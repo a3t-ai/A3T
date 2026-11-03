@@ -16,7 +16,8 @@
 
   type Kind = 'flow' | 'resource' | 'trigger' | 'canvas' | 'template' | 'agent';
   /// `onopen`: the page shows the item (read-only — it is not yours to change).
-  let { kind, noun, onopen }: { kind: Kind; noun: string; onopen?: (it: ExposedItem) => void } = $props();
+  /// `hide`: releases (`name@sub`) the page already lists — not repeated here.
+  let { kind, noun, onopen, hide }: { kind: Kind; noun: string; onopen?: (it: ExposedItem) => void; hide?: Set<string> } = $props();
 
   type Item = ExposedItem;
   let items = $state<Item[]>([]);
@@ -96,6 +97,7 @@
     const best = new Map<string, Item>();
     for (const it of items) {
       const k = `${it.name}@${it.sub}`;
+      if (hide?.has(k)) continue;
       const cur = best.get(k);
       if (!cur || (ownerOf(it.namespace) === mine && ownerOf(cur.namespace) !== mine)) best.set(k, it);
     }

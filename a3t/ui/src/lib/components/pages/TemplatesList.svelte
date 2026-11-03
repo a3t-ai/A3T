@@ -14,7 +14,7 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
-  import { inContext, projectOf, getProject, canAdminNamespace } from '$lib/stores/context.svelte.ts';
+  import { inContext, projectOf, getProject, canAdminNamespace, isReleaseProject } from '$lib/stores/context.svelte.ts';
 
   // Stacked sub-editors (unlimited depth)
   interface SubEditor { type: string; data?: any; closing?: boolean }
@@ -278,18 +278,26 @@ do:
   });
 
   // Collapsible sections
-  let sections = $state({ platform: true, my: true, training: true, community: false });
+  let sections = $state<Record<string, boolean>>({ platform: true, my: true, released: true, training: true, community: false });
 
   /// The selected project's templates only (all of them under "All projects").
   let inView = $derived(allTemplates.filter(t => inContext(t.namespace, 'shared')));
   /// Mine: templates I created. Shared: everyone else's in view, and the
   /// built-in ones. Templates other orgs expose are in the sections below.
-  let myTemplates = $derived(inView.filter(t => t.created_by === $currentUser?.id));
-  let platformTemplates = $derived(inView.filter(t => t.created_by !== $currentUser?.id));
+  /// A template in a project that releases to others is a release — never "mine",
+  /// even in that project. Working in one, its releases get their own section;
+  /// elsewhere they are in the shared sections below. Each release shows once:
+  /// the upstream copy it was passed on from (system → a3t) is not repeated.
+  let workTemplates = $derived(inView.filter(t => !isReleaseProject(t.namespace)));
+  let releasedHere = $derived(inView.filter(t => isReleaseProject(t.namespace)));
+  let shownReleases = $derived(new Set(releasedHere.map((t) => `${t.name}@v${String(t.version).replace(/^v/, '')}`)));
+  let myTemplates = $derived(workTemplates.filter(t => t.created_by === $currentUser?.id));
+  let platformTemplates = $derived(workTemplates.filter(t => t.created_by !== $currentUser?.id));
 
   let tplSections = $derived([
     { key: 'my', label: 'My Templates', hint: 'Created by you', items: myTemplates },
     { key: 'platform', label: 'Team Templates', hint: 'Created by others in view, and built into A3T', items: platformTemplates },
+    ...(releasedHere.length ? [{ key: 'released', label: `Released from ${getProject() || 'your orgs'}`, hint: 'Shared with other orgs — what you change here reaches everyone who uses them', items: releasedHere }] : []),
 
   ]);
 
@@ -677,7 +685,7 @@ do:
           </div>
       </FoldSection>
     {/each}
-    <ExposedSections kind="template" noun="Templates" onopen={openInherited} />
+    <ExposedSections kind="template" noun="Templates" onopen={openInherited} hide={shownReleases} />
   </div>
 
 <!-- Delete confirmation dialog -->

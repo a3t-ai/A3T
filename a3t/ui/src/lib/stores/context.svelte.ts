@@ -131,12 +131,22 @@ function exposureFor(p: Project): ExposedKind | null {
   const ex = p.info?.policy?.exposure;
   if (!p.info || !ex?.audience || ex.audience === 'none' || p.name === project) return null;
   const orgs = viewingOrgs();
-  // With no project selected, your org's own projects are already in your
-  // lists. With one selected, a sibling project's release reaches it like
-  // any other org's: a3t-examples sees what a3t-shared exposes.
-  if (!project && p.info.owner_kind === 'org' && orgs.includes(p.info.owner)) return null;
-  const reaches = ex.audience === 'public' || (ex.orgs ?? []).some((o: string) => orgs.includes(o));
+  // Your own org's releases are releases too: with no project selected they are
+  // not in your lists (namespacesFor), so they show here, by their kind. With
+  // one selected, a sibling project's release reaches it like any other org's.
+  const own = p.info.owner_kind === 'org' && orgs.includes(p.info.owner);
+  const reaches = own || ex.audience === 'public' || (ex.orgs ?? []).some((o: string) => orgs.includes(o));
   return reaches ? ((ex.kind ?? 'community') as ExposedKind) : null;
+}
+
+/// A project that releases to others (its policy exposes it, or it reaches you
+/// as Shared / Training / Community): what is in it is a release, shown in the
+/// shared sections — never as "mine", even when you made it.
+export function isReleaseProject(ns: string | undefined): boolean {
+  const p = ns ? projects.find((x) => x.name === ns) : undefined;
+  if (!p?.info) return false;
+  const ex = p.info.policy?.exposure;
+  return (EXPOSED_ROLES as readonly string[]).includes(p.info.role ?? '') || (!!ex?.audience && ex.audience !== 'none');
 }
 
 /// Projects exposed to the orgs in view (not theirs), by kind.
@@ -194,7 +204,9 @@ export function isPlatform(ns: string | undefined): boolean {
 /// selected project (or every user project), then platform ones where they belong.
 export function namespacesFor(kind: ListKind): string[] {
   // Your projects — not ones only exposed to you (those have their own sections).
-  const user = projects.filter((p) => !p.platform && canSee(p) && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '')).map((p) => p.name);
+  // Your projects — not ones only exposed to you, and not ones that release to
+  // others (their items are releases, in the shared sections), unless selected.
+  const user = projects.filter((p) => !p.platform && canSee(p) && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '') && !isReleaseProject(p.name)).map((p) => p.name);
   const platform = projects.filter((p) => p.platform).map((p) => p.name);
   const base = project ? [project] : user;
   const withPlatform = kind === 'picker' || (showPlatform && !project);
