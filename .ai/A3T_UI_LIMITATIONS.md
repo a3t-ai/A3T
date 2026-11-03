@@ -1,0 +1,46 @@
+# A3T console — UI limitations and the APIs they need
+
+Started 3 Nov 2026, with the persona-driven agent hub (branch `a3t-ui`). The console
+was rebuilt around four ways people come to an agent — a learner exploring, a
+developer, a security reviewer, an SRE — using only the APIs that exist. Where a
+screen needs data no API gives, the UI says so and names the entry below
+(`UI-n`); it never shows made-up data.
+
+Status: **open** (the UI shows a gap), **partial** (the UI approximates it, as
+described), **done** (with commit).
+
+## Where each persona lands
+
+| Persona | Way in | Lands on |
+|---|---|---|
+| Learner / agent infra owner | Chat home: "What is A3T?", "Create an agent", "Explore an agent" | Agent → Overview, then Activity, Memory, Controls |
+| Developer | Agent → Code ("Open in Studio"), Deploy | Studio: run, debug, versions; canvas |
+| Security reviewer | Chat home: "Review security"; agent → Controls | Decision log (filtered to the agent), Controls |
+| SRE | Chat home: "Check health"; agent → Health | Runtimes, agent Health |
+
+## API gaps
+
+| # | What the UI needs | Where it shows | Today | Proposed API | Status |
+|---|---|---|---|---|---|
+| UI-1 | Read one agent's memory: entries per tier (working, episodic, semantic, procedural, tools), counts, newest first | Agent → Memory; Memory page | Tier cards show "entries: —"; admins are pointed at Settings → ADB SQL | `GET /agents/{id}/memory?tier=&limit=&cursor=` → `{tiers: [{tier, count, bytes}], entries: [{tier, key, value, ts, scope, source_run}]}`, read through AQL on the agent's scope; Cedar `memory:read` on the agent | open |
+| UI-2 | Runs of **this** agent, not of its serving flow | Agent → Activity, Overview tiles, Health | Lists runs of the serving flow (`variables.target`), which agents can share (the chat engine) | `list_runs` gains `agent_id` (from the run's input or its trigger), indexed in the run store | partial |
+| UI-3 | Decision-log records about one agent, server-filtered and paged | Agent → Activity, Controls; Decision log | Reads the latest 500 records and filters by agent id in principal / on-behalf-of / resource | `GET /security/audit?principal=agent:{id}&involves={id}&since=&cursor=` | partial |
+| UI-4 | All conversations with an agent (for its owner / admins), not only the caller's | Agent → Activity | Shows only the signed-in user's own sessions (`<agent>:<client>` prefix) | `GET /agents/{id}/sessions?cursor=` (owner, admin), titles + counts + last activity, no transcripts without `session:read` | partial |
+| UI-5 | What an agent learned, when: memory writes as events | Agent → Memory ("recent learning"), Activity | Not shown | Memory writes emitted as events (`memory.stored {agent, tier, key, run}`) and listable: `GET /agents/{id}/memory/events` | open |
+| UI-6 | The agent's outbound identity: gateway, IdP token audience, egress policy | Agent → Controls → Identity | Text explains the policy choke points; no per-agent egress facts | From the gateway pool (cluster design §10): `GET /agents/{id}/egress` → `{gateway, token_audience, allowed_hosts, policy_ids}` | open |
+| UI-7 | Per-agent data handling: audit level, transcript retention, redaction hooks in force | Agent → Controls → What is logged | Lists what is logged in general; says retention/redaction have no setting | Agent (or template) `policy.audit {level, retention_days, redact[]}` stored and returned with the agent; enforced in the hooks | open |
+| UI-8 | Metrics per agent over time: latency, error rate, tokens, cost | Agent → Health | Deployment totals from `/ops/overview` (runs, last hour, error rate, p50, p95, refused, last error) when the agent is deployed through a canvas; nothing for undeployed agents and no history | `GET /agents/{id}/metrics?window=24h&step=5m` → series `{runs, errors, p50, p95, tokens_in, tokens_out, cost}`; tokens from the LLM call task | partial |
+| UI-9 | Runtime events: restarts, crashes, out-of-memory, hibernate/resume | Agent → Health; Runtimes | Not shown; restart *policy* is visible in the canvas | `GET /ops/runtimes/{name}/events` and `GET /ops/deployments/{id}/events` (k8s events + controller decisions) | open |
+| UI-10 | Application logs of an agent's runs and its runtime (stdout/stderr, tracing) | Agent → Health; Executions | The console's "Logs" was the decision log; renamed "Decision log" so it no longer suggests application logs | `GET /runs/{id}/logs` and `GET /ops/deployments/{id}/logs?since=&follow=1` (SSE) | open |
+| UI-11 | A plain-language purpose for an agent separate from its template's description | Agent → Overview | Uses the template's `document.metadata.description` | Agent record gains `description`; the builder agent fills it | open |
+| UI-12 | Alerts: thresholds on error rate / latency that notify | Bell → Notifications | Notifications hold console warnings and errors only | `alerts` resource (`{agent, metric, op, value, window}`) evaluated by the controller; notices pushed to the console | open |
+
+## UI changes made with this (no backend change)
+
+- Agent pop-in (existing agent): tabs Overview · Activity · Memory · Controls · Health · Code · Deploy · Configuration · Template · Ownership. The hub (`components/agent/AgentHub.svelte`, data in `agentData.ts`) loads runs, decisions, conversations and placement once per agent.
+- Chat home: five ways in (What is A3T? · Create an agent · Explore an agent · Review security · Check health).
+- "Logs" → "Decision log", filterable to an agent (`navigateTo('logs', …, { q: agentId })`).
+- Memory page: the made-up sample agents are gone; it lists real agents and opens each one's Memory tab. Added to the menu.
+- Identity: an unreachable SSO provider reads as what it means for sign-in, with the technical error behind "Technical detail".
+- Chat: an agent artifact opens the agent's page ("Open agent"); the Studio stays one click away.
+- Deep links: `navigateToDetail('agents', 'Agents', id, { tab: 'memory' | 'activity' | 'policy' | 'health' | … })`.

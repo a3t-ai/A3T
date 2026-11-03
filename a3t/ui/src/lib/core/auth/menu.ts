@@ -46,6 +46,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       // databases; /db-console still opens it for old links.
       { type: 'flow-editor',      label: 'Studio',           tag: null, icon: 'studio',   roles: ALL_ROLES },
       { type: 'knowledge',        label: 'Knowledge',        tag: null, icon: 'kg', roles: ALL_ROLES },
+      { type: 'memory',           label: 'Memory',           tag: null, icon: 'memory', roles: ALL_ROLES },
     ],
   },
   {
@@ -54,7 +55,7 @@ export const MENU_CONFIG: MenuGroup[] = [
     items: [
       { type: 'runtime',     label: 'Runtimes',    tag: null, icon: 'runtime', roles: ALL_ROLES },
       { type: 'executions',  label: 'Executions',  tag: null, icon: 'runs', roles: ALL_ROLES },
-      { type: 'logs',        label: 'Logs',         tag: null, icon: 'logs', roles: ALL_ROLES },
+      { type: 'logs',        label: 'Decision log',         tag: null, icon: 'logs', roles: ALL_ROLES },
     ],
   },
   {

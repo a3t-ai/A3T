@@ -2,6 +2,7 @@
   import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import AgentHub from '$lib/components/agent/AgentHub.svelte';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
@@ -139,20 +140,34 @@
     { id: 'serving', label: 'Serving', hint: 'The flow that serves it and its endpoint — one is made for it unless you pick one' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    detail: 'What it is and where it lives', config: 'LLM, prompt and tools', designer: 'Its flow, visually',
-    template: 'The template it is built from', canvas: 'Where and how it is deployed',
-    policy: 'What it may do', ownership: 'Who owns it and who can use it',
+    detail: 'What it is, whether it is working, and where to look next',
+    activity: 'What it did: conversations, runs, and what was blocked',
+    memory: 'What it keeps, and how',
+    policy: 'Who it acts as, what it may do, its hooks, what is logged',
+    health: 'How its deployment is doing: errors, latency, its runtime',
+    designer: 'Its flow and hooks — open in Studio to change and test',
+    canvas: 'Where it runs and how it is deployed',
+    config: 'Model, prompt and tool overrides for this agent',
+    template: 'The template it is built from', ownership: 'Who owns it and who can use it',
   };
 
+  /// An existing agent's tabs, ordered by the questions people bring: what is
+  /// it and is it working, what it did, what it remembers, what it may do, how
+  /// it is running — then how it is built, deployed and configured.
   const treeNodes = [
-    { id: 'detail', label: 'Agent Detail', icon: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>' },
+    { id: 'detail', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
+    { id: 'activity', label: 'Activity', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
+    { id: 'memory', label: 'Memory', icon: '<ellipse cx="8" cy="4" rx="6" ry="2.5"/><path d="M2 4v8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V4M2 8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/>' },
+    { id: 'policy', label: 'Controls', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
+    { id: 'health', label: 'Health', icon: '<path d="M8 14s-6-3.6-6-8a3.3 3.3 0 016-1.9A3.3 3.3 0 0114 6c0 4.4-6 8-6 8z"/>' },
+    { id: 'designer', label: 'Code', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>' },
+    { id: 'canvas', label: 'Deploy', icon: '<path d="M8 1v9M4.5 6.5L8 10l3.5-3.5M2 13h12"/>' },
     { id: 'config', label: 'Configuration', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
-    { id: 'designer', label: 'Designer', icon: '<rect x="1" y="1" width="5" height="5" rx="1"/><rect x="10" y="10" width="5" height="5" rx="1"/><path d="M6 3.5h4M8 3.5v9"/>' },
     { id: 'template', label: 'Template', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>' },
-    { id: 'canvas', label: 'Canvas', icon: '<path d="M8 1v9M4.5 6.5L8 10l3.5-3.5M2 13h12"/>' },
-    { id: 'policy', label: 'Permissions', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
     { id: 'ownership', label: 'Ownership & Access', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
+  /// The tabs the hub draws (one instance, so its data loads once per agent).
+  const HUB: Record<string, 'overview' | 'activity' | 'memory' | 'health'> = { detail: 'overview', activity: 'activity', memory: 'memory', health: 'health' };
 
   async function loadAgents() {
     loading = true; error = '';
@@ -535,6 +550,8 @@
       onTemplateChange();
     } else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
+      // "Open its memory", "Review its controls"… land on that tab.
+      if (panel.props.tab && (treeNodes.some((n) => n.id === panel.props.tab))) propNode = panel.props.tab;
     }
   });
 </script>
@@ -606,17 +623,10 @@
               {/if}
             </div>
           </div>
-        {:else if propNode === 'detail'}
-          <div class="pf">
-            <h3>Agent Detail</h3>
-            <div class="pf-kv">
-              <div class="pf-row"><span class="pf-k">ID</span><span class="pf-v mono">{agent.id}</span></div>
-              <div class="pf-row"><span class="pf-k">Name</span><span class="pf-v">{agent.name}</span></div>
-              <div class="pf-row"><span class="pf-k">Namespace</span><span class="pf-v">{agent.namespace}</span></div>
-              <div class="pf-row"><span class="pf-k">Mode</span><span class="pf-v">{agent.mode}</span></div>
-              <div class="pf-row"><span class="pf-k">Status</span><span class="pf-v">{agent.status}</span></div>
-              <div class="pf-row"><span class="pf-k">Template</span><span class="pf-v mono">{agent.template_id}:{agent.template_version}</span></div>
-            </div>
+        {:else if HUB[propNode]}
+          <div class="pf wide">
+            <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
+            <AgentHub {agent} {templates} section={HUB[propNode]} ongo={(t) => (propNode = t)} onstudio={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)} />
           </div>
 
         {:else if propNode === 'config'}
@@ -653,6 +663,10 @@
           </div>
 
         {:else if propNode === 'designer'}
+          <div class="code-bar">
+            <span>Read-only here. Change, run and debug it in the Studio.</span>
+            <button class="btn spec sm" onclick={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}>Open in Studio</button>
+          </div>
           {#if agentTemplate?.spec_yaml}
             <div class="agt-designer">
               <FlowEditorPane aiKind="agent" aiName={agent?.name ?? ''} initialYaml={agentTemplate.spec_yaml} readOnly configSeed={agentConfigSeed} />
@@ -672,6 +686,10 @@
           </div>
 
         {:else if propNode === 'canvas'}
+          <div class="pf wide">
+            <WizardHead step={agentSteps.find((x) => x.id === 'canvas')} />
+            <AgentHub {agent} {templates} section="deploy" ongo={(t) => (propNode = t)} />
+          </div>
           <div class="pf">
             <div class="pf-head">
               <h3>Canvas — deploy this agent</h3>
@@ -710,6 +728,10 @@
           </div>
 
         {:else if propNode === 'policy'}
+          <div class="pf wide">
+            <WizardHead step={agentSteps.find((x) => x.id === 'policy')} />
+            <AgentHub {agent} {templates} section="controls" ongo={(t) => (propNode = t)} />
+          </div>
           <div class="pf">
             <h3>Permissions</h3>
             <p class="pf-hint">Which tools this agent is allowed to use. The policy engine blocks any tool that isn't allowed — even if the model tries to call it.</p>
@@ -717,7 +739,7 @@
             <label class="perm-toggle">
               <input type="checkbox" checked={restrictTools}
                 onchange={(e) => { bindings.enabled_tools = (e.currentTarget as HTMLInputElement).checked ? allToolNames(serverTools).filter(t => !isDestructive(t)) : null; }} />
-              <span><strong>Restrict tools</strong> — {restrictTools ? `${(bindings.enabled_tools ?? []).length} of ${allToolNames(serverTools).length} allowed` : 'off · agent may use every tool below'}</span>
+              <span><strong>Restrict tools</strong> — {restrictTools ? `${(bindings.enabled_tools ?? []).length} of ${allToolNames(serverTools).length} allowed` : 'off · it may use every tool below'}{restrictTools && (bindings.enabled_tools ?? []).length === 0 ? ' — none yet: tick the tools it may use' : ''}</span>
             </label>
 
             {#if (bindings.mcp_servers ?? []).length === 0}
@@ -887,7 +909,7 @@
   .panel-col { display: flex; flex-direction: column; min-height: 0; height: 100%; }
   .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
   .panel-content-flush { overflow: hidden; }
-  .agt-designer { height: 100%; overflow: hidden; }
+  .agt-designer { height: calc(100% - 47px); overflow: hidden; }
   .pf-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .pf-head h3 { margin-bottom: 0; }
   .pf-form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
@@ -897,6 +919,9 @@
 
   /* Panel forms */
   .pf { padding: 24px 32px; max-width: 704px; }
+  .pf.wide { max-width: 980px; }
+  .pf.wide + .pf { padding-top: 0; }
+  .code-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; color: var(--text-3); }
   .pf h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .pf-kv { display: flex; flex-direction: column; }
   .pf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }

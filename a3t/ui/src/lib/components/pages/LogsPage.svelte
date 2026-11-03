@@ -3,7 +3,7 @@
   // choke points). This is the platform's security-relevant event stream. In CE
   // (allow-all) there are no decisions to record, so it reads empty.
   import { audit, getEdition } from '$lib/services/api';
-  import { navigateTo } from '$lib/stores/panels.svelte.ts';
+  import { navigateTo, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { onMount, onDestroy } from 'svelte';
 
   interface Rec {
@@ -18,7 +18,8 @@
   let edition = $state<'ce' | 'ee' | null>(null);
   let limit = $state(100);
   let denialsOnly = $state(false);
-  let q = $state('');
+  /// An agent page opens this filtered to the agent (props.q).
+  let q = $state<string>(getActivePanel()?.props?.q ?? '');
   let auto = $state(false);
   let timer: any = null;
 
@@ -37,7 +38,7 @@
 
   let shown = $derived(
     !q.trim() ? records
-    : records.filter(r => `${r.principal_id} ${r.action} ${r.resource_type} ${r.resource_id} ${r.reason ?? ''}`.toLowerCase().includes(q.toLowerCase()))
+    : records.filter(r => `${r.principal_id} ${r.on_behalf_of ?? ''} ${r.action} ${r.resource_type} ${r.resource_id} ${r.reason ?? ''}`.toLowerCase().includes(q.toLowerCase()))
   );
 
   function toggleAuto() {
@@ -54,8 +55,8 @@
 <div class="logs">
   <header class="head">
     <div>
-      <h1>Logs</h1>
-      <p class="sub">Authorization decision log — every allow/deny recorded at the policy choke points.</p>
+      <h1>Decision log</h1>
+      <p class="sub">Every allow and deny at the policy choke points — who, acting for whom, did what to which resource, and the policy that decided. Run logs are under Executions; application logs are not in the console yet.</p>
     </div>
     <div class="head-actions">
       <button class="btn ghost" onclick={() => navigateTo('settings', 'Settings')}>⚙ Log settings</button>
@@ -65,7 +66,7 @@
   </header>
 
   <div class="filters">
-    <input class="inp grow" placeholder="filter by principal / action / resource / reason" bind:value={q} />
+    <input class="inp grow" placeholder="filter by agent, person, action, resource or policy" bind:value={q} />
     <label class="chk"><input type="checkbox" bind:checked={denialsOnly} onchange={load} /> Denials only</label>
     <select class="inp" bind:value={limit} onchange={load}>
       {#each [50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}

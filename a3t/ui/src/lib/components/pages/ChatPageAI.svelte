@@ -1,6 +1,6 @@
 <script lang="ts">
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
-  import { setActiveSelection, getActivePanel, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { setActiveSelection, getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { splitContextPath } from '$lib/stores/context.svelte.ts';
   // Same layout as the original chat (conversation sidebar + main pane); the
   // message engine underneath is @ai-sdk/svelte's `Chat` talking to POST /chat,
@@ -77,6 +77,22 @@
   let conversations = $state<Conv[]>(loadLS<Conv[]>(LS_CONV, []));
   let messagesById = $state<Record<string, UIMessage[]>>(loadLS<Record<string, UIMessage[]>>(LS_MSGS, {}));
   let inputValue = $state('');
+  let inputEl = $state<HTMLTextAreaElement>();
+
+  /// The ways in, by what people come to do — the same for everyone; each one
+  /// starts a question or opens the place that answers it.
+  const INTENTS: { title: string; sub: string; go: () => void }[] = [
+    { title: 'What is A3T?', sub: 'Ask the assistant to explain the platform', go: () => ask('What is A3T, and what can I do with it?', true) },
+    { title: 'Create an agent', sub: 'Describe what it should do — it is built in this project', go: () => ask('Create an agent that ') },
+    { title: 'Explore an agent', sub: 'What it does, remembers, and was blocked from', go: () => navigateTo('agents', 'Agents') },
+    { title: 'Review security', sub: 'Every allow and deny, who acted for whom', go: () => navigateTo('logs', 'Decision log') },
+    { title: 'Check health', sub: 'Runtimes, deployments, errors and latency', go: () => navigateTo('runtime', 'Runtimes') },
+  ];
+  function ask(text: string, send = false) {
+    inputValue = text;
+    if (send) { sendMessage(); return; }
+    requestAnimationFrame(() => { inputEl?.focus(); inputEl?.setSelectionRange(text.length, text.length); });
+  }
 
   // The conversation list, its resizing and its icon rail all moved to the
   // shell's context pane, so this page no longer owns a side column.
@@ -894,6 +910,7 @@
         {/if}
         <textarea
           class="chat-input"
+          bind:this={inputEl}
           placeholder="Ask anything about the platform..."
           bind:value={inputValue}
           onkeydown={handleKeydown}
@@ -986,6 +1003,11 @@
       </div>
     </div>
     {#if landing}
+      <div class="intents">
+        {#each INTENTS as it (it.title)}
+          <button class="intent" onclick={it.go}><b>{it.title}</b><span>{it.sub}</span></button>
+        {/each}
+      </div>
       <!-- Same Pinned / Latest lists as every other app home, below the composer. -->
       <div class="landing-lists">
         <AppHome appType="chat" embedded />
@@ -1107,6 +1129,12 @@
   }
   .landing-sub { font-size: 12.5px; color: var(--text-4); margin: 0; }
 
+  .intents { max-width: 860px; width: 100%; margin: 4px auto 22px; padding: 0 32px; box-sizing: border-box; display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .intent { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
+  .intent:hover { border-color: var(--spec); background: var(--spec-bg); }
+  .intent b { font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .intent span { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
+  @media (max-width: 900px) { .intents { grid-template-columns: repeat(2, 1fr); } }
   .landing-lists { max-width: 860px; margin: 0 auto; width: 100%; padding: 0 32px 24px; box-sizing: border-box; }
 
 

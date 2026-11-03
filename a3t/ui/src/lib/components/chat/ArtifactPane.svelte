@@ -9,7 +9,7 @@
   import CanvasDeployBar from './CanvasDeployBar.svelte';
   import CanvasDesigner from '$lib/components/editor/CanvasDesigner.svelte';
   import { mcpCall } from '$lib/services/api';
-  import { openInStudio } from '$lib/stores/panels.svelte';
+  import { openInStudio, navigateToDetail } from '$lib/stores/panels.svelte';
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import JsonForm from './JsonForm.svelte';
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
@@ -34,6 +34,7 @@
   } = $props();
 
   const spec = $derived(ARTIFACTS[artifact.kind]);
+  const agentId = $derived.by(() => { if (artifact.kind !== 'agent') return ''; if (artifact.id) return artifact.id; try { const j = JSON.parse(artifact.text ?? '{}'); return j.id ?? j.agent_id ?? ''; } catch { return ''; } });
   let text = $state(artifact.text);
   let section = $state('graph');
   let saving = $state(false);
@@ -221,6 +222,9 @@
         </button>
       {/if}
       {#if artifact.kind !== 'flow_draft'}
+        {#if artifact.kind === 'agent' && agentId}
+          <button class="pbtn" title="Open the agent: what it does, remembers and was blocked from" onclick={() => navigateToDetail('agents', 'Agents', agentId)}>Open agent</button>
+        {/if}
         <button class="pbtn" title="Open in Studio"
           onclick={() => openInStudio(artifact.kind as Exclude<ArtifactKind, 'flow_draft'>, artifact.namespace, artifact.name, artifact.id)}>↗</button>
       {/if}

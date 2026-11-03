@@ -56,7 +56,7 @@ const PATH_TO_TYPE: Record<string, { type: string; title: string }> = {
   '/runtime': { type: 'runtime', title: 'Runtimes' },
   '/controller': { type: 'reconciliation', title: 'Controller' },
   '/executions': { type: 'executions', title: 'Executions' },
-  '/logs': { type: 'logs', title: 'Logs' },
+  '/logs': { type: 'logs', title: 'Decision log' },
   '/studio': { type: 'flow-editor', title: 'Studio' },
   // Old links.
   '/flow-editor': { type: 'flow-editor', title: 'Studio' },

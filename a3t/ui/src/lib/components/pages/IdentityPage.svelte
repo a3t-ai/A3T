@@ -164,8 +164,9 @@
             <div><dt>Realm</dt><dd>{status.realm}</dd></div>
           </dl>
         {:else}
-          <div class="conn bad"><span class="dot"></span> Configured, unreachable</div>
-          <p class="hint">{status?.error || 'Could not obtain an admin token.'}</p>
+          <div class="conn warn"><span class="dot"></span> Set up, not reachable from the console</div>
+          <p class="hint">Sign-in still works with console accounts; SSO users and roles can't be listed or managed here until the console can reach the provider.</p>
+          <details class="why"><summary>Technical detail</summary><code>{status?.error || 'Could not obtain an admin token.'}</code></details>
         {/if}
       </section>
 
@@ -238,6 +239,11 @@
 </DesignerPanel>
 
 <style>
+  .conn.warn .dot { background: var(--warn); }
+  .conn.warn { color: var(--warn); }
+  .why { margin-top: 8px; font-size: 12px; color: var(--text-3); }
+  .why summary { cursor: pointer; }
+  .why code { display: block; margin-top: 6px; padding: 8px 10px; background: var(--bg-subtle); border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
   /* Page header — the same shape as every other section. */
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); flex: none; }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
