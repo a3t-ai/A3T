@@ -21,6 +21,8 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
   import { onMount, untrack } from 'svelte';
+  import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
 
   interface TriggerTarget { type: string; namespace?: string; name?: string; agent_id?: string; url?: string }
   interface Trigger {
@@ -221,7 +223,19 @@
     formTargets = []; sidebarSearch = '';
   }
 
-  function openCreate() { editingTrigger = null; resetForm(); view = 'editor'; }
+  function openCreate() { editingTrigger = null; resetForm(); step = 'details'; view = 'editor'; }
+
+  /// The editor's steps: what it is, what fires it, where it delivers, a test.
+  /// A new trigger goes in order; an existing one opens on any step.
+  let step = $state('details');
+  let saving = $state(false);
+  const trgSteps = $derived.by((): WizardStep[] => [
+    { id: 'details', label: 'Details', ok: !!formName.trim() && !!formNs, need: 'Name the trigger.' },
+    { id: 'source', label: 'Source', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : !!formEventSource.trim(),
+      need: formType === 'webhook' ? 'Give the webhook a path.' : formType === 'cron' ? 'Give the schedule a cron expression.' : 'Name the event source.' },
+    { id: 'destinations', label: 'Destinations', ok: formTargets.length > 0, need: 'Connect a destination: drag a flow or agent onto the canvas.' },
+    { id: 'test', label: 'Test', optional: true },
+  ]);
 
   function openEdit(t: Trigger) {
     editingTrigger = t;
@@ -231,6 +245,7 @@
     formCron = t.config.expression ?? '*/5 * * * *'; formCronMsg = t.config.message ?? ''; formTimezone = t.config.timezone ?? '';
     formEventSource = t.config.source ?? ''; formEventFilter = t.config.filter ?? '';
     formTargets = [...t.targets]; sidebarSearch = '';
+    step = 'details';
     view = 'editor';
   }
 
@@ -257,7 +272,9 @@
     const triggerObj = { name: formName, namespace: formNs, config: c, targets: formTargets, enabled: formEnabled, description: formDesc };
     // The trigger's fields go at the top level, as the platform's Trigger reads them
     // (a wrapped { trigger } failed both calls, silently).
+    saving = true;
     const r = editingTrigger ? await putTrigger(editingTrigger.id, triggerObj) : await createTrigger(triggerObj);
+    saving = false;
     if (!r.ok) { saveError = r.error; return; }
     saveError = '';
     view = 'list';
@@ -436,18 +453,27 @@
 <!-- ═══════════ EDITOR (SlidePanel pop-in) ═══════════ -->
 <SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={saveTrigger}>
   <div class="te" bind:this={editorContainer}>
+    <div class="te-steps"><WizardSteps steps={trgSteps} active={step} wizard={!editingTrigger} orientation="horizontal" onselect={(id) => (step = id)} /></div>
     {#if saveError}<div class="te-error" role="alert">Could not save: {saveError}</div>{/if}
-    <!-- TOP: Form -->
+    <!-- Details / Source -->
+    {#if step === 'details' || step === 'source'}
     <div class="te-form">
       <div class="tf-row-top">
+        {#if step === 'details'}
         <div class="tf-col">
           <div class="tf-section-first">IDENTITY</div>
           <div class="tf-row2">
             <label><span>Name</span><input type="text" bind:value={formName} placeholder="my-webhook" /></label>
-            <label><span>Namespace</span><input type="text" bind:value={formNs} /></label>
+            <label><span>Namespace</span>
+              <select bind:value={formNs}>
+                {#each [...new Set([formNs, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}
+              </select>
+            </label>
           </div>
           <label class="tf-full"><span>Description</span><input type="text" bind:value={formDesc} placeholder="What this trigger does" /></label>
+          <label class="tf-check"><input type="checkbox" bind:checked={formEnabled} /> Enabled</label>
         </div>
+        {:else}
         <div class="tf-col">
           <div class="tf-section-first">CHANNEL</div>
           <div class="tf-type-tabs">
@@ -477,11 +503,13 @@
           {:else if formType === 'event'}
             <label class="tf-full"><span>Source</span><input type="text" bind:value={formEventSource} placeholder="system.workflow.completed" /></label>
           {/if}
-          <label class="tf-check"><input type="checkbox" bind:checked={formEnabled} /> Enabled</label>
         </div>
+        {/if}
       </div>
     </div>
+    {/if}
 
+    {#if step === 'destinations' || step === 'test'}
     <!-- Connected targets bar -->
     {#if formTargets.length > 0}
       <div class="te-targets-bar">
@@ -564,8 +592,13 @@
       </div>
     </div>
 
+    {/if}
+
+    {#if step === 'test' && !(formType === 'webhook' && formTargets.length > 0)}
+      <div class="te-note">{formType !== 'webhook' ? 'Test fires webhook triggers from here; a cron or event trigger runs on its schedule or event once saved.' : 'Connect a destination first — Test sends the input below to it.'}</div>
+    {/if}
     <!-- Output panel -->
-    {#if showOutput}
+    {#if showOutput && step === 'test'}
       <div class="te-bottom-divider" class:dragging-bottom={draggingBottom} onmousedown={onBottomDragStart} role="separator"></div>
       <div class="te-output" style="height: {outputHeight}px;">
         <div class="te-out-header">
@@ -606,6 +639,8 @@
         </div>
       </div>
     {/if}
+    <WizardNav steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }}
+      final={saveTrigger} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
   </div>
 </SlidePanel>
 
@@ -647,6 +682,8 @@
 
   /* ═══ EDITOR (inside SlidePanel) ═══ */
   .te { display: flex; flex-direction: column; height: 100%; }
+  .te-steps { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); flex-shrink: 0; }
+  .te-note { padding: 10px 16px; font-size: 12.5px; color: var(--text-3); background: var(--bg-subtle); border-top: 1px solid var(--border); }
 
   /* TOP: form — two columns side by side */
   .te-form { padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }

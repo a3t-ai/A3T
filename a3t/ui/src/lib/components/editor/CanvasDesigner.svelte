@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import { getProject } from '$lib/stores/context.svelte.ts';
   // Canvas editor — a canvas is ONE flow's DEPLOYMENT metadata (not a multi-agent
   // graph). See .ai/A3T_CANVAS_SPEC.md §3. It emits the a3t.io/v1alpha1 CanvasSpec:
@@ -53,7 +54,17 @@
     window.addEventListener('mouseup', onUp);
   }
 
-  let activeSection = $state('designer');
+  /// The form in four steps (the code / preview pane stays beside it): which flow,
+  /// where it loads, how it runs, what it depends on. Embedded (the chat pane)
+  /// shows them all at once.
+  let activeSection = $state('flow');
+  const canvasSteps = $derived.by((): WizardStep[] => [
+    { id: 'flow', label: 'Flow', ok: !!name.trim() && !!flowRef, need: !name.trim() ? 'Name the canvas.' : 'Pick the flow it deploys.' },
+    { id: 'placement', label: 'Placement' },
+    { id: 'lifecycle', label: 'Lifecycle' },
+    { id: 'health', label: 'Health', optional: true },
+  ]);
+  const showStep = (id: string) => embedded || activeSection === id;
   let name = $state('');
   // A new canvas belongs to the selected project.
   let namespace = $state(getProject() || 'default');
@@ -93,7 +104,7 @@
   $effect(() => { if (open || embedded) void init(); });
 
   async function init() {
-    msg = ''; activeSection = 'designer'; depInput = ''; leftMode = 'code'; rightMode = 'form';
+    msg = ''; activeSection = 'flow'; depInput = ''; leftMode = 'code'; rightMode = 'form';
     const [rt, sch] = await Promise.all([canvasApi.runtimes(), canvasApi.schema()]);
     runtimes = rt.ok ? (rt.data?.runtimes ?? []) : [];
     schema = sch.ok ? sch.data : null;
@@ -338,6 +349,7 @@
         {#if rightMode === 'form'}
           <fieldset class="cd-fieldset" disabled={readonly}>
           <div class="cd-formcol">
+            {#if showStep('flow')}
             <div class="cd-sub">Canvas — the flow this deploys</div>
             <label class="cf-field"><span>Name</span><input bind:value={name} placeholder="orders-canvas" readonly={!!canvas} /></label>
             <label class="cf-field"><span>Namespace</span><input bind:value={namespace} readonly={!!canvas} /></label>
@@ -349,7 +361,9 @@
               </select>
             </label>
             <label class="cf-field"><span>Description</span><input bind:value={description} placeholder="what this canvas deploys" /></label>
+            {/if}
 
+            {#if showStep('placement')}
             <div class="cd-sub">Placement — where the flow loads</div>
             <label class="cf-field"><span>Isolation mode</span>
               <select bind:value={mode}><option value="shared">shared — into a runtime pool</option><option value="isolated">isolated — dedicated sandbox</option></select>
@@ -363,7 +377,9 @@
                 {#each runtimes as r}<option value={r.name}>{r.name}</option>{/each}
               </select>
             </label>
+            {/if}
 
+            {#if showStep('lifecycle')}
             <div class="cd-sub">Lifecycle — how it runs</div>
             <div class="cf-grid">
               <label class="cf-field"><span>State</span>
@@ -393,7 +409,9 @@
               </label>
               <label class="cf-field"><span>Max retries</span><input type="number" min="0" bind:value={rsMax} /></label>
             </div>
+            {/if}
 
+            {#if showStep('health')}
             <div class="cd-sub">Health — dependent resources to watch</div>
             <p class="sf-note">Auto-derived from the flow's tasks (call:llm/mcp/adb) when empty. Override here.</p>
             <div class="dep-add">
@@ -406,6 +424,7 @@
             <label class="cf-field" style="margin-top:10px;"><span>On dependency down</span>
               <select bind:value={onDepDown}>{#each ON_DEP_DOWN as o}<option value={o}>{o}</option>{/each}</select>
             </label>
+            {/if}
           </div>
           </fieldset>
         {:else}
@@ -439,9 +458,11 @@
   name={name || 'New Canvas'}
   meta={canvas ? namespace : 'a3t.io/v1alpha1 · Canvas'}
   sections={SECTIONS}
+  steps={canvasSteps}
+  wizard={!canvas && !readonly}
   active={activeSection}
   onselect={(id) => (activeSection = id)}
-  onsave={save}
+  onsave={readonly ? undefined : save}
   {saving}
   saveLabel={canvas ? 'Save canvas' : 'Create canvas'}
   {onclose}

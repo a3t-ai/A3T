@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WizardSteps, { type WizardStep } from './WizardSteps.svelte';
   let {
     icon = '?',
     color = '#999',
@@ -7,6 +8,8 @@
     nodes = [] as { id: string; label: string; icon: string }[],
     activeNode = '',
     onselect,
+    steps,
+    wizard = false,
   }: {
     icon: string;
     color: string;
@@ -15,6 +18,9 @@
     nodes: { id: string; label: string; icon: string }[];
     activeNode: string;
     onselect: (id: string) => void;
+    /// Numbered steps instead of plain nodes (see WizardSteps); `wizard`: in order.
+    steps?: WizardStep[];
+    wizard?: boolean;
   } = $props();
 </script>
 
@@ -26,6 +32,9 @@
       <div class="pt-meta">{meta}</div>
     </div>
   </div>
+  {#if steps}
+    <WizardSteps {steps} active={activeNode} {wizard} {onselect} />
+  {:else}
   <nav class="pt-tree">
     {#each nodes as node}
       <button class="pt-node" class:active={activeNode === node.id} onclick={() => onselect(node.id)}>
@@ -34,6 +43,7 @@
       </button>
     {/each}
   </nav>
+  {/if}
 </div>
 
 <style>

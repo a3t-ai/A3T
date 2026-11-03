@@ -5,6 +5,8 @@
   // content area. Provide `sections` + `active`/`onselect`; render the active
   // section as children. Styling is copied verbatim from TemplatesList.
   import type { Snippet } from 'svelte';
+  import WizardSteps, { type WizardStep } from './WizardSteps.svelte';
+  import WizardNav from './WizardNav.svelte';
 
   let {
     open = false,
@@ -21,6 +23,8 @@
     onclose,
     saving = false,
     saveLabel = 'Save',
+    steps,
+    wizard = false,
     children,
   }: {
     open: boolean;
@@ -37,6 +41,10 @@
     onclose: () => void;
     saving?: boolean;
     saveLabel?: string;
+    /// Numbered steps (instead of `sections`) with Back / Next / save at the foot;
+    /// `wizard`: a new item, filled in order.
+    steps?: WizardStep[];
+    wizard?: boolean;
     children: Snippet;
   } = $props();
 
@@ -60,6 +68,9 @@
             <div class="sp-tree-meta">{meta}</div>
           </div>
         </div>
+        {#if steps}
+          <WizardSteps {steps} {active} {wizard} {onselect} />
+        {:else}
         <nav class="sp-tree">
           {#each sections as s}
             <button class="sp-tree-node" class:active={active === s.id} onclick={() => onselect(s.id)}>
@@ -68,6 +79,7 @@
             </button>
           {/each}
         </nav>
+        {/if}
       </div>
 
       <!-- MAIN: action bar + content -->
@@ -105,6 +117,7 @@
           </div>
         </div>
         <div class="sp-content">{@render children()}</div>
+        {#if steps}<WizardNav {steps} {active} {wizard} {onselect} final={onsave} finalLabel={saveLabel} finalBusy={saving} busyLabel={wizard ? 'Creating…' : 'Saving…'} />{/if}
       </div>
     </div>
   </div>
@@ -141,7 +154,7 @@
   .sp-tree-node svg { color: var(--text-4); flex-shrink: 0; }
   .sp-tree-node.active svg { color: var(--spec, #c47028); }
 
-  .sp-main { overflow: hidden; position: relative; padding-top: 44px; }
+  .sp-main { overflow: hidden; position: relative; padding-top: 44px; display: flex; flex-direction: column; }
   .sp-close-bar { position: absolute; top: 0; left: 0; right: 0; height: 44px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 0 12px; z-index: 10; background: var(--bg-page); border-bottom: 1px solid var(--border); }
   .sp-btn-wrap { position: relative; }
   .sp-tooltip { position: absolute; bottom: -30px; left: 50%; transform: translateX(-50%); padding: 4px 10px; background: var(--text-1); color: var(--bg-page); font-size: 11px; font-weight: 500; white-space: nowrap; border-radius: 5px; pointer-events: none; opacity: 0; transition: opacity 0.15s 0.3s; z-index: 20; }
@@ -153,5 +166,5 @@
   .sp-action-btn:disabled { opacity: 0.5; cursor: default; }
   .sp-close { width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-surface); color: var(--text-3); cursor: pointer; display: grid; place-items: center; transition: all 0.12s; }
   .sp-close:hover { background: var(--text-1); color: var(--bg-page); border-color: var(--text-1); }
-  .sp-content { height: 100%; overflow: hidden; }
+  .sp-content { flex: 1; min-height: 0; overflow: hidden; }
 </style>

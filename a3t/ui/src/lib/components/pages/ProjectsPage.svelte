@@ -1,4 +1,6 @@
 <script lang="ts">
+  import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
   /// Projects: namespaces owned by you (<handle>-<name>) or by an org
   /// (<org>-<name>), who is in each, and the rules it runs under. Everything goes
   /// through the a3t-projects / a3t-profile flows, which decide on the server who
@@ -113,6 +115,21 @@
   const previewNs = $derived(ownerHandle && newName ? `${ownerHandle}-${newName}` : '');
 
   function say(text: string, ok = false) { message = text; messageOk = ok; }
+
+  /// The pop-in's steps. A new project goes in order: it needs an owner and a
+  /// valid name; members and policy can be left as they are; it has no releases yet.
+  const pjSteps = $derived.by((): WizardStep[] => {
+    const nameOk = !!owner && SLUG.test(newName.trim());
+    const steps: WizardStep[] = [
+      { id: 'overview', label: 'Overview', ok: panel !== 'create' || nameOk,
+        need: !owner ? (profile ? 'Choose an owner.' : 'Claim your handle first.') : 'Name the project: 2–38 lowercase letters, digits and dashes.' },
+      { id: 'members', label: `Members (${dMembers.length})`, optional: panel === 'create' },
+      { id: 'policy', label: 'Policy', optional: panel === 'create' },
+      ...(panel === 'create' ? [] : [{ id: 'releases', label: 'Releases' }]),
+      { id: 'environments', label: 'Environments' },
+    ];
+    return steps;
+  });
 
   function card(p: Project) {
     const role = roleIn(p);
@@ -336,11 +353,7 @@
     </div>
 
     {#if (panel === 'detail' && info) || panel === 'create'}
-      <div class="pj-tabs" role="tablist">
-        {#each [['overview', 'Overview'], ['members', `Members (${dMembers.length})`], ['policy', 'Policy'], ['releases', 'Releases'], ['environments', 'Environments']] as [key, label]}
-          <button class="pj-tab" class:active={tab === key} role="tab" aria-selected={tab === key} onclick={() => (tab = key as any)}>{label}</button>
-        {/each}
-      </div>
+      <div class="pj-steps"><WizardSteps steps={pjSteps} active={tab} wizard={panel === 'create'} orientation="horizontal" onselect={(id) => (tab = id as any)} /></div>
     {/if}
 
     {#if message}<div class="pj-msg" class:ok={messageOk}>{message}</div>{/if}
@@ -545,10 +558,11 @@
       </div>
     {/if}
 
-    {#if panel === 'create'}
-      <div class="pj-row pj-create">
-        <button class="pj-btn primary" onclick={create} disabled={saving || !owner || !newName.trim()}>{saving ? 'Creating…' : 'Create project'}</button>
-        <span class="dim">{newName.trim() ? `Creates ${previewNs || newName} with the members and policy set in the tabs.` : 'Name it on Overview first.'}</span>
+    {#if (panel === 'detail' && info) || panel === 'create'}
+      <div class="pj-foot">
+        <WizardNav steps={pjSteps} active={tab} wizard={panel === 'create'} onselect={(id) => (tab = id as any)}
+          final={panel === 'create' ? create : canEdit ? save : undefined}
+          finalLabel={panel === 'create' ? 'Create project' : 'Save'} finalBusy={saving} busyLabel={panel === 'create' ? 'Creating…' : 'Saving…'} />
       </div>
     {/if}
   </div>
@@ -556,7 +570,8 @@
 
 <style>
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
-  .pj-create { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); align-items: center; gap: 12px; }
+  .pj-steps { margin: 4px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .pj-foot { position: sticky; bottom: 0; margin-top: 20px; z-index: 2; }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
   .breadcrumb .sep { color: var(--text-5); }
   .screen-title-row { display: flex; align-items: center; gap: 18px; }

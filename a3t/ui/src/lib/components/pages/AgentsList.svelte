@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
@@ -124,10 +126,18 @@
       mode: 'session', target: '', ep_path: '', llm: 'a3t/claude-cli-max', mcp_servers: [],
     };
     creatingNew = true;
-    propNode = 'detail';
+    propNode = 'identity';
   }
 
   // Tree nodes
+  /// A new agent is made in three steps; an existing one has a step per section.
+  const agentSteps = $derived.by((): WizardStep[] => creatingNew ? [
+    { id: 'identity', label: 'Identity', ok: !!newAgent.name.trim() && !!newAgent.namespace && !!newAgent.template_id,
+      need: !newAgent.name.trim() ? 'Name the agent.' : !newAgent.template_id ? 'Pick a template.' : 'Pick a namespace.' },
+    { id: 'behaviour', label: 'Model & tools' },
+    { id: 'serving', label: 'Serving' },
+  ] : treeNodes.map((n) => ({ id: n.id, label: n.label })));
+
   const treeNodes = [
     { id: 'detail', label: 'Agent Detail', icon: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>' },
     { id: 'config', label: 'Configuration', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
@@ -532,20 +542,22 @@
         color="#2980b9"
         name={agent.name || 'New Agent'}
         meta="{agent.mode} · {agent.status}"
-        nodes={agent.isNew ? treeNodes.filter(n => n.id === 'detail') : treeNodes}
+        nodes={treeNodes}
+        steps={agentSteps}
+        wizard={creatingNew}
         activeNode={propNode}
         onselect={(id) => propNode = id}
       />
+      <div class="panel-col">
       <div class="panel-content" class:panel-content-flush={propNode === 'designer'}>
-        {#if propNode === 'detail'}
-          {#if agent.isNew}
+        {#if agent.isNew}
           <div class="pf">
-            <div class="pf-head">
-              <h3>New Agent</h3>
-              <button class="btn spec sm" disabled={creating || !newAgent.name || !newAgent.template_id} onclick={createAgent}>{creating ? 'Creating…' : 'Create Agent'}</button>
-            </div>
-            <p class="pf-hint">Pick a template, set the mode and bindings, then create. A chat endpoint is auto-created unless you select an existing one.</p>
+            <div class="pf-head"><h3>New Agent — {agentSteps.find((x) => x.id === propNode)?.label}</h3></div>
+            <p class="pf-hint">{propNode === 'identity' ? 'Name it, choose where it lives and the template it is built from.'
+              : propNode === 'behaviour' ? 'How long it lives, the model it thinks with, and the MCP tools it may call.'
+              : 'The flow that serves it, and the endpoint it answers on — a chat endpoint is made for it unless you pick one.'}</p>
             <div class="pf-form">
+              {#if propNode === 'identity'}
               <label class="cf-field"><span>Name</span><input type="text" bind:value={newAgent.name} placeholder="my-agent" /></label>
               <label class="cf-field"><span>Namespace</span>
                 <select bind:value={newAgent.namespace}>
@@ -558,6 +570,7 @@
                   {#each templateChoices as t (t.id)}<option value={t.id}>{t.name} v{t.version}{t.ns ? ` · ${t.ns}` : ''}</option>{/each}
                 </select>
               </label>
+              {:else if propNode === 'behaviour'}
               <label class="cf-field"><span>Mode</span>
                 <select bind:value={newAgent.mode}>
                   <option value="ephemeral">Ephemeral</option>
@@ -569,12 +582,6 @@
               <label class="cf-field"><span>LLM</span>
                 <ResourceSelect value={newAgent.llm} options={llmResources} placeholder="— select LLM —" onchange={(v) => newAgent.llm = v} />
               </label>
-              <label class="cf-field"><span>Target flow</span>
-                <ResourceSelect value={newAgent.target} options={flowOptions} placeholder="— select flow —" onchange={(v) => newAgent.target = v} />
-              </label>
-              <label class="cf-field"><span>Endpoint</span>
-                <ResourceSelect value={newAgent.ep_path} options={triggerOptions} placeholder="+ New endpoint (auto-created)" allowNew={false} onchange={(v) => newAgent.ep_path = v} />
-              </label>
               <!-- Checkboxes, not a multi-select: a grey highlight read as "listed", not "selected". -->
               <div class="cf-field full"><span>MCP servers</span>
                 <div class="cf-checks">
@@ -585,9 +592,18 @@
                   {/each}
                 </div>
               </div>
+              {:else}
+              <label class="cf-field"><span>Target flow</span>
+                <ResourceSelect value={newAgent.target} options={flowOptions} placeholder="— select flow —" onchange={(v) => newAgent.target = v} />
+              </label>
+              <label class="cf-field"><span>Endpoint</span>
+                <ResourceSelect value={newAgent.ep_path} options={triggerOptions} placeholder="+ New endpoint (auto-created)" allowNew={false} onchange={(v) => newAgent.ep_path = v} />
+              </label>
+
+              {/if}
             </div>
           </div>
-          {:else}
+        {:else if propNode === 'detail'}
           <div class="pf">
             <h3>Agent Detail</h3>
             <div class="pf-kv">
@@ -599,7 +615,6 @@
               <div class="pf-row"><span class="pf-k">Template</span><span class="pf-v mono">{agent.template_id}:{agent.template_version}</span></div>
             </div>
           </div>
-          {/if}
 
         {:else if propNode === 'config'}
           <div class="pf">
@@ -765,6 +780,11 @@
           </div>
         {/if}
       </div>
+      <WizardNav steps={agentSteps} active={propNode} wizard={creatingNew} onselect={(id) => (propNode = id)}
+        final={creatingNew ? createAgent : propNode === 'config' ? saveBindings : undefined}
+        finalLabel={creatingNew ? 'Create agent' : 'Save'} finalBusy={creatingNew ? creating : savingBind}
+        busyLabel={creatingNew ? 'Creating…' : 'Saving…'} />
+      </div>
     </div>
   {/if}
 </SlidePanel>
@@ -861,7 +881,8 @@
 
   /* Panel layout */
   .panel-layout { display: grid; grid-template-columns: 200px 1fr; height: 100%; }
-  .panel-content { overflow-y: auto; }
+  .panel-col { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
   .panel-content-flush { overflow: hidden; }
   .agt-designer { height: 100%; overflow: hidden; }
   .pf-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

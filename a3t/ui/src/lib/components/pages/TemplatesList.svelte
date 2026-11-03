@@ -1,4 +1,6 @@
 <script lang="ts">
+  import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections, { type ExposedItem } from '$lib/components/shared/ExposedSections.svelte';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
@@ -314,6 +316,17 @@ do:
   let template = $derived(draftTemplate ? draftTemplate : viewTemplate ? viewTemplate : (selected ? (inView.find(t => t.name === selected) ?? allTemplates.find(t => t.name === selected)) : null));
   const readOnly = $derived(!!template?.readOnly);
 
+  /// The pop-in's steps. A new template needs a name before its spec; agents are
+  /// made from a saved one, so that step is not there while it is new.
+  const tplSteps = $derived.by((): WizardStep[] => [
+    { id: 'detail', label: 'Template Detail', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+      need: 'Name the template: lowercase letters, digits and dashes.' },
+    { id: 'yaml', label: 'Template YAML', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'policy', label: 'Policy' },
+    { id: 'ownership', label: 'Ownership & Access' },
+    ...(draftTemplate?.isNew ? [] : [{ id: 'agents', label: 'Agents' }]),
+  ]);
+
   function openInherited(it: ExposedItem) {
     const base = allTemplates.find((t) => t.id === it.templateId) ?? (it.raw ? toTemplate(it.raw) : null);
     if (!base) return;
@@ -482,31 +495,7 @@ do:
                 <div class="sp-tree-meta">v{template.activeVersion}</div>
               </div>
             </div>
-            <nav class="sp-tree">
-              <button class="sp-tree-node" class:active={propNode === 'detail'} onclick={() => propNode = 'detail'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/></svg>
-                Template Detail
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'yaml'} onclick={() => propNode = 'yaml'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3L1 8l4 5M11 3l4 5-4 5"/></svg>
-                Template YAML
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'policy'} onclick={() => propNode = 'policy'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/></svg>
-                Policy
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'ownership'} onclick={() => propNode = 'ownership'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/></svg>
-                Ownership &amp; Access
-              </button>
-              <!-- Agents are made from a saved template: none while it is new. -->
-              {#if !draftTemplate?.isNew}
-              <button class="sp-tree-node" class:active={propNode === 'agents'} onclick={() => propNode = 'agents'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/></svg>
-                Agents
-              </button>
-              {/if}
-            </nav>
+            <WizardSteps steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)} />
           </div>
 
           <!-- CENTER: Content + close -->
@@ -633,6 +622,9 @@ do:
                 </div>
               {/if}
             </div>
+            <WizardNav steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)}
+              final={$canEditTpl && !readOnly ? saveTemplate : undefined} finalLabel={draftTemplate?.isNew ? 'Create template' : 'Save'}
+              finalBusy={saving} busyLabel={draftTemplate?.isNew ? 'Creating…' : 'Saving…'} />
           </div>
         </div>
       </div>
@@ -958,7 +950,7 @@ do:
   .tpl-tag { font-family: var(--font-mono); font-size: 9px; padding: 2px 6px; border-radius: 3px; background: var(--bg-subtle); color: var(--text-3); }
 
   /* Main area */
-  .sp-main { overflow: hidden; position: relative; padding-top: 44px; }
+  .sp-main { overflow: hidden; position: relative; padding-top: 44px; display: flex; flex-direction: column; }
   .sp-close-bar {
     position: absolute; top: 0; left: 0; right: 0; height: 44px;
     display: flex; align-items: center; justify-content: flex-end; gap: 6px;
@@ -1008,7 +1000,7 @@ do:
     border-color: var(--text-1);
   }
 
-  .sp-content { height: 100%; overflow: hidden; }
+  .sp-content { flex: 1; min-height: 0; overflow-y: auto; }
   .sp-empty { padding: 40px; text-align: center; color: var(--text-4); font-size: 13px; }
 
   /* Form views */
