@@ -15,7 +15,7 @@
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import { currentUser } from '$lib/stores/auth';
-  import { getProject, inContext, projectOf } from '$lib/stores/context.svelte.ts';
+  import { getProject, getProjects, inContext, projectOf, EXPOSED_ROLES } from '$lib/stores/context.svelte.ts';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
@@ -34,7 +34,31 @@
   const myAgents = $derived(visibleAgents.filter((a) => a.created_by === $currentUser?.id));
   const sharedAgents = $derived(visibleAgents.filter((a) => a.created_by !== $currentUser?.id));
   /// New agents go into the selected project (`default` under "All projects").
-  const newNamespace = () => getProject() || 'default';
+  const newNamespace = () => getProject() || namespaceChoices()[0] || 'default';
+  /// Projects a new agent can go in: yours (not ones only exposed to you), the
+  /// selected one first; the current value stays listed even if it is none of them.
+  function namespaceChoices(current?: string): string[] {
+    const mine = getProjects().filter((p) => !p.platform && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '')).map((p) => p.name);
+    const sel = getProject();
+    const list = [...(sel ? [sel] : []), ...mine.filter((n) => n !== sel)];
+    return current && !list.includes(current) ? [current, ...list] : list;
+  }
+  /// One entry per template release (name + version). A release passed on from
+  /// system to a3t is listed twice by the registry; keep the copy nearest you.
+  const templateChoices = $derived.by(() => {
+    const nsOf = (y: string) => (y ?? '').match(/^\s+namespace:\s*['"]?([\w.-]+)/m)?.[1] ?? '';
+    const best = new Map<string, { id: string; name: string; version: string; ns: string }>();
+    for (const t of templates) {
+      const k = `${t.name}@${t.version}`;
+      const it = { id: t.id, name: t.name, version: t.version, ns: nsOf(t.spec_yaml) };
+      const cur = best.get(k);
+      if (!cur || (cur.ns.startsWith('system') && !it.ns.startsWith('system'))) best.set(k, it);
+    }
+    // The one already chosen (a deep link) stays selectable.
+    const chosen = templates.find((t) => t.id === newAgent.template_id);
+    if (chosen && ![...best.values()].some((b) => b.id === chosen.id)) best.set(`${chosen.id}`, { id: chosen.id, name: chosen.name, version: chosen.version, ns: nsOf(chosen.spec_yaml) });
+    return [...best.values()].sort((a, b) => a.name.localeCompare(b.name) || b.version.localeCompare(a.version));
+  });
   let templates: { id: string; name: string; version: string; spec_yaml: string }[] = $state([]);
 
   // Default target flow (path) for an agent, derived from its template's spec document.
@@ -523,11 +547,15 @@
             <p class="pf-hint">Pick a template, set the mode and bindings, then create. A chat endpoint is auto-created unless you select an existing one.</p>
             <div class="pf-form">
               <label class="cf-field"><span>Name</span><input type="text" bind:value={newAgent.name} placeholder="my-agent" /></label>
-              <label class="cf-field"><span>Namespace</span><input type="text" bind:value={newAgent.namespace} /></label>
+              <label class="cf-field"><span>Namespace</span>
+                <select bind:value={newAgent.namespace}>
+                  {#each namespaceChoices(newAgent.namespace) as ns (ns)}<option value={ns}>{ns}</option>{/each}
+                </select>
+              </label>
               <label class="cf-field"><span>Template</span>
                 <select bind:value={newAgent.template_id} onchange={onTemplateChange}>
                   <option value="">-- select template --</option>
-                  {#each templates as t}<option value={t.id}>{t.name} (v{t.version})</option>{/each}
+                  {#each templateChoices as t (t.id)}<option value={t.id}>{t.name} v{t.version}{t.ns ? ` · ${t.ns}` : ''}</option>{/each}
                 </select>
               </label>
               <label class="cf-field"><span>Mode</span>

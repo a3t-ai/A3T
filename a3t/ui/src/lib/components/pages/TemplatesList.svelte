@@ -1,6 +1,6 @@
 <script lang="ts">
   import { openPublish } from '$lib/stores/publish.svelte.ts';
-  import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
+  import ExposedSections, { type ExposedItem } from '$lib/components/shared/ExposedSections.svelte';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { execFlow, mcpCall } from '$lib/services/api';
@@ -160,7 +160,12 @@ do:
   }
 
   function applyRows(rows: any[]) {
-    allTemplates = releases(rows.map((r: any) => ({
+    allTemplates = releases(rows.map(toTemplate));
+  }
+
+  /// A template row from the registry, as the page shows it.
+  function toTemplate(r: any) {
+    return ({
       name: r.name,
       version: r.version ?? 'v1.0',
       activeVersion: r.version ?? 'v1.0',
@@ -182,7 +187,7 @@ do:
       namespace: projectOf((typeof r.spec_yaml === 'string'
         ? r.spec_yaml.split(/\n(?=\S)/).find((b: string) => b.startsWith('document:'))?.match(/^\s+namespace:\s*['"]?([\w.-]+)/m)?.[1]
         : undefined), r.created_by) as string | undefined,
-    })));
+    });
   }
 
   /// One card per template per project: its newest version, with every
@@ -296,13 +301,24 @@ do:
   // document name) as the user types the name. Flips true once they edit the spec/designer.
   let specEdited = $state(false);
   // Two projects can hold a template of the same name (a release): the one in view wins.
-  let template = $derived(draftTemplate ? draftTemplate : (selected ? (inView.find(t => t.name === selected) ?? allTemplates.find(t => t.name === selected)) : null));
+  /// An inherited template (Shared / Training / Community), opened read-only.
+  let viewTemplate = $state<any>(null);
+  let template = $derived(draftTemplate ? draftTemplate : viewTemplate ? viewTemplate : (selected ? (inView.find(t => t.name === selected) ?? allTemplates.find(t => t.name === selected)) : null));
+  const readOnly = $derived(!!template?.readOnly);
+
+  function openInherited(it: ExposedItem) {
+    const base = allTemplates.find((t) => t.id === it.templateId) ?? (it.raw ? toTemplate(it.raw) : null);
+    if (!base) return;
+    draftTemplate = null; selected = '';
+    viewTemplate = { ...base, namespace: it.namespace, readOnly: true };
+    propNode = 'yaml';
+  }
 
   let propNode = $state<'detail' | 'yaml' | 'policy' | 'ownership' | 'agents'>('detail');
   let panelClosing = $state(false);
 
   function selectTemplate(name: string) {
-    draftTemplate = null;
+    draftTemplate = null; viewTemplate = null;
     selected = name;
     propNode = 'yaml';
     navigateToDetail('templates', 'Templates', name);
@@ -312,7 +328,7 @@ do:
   // Open the edit slide-in on a blank draft. Tags are kept as a comma string
   // for the input; saveTemplate passes them straight to the create flow.
   function newTemplate() {
-    selected = '';
+    selected = ''; viewTemplate = null;
     draftTemplate = {
       id: `tpl-${crypto.randomUUID().slice(0, 8)}`,
       name: '', version: '1.0.0', activeVersion: '1.0.0',
@@ -420,6 +436,7 @@ do:
     setTimeout(() => {
       selected = '';
       draftTemplate = null;
+      viewTemplate = null;
       panelClosing = false;
       navigateTo('templates', 'Templates');
     }, 200);
@@ -474,10 +491,13 @@ do:
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/></svg>
                 Ownership &amp; Access
               </button>
+              <!-- Agents are made from a saved template: none while it is new. -->
+              {#if !draftTemplate?.isNew}
               <button class="sp-tree-node" class:active={propNode === 'agents'} onclick={() => propNode = 'agents'}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/></svg>
                 Agents
               </button>
+              {/if}
             </nav>
           </div>
 
@@ -490,7 +510,7 @@ do:
                 </button>
                 <span class="sp-tooltip">Open in Studio</span>
               </div>
-              {#if $canEditTpl}
+              {#if $canEditTpl && !readOnly}
               <div class="sp-btn-wrap">
                 <button class="sp-action-btn save" onclick={saveTemplate} disabled={saving}>
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 15H3a1 1 0 01-1-1V2a1 1 0 011-1h8l3 3v10a1 1 0 01-1 1z"/><path d="M11 15V9H5v6M5 1v4h5"/></svg>
@@ -515,6 +535,7 @@ do:
               {#if propNode === 'detail'}
                 <div class="sp-form">
                   <h3>{template.isNew ? 'New Template' : 'Template Details'}</h3>
+                  {#if readOnly}<p class="ro-note">Read-only — inherited from <span class="mono">{template.namespace}</span>. Duplicate it to make your own copy, or create agents from it.</p>{/if}
                   {#if template.isNew}
                     <p class="sf-hint">Set the name and details, edit the spec in Template YAML, then save.</p>
                     <label class="cf-field"><span>Name</span>
@@ -546,16 +567,16 @@ do:
 
               {:else if propNode === 'yaml'}
                 {#if template.spec_yaml}
-                  <FlowEditorPane aiKind="template" aiName={template.name} initialYaml={template.spec_yaml} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
+                  <FlowEditorPane aiKind="template" aiName={template.name} initialYaml={template.spec_yaml} {readOnly} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
                 {:else}
                   <div class="sp-empty">No spec defined for this template.</div>
                 {/if}
 
-              {:else if propNode === 'agents'}
+              {:else if propNode === 'agents' && !draftTemplate?.isNew}
                 <div class="sp-form">
                   <div class="pf-head">
                     <h3>Agents</h3>
-                    {#if template?.id}<button class="btn spec sm" onclick={() => navigateTo('agents', 'Agents', { createFromTemplate: template.id })}>+ Create Agent</button>{/if}
+                    {#if template?.id && !draftTemplate?.isNew}<button class="btn spec sm" onclick={() => navigateTo('agents', 'Agents', { createFromTemplate: template.id })}>+ Create Agent</button>{/if}
                   </div>
                   <p class="sf-hint">Agents instantiated from this template — one template, many agents.</p>
                   {#if agentsLoading}
@@ -656,7 +677,7 @@ do:
           </div>
       </FoldSection>
     {/each}
-    <ExposedSections kind="template" noun="Templates" />
+    <ExposedSections kind="template" noun="Templates" onopen={openInherited} />
   </div>
 
 <!-- Delete confirmation dialog -->
@@ -756,6 +777,7 @@ do:
 {/each}
 
 <style>
+  .ro-note { font-size: 12px; color: var(--warn); background: var(--warn-bg); padding: 8px 10px; border-radius: var(--r-sm); margin: 0 0 12px; }
   /* Stacked sub-editor — slides in like SlidePanel but offset 10px right */
   .sub-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.08);

@@ -69,7 +69,7 @@
     say(r.ok ? `${name}: callers without a pin now get ${version}.` : (r.error ?? 'Could not activate'), r.ok);
     await loadReleases(info.namespace);
   }
-  $effect(() => { if (tab === 'releases' && info) void loadReleases(info.namespace); });
+  $effect(() => { if (tab === 'releases' && panel === 'detail' && info) void loadReleases(info.namespace); });
   let selectedName = $state('');
   let message = $state('');
   let messageOk = $state(false);
@@ -98,11 +98,16 @@
   const selected = $derived(getProjects().find((p) => p.name === selectedName));
   /// Exposure: the system org exposes to a3t only; the platform orgs label it
   /// shared or training, every other org's is community.
-  const isSystem = $derived(selected?.info?.owner_kind === 'org' && selected?.info?.owner === 'system');
-  const isPlatformOrg = $derived(selected?.info?.owner_kind === 'org' && (selected?.info?.owner === 'a3t' || isSystem));
+  const isSystem = $derived(view?.owner_kind === 'org' && view?.owner === 'system');
+  const isPlatformOrg = $derived(view?.owner_kind === 'org' && (view?.owner === 'a3t' || isSystem));
   const ex = $derived<any>(dPolicy.exposure ?? { audience: 'none' });
   const info = $derived(selected?.info);
-  const canEdit = $derived(!!info && (info.can_admin || info.role === 'owner'));
+  /// The project the tabs edit: the one open, or — while creating — the one the
+  /// form describes, so every tab works before it exists.
+  const view = $derived<any>(panel === 'create'
+    ? { owner_kind: owner.startsWith('org:') ? 'org' : 'user', owner: owner.split(':')[1] ?? '', namespace: previewNs || '<owner>-<name>', role: 'owner', environments: [] }
+    : info);
+  const canEdit = $derived(panel === 'create' || (!!info && (info.can_admin || info.role === 'owner')));
   const adminOrgs = $derived(orgs.filter((o) => o.role === 'admin'));
   const ownerHandle = $derived(owner.split(':')[1] ?? '');
   const previewNs = $derived(ownerHandle && newName ? `${ownerHandle}-${newName}` : '');
@@ -139,6 +144,7 @@
   function openCreate() {
     owner = profile ? `user:${profile.handle}` : (orgs[0] ? `org:${orgs[0].handle}` : '');
     newName = ''; newDisplay = ''; newDesc = ''; newPrivate = false;
+    dMembers = []; dPolicy = {}; tab = 'overview';
     handleDraft = profile ? '' : (($currentUser?.email ?? '').split('@')[0] ?? '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
     say('');
     panel = 'create';
@@ -184,13 +190,20 @@
       owner_kind: kind, owner: handle, name: newName.trim(),
       display_name: newDisplay.trim() || newName.trim(), description: newDesc.trim(), private: newPrivate,
     });
-    saving = false;
-    if (!res.ok) { say(res.error ?? 'Create failed'); return; }
+    if (!res.ok) { saving = false; say(res.error ?? 'Create failed'); return; }
     const ns = res.data?.project?.namespace ?? `${handle}-${newName.trim()}`;
+    // Members and policy set in the other tabs go in with it (one step).
+    if (dMembers.length || Object.keys(dPolicy).length) {
+      const up = await projectsApi.update(ns, {
+        display_name: newDisplay.trim() || newName.trim(), description: newDesc.trim(), private: newPrivate,
+        members: $state.snapshot(dMembers) as ProjectMember[], policy: { ...dPolicy },
+      });
+      if (!up.ok) say(`Created ${ns}, but its members and policy were not saved: ${up.error ?? 'update failed'}`);
+    }
+    saving = false;
     await loadProjects(true);
     setProject(ns);
     navigateToDetail('projects', 'Projects', ns);
-    tab = 'members';
   }
 
   async function save() {
@@ -308,7 +321,7 @@
   </FoldSection>
 </div>
 
-<SlidePanel open={panel !== 'closed'} onclose={closePanel} onsave={panel === 'detail' && canEdit ? save : undefined}>
+<SlidePanel open={panel !== 'closed'} onclose={closePanel} onsave={panel === 'create' ? create : panel === 'detail' && canEdit ? save : undefined}>
   <div class="pj">
     <div class="pj-head">
       <div class="pj-icon">{(panel === 'create' ? (newName || 'NP') : (info?.display_name || selectedName)).slice(0, 2).toUpperCase()}</div>
@@ -322,7 +335,7 @@
       </div>
     </div>
 
-    {#if panel === 'detail' && info}
+    {#if (panel === 'detail' && info) || panel === 'create'}
       <div class="pj-tabs" role="tablist">
         {#each [['overview', 'Overview'], ['members', `Members (${dMembers.length})`], ['policy', 'Policy'], ['releases', 'Releases'], ['environments', 'Environments']] as [key, label]}
           <button class="pj-tab" class:active={tab === key} role="tab" aria-selected={tab === key} onclick={() => (tab = key as any)}>{label}</button>
@@ -332,7 +345,7 @@
 
     {#if message}<div class="pj-msg" class:ok={messageOk}>{message}</div>{/if}
 
-    {#if panel === 'create'}
+    {#if panel === 'create' && tab === 'overview'}
       <div class="pj-form">
         {#if !profile}
           <div class="pj-box">
@@ -360,10 +373,9 @@
           <input type="checkbox" bind:checked={newPrivate} />
           <span><b>Private</b><em>{owner.startsWith('org:') ? "Only the project's members and the org's admins and security admins see it." : 'Only you see it.'}</em></span>
         </label>
-        <div class="pj-row"><button class="pj-btn primary" onclick={create} disabled={saving || !owner || !newName.trim()}>{saving ? 'Creating…' : 'Create project'}</button></div>
       </div>
 
-    {:else if !info}
+    {:else if panel === 'detail' && !info}
       <div class="pj-form">
         <p class="pj-note">{selected?.platform
           ? 'A platform namespace: the shared LLMs, memory and MCP servers every project uses, and A3T’s own flows.'
@@ -433,7 +445,7 @@
                 <td>{#if canEdit}<button class="pj-x" onclick={() => removeMember(m)} title="Remove">×</button>{/if}</td>
               </tr>
             {:else}
-              <tr><td colspan="3" class="dim">{info.owner_kind === 'org' ? "No named members — the org's admins (and, unless private, all its members) see it." : 'Only you so far.'}</td></tr>
+              <tr><td colspan="3" class="dim">{view.owner_kind === 'org' ? "No named members — the org's admins (and, unless private, all its members) see it." : 'Only you so far.'}</td></tr>
             {/each}
           </tbody>
         </table>
@@ -455,13 +467,13 @@
         <label><span>Where this project's flows run</span>
           <select value={dPolicy.runtime ?? ''} disabled={!canEdit}
                   onchange={(e) => { const v = e.currentTarget.value; dPolicy = { ...dPolicy }; if (v) dPolicy.runtime = v; else delete dPolicy.runtime; }}>
-            <option value="">{info.owner_kind === 'org' ? "The organisation's setting" : 'Shared (default)'}</option>
-            <option value="isolated">Isolated — only on {info.owner_kind === 'org' ? `${info.owner}'s own runtimes` : 'its own runtime'}</option>
+            <option value="">{view.owner_kind === 'org' ? "The organisation's setting" : 'Shared (default)'}</option>
+            <option value="isolated">Isolated — only on {view.owner_kind === 'org' ? `${view.owner}'s own runtimes` : 'its own runtime'}</option>
             <option value="shared">Shared runtimes</option>
           </select>
-          <em>{info.owner_kind === 'org'
-            ? `Isolated runs only on runtimes labelled a3t.io/org=${info.owner}; never on another org's.`
-            : `Isolated runs only on a runtime labelled a3t.io/project=${info.namespace}.`} Enforced by FlowR when a flow is deployed.</em>
+          <em>{view.owner_kind === 'org'
+            ? `Isolated runs only on runtimes labelled a3t.io/org=${view.owner}; never on another org's.`
+            : `Isolated runs only on a runtime labelled a3t.io/project=${view.namespace}.`} Enforced by FlowR when a flow is deployed.</em>
         </label>
         <h4>Exposure</h4>
         <label><span>Who else may use this project — read, clone and run its flows, resources, triggers and templates; never change them</span>
@@ -504,7 +516,8 @@
     {:else if tab === 'releases'}
       <div class="pj-form">
         <p class="pj-note">Each flow keeps every version released here. Callers that pin one (<span class="mono">run: workflow … version: 1.0.0</span>) keep it; everyone else gets the active one. Activate rolls that back or forward — one release at a time, never all callers' pins.</p>
-        {#if releasesLoading}<p class="dim">Loading…</p>
+        {#if panel === 'create'}<p class="dim">Releases appear here once the project has flows.</p>
+        {:else if releasesLoading}<p class="dim">Loading…</p>
         {:else if releases.length === 0}<p class="dim">No flows in this project yet.</p>
         {:else}
           <table class="pj-table">
@@ -527,8 +540,15 @@
       </div>
     {:else if tab === 'environments'}
       <div class="pj-form">
-        <div class="pj-envs">{#each info.environments?.length ? info.environments : ENVIRONMENTS as env}<span class="pj-env {env}">{env}</span>{/each}</div>
+        <div class="pj-envs">{#each view.environments?.length ? view.environments : ENVIRONMENTS as env}<span class="pj-env {env}">{env}</span>{/each}</div>
         <p class="pj-note">Environments arrive with the next stage: runtimes labelled per environment, the environment switcher in the top bar, per-environment resource values and promotion from dev to prod.</p>
+      </div>
+    {/if}
+
+    {#if panel === 'create'}
+      <div class="pj-row pj-create">
+        <button class="pj-btn primary" onclick={create} disabled={saving || !owner || !newName.trim()}>{saving ? 'Creating…' : 'Create project'}</button>
+        <span class="dim">{newName.trim() ? `Creates ${previewNs || newName} with the members and policy set in the tabs.` : 'Name it on Overview first.'}</span>
       </div>
     {/if}
   </div>
@@ -536,6 +556,7 @@
 
 <style>
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
+  .pj-create { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); align-items: center; gap: 12px; }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
   .breadcrumb .sep { color: var(--text-5); }
   .screen-title-row { display: flex; align-items: center; gap: 18px; }
