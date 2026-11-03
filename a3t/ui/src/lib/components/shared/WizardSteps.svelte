@@ -32,6 +32,17 @@
   const idx = $derived(steps.findIndex((s) => s.id === active));
 </script>
 
+{#if !wizard && orientation === 'vertical'}
+  <!-- An existing item: plain vertical tabs, any one at a time. -->
+  <nav class="tabs" aria-label="Sections">
+    {#each steps as s (s.id)}
+      <button class="tab" class:on={s.id === active} onclick={() => onselect(s.id)} aria-current={s.id === active ? 'page' : undefined} title={s.hint ?? s.label}>
+        {#if s.icon}<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">{@html s.icon}</svg>{/if}
+        <span>{s.label}</span>
+      </button>
+    {/each}
+  </nav>
+{:else}
 <nav class="ws {orientation}" aria-label="Steps">
   {#each steps as s, i (s.id)}
     {@const open = reachable(steps, s.id, wizard)}
@@ -51,8 +62,18 @@
     </div>
   {/each}
 </nav>
+{/if}
 
 <style>
+  /* ── Tabs (an existing item) ── */
+  .tabs { display: flex; flex-direction: column; padding: 10px 0; gap: 1px; }
+  .tab { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 20px; border: 0; background: none; cursor: pointer; text-align: left;
+         font-size: 13px; color: var(--text-3); transition: background 0.1s, color 0.1s; }
+  .tab svg { color: var(--text-4); flex-shrink: 0; }
+  .tab:hover { color: var(--text-1); background: var(--bg-subtle); }
+  .tab.on { color: var(--text-1); font-weight: 600; background: var(--bg-subtle); box-shadow: inset 3px 0 0 var(--spec, #5530a8); }
+  .tab.on svg { color: var(--spec, #5530a8); }
+
   .ws { display: flex; --c-done: var(--ok, #2fa88d); --c-on: var(--spec, #5530a8); --c-off: var(--border, #e4e0d8); }
 
   /* ── Vertical: the full height of the rail ── */

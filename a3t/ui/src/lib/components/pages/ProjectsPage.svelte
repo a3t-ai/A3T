@@ -122,12 +122,12 @@
   const pjSteps = $derived.by((): WizardStep[] => {
     const nameOk = !!owner && SLUG.test(newName.trim());
     const steps: WizardStep[] = [
-      { id: 'overview', label: 'Overview', hint: 'Owner, name and who can see it', ok: panel !== 'create' || nameOk,
+      { id: 'overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', label: 'Overview', hint: 'Owner, name and who can see it', ok: panel !== 'create' || nameOk,
         need: !owner ? (profile ? 'Choose an owner.' : 'Claim your handle first.') : 'Name the project: 2–38 lowercase letters, digits and dashes.' },
-      { id: 'members', label: `Members (${dMembers.length})`, hint: 'People and the role each has', optional: panel === 'create' },
-      { id: 'policy', label: 'Policy', hint: 'Where it runs, who else may use it, its rules', optional: panel === 'create' },
-      ...(panel === 'create' ? [] : [{ id: 'releases', label: 'Releases', hint: 'Flow versions and the active one' }]),
-      { id: 'environments', label: 'Environments', hint: 'Dev, staging and prod' },
+      { id: 'members', icon: '<circle cx="6" cy="5" r="2.5"/><path d="M1.5 13a4.5 4.5 0 019 0"/><path d="M11 3a2.5 2.5 0 010 5M12.5 13a4.5 4.5 0 00-2-3.7"/>', label: `Members (${dMembers.length})`, hint: 'People and the role each has', optional: panel === 'create' },
+      { id: 'policy', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>', label: 'Policy', hint: 'Where it runs, who else may use it, its rules', optional: panel === 'create' },
+      ...(panel === 'create' ? [] : [{ id: 'releases', icon: '<path d="M2 8V2h6l6 6-6 6z"/><circle cx="5" cy="5" r="1"/>', label: 'Releases', hint: 'Flow versions and the active one' }]),
+      { id: 'environments', icon: '<path d="M8 1L1 5l7 4 7-4z"/><path d="M1 8l7 4 7-4"/><path d="M1 11l7 4 7-4"/>', label: 'Environments', hint: 'Dev, staging and prod' },
     ];
     return steps;
   });

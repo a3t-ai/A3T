@@ -59,10 +59,10 @@
   /// shows them all at once.
   let activeSection = $state('flow');
   const canvasSteps = $derived.by((): WizardStep[] => [
-    { id: 'flow', label: 'Flow', hint: 'The flow this canvas deploys', ok: !!name.trim() && !!flowRef, need: !name.trim() ? 'Name the canvas.' : 'Pick the flow it deploys.' },
-    { id: 'placement', label: 'Placement', hint: 'Which runtime it loads on' },
-    { id: 'lifecycle', label: 'Lifecycle', hint: 'State, session, scaling, restarts' },
-    { id: 'health', label: 'Health', hint: 'Resources it depends on', optional: true },
+    { id: 'flow', icon: '<circle cx="3" cy="8" r="2"/><circle cx="13" cy="8" r="2"/><path d="M5 8h6"/>', label: 'Flow', hint: 'The flow this canvas deploys', ok: !!name.trim() && !!flowRef, need: !name.trim() ? 'Name the canvas.' : 'Pick the flow it deploys.' },
+    { id: 'placement', icon: '<rect x="1" y="3" width="14" height="10" rx="1.5"/><path d="M1 7h14"/>', label: 'Placement', hint: 'Which runtime it loads on' },
+    { id: 'lifecycle', icon: '<path d="M13.5 8A5.5 5.5 0 113 4.5"/><path d="M3 1.5v3h3"/>', label: 'Lifecycle', hint: 'State, session, scaling, restarts' },
+    { id: 'health', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>', label: 'Health', hint: 'Resources it depends on', optional: true },
   ]);
   const showStep = (id: string) => embedded || activeSection === id;
   let name = $state('');

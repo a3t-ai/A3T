@@ -230,7 +230,7 @@
     { id: 'review', label: 'Review & Create', hint: 'Check, then create' },
   ]);
   /// An existing resource's sections, numbered the same way (any step, any time).
-  const detailSteps = $derived(detailNodes.map((n) => ({ id: n.id, label: n.label })));
+  const detailSteps = $derived(detailNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon })));
 
   const createTreeNodes = [
     { id: 'details', label: 'Details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },

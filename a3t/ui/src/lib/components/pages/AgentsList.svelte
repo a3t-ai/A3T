@@ -137,7 +137,7 @@
       need: !newAgent.name.trim() ? 'Name the agent.' : !newAgent.template_id ? 'Pick a template.' : 'Pick a namespace.' },
     { id: 'behaviour', label: 'Model & tools', hint: 'How long it lives, the model it thinks with, the MCP tools it may call' },
     { id: 'serving', label: 'Serving', hint: 'The flow that serves it and its endpoint — one is made for it unless you pick one' },
-  ] : treeNodes.map((n) => ({ id: n.id, label: n.label, hint: AGENT_HINTS[n.id] })));
+  ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
     detail: 'What it is and where it lives', config: 'LLM, prompt and tools', designer: 'Its flow, visually',
     template: 'The template it is built from', canvas: 'Where and how it is deployed',

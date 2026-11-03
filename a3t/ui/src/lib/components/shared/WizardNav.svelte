@@ -22,6 +22,7 @@
   const allOk = $derived(steps.every((s) => s.ok !== false));
 </script>
 
+{#if wizard}
 <div class="wn">
   <span class="pos">Step {i + 1} of {steps.length}</span>
   {#if blocked && cur?.need}<span class="need">{cur.need}</span>{/if}
@@ -35,6 +36,7 @@
     <button class="b primary" disabled={finalBusy || finalDisabled || (wizard && !allOk)} onclick={final}>{finalBusy ? busyLabel : finalLabel}</button>
   {/if}
 </div>
+{/if}
 
 <style>
   .wn { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 12px 32px; box-sizing: border-box; border-top: 1px solid var(--border); background: var(--bg-surface); flex-shrink: 0; }

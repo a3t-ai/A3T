@@ -319,12 +319,12 @@ do:
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.
   const tplSteps = $derived.by((): WizardStep[] => [
-    { id: 'detail', label: 'Template Detail', hint: 'Name, version and tags', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+    { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: 'Template Detail', hint: 'Name, version and tags', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
       need: 'Name the template: lowercase letters, digits and dashes.' },
-    { id: 'yaml', label: 'Template YAML', hint: 'The spec: hooks, LLM, tools, memory', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
-    { id: 'policy', label: 'Policy', hint: 'What its agents may do' },
-    { id: 'ownership', label: 'Ownership & Access', hint: 'Who owns it and who can use it' },
-    ...(draftTemplate?.isNew ? [] : [{ id: 'agents', label: 'Agents', hint: 'Agents built from it' }]),
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Template YAML', hint: 'The spec: hooks, LLM, tools, memory', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'policy', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>', label: 'Policy', hint: 'What its agents may do' },
+    { id: 'ownership', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>', label: 'Ownership & Access', hint: 'Who owns it and who can use it' },
+    ...(draftTemplate?.isNew ? [] : [{ id: 'agents', icon: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>', label: 'Agents', hint: 'Agents built from it' }]),
   ]);
 
   function openInherited(it: ExposedItem) {

@@ -231,11 +231,11 @@
   let step = $state('details');
   let saving = $state(false);
   const trgSteps = $derived.by((): WizardStep[] => [
-    { id: 'details', label: 'Details', hint: 'Name, project, description', ok: !!formName.trim() && !!formNs, need: 'Name the trigger.' },
-    { id: 'source', label: 'Source', hint: 'What fires it: webhook, cron or event', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : !!formEventSource.trim(),
+    { id: 'details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', label: 'Details', hint: 'Name, project, description', ok: !!formName.trim() && !!formNs, need: 'Name the trigger.' },
+    { id: 'source', icon: '<path d="M9 1L3 9h5l-1 6 6-8H8z"/>', label: 'Source', hint: 'What fires it: webhook, cron or event', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : !!formEventSource.trim(),
       need: formType === 'webhook' ? 'Give the webhook a path.' : formType === 'cron' ? 'Give the schedule a cron expression.' : 'Name the event source.' },
-    { id: 'destinations', label: 'Destinations', hint: 'The flows and agents it delivers to', ok: formTargets.length > 0, need: 'Connect a destination: drag a flow or agent onto the canvas.' },
-    { id: 'test', label: 'Test', hint: 'Fire it with a sample input', optional: true },
+    { id: 'destinations', icon: '<path d="M2 8h9M8 4l4 4-4 4"/><path d="M14 3v10"/>', label: 'Destinations', hint: 'The flows and agents it delivers to', ok: formTargets.length > 0, need: 'Connect a destination: drag a flow or agent onto the canvas.' },
+    { id: 'test', icon: '<path d="M4 2l10 6-10 6z"/>', label: 'Test', hint: 'Fire it with a sample input', optional: true },
   ]);
 
   function openEdit(t: Trigger) {
