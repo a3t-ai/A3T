@@ -59,10 +59,10 @@
   /// shows them all at once.
   let activeSection = $state('flow');
   const canvasSteps = $derived.by((): WizardStep[] => [
-    { id: 'flow', label: 'Flow', ok: !!name.trim() && !!flowRef, need: !name.trim() ? 'Name the canvas.' : 'Pick the flow it deploys.' },
-    { id: 'placement', label: 'Placement' },
-    { id: 'lifecycle', label: 'Lifecycle' },
-    { id: 'health', label: 'Health', optional: true },
+    { id: 'flow', label: 'Flow', hint: 'The flow this canvas deploys', ok: !!name.trim() && !!flowRef, need: !name.trim() ? 'Name the canvas.' : 'Pick the flow it deploys.' },
+    { id: 'placement', label: 'Placement', hint: 'Which runtime it loads on' },
+    { id: 'lifecycle', label: 'Lifecycle', hint: 'State, session, scaling, restarts' },
+    { id: 'health', label: 'Health', hint: 'Resources it depends on', optional: true },
   ]);
   const showStep = (id: string) => embedded || activeSection === id;
   let name = $state('');

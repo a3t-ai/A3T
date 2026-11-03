@@ -1,6 +1,7 @@
 <script lang="ts">
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
   /// Projects: namespaces owned by you (<handle>-<name>) or by an org
   /// (<org>-<name>), who is in each, and the rules it runs under. Everything goes
   /// through the a3t-projects / a3t-profile flows, which decide on the server who
@@ -121,12 +122,12 @@
   const pjSteps = $derived.by((): WizardStep[] => {
     const nameOk = !!owner && SLUG.test(newName.trim());
     const steps: WizardStep[] = [
-      { id: 'overview', label: 'Overview', ok: panel !== 'create' || nameOk,
+      { id: 'overview', label: 'Overview', hint: 'Owner, name and who can see it', ok: panel !== 'create' || nameOk,
         need: !owner ? (profile ? 'Choose an owner.' : 'Claim your handle first.') : 'Name the project: 2–38 lowercase letters, digits and dashes.' },
-      { id: 'members', label: `Members (${dMembers.length})`, optional: panel === 'create' },
-      { id: 'policy', label: 'Policy', optional: panel === 'create' },
-      ...(panel === 'create' ? [] : [{ id: 'releases', label: 'Releases' }]),
-      { id: 'environments', label: 'Environments' },
+      { id: 'members', label: `Members (${dMembers.length})`, hint: 'People and the role each has', optional: panel === 'create' },
+      { id: 'policy', label: 'Policy', hint: 'Where it runs, who else may use it, its rules', optional: panel === 'create' },
+      ...(panel === 'create' ? [] : [{ id: 'releases', label: 'Releases', hint: 'Flow versions and the active one' }]),
+      { id: 'environments', label: 'Environments', hint: 'Dev, staging and prod' },
     ];
     return steps;
   });
@@ -339,7 +340,28 @@
 </div>
 
 <SlidePanel open={panel !== 'closed'} onclose={closePanel} onsave={panel === 'create' ? create : panel === 'detail' && canEdit ? save : undefined}>
-  <div class="pj">
+  {@const stepped = (panel === 'detail' && !!info) || panel === 'create'}
+  <div class="pj-wiz" class:stepped>
+    {#if stepped}
+      <aside class="pj-rail">
+        <div class="pj-head">
+          <div class="pj-icon">{(panel === 'create' ? (newName || 'NP') : (info?.display_name || selectedName)).slice(0, 2).toUpperCase()}</div>
+          <div>
+            <h2 class="pj-title">{panel === 'create' ? 'New project' : (info?.display_name || selectedName)}</h2>
+            <div class="pj-sub">
+              {#if panel === 'create'}Yours or an organisation's{:else}
+                <span class="mono">{selectedName}</span> · {info ? `${info.owner_kind === 'org' ? 'org' : 'personal'} · ${info.role}${info.private ? ' · private' : ''}` : (selected?.platform ? 'platform' : 'open to everyone')}
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        <WizardSteps steps={pjSteps} active={tab} wizard={panel === 'create'} onselect={(id) => (tab = id as any)} />
+      </aside>
+    {/if}
+    <div class="pj-main">
+  <div class="pj-scroll"><div class="pj">
+    {#if !stepped}
     <div class="pj-head">
       <div class="pj-icon">{(panel === 'create' ? (newName || 'NP') : (info?.display_name || selectedName)).slice(0, 2).toUpperCase()}</div>
       <div>
@@ -352,10 +374,9 @@
       </div>
     </div>
 
-    {#if (panel === 'detail' && info) || panel === 'create'}
-      <div class="pj-steps"><WizardSteps steps={pjSteps} active={tab} wizard={panel === 'create'} orientation="horizontal" onselect={(id) => (tab = id as any)} /></div>
     {/if}
 
+    {#if stepped}<WizardHead step={pjSteps.find((x) => x.id === tab)} />{/if}
     {#if message}<div class="pj-msg" class:ok={messageOk}>{message}</div>{/if}
 
     {#if panel === 'create' && tab === 'overview'}
@@ -558,20 +579,27 @@
       </div>
     {/if}
 
-    {#if (panel === 'detail' && info) || panel === 'create'}
-      <div class="pj-foot">
-        <WizardNav steps={pjSteps} active={tab} wizard={panel === 'create'} onselect={(id) => (tab = id as any)}
-          final={panel === 'create' ? create : canEdit ? save : undefined}
-          finalLabel={panel === 'create' ? 'Create project' : 'Save'} finalBusy={saving} busyLabel={panel === 'create' ? 'Creating…' : 'Saving…'} />
-      </div>
+  </div></div>
+    {#if stepped}
+      <WizardNav steps={pjSteps} active={tab} wizard={panel === 'create'} onselect={(id) => (tab = id as any)}
+        final={panel === 'create' ? create : canEdit ? save : undefined}
+        finalLabel={panel === 'create' ? 'Create project' : 'Save'} finalBusy={saving} busyLabel={panel === 'create' ? 'Creating…' : 'Saving…'} />
     {/if}
+    </div>
   </div>
 </SlidePanel>
 
 <style>
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
-  .pj-steps { margin: 4px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-  .pj-foot { position: sticky; bottom: 0; margin-top: 20px; z-index: 2; }
+  .pj-wiz { height: 100%; display: grid; grid-template-columns: 1fr; }
+  .pj-wiz.stepped { grid-template-columns: 280px 1fr; }
+  .pj-rail { display: flex; flex-direction: column; min-height: 0; background: var(--bg-surface); border-right: 1px solid var(--border); }
+  .pj-rail .pj-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); margin: 0; }
+  .pj-rail .pj-icon { width: 32px; height: 32px; border-radius: 8px; font-size: 11px; }
+  .pj-rail .pj-title { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
+  .pj-rail .pj-sub { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pj-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .pj-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
   .breadcrumb .sep { color: var(--text-5); }
   .screen-title-row { display: flex; align-items: center; gap: 18px; }
@@ -581,7 +609,7 @@
   .screen-body { flex: 1; overflow-y: auto; padding: 20px 32px 40px; }
   .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 
-  .pj { max-width: 760px; margin: 0 auto; padding: 8px 28px 40px; }
+  .pj { max-width: 704px; padding: 24px 32px 40px; }
   .pj-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
   .pj-icon { width: 44px; height: 44px; border-radius: var(--r-sm); background: #5530a8; color: white; display: grid; place-items: center; font: 700 13px var(--font-mono); }
   .pj-title { margin: 0; font-family: var(--font-serif); font-size: 22px; font-weight: 500; }

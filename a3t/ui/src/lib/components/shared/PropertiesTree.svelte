@@ -52,14 +52,11 @@
     border-right: 1px solid var(--border); overflow-y: auto; width: 100%; height: 100%;
   }
 
-  .pt-header {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 14px; border-bottom: 1px solid var(--border);
-  }
-  .pt-icon { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: white; flex-shrink: 0; }
+  .pt-header { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+  .pt-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; }
   .pt-info { min-width: 0; }
-  .pt-name { font-family: var(--font-serif); font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pt-meta { font-size: 10px; color: var(--text-4); margin-top: 1px; }
+  .pt-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pt-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .pt-tree { display: flex; flex-direction: column; padding: 6px 0; flex: 1; }
   .pt-node {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
@@ -132,11 +133,16 @@
   // Tree nodes
   /// A new agent is made in three steps; an existing one has a step per section.
   const agentSteps = $derived.by((): WizardStep[] => creatingNew ? [
-    { id: 'identity', label: 'Identity', ok: !!newAgent.name.trim() && !!newAgent.namespace && !!newAgent.template_id,
+    { id: 'identity', label: 'Identity', hint: 'Name it, choose the project it lives in and the template it is built from', ok: !!newAgent.name.trim() && !!newAgent.namespace && !!newAgent.template_id,
       need: !newAgent.name.trim() ? 'Name the agent.' : !newAgent.template_id ? 'Pick a template.' : 'Pick a namespace.' },
-    { id: 'behaviour', label: 'Model & tools' },
-    { id: 'serving', label: 'Serving' },
-  ] : treeNodes.map((n) => ({ id: n.id, label: n.label })));
+    { id: 'behaviour', label: 'Model & tools', hint: 'How long it lives, the model it thinks with, the MCP tools it may call' },
+    { id: 'serving', label: 'Serving', hint: 'The flow that serves it and its endpoint — one is made for it unless you pick one' },
+  ] : treeNodes.map((n) => ({ id: n.id, label: n.label, hint: AGENT_HINTS[n.id] })));
+  const AGENT_HINTS: Record<string, string> = {
+    detail: 'What it is and where it lives', config: 'LLM, prompt and tools', designer: 'Its flow, visually',
+    template: 'The template it is built from', canvas: 'Where and how it is deployed',
+    policy: 'What it may do', ownership: 'Who owns it and who can use it',
+  };
 
   const treeNodes = [
     { id: 'detail', label: 'Agent Detail', icon: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>' },
@@ -552,10 +558,7 @@
       <div class="panel-content" class:panel-content-flush={propNode === 'designer'}>
         {#if agent.isNew}
           <div class="pf">
-            <div class="pf-head"><h3>New Agent — {agentSteps.find((x) => x.id === propNode)?.label}</h3></div>
-            <p class="pf-hint">{propNode === 'identity' ? 'Name it, choose where it lives and the template it is built from.'
-              : propNode === 'behaviour' ? 'How long it lives, the model it thinks with, and the MCP tools it may call.'
-              : 'The flow that serves it, and the endpoint it answers on — a chat endpoint is made for it unless you pick one.'}</p>
+            <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
             <div class="pf-form">
               {#if propNode === 'identity'}
               <label class="cf-field"><span>Name</span><input type="text" bind:value={newAgent.name} placeholder="my-agent" /></label>
@@ -880,7 +883,7 @@
   .cf-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
   /* Panel layout */
-  .panel-layout { display: grid; grid-template-columns: 200px 1fr; height: 100%; }
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
   .panel-col { display: flex; flex-direction: column; min-height: 0; height: 100%; }
   .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
   .panel-content-flush { overflow: hidden; }
@@ -889,11 +892,11 @@
   .pf-head h3 { margin-bottom: 0; }
   .pf-form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
   .cf-checks { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); }
-  .cf-check { display: flex; align-items: center; gap: 8px; font-size: 12px; font-family: var(--font-mono); color: var(--text-1); cursor: pointer; }
+  .cf-check { display: flex; align-items: center; gap: 10px; padding: 3px 0; cursor: pointer; }
   .cf-none { font-size: 12px; color: var(--text-3, var(--text-2)); }
 
   /* Panel forms */
-  .pf { padding: 24px 32px; max-width: 600px; }
+  .pf { padding: 24px 32px; max-width: 704px; }
   .pf h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .pf-kv { display: flex; flex-direction: column; }
   .pf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }

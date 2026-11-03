@@ -23,6 +23,7 @@
   import { onMount, untrack } from 'svelte';
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
 
   interface TriggerTarget { type: string; namespace?: string; name?: string; agent_id?: string; url?: string }
   interface Trigger {
@@ -230,11 +231,11 @@
   let step = $state('details');
   let saving = $state(false);
   const trgSteps = $derived.by((): WizardStep[] => [
-    { id: 'details', label: 'Details', ok: !!formName.trim() && !!formNs, need: 'Name the trigger.' },
-    { id: 'source', label: 'Source', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : !!formEventSource.trim(),
+    { id: 'details', label: 'Details', hint: 'Name, project, description', ok: !!formName.trim() && !!formNs, need: 'Name the trigger.' },
+    { id: 'source', label: 'Source', hint: 'What fires it: webhook, cron or event', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : !!formEventSource.trim(),
       need: formType === 'webhook' ? 'Give the webhook a path.' : formType === 'cron' ? 'Give the schedule a cron expression.' : 'Name the event source.' },
-    { id: 'destinations', label: 'Destinations', ok: formTargets.length > 0, need: 'Connect a destination: drag a flow or agent onto the canvas.' },
-    { id: 'test', label: 'Test', optional: true },
+    { id: 'destinations', label: 'Destinations', hint: 'The flows and agents it delivers to', ok: formTargets.length > 0, need: 'Connect a destination: drag a flow or agent onto the canvas.' },
+    { id: 'test', label: 'Test', hint: 'Fire it with a sample input', optional: true },
   ]);
 
   function openEdit(t: Trigger) {
@@ -452,16 +453,23 @@
 
 <!-- ═══════════ EDITOR (SlidePanel pop-in) ═══════════ -->
 <SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={saveTrigger}>
+  <div class="te-wiz">
+  <aside class="te-rail">
+    <div class="te-rail-head">
+      <div class="te-rail-icon">{(formName || 'NT').slice(0, 2).toUpperCase()}</div>
+      <div><div class="te-rail-name">{formName || 'New trigger'}</div><div class="te-rail-meta">{formType} · {formNs || '—'}</div></div>
+    </div>
+    <WizardSteps steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }} />
+  </aside>
   <div class="te" bind:this={editorContainer}>
-    <div class="te-steps"><WizardSteps steps={trgSteps} active={step} wizard={!editingTrigger} orientation="horizontal" onselect={(id) => (step = id)} /></div>
     {#if saveError}<div class="te-error" role="alert">Could not save: {saveError}</div>{/if}
     <!-- Details / Source -->
     {#if step === 'details' || step === 'source'}
     <div class="te-form">
+      <WizardHead step={trgSteps.find((x) => x.id === step)} />
       <div class="tf-row-top">
         {#if step === 'details'}
         <div class="tf-col">
-          <div class="tf-section-first">IDENTITY</div>
           <div class="tf-row2">
             <label><span>Name</span><input type="text" bind:value={formName} placeholder="my-webhook" /></label>
             <label><span>Namespace</span>
@@ -475,7 +483,6 @@
         </div>
         {:else}
         <div class="tf-col">
-          <div class="tf-section-first">CHANNEL</div>
           <div class="tf-type-tabs">
             <button class="tf-type" class:active={formType === 'webhook'} onclick={() => formType = 'webhook'}>
               <span class="tf-ti" style="background:var(--runtime-bg);color:var(--runtime);">W</span> Webhook
@@ -642,6 +649,7 @@
     <WizardNav steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }}
       final={saveTrigger} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
   </div>
+  </div>
 </SlidePanel>
 
 <!-- Was passed `name`/`type` and no `open`, so the dialog never appeared and a
@@ -682,34 +690,41 @@
 
   /* ═══ EDITOR (inside SlidePanel) ═══ */
   .te { display: flex; flex-direction: column; height: 100%; }
-  .te-steps { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); flex-shrink: 0; }
+  .te-wiz { display: grid; grid-template-columns: 280px 1fr; height: 100%; min-height: 0; }
+  .te-wiz > .te { min-width: 0; min-height: 0; }
+  .te-rail { display: flex; flex-direction: column; min-height: 0; background: var(--bg-surface); border-right: 1px solid var(--border); }
+  .te-rail-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+  .te-rail-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; background: var(--runtime, #1a7158); }
+  .te-rail-head > div:last-child { min-width: 0; }
+  .te-rail-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .te-rail-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .te-note { padding: 10px 16px; font-size: 12.5px; color: var(--text-3); background: var(--bg-subtle); border-top: 1px solid var(--border); }
 
   /* TOP: form — two columns side by side */
-  .te-form { padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .tf-row-top { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .tf-col { display: flex; flex-direction: column; gap: 4px; }
+  .te-form { padding: 24px 32px; flex: 1; min-height: 0; overflow-y: auto; }
+  .tf-row-top { display: block; max-width: 640px; }
+  .tf-col { display: flex; flex-direction: column; gap: 14px; }
 
   .tf-section-first { font-size: 9px; font-weight: 700; color: var(--text-3); letter-spacing: 0.06em; margin-bottom: 6px; }
 
-  .te-form label { display: flex; flex-direction: column; gap: 2px; }
-  .te-form label span { font-size: 10px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
-  .te-form input, .te-form select { padding: 5px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-surface); color: var(--text-1); font-size: 11px; font-family: var(--font-mono); outline: none; }
+  .te-form label { display: flex; flex-direction: column; gap: 6px; }
+  .te-form label span { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
+  .te-form input, .te-form select { padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r-sm, 6px); background: var(--bg-surface); color: var(--text-1); font-size: 13.5px; font-family: var(--font-sans); outline: none; }
   .te-form input:focus, .te-form select:focus { border-color: var(--spec); }
 
-  .tf-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
-  .tf-full { margin-bottom: 4px; }
+  .tf-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .tf-full { margin: 0; }
 
-  .tf-type-tabs { display: flex; gap: 3px; margin-bottom: 6px; }
-  .tf-type { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-surface); color: var(--text-3); font-size: 10px; font-weight: 500; cursor: pointer; }
+  .tf-type-tabs { display: flex; gap: 8px; }
+  .tf-type { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--r-sm, 6px); background: var(--bg-surface); color: var(--text-2); font-size: 13px; font-weight: 500; cursor: pointer; }
   .tf-type.active { border-color: var(--spec); background: var(--spec-bg); color: var(--spec-ink); }
   .tf-ti { width: 16px; height: 16px; border-radius: 3px; display: grid; place-items: center; font-size: 8px; font-weight: 700; font-family: var(--font-mono); }
 
-  .tf-ep { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; margin-top: 2px; }
-  .tf-ep-l { font-size: 9px; font-weight: 600; color: var(--text-4); text-transform: uppercase; display: block; margin-bottom: 1px; }
-  .tf-ep code { font-family: var(--font-mono); font-size: 11px; color: var(--runtime); }
+  .tf-ep { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--r-sm, 6px); padding: 10px 12px; }
+  .tf-ep-l { font-size: 10.5px; font-weight: 600; color: var(--text-4); text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
+  .tf-ep code { font-family: var(--font-mono); font-size: 12.5px; color: var(--runtime); }
 
-  .tf-check { flex-direction: row !important; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); margin-top: 6px; }
+  .tf-check { flex-direction: row !important; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
   .tf-check input { accent-color: var(--spec); }
 
   .te-error { margin: 8px 12px 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--err-bg, #fde8e8); color: var(--err, #b42318); font-size: 12px; }

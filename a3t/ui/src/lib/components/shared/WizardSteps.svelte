@@ -1,7 +1,8 @@
 <script lang="ts" module>
-  /// One step of a pop-in: its id, label, and — for a new item — whether it is
-  /// filled in well enough to go on (`ok`) and what is missing when not (`need`).
-  export type WizardStep = { id: string; label: string; icon?: string; ok?: boolean; need?: string; optional?: boolean };
+  /// One step of a pop-in: its id, label, a line on what it is for (`hint`), and —
+  /// for a new item — whether it is filled in well enough to go on (`ok`) and
+  /// what is missing when not (`need`).
+  export type WizardStep = { id: string; label: string; hint?: string; icon?: string; ok?: boolean; need?: string; optional?: boolean };
 
   /// A step can be opened when every step before it is ok (a new item), or always
   /// (an existing one).
@@ -16,9 +17,11 @@
 </script>
 
 <script lang="ts">
-  /// The steps of a pop-in, numbered: done ones ticked, the current one marked,
-  /// later ones locked until the ones before them are filled in (new items only).
-  /// Vertical in a pop-in's left rail, horizontal over a single-column one.
+  /// The steps of a pop-in as a wizard: a vertical stack down the full height of
+  /// the rail, each step a numbered circle with its title and what it is for,
+  /// joined by a line that turns from grey to colour as the steps are done.
+  /// Later steps of a new item stay locked until the ones before are filled in.
+  /// `horizontal` is a compact strip for narrow places.
   let { steps, active, onselect, wizard = false, orientation = 'vertical' }: {
     steps: WizardStep[]; active: string; onselect: (id: string) => void;
     /// A new item: go in order. An existing one: any step, any time.
@@ -33,40 +36,58 @@
   {#each steps as s, i (s.id)}
     {@const open = reachable(steps, s.id, wizard)}
     {@const done = i < idx && s.ok !== false}
-    <button class="st" class:on={s.id === active} class:done class:locked={!open} disabled={!open}
-            onclick={() => onselect(s.id)} aria-current={s.id === active ? 'step' : undefined}
-            title={open ? s.label : `Finish the steps before ${s.label}`}>
-      <span class="n">
-        {#if done}<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>{:else}{i + 1}{/if}
-      </span>
-      <span class="l">{s.label}{#if s.optional}<em> · optional</em>{/if}</span>
-    </button>
-    {#if orientation === 'horizontal' && i < steps.length - 1}<span class="bar" class:done={i < idx}></span>{/if}
+    <div class="item" class:on={s.id === active} class:done class:locked={!open} class:last={i === steps.length - 1}>
+      <button class="st" disabled={!open} onclick={() => onselect(s.id)} aria-current={s.id === active ? 'step' : undefined}
+              title={open ? s.label : `Finish the steps before ${s.label}`}>
+        <span class="n">
+          {#if done}<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>{:else}{i + 1}{/if}
+        </span>
+        <span class="txt">
+          <span class="l">{s.label}{#if s.optional}<em> · optional</em>{/if}</span>
+          {#if s.hint && orientation === 'vertical'}<span class="h">{s.hint}</span>{/if}
+        </span>
+      </button>
+      {#if i < steps.length - 1}<span class="line" class:filled={i < idx} aria-hidden="true"></span>{/if}
+    </div>
   {/each}
 </nav>
 
 <style>
-  .ws { display: flex; }
-  .ws.vertical { flex-direction: column; padding: 8px 0; gap: 2px; position: relative; }
-  .ws.horizontal { align-items: center; gap: 6px; flex-wrap: wrap; }
+  .ws { display: flex; --c-done: var(--ok, #2fa88d); --c-on: var(--spec, #5530a8); --c-off: var(--border, #e4e0d8); }
 
-  .st { display: flex; align-items: center; gap: 9px; border: 0; background: none; cursor: pointer; text-align: left; color: var(--text-3); font-size: 12.5px; }
-  .vertical .st { padding: 7px 14px; }
-  .horizontal .st { padding: 6px 4px; }
-  .st:hover:not(:disabled) { color: var(--text-1); }
-  .vertical .st:hover:not(:disabled) { background: var(--bg-subtle); }
-  .st.on { color: var(--text-1); font-weight: 600; }
-  .vertical .st.on { background: var(--bg-subtle); box-shadow: inset 3px 0 0 var(--spec, #5530a8); }
-  .st.locked { opacity: 0.45; cursor: not-allowed; }
+  /* ── Vertical: the full height of the rail ── */
+  .ws.vertical { flex-direction: column; padding: 24px 20px 20px; flex: 1; min-height: 0; }
+  .vertical .item { position: relative; display: flex; flex-direction: column; flex: 1 1 0; max-height: 128px; min-height: 64px; }
+  .vertical .item.last { flex: 0 0 auto; min-height: 0; }
+  .vertical .st { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; position: relative; z-index: 1; }
+  .vertical .n { width: 32px; height: 32px; font-size: 12px; }
+  .vertical .txt { display: flex; flex-direction: column; gap: 3px; padding-top: 6px; min-width: 0; }
+  .vertical .l { font-size: 13px; }
+  .h { font-size: 11.5px; line-height: 1.4; color: var(--text-4); }
+  /* The connector: from under this circle to the next one. */
+  .vertical .line { position: absolute; left: 15px; top: 38px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--c-off); overflow: hidden; }
+  .vertical .line::after { content: ''; position: absolute; inset: 0; background: var(--c-done); transform: scaleY(0); transform-origin: top; transition: transform 0.35s ease; }
+  .vertical .line.filled::after { transform: scaleY(1); }
 
-  .n { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font: 600 10.5px var(--font-mono);
-       border: 1.5px solid var(--border); color: var(--text-3); background: var(--bg-surface); }
-  .st.on .n { border-color: var(--spec, #5530a8); background: var(--spec, #5530a8); color: #fff; }
-  .st.done .n { border-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
-  .n svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-  .l { white-space: nowrap; }
+  /* ── Horizontal: a compact strip ── */
+  .ws.horizontal { align-items: center; gap: 8px; flex-wrap: wrap; }
+  .horizontal .item { display: flex; align-items: center; gap: 8px; }
+  .horizontal .st { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border: 0; background: none; cursor: pointer; }
+  .horizontal .n { width: 22px; height: 22px; font-size: 10.5px; }
+  .horizontal .line { width: 26px; height: 2px; background: var(--c-off); }
+  .horizontal .line.filled { background: var(--c-done); }
+
+  /* ── Both ── */
+  .n { border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font-family: var(--font-mono); font-weight: 600;
+       border: 2px solid var(--c-off); color: var(--text-4); background: var(--bg-surface); transition: all 0.2s; }
+  .item.on .n { border-color: var(--c-on); background: var(--c-on); color: #fff; box-shadow: 0 0 0 4px color-mix(in srgb, var(--c-on) 15%, transparent); }
+  .item.done .n { border-color: var(--c-done); background: var(--c-done); color: #fff; }
+  .n svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .l { color: var(--text-3); font-weight: 500; white-space: nowrap; }
   .l em { font-style: normal; font-weight: 400; color: var(--text-4); font-size: 11px; }
-
-  .bar { flex: 0 0 22px; height: 1.5px; background: var(--border); }
-  .bar.done { background: var(--ok); }
+  .item.on .l { color: var(--text-1); font-weight: 650; }
+  .item.done .l { color: var(--text-2); }
+  .st:hover:not(:disabled) .l { color: var(--text-1); }
+  .item.locked .st { cursor: not-allowed; }
+  .item.locked .l, .item.locked .h { opacity: 0.55; }
 </style>

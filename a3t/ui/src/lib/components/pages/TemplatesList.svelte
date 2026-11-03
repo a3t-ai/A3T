@@ -319,12 +319,12 @@ do:
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.
   const tplSteps = $derived.by((): WizardStep[] => [
-    { id: 'detail', label: 'Template Detail', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+    { id: 'detail', label: 'Template Detail', hint: 'Name, version and tags', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
       need: 'Name the template: lowercase letters, digits and dashes.' },
-    { id: 'yaml', label: 'Template YAML', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
-    { id: 'policy', label: 'Policy' },
-    { id: 'ownership', label: 'Ownership & Access' },
-    ...(draftTemplate?.isNew ? [] : [{ id: 'agents', label: 'Agents' }]),
+    { id: 'yaml', label: 'Template YAML', hint: 'The spec: hooks, LLM, tools, memory', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'policy', label: 'Policy', hint: 'What its agents may do' },
+    { id: 'ownership', label: 'Ownership & Access', hint: 'Who owns it and who can use it' },
+    ...(draftTemplate?.isNew ? [] : [{ id: 'agents', label: 'Agents', hint: 'Agents built from it' }]),
   ]);
 
   function openInherited(it: ExposedItem) {
@@ -914,21 +914,18 @@ do:
   }
 
   /* Layout: left tree + main content */
-  .sp-layout { display: grid; grid-template-columns: 200px 1fr; height: 100%; }
+  .sp-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
 
   /* Left: Tree panel */
   .sp-tree-panel {
     display: flex; flex-direction: column; background: var(--bg-surface);
     border-right: 1px solid var(--border); overflow-y: auto;
   }
-  .sp-tree-head {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 14px; border-bottom: 1px solid var(--border);
-  }
-  .sp-tree-icon { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: white; flex-shrink: 0; }
+  .sp-tree-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+  .sp-tree-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; }
   .sp-tree-info { min-width: 0; }
-  .sp-tree-name { font-family: var(--font-serif); font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sp-tree-meta { font-size: 10px; color: var(--text-4); margin-top: 1px; }
+  .sp-tree-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sp-tree-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .sp-tree { display: flex; flex-direction: column; padding: 6px 0; flex: 1; }
   .sp-tree-node {

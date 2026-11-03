@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
@@ -216,6 +219,18 @@
     }
   });
   let creating = $state(false);
+
+  /// New resource, in three steps; each one needs what it asks for before Next.
+  const configOk = $derived.by(() => { try { JSON.parse(newResource.config || '{}'); return true; } catch { return false; } });
+  const createSteps = $derived.by((): WizardStep[] => [
+    { id: 'details', label: 'Details', hint: 'Name, project, kind and type',
+      ok: !!newResource.name.trim() && !!newResource.namespace && !!createForCategory && !!newResource.type,
+      need: !createForCategory ? 'Choose what kind of resource it is.' : !newResource.name.trim() ? 'Name the resource.' : !newResource.namespace ? 'Pick its project.' : 'Pick its type.' },
+    { id: 'config', label: 'Configuration', hint: 'How to connect to it, as JSON', ok: configOk, need: 'The configuration is not valid JSON.' },
+    { id: 'review', label: 'Review & Create', hint: 'Check, then create' },
+  ]);
+  /// An existing resource's sections, numbered the same way (any step, any time).
+  const detailSteps = $derived(detailNodes.map((n) => ({ id: n.id, label: n.label })));
 
   const createTreeNodes = [
     { id: 'details', label: 'Details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
@@ -709,6 +724,7 @@ do:
         name={selected.category === 'flows' && isNewFlow ? (flowMeta.name || 'New flow') : selected.name}
         meta="{selected.type} · {selected.namespace}"
         nodes={detailNodes}
+        steps={detailSteps}
         activeNode={panelTab}
         onselect={selectPanelTab}
       />
@@ -1082,16 +1098,24 @@ do:
       name={createForCategory ? `New ${catMeta(createForCategory).label.replace(/s$/, '')}` : 'New resource'}
       meta={createForCategory}
       nodes={createTreeNodes}
+      steps={createSteps}
+      wizard
       activeNode={createTab}
       onselect={(id) => { createTab = id; }}
     />
+    <div class="panel-col">
     <div class="panel-content">
       {#if createTab === 'details'}
         <div class="pf">
-          <h3>Details</h3>
+          <WizardHead step={createSteps.find((x) => x.id === createTab)} />
           <div class="pf-kv">
             <label class="cf-field"><span>Name</span><input type="text" bind:value={newResource.name} placeholder="my-resource" /></label>
-            <label class="cf-field"><span>Namespace</span><input type="text" bind:value={newResource.namespace} placeholder="project" /></label>
+            <label class="cf-field"><span>Namespace</span>
+              <select bind:value={newResource.namespace}>
+                {#if !newResource.namespace}<option value="" disabled>Choose a project…</option>{/if}
+                {#each [...new Set([newResource.namespace, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}
+              </select>
+            </label>
             <label class="cf-field"><span>Kind</span>
               <select value={createForCategory} onchange={(e) => pickKind((e.currentTarget as HTMLSelectElement).value)}>
                 {#if !createForCategory}<option value="" disabled>Choose a kind…</option>{/if}
@@ -1112,21 +1136,19 @@ do:
 
       {:else if createTab === 'config'}
         <div class="pf">
-          <h3>Configuration</h3>
+          <WizardHead step={createSteps.find((x) => x.id === createTab)} />
           {#if newResource.type === 'adb'}
             <p class="pf-hint">ADB: <code>url</code> is its HTTP address (AQL, MCP at <code>/mcp/sse</code>); <code>call:adb</code> uses Arrow Flight on the same host, port 3001 — set <code>flight_url</code> only if it is elsewhere.</p>
-          {:else}
-            <p class="pf-hint">Provide the connection configuration as JSON.</p>
           {/if}
           <label class="cf-field full">
             <span>Config (JSON)</span>
-            <textarea rows="10" bind:value={newResource.config}></textarea>
+            <textarea class="mono-area" rows="12" spellcheck="false" bind:value={newResource.config}></textarea>
           </label>
         </div>
 
       {:else if createTab === 'review'}
         <div class="pf">
-          <h3>Review & Create</h3>
+          <WizardHead step={createSteps.find((x) => x.id === createTab)} />
           <div class="pf-kv">
             <div class="pf-row"><span class="pf-k">Name</span><span class="pf-v">{newResource.name || '—'}</span></div>
             <div class="pf-row"><span class="pf-k">Namespace</span><span class="pf-v">{newResource.namespace}</span></div>
@@ -1135,14 +1157,9 @@ do:
           <pre class="pf-code" style="margin-top: 16px;">{newResource.config}</pre>
         </div>
       {/if}
-      <!-- On every step: Create was only on Review, so it looked like there was no save. -->
-      <div class="create-actions pf-footer">
-        {#if !createForCategory}<span class="pf-hint">Choose what kind of resource it is.</span>{:else if !newResource.name}<span class="pf-hint">Name the resource to create it.</span>{/if}
-        <button class="btn ghost" onclick={() => showCreate = false}>Cancel</button>
-        <button class="btn spec" disabled={creating || !newResource.name || !newResource.type || !newResource.namespace} onclick={createResource}>
-          {creating ? 'Creating...' : 'Create Resource'}
-        </button>
-      </div>
+    </div>
+    <WizardNav steps={createSteps} active={createTab} wizard onselect={(id) => { createTab = id; }}
+      final={createResource} finalLabel="Create resource" finalBusy={creating} busyLabel="Creating…" />
     </div>
   </div>
 </SlidePanel>
@@ -1335,8 +1352,11 @@ do:
   .pf-footer .pf-hint { margin: 0 auto 0 0; }
 
   /* Panel layout (matches AgentsList) */
-  .panel-layout { display: grid; grid-template-columns: 200px 1fr; height: 100%; }
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
   .panel-content { overflow-y: auto; }
+  .mono-area { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; }
+  .panel-col { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+  .panel-col > .panel-content { flex: 1; min-height: 0; }
   .panel-content-flush { overflow: hidden; }
   .flow-def-pane { height: 100%; overflow: hidden; }
 
@@ -1358,7 +1378,7 @@ do:
   .exec-err { font-size: 12px; color: var(--err, #d44); font-family: var(--font-mono); background: var(--err-bg, #fde8e8); padding: 8px 10px; border-radius: var(--r-sm); }
   .exec-kv { display: flex; flex-direction: column; gap: 3px; }
   .exec-kv > span { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-4); }
-  .pf { padding: 24px 32px; max-width: 600px; }
+  .pf { padding: 24px 32px; max-width: 704px; }
   .pf h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .pf-kv { display: flex; flex-direction: column; }
   .pf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }

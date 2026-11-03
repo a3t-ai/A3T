@@ -37,11 +37,11 @@
 </div>
 
 <style>
-  .wn { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--bg-surface); }
+  .wn { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 12px 32px; box-sizing: border-box; border-top: 1px solid var(--border); background: var(--bg-surface); flex-shrink: 0; }
   .pos { font: 11px var(--font-mono); color: var(--text-4); white-space: nowrap; }
   .need { font-size: 12px; color: var(--warn); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .grow { flex: 1; }
-  .b { padding: 7px 14px; border: 1px solid var(--border); border-radius: var(--r-sm, 6px); background: var(--bg-surface); color: var(--text-2); font-size: 12.5px; font-weight: 550; cursor: pointer; white-space: nowrap; }
+  .b { height: 34px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--r-sm, 6px); background: var(--bg-surface); color: var(--text-2); font-size: 12.5px; font-weight: 550; cursor: pointer; white-space: nowrap; }
   .b:hover:not(:disabled) { background: var(--bg-subtle); color: var(--text-1); }
   .b.primary { background: var(--spec, #5530a8); border-color: var(--spec, #5530a8); color: #fff; }
   .b.primary:hover:not(:disabled) { opacity: 0.9; background: var(--spec, #5530a8); color: #fff; }
