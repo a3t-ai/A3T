@@ -34,6 +34,8 @@ described), **done** (with commit).
 | UI-10 | Application logs of an agent's runs and its runtime (stdout/stderr, tracing) | Agent → Health; Executions | The console's "Logs" was the decision log; renamed "Decision log" so it no longer suggests application logs | `GET /runs/{id}/logs` and `GET /ops/deployments/{id}/logs?since=&follow=1` (SSE) | open |
 | UI-11 | A plain-language purpose for an agent separate from its template's description | Agent → Overview | Uses the template's `document.metadata.description` | Agent record gains `description`; the builder agent fills it | open |
 | UI-12 | Alerts: thresholds on error rate / latency that notify | Bell → Notifications | Notifications hold console warnings and errors only | `alerts` resource (`{agent, metric, op, value, window}`) evaluated by the controller; notices pushed to the console | open |
+| UI-13 | One run per conversation at a time | AI Chat composer | The composer waits while any permission question is pending (fc80acf); another client could still start a second run | `POST /chat` returns 409 `{waiting_on: request_id}` while the session has a run suspended on an approval | partial |
+| UI-14 | Edits to the open document without a permission prompt | AI Chat with a document open | `propose_edit` is added to an agent's explicit tool list; an agent with no list (every call needs approval) still asks once, and the main-chat prompt only names `propose_edit` in designer mode | Treat `propose_edit` / `propose_flow` as no-effect tools that need no approval; in `prompt_with_ui_context`, say "change it with propose_edit" whenever a document is open, not only in designer mode | partial |
 
 ## UI changes made with this (no backend change)
 
