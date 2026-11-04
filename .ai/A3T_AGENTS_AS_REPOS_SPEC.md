@@ -278,9 +278,9 @@ beside versions; diff in the split view).
 
 | # | Phase | Repos | Ends with |
 |---|---|---|---|
-| 0 | **Prerequisites**: registry versions (§4.1); memory space per agent (§3.1); schema v5 `branch` column; versioned patches (§3.5) | FlowR, ADB | Existing behaviour unchanged; conformance and FlowR suites pass |
+| 0 | **Prerequisites**: registry versions (§4.1); memory space per agent (§3.1) | FlowR, ADB | Existing behaviour unchanged; conformance and FlowR suites pass |
 | 1 | **Lineage** (§4.2) | FlowR / A3T | Three-generation chat lineage (system → A3T → crawl): a fix in the root reaches the others as an upgrade |
-| 2 | **ADB branches** (§3.2–3.8): branch table, overlay reads for every statement, writes, pins, FORGET across branches, AQL `BRANCH`, tags, diff, rebase, promote of procedures | ADB | Conformance suite run on a branch matches `main`; branch reads after 10k parent writes see the point; compaction keeps pinned history; FORGET reaches branches |
+| 2 | **ADB branches as isolated engines** (§2.3, ADB `.ai/BRANCHING.md` B1–B6): control records on the org log, branch engines (own WAL, sequencer, delta table; hosted or own pod), overlay reads, branch writes, pins, FORGET reaching branches, promote as a new agent, clone | ADB | Branch traffic never reaches the org's sequencer or table; a branch reads its parent `AS OF` the point plus its own writes; compaction keeps pinned history; FORGET reaches branches; a promoted agent equals the branch view |
 | 3 | **Branch runs** (§4.3): run → branch, side-effect classes, gateway guard, CLI branch / diff / promote | FlowR | The developer loop of the post end to end: branch, run, diff, rebase, promote; no outbound call leaves A3T from a branch |
 | 4 | **Inheritance** (§3.9): layers, sealed, precedence, cross-tenant grants | ADB, FlowR | The trading agent mounts the compliance layer, calls `check_trade`, cannot shadow it, never sees compliance episodes |
 | 5 | **Governance** (§4.4) and **audit** (§3.10) | FlowR, ADB | Compliance v2 → per-agent impact reports from replay; grace period enforced; a decision's memory point reproduces what the agent read |
