@@ -18,7 +18,7 @@ pub struct McpHandler {
 
 impl McpHandler {
     pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
+        Self { client: swf_runtime::handlers::call_http::shared_client() }
     }
 }
 

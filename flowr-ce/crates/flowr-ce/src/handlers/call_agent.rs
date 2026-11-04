@@ -456,7 +456,7 @@ impl TaskHandler for AgentHandler {
         info!(task = %task.name, session = %config.session_id, "call:a3t:agent starting");
 
         let storage = get_storage(ctx)?;
-        let http_client = reqwest::Client::new();
+        let http_client = swf_runtime::handlers::call_http::shared_client();
 
         // ── Admission: a paused agent does not run, however it was reached ──
         // Chat, send_message, triggers and other agents all arrive here, which

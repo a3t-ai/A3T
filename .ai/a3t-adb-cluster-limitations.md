@@ -74,6 +74,24 @@ another carries on".
 | CA-52 | The router sends a run to `FLOWR_DEFAULT_POOL` or a deployment runtime only once that pool has a live worker; otherwise to `default`, silently. A run started right after a runtime starts (before its first claim) waited in `default`, where nobody claims user flows | Runs stuck pending with no sign why | A warning names the flow when it falls back; a queue that nobody serves is still possible | partly fixed |
 | CA-50 | "Gateway" also names the console's engine endpoint on port 3003 (`engine_remote`, `FLOWR_ENGINE_URL`) | Confusing names in code and logs | Rename the old one (engine relay) when it is retired | accepted |
 
+## Performance pass (4 Nov 2026)
+
+Benchmark: ADB `tests/perf-a3t.mjs` (one FlowR console in front of a 3-node ADB, `perf`
+build profile; `--single` = one ADB node without Raft; `--transient`). Baseline (ADB l,
+FlowR ccf33f5): reads 3.4 ms p50; a platform-style flow (three state reads + a step)
+141 ms p50, p99 301 ms; 8 concurrent callers 3.9 flows/s with a **30 s p99**; writes 37/s.
+
+| # | Found | Effect | Fix | Status |
+|---|---|---|---|---|
+| CA-53 | **Subscription streams leaked.** `subscribe` (FlowR → ADB Flight, and the console relay over SSE) noticed a dropped receiver only when a notice arrived; a finished run's topic gets none, so every claimed run (`keep_alive`) left an HTTP/2 stream open on the shared connection | Streams pile up until the connection stalls: calls cancelled (`operation was canceled`, `h2 protocol error`), lost releases → runs re-claimed after the 30 s lease (the p99 tail), then a hang. Long-running pods on vc-dev degrade the same way | The stream is dropped as soon as the receiver is (`tokio::select!` on `tx.closed()`); Cancelled / DeadlineExceeded retried; a 30 s timeout per engine call (`engine_adb.rs`, `engine_remote.rs`) | fixed (pending vc-dev) |
+| CA-54 | **Every run built its HTTP clients.** Each executor registered fresh `reqwest::Client`s (HTTP, MCP, LLM, and the gateway's) — the TLS roots loaded each time, no connection reuse | 102 ms before a flow's first step (a no-op transient flow: 77 ms → 9 ms) | One process-wide client (`swf_runtime::handlers::call_http::shared_client`) | fixed |
+| CA-55 | `execute_flow` polled the run row on a backoff (25 → 250 ms) | A run done at 100 ms reported at 175 ms | Waits on the run's `run:<id>` notice, polling every 250 ms as a fallback | fixed |
+| CA-33 | Transient flows | — | `metadata.a3t.durability: transient`: `execute_flow` runs the flow inline when the router places it on a pool this process claims (no queue, claim, journal, release); otherwise it is queued as ephemeral | built |
+| CA-24 | Write cost | Raft is ~30 % of a write (1 node 50 writes/s, 3 nodes 35/s); the rest is one Lance commit per platform-table operation, and a state write is two (CA-8) | `TableUpsert` (Lance `merge_insert`): one operation per state / registry write; group commit decided after measuring | in progress |
+
+Results so far (3-node Raft, p50): platform-style flow durable 141 → 61 ms, transient
+**12.6 ms**; 8 concurrent transient callers **292 flows/s** (from 3.9), p99 51 ms.
+
 ## What is left in ADB (3 Nov 2026)
 
 The Raft replica set runs on vc-dev (3 nodes, adb `l`); memory features are done. Open,

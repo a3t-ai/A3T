@@ -242,26 +242,37 @@ impl Transport for HttpTransport {
     }
 
     /// Server-sent events from the console, reconnecting until the receiver
-    /// is dropped. Notices are best effort: a gap only delays a wake-up.
+    /// is dropped. Notices are best effort: a gap only delays a wake-up. The
+    /// request is dropped as soon as the receiver is, so a finished run's topic
+    /// does not keep a connection open.
     fn subscribe(&self, topic: &str) -> BoxStream<'static, Value> {
-        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let url = format!("{}/v1/engine/subscribe?topic={}", self.base, urlencode(topic));
         let token = self.token.clone();
-        let http = reqwest::Client::new();
+        let http = swf_runtime::handlers::call_http::shared_client();
         tokio::spawn(async move {
             while !tx.is_closed() {
-                match http.get(&url).bearer_auth(&token).send().await {
-                    Ok(r) if r.status().is_success() => {
+                let sent = tokio::select! {
+                    r = http.get(&url).bearer_auth(&token).send() => r,
+                    _ = tx.closed() => return,
+                };
+                if let Ok(r) = sent {
+                    if r.status().is_success() {
                         let mut body = r.bytes_stream();
                         let mut buf = String::new();
-                        while let Some(Ok(bytes)) = body.next().await {
+                        loop {
+                            let chunk = tokio::select! {
+                                c = body.next() => c,
+                                _ = tx.closed() => return,
+                            };
+                            let Some(Ok(bytes)) = chunk else { break };
                             buf.push_str(&String::from_utf8_lossy(&bytes));
                             while let Some(i) = buf.find("\n\n") {
                                 let event: String = buf.drain(..i + 2).collect();
                                 for line in event.lines() {
                                     if let Some(d) = line.strip_prefix("data:") {
                                         let v = serde_json::from_str(d.trim()).unwrap_or(Value::Null);
-                                        if tx.unbounded_send(v).is_err() {
+                                        if tx.send(v).is_err() {
                                             return;
                                         }
                                     }
@@ -269,12 +280,14 @@ impl Transport for HttpTransport {
                             }
                         }
                     }
-                    _ => {}
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = tx.closed() => return,
+                }
             }
         });
-        rx.boxed()
+        futures::stream::poll_fn(move |cx| rx.poll_recv(cx)).boxed()
     }
 }
 

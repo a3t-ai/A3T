@@ -18,6 +18,7 @@ flowr-expr = { path = "../flowr-expr" }
 tokio = { version = "1", features = ["sync", "time"] }
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
+futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

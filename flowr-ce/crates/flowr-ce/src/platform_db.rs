@@ -37,6 +37,29 @@ pub trait PlatformDb: Send + Sync {
     /// Make `rows` (fields → strings) the whole table, with `columns` — one step,
     /// creating the table if needed (copying across backends, [`switch`]).
     async fn replace_table(&self, table: &str, columns: &[String], rows: &[Value]) -> Result<(), String>;
+    /// Insert `records`, replacing the rows whose `key` columns match (CA-8). ADB does
+    /// it in one write (`TableUpsert`); the default is a delete per record, then an insert.
+    async fn upsert(&self, table: &str, key: &[&str], records: &[Value]) -> Result<usize, String> {
+        for r in records {
+            self.delete(table, &key_filter(key, r)).await?;
+        }
+        self.insert(table, records).await
+    }
+}
+
+/// `col = 'value' AND …` for the key columns of `row` (values as text, quotes doubled).
+pub fn key_filter(key: &[&str], row: &Value) -> String {
+    key.iter()
+        .map(|c| {
+            let v = match row.get(*c) {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Null) | None => String::new(),
+                Some(other) => other.to_string(),
+            };
+            format!("{c} = '{}'", v.replace('\'', "''"))
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
 }
 
 /// The resource that names A3T's platform database, and its default path.
@@ -333,6 +356,11 @@ pub struct AdbPlatform {
     ep: crate::handlers::call_adb::AdbEndpoint,
 }
 
+/// Set once an ADB answered that it has no `upsert` action (an older ADB): the default
+/// delete-then-insert is used from then on.
+#[cfg(feature = "adb-platform")]
+static ADB_HAS_NO_UPSERT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(feature = "adb-platform")]
 #[async_trait]
 impl PlatformDb for AdbPlatform {
@@ -380,6 +408,28 @@ impl PlatformDb for AdbPlatform {
         crate::handlers::call_adb::flight_action(&self.ep, "delete", &json!({ "table": table, "filter": flowr_storage::filter::compat(filter) }))
             .await
             .map(|_| ())
+    }
+
+    async fn upsert(&self, table: &str, key: &[&str], records: &[Value]) -> Result<usize, String> {
+        use std::sync::atomic::Ordering;
+        if records.is_empty() {
+            return Ok(0);
+        }
+        if !ADB_HAS_NO_UPSERT.load(Ordering::Relaxed) {
+            let rows: Vec<Value> = records.iter().map(|r| Value::Object(text_row(r, None))).collect();
+            match crate::handlers::call_adb::flight_action(&self.ep, "upsert", &json!({ "table": table, "key": key, "rows": rows })).await {
+                Ok(r) => return Ok(r.get("upserted").and_then(|n| n.as_u64()).unwrap_or(records.len() as u64) as usize),
+                Err(e) if e.contains("unknown action upsert") => {
+                    warn!("platform db: this ADB has no upsert; writing a delete then an insert");
+                    ADB_HAS_NO_UPSERT.store(true, Ordering::Relaxed);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        for r in records {
+            self.delete(table, &key_filter(key, r)).await?;
+        }
+        self.insert(table, records).await
     }
 
     async fn replace_table(&self, table: &str, columns: &[String], rows: &[Value]) -> Result<(), String> {
@@ -463,6 +513,16 @@ impl PlatformDb for EmbeddedAdbPlatform {
         }
         let rows: Vec<Map<String, Value>> = records.iter().map(|r| text_row(r, None)).collect();
         self.write(adb_core::log::Effect::TableInsert { table: table.to_string(), rows }).await?;
+        Ok(records.len())
+    }
+
+    async fn upsert(&self, table: &str, key: &[&str], records: &[Value]) -> Result<usize, String> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let rows: Vec<Map<String, Value>> = records.iter().map(|r| text_row(r, None)).collect();
+        let key = key.iter().map(|k| k.to_string()).collect();
+        self.write(adb_core::log::Effect::TableUpsert { table: table.to_string(), key, rows }).await?;
         Ok(records.len())
     }
 

@@ -868,7 +868,7 @@ impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
                     }
                     await_outcome(storage_clone.as_ref(), engine.as_ref(), instance_id).await
                 }
-                None => execute_workflow(storage_clone.clone(), &reqwest::Client::new(), request).await,
+                None => execute_workflow(storage_clone.clone(), &swf_runtime::handlers::call_http::shared_client(), request).await,
             };
             match &result {
                 Ok(state) => info!(workflow = %n, instance_id = %instance_id, status = ?state.status, "Trigger workflow completed"),
@@ -2480,6 +2480,7 @@ async fn run_worker(storage: Arc<dyn StorageBackend>) {
             engine_remote::spawn_gateway(engine.clone());
             flowr_storage::engine::set_pool_router(router::route);
         }
+        install_inline_runner(storage.clone());
         return engine_worker::run(storage, engine, engine_worker::worker_pools()).await;
     }
 
@@ -2503,7 +2504,7 @@ async fn run_worker(storage: Arc<dyn StorageBackend>) {
         match storage.queue().dequeue(std::time::Duration::from_millis(100)).await {
             Ok(Some(request)) => {
                 let storage_clone = storage.clone();
-                let http_client = reqwest::Client::new();
+                let http_client = swf_runtime::handlers::call_http::shared_client();
 
                 info!(
                     instance_id = %request.instance_id,
@@ -2587,6 +2588,27 @@ pub async fn execute_workflow(
     request: flowr_types::ExecutionRequest,
 ) -> anyhow::Result<ExecutionState> {
     run_request(storage, request, true, None).await
+}
+
+/// CA-33: `execute_flow` runs a transient flow here when the router would place it
+/// on a pool this process claims; otherwise the call goes through the queue.
+fn install_inline_runner(storage: Arc<dyn StorageBackend>) {
+    flowr_mcp_core::tools::set_inline_runner(Arc::new(move |req: flowr_types::ExecutionRequest| {
+        let storage = storage.clone();
+        Box::pin(async move {
+            let pool = router::route(&req.namespace, &req.name);
+            if !engine_worker::worker_pools().contains(&pool) {
+                return None;
+            }
+            Some(match run_request(storage, req, false, None).await {
+                Ok(state) => match state.status {
+                    flowr_types::ExecutionStatus::Completed => Ok(state.output.unwrap_or(serde_json::Value::Null)),
+                    _ => Err(state.error.unwrap_or_else(|| "failed".into())),
+                },
+                Err(e) => Err(e.to_string()),
+            })
+        })
+    }));
 }
 
 /// Run one request. With `persist`, the execution record is written at start

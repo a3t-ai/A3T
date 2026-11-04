@@ -13,10 +13,19 @@ pub struct HttpHandler {
     client: reqwest::Client,
 }
 
+/// One HTTP client for the whole process, shared by every handler that calls out
+/// (HTTP, MCP, LLM, agents). Building a `reqwest::Client` loads the TLS roots
+/// (tens of ms) and starts an empty connection pool, and each run used to build
+/// several; a clone of this one is an `Arc` copy and keeps connections warm.
+pub fn shared_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new).clone()
+}
+
 impl HttpHandler {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: shared_client(),
         }
     }
 

@@ -346,7 +346,9 @@ fn declared_ephemeral(record: &flowr_types::WorkflowRecord) -> bool {
         .parse()
         .ok()
         .and_then(|d| d.metadata)
-        .and_then(|m| m.pointer("/a3t/durability").and_then(|v| v.as_str()).map(|s| s == "ephemeral"))
+        // A transient flow (CA-33) that reached the queue (not runnable inline where it
+        // was called) runs as ephemeral: no journal either.
+        .and_then(|m| m.pointer("/a3t/durability").and_then(|v| v.as_str()).map(|s| s == "ephemeral" || s == "transient"))
         .unwrap_or(false)
 }
 

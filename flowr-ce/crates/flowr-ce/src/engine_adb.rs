@@ -124,7 +124,10 @@ impl Transport for FlightTransport {
         let mut wait = Duration::from_millis(200);
         for attempt in 0..5 {
             let action = arrow_flight::Action { r#type: "engine".into(), body: body.clone().into() };
-            match self.client().do_action(self.request(action)).await {
+            // A call on a connection that broke must fail and be retried, not hang.
+            let mut req = self.request(action);
+            req.set_timeout(Duration::from_secs(30));
+            match self.client().do_action(req).await {
                 Ok(r) => {
                     let mut s = r.into_inner();
                     let answer = s.next().await.ok_or_else(|| StoreError::Backend(format!("ADB {op}: no answer")))?;
@@ -135,7 +138,10 @@ impl Transport for FlightTransport {
                 Err(e) if matches!(e.code(), tonic::Code::Unauthenticated | tonic::Code::PermissionDenied) => {
                     return Err(StoreError::Backend(format!("ADB at {} refused the engine token: {}", self.url, e.message())));
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown) && attempt < 4 => {
+                // Cancelled: the HTTP/2 connection went away under the call (an ADB
+                // restart or failover); the call did not reach ADB or is retried under
+                // the same arguments, which the engine core treats idempotently.
+                Err(e) if matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded) && attempt < 4 => {
                     tokio::time::sleep(wait).await;
                     wait *= 2;
                 }
@@ -146,8 +152,12 @@ impl Transport for FlightTransport {
     }
 
     /// Notices from ADB, reconnecting until the receiver is dropped (best effort).
+    ///
+    /// The stream to ADB is dropped as soon as the receiver is: a run's topic gets no
+    /// more notices once it ends, and a stream kept open waiting for one leaked an
+    /// HTTP/2 stream per run on the shared connection until new calls stalled.
     fn subscribe(&self, topic: &str) -> BoxStream<'static, Value> {
-        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let body = json!({ "space": self.space, "topic": topic }).to_string();
         let (channel, bearer) = (self.channel.clone(), self.bearer.clone());
         tokio::spawn(async move {
@@ -157,18 +167,34 @@ impl Transport for FlightTransport {
                 if let Some(b) = &bearer {
                     req.metadata_mut().insert("authorization", b.clone());
                 }
-                if let Ok(r) = client.do_action(req).await {
+                let opened = tokio::select! {
+                    r = client.do_action(req) => r,
+                    _ = tx.closed() => return,
+                };
+                if let Ok(r) = opened {
                     let mut s = r.into_inner();
-                    while let Some(Ok(n)) = s.next().await {
-                        if tx.unbounded_send(serde_json::from_slice(&n.body).unwrap_or(Value::Null)).is_err() {
-                            return;
+                    loop {
+                        tokio::select! {
+                            n = s.next() => match n {
+                                Some(Ok(n)) => {
+                                    if tx.send(serde_json::from_slice(&n.body).unwrap_or(Value::Null)).is_err() {
+                                        return;
+                                    }
+                                }
+                                _ => break,
+                            },
+                            // The receiver is gone: drop the stream (resets it on the connection).
+                            _ = tx.closed() => return,
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = tx.closed() => return,
+                }
             }
         });
-        rx.boxed()
+        futures::stream::poll_fn(move |cx| rx.poll_recv(cx)).boxed()
     }
 }
 

@@ -553,8 +553,10 @@ impl SharedState {
             .map(|d| (now_t + d).to_rfc3339())
             .unwrap_or_default();
         let value = serde_json::to_string(&value).map_err(|e| FlowError::Storage(format!("Failed to serialize value: {e}")))?;
-        self.db.delete(STATE, &Self::key_filter(key)).await.map_err(storage_err)?;
-        insert(&*self.db, STATE, json!({ "key": key, "value": value, "expires_at": expires, "created_at": now_t.to_rfc3339() })).await
+        // One write (CA-8): no moment where a reader finds the key missing, and two
+        // replicas setting it cannot leave two rows.
+        let row = json!({ "key": key, "value": value, "expires_at": expires, "created_at": now_t.to_rfc3339() });
+        self.db.upsert(STATE, &["key"], &[row]).await.map(|_| ()).map_err(storage_err)
     }
 
     async fn delete(&self, key: &str) -> FlowResult<bool> {

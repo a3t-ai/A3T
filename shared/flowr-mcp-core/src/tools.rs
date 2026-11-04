@@ -2078,6 +2078,31 @@ async fn delete_flow(storage: &dyn StorageBackend, args: &Value) -> CallToolResu
 // Execution Tools
 // ============================================================================
 
+
+/// Runs a transient flow in this process (CA-33), installed by the server: `None`
+/// when the flow does not belong on this process (the call then goes through the
+/// queue), else the run's output or error.
+pub type InlineRunner = std::sync::Arc<
+    dyn Fn(ExecutionRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Result<Value, String>>> + Send>> + Send + Sync,
+>;
+
+static INLINE_RUNNER: std::sync::OnceLock<InlineRunner> = std::sync::OnceLock::new();
+
+/// Install the inline runner for transient flows (once, at server start).
+pub fn set_inline_runner(runner: InlineRunner) {
+    let _ = INLINE_RUNNER.set(runner);
+}
+
+/// `metadata.a3t.durability: transient` on the flow's document.
+pub fn declares_transient(record: &flowr_types::WorkflowRecord) -> bool {
+    record
+        .parse()
+        .ok()
+        .and_then(|d| d.metadata)
+        .and_then(|m| m.pointer("/a3t/durability").and_then(|v| v.as_str()).map(|s| s == "transient"))
+        .unwrap_or(false)
+}
+
 async fn execute_flow(
     storage: &dyn StorageBackend,
     principal: &flowr_policy::Principal,
@@ -2091,9 +2116,10 @@ async fn execute_flow(
     let input = args.get("input").cloned().unwrap_or(json!({}));
 
     // Verify workflow exists
-    if let Err(e) = storage.workflows().get(namespace, name).await {
-        return CallToolResult::error(format!("Workflow not found: {}", e));
-    }
+    let record = match storage.workflows().get(namespace, name).await {
+        Ok(r) => r,
+        Err(e) => return CallToolResult::error(format!("Workflow not found: {}", e)),
+    };
 
     // Keystone: the enqueued flow inherits the caller's identity, so the worker
     // runs its root `ExecutionContext` as this principal (not the service default)
@@ -2103,6 +2129,34 @@ async fn execute_flow(
         .with_input(input)
         .with_principal(principal.clone());
     let instance_id = request.instance_id;
+
+    // CA-33: a transient flow (`metadata.a3t.durability: transient`, a read or an API
+    // call) runs here, in this process, when it would be placed on a pool this process
+    // serves: no queue entry, no claim, no journal, no release. A crash fails the call;
+    // the caller retries, as with any API call.
+    if declares_transient(&record) {
+        if let Some(runner) = INLINE_RUNNER.get() {
+            if let Some(outcome) = runner(request.clone()).await {
+                return match outcome {
+                    Ok(output) => {
+                        let pretty = serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
+                        CallToolResult::text(format!(
+                            "Workflow execution completed.\n\n- Instance ID: `{}`\n- Workflow: {}/{}\n- Status: completed (transient)\n\nOutput:\n{}",
+                            instance_id, namespace, name, pretty
+                        ))
+                    }
+                    Err(e) => CallToolResult::error(format!(
+                        "Workflow execution failed.\n\n- Instance ID: `{}`\n- Workflow: {}/{}\n- Error: {}",
+                        instance_id, namespace, name, e
+                    )),
+                };
+            }
+        }
+    }
+    // Woken when the run finishes (its `run:<id>` notice), instead of polling on a
+    // backoff that reported a run done at 100 ms only at 175 ms. Subscribed before
+    // the start, so the notice cannot be missed.
+    let mut finished = storage.engine().map(|e| e.subscribe(&flowr_storage::engine::run_topic(instance_id)));
 
     // Enqueue execution request
     if let Err(e) = storage.queue().enqueue(request).await {
@@ -2156,8 +2210,17 @@ async fn execute_flow(
                 wait_secs, instance_id, namespace, name
             ));
         }
-        tokio::time::sleep(delay).await;
-        delay = std::cmp::min(delay * 2, std::time::Duration::from_millis(250));
+        match finished.as_mut() {
+            // A notice (phase change, request) or, at the latest, a check every 250 ms.
+            Some(notices) => {
+                use futures::StreamExt;
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(250), notices.next()).await;
+            }
+            None => {
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(delay * 2, std::time::Duration::from_millis(250));
+            }
+        }
     }
 }
 
