@@ -17,7 +17,7 @@ document:
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
   a3t:
-    durability: ephemeral
+    durability: transient
 do:
 - whoami:
     set:

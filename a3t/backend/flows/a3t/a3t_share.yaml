@@ -16,7 +16,7 @@ document:
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
   a3t:
-    durability: ephemeral
+    durability: transient
 do:
 # A refusal (no read on the source, no write on the target) fails the run with
 # the reason, which the caller sees.
