@@ -55,6 +55,39 @@ layers; memory crossing partitions (one partition today, ADB S1); external gatew
 | One place every outbound call passes | The gateway pool (cluster design §10): runtimes send `call:http` / `call:mcp` / `call:llm` there; it decides (placeholder) and records. |
 | Replay | Re-run from a checkpoint (L19); the journal holds each step's input and output. |
 
+## 2.3 Revision, 4 Nov 2026 (user) — supersedes §3.2–3.8 placement and §3.8 promote
+
+**A branch is isolated from the production agent.** The first build put branch rows in
+the org's table, through the org's sequencer: test and dev traffic still loaded
+production ADB. Instead each branch has **its own log, its own sequencer and its own
+small delta table** (a separate ADB engine). No Iggy: the branch log is ADB's own WAL.
+
+| | Log | Sequencer | Storage | Compute |
+|---|---|---|---|---|
+| main (every agent in the org) | the org partition's WAL (Raft) | the org's | the org's Lance table | shared ADB nodes |
+| branch | its own WAL, from the branch point | its own | its own delta table + the parent read `AS OF` the point | **either** hosted in the main ADB nodes (an engine beside the org's) **or** its own pod (a hibernating Sandbox); same code |
+| new agent (promote) | the org's WAL | the org's | rows in the org table, new namespace | shared ADB nodes |
+
+- The org sees only a branch's **control records** (created at point X, dropped) and
+  answers **reads `AS OF` the point** for its parent rows; it gets no branch writes, no
+  branch rows and no branch compaction.
+- Reads on a branch: the overlay of §3.3 (nearest level wins per lineage), with the
+  branch's rows from its delta table and the parent's from the org table `AS OF t_B`.
+- **Merge = promote as a new agent** (user, 4 Nov): there is no merge into the parent's
+  memory. Promote materialises the branch's view into a **new agent space in production**
+  (a new namespace, written through the org's sequencer in batched records) together
+  with the branch's flow versions as the new agent's; the original agent is untouched
+  and traffic moves by deployment. *(default)* memory carried: SEMANTIC, PROCEDURAL,
+  TOOLS of the branch view; EPISODIC history stays with the original agent; WORKING
+  never. The §3.8 "apply overrides to the parent" and semantic merge are dropped.
+- **Fork / clone** is the same materialisation without a branch (a space at a point into
+  a new space), so branch and clone are different operations with different costs:
+  a branch is cheap and depends on the org's retention pins; a clone is a copy and
+  depends on nothing.
+- Retention pins (§3.6) stay at the org. FORGET on main reaches branches: the org logs
+  the erasure, a branch engine applies it to its delta table (and drops the parent row
+  from its view) before serving, also when it wakes from hibernation.
+
 ## 3. ADB: branching
 
 ### 3.1 Memory space
