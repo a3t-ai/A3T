@@ -21,7 +21,7 @@
     /// place so a revision refreshes this pane instead of requiring the user to
     /// open a second card — unless they have unsaved edits, which are never
     /// silently discarded.
-    revision?: { text: string; seq: number } | null;
+    revision?: { text: string; seq: number; edit?: string } | null;
     onclose?: () => void;
     onapplied?: (summary: string) => void;
     onsection?: (section: string) => void;
@@ -42,6 +42,10 @@
   let baseText = $state(artifact.text);
   let appliedSeq = $state(0);
   let offered = $state<{ text: string; seq: number } | null>(null);
+  /// An edit the agent made to the buffer (`propose_edit`): applied straight to
+  /// the editor, unsaved, with the user's previous text kept for Undo.
+  let agentEdit = $state<{ summary: string; before: string } | null>(null);
+  let mount = $state(0);
   const dirty = $derived(text !== baseText);
   let status = $state<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
@@ -99,7 +103,7 @@
     if (key === loadedKey) return;
     loadedKey = key;
     text = artifact.text; baseText = artifact.text;
-    offered = null; confirmedOverwrite = false; status = null;
+    offered = null; agentEdit = null; confirmedOverwrite = false; status = null;
     // JSON artifacts open on their form; flows on the graph.
     jsonView = 'form';
     if (artifact.kind === 'agent') { specFetched = true; loadAgentSpec(artifact.text); }
@@ -123,6 +127,13 @@
       if (rev.seq === appliedSeq) return;
       appliedSeq = rev.seq;
       if (rev.text === text) return;
+      if (rev.edit !== undefined) {
+        // The agent edited what is on screen, starting from this very buffer
+        // (it was sent with the turn), so apply it — but leave it unsaved.
+        agentEdit = { summary: rev.edit, before: text };
+        text = rev.text; offered = null; status = null;
+        return;
+      }
       if (dirty) {
         // Editing in the pane wins until the user chooses; losing typed work to a
         // background refresh would be worse than a stale view.
@@ -133,6 +144,11 @@
       }
     });
   });
+
+  function undoAgentEdit() {
+    if (!agentEdit) return;
+    text = agentEdit.before; agentEdit = null; mount += 1;
+  }
 
   function takeRevision() {
     if (!offered) return;
@@ -201,7 +217,7 @@
     saving = false;
     if (res.ok) {
       status = { kind: 'ok', text: 'Saved' };
-      baseText = text;
+      baseText = text; agentEdit = null;
       onapplied?.(spec.draft
         ? `I reviewed and saved the draft as ${artifact.namespace}/${artifact.name}. It is now in the registry.`
         : `I updated the ${spec.label} ${artifact.namespace}/${artifact.name} in the editor. Re-read it before making further changes.`);
@@ -236,6 +252,13 @@
          go to the agent, so the same gates and approvals apply. -->
     <CanvasDeployBar namespace={artifact.namespace} name={artifact.name} {text} onrequest={(m) => onapplied?.(m)} />
   {/if}
+  {#if agentEdit}
+    <div class="pane-revision">
+      <span>The agent changed the editor{agentEdit.summary ? `: ${agentEdit.summary}` : ''}. Not saved — review it, then Save.</span>
+      <button class="pbtn" onclick={undoAgentEdit}>Undo</button>
+      <button class="pbtn" onclick={() => (agentEdit = null)}>Keep</button>
+    </div>
+  {/if}
   {#if offered}
     <div class="pane-revision">
       The agent revised this while you were editing.
@@ -245,7 +268,7 @@
   {/if}
   {#if status}<div class="pane-status {status.kind}">{status.text}</div>{/if}
   <div class="pane-editor">
-    {#key `${artifact.kind}:${artifact.namespace}/${artifact.name}:${appliedSeq}`}
+    {#key `${artifact.kind}:${artifact.namespace}/${artifact.name}:${appliedSeq}:${mount}`}
       {#if artifact.kind === 'canvas'}
         <!-- A canvas gets the canvas designer: Script and Form views, with a live
              placement preview. Shared presets open READ-ONLY — they are reused by

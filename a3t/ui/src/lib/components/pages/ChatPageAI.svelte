@@ -145,7 +145,7 @@
   /// Newest streamed version of whatever the pane has open. A revised draft
   /// should refresh the open pane rather than appear only as another card the
   /// user has to click.
-  let openRevision = $state<{ text: string; seq: number } | null>(null);
+  let openRevision = $state<{ text: string; seq: number; edit?: string } | null>(null);
   /// The live editor buffer for the open artifact, including edits the user has
   /// not saved. Sent with the next turn so the agent reasons about what is on
   /// screen rather than the registry copy, which may now be stale.
@@ -176,6 +176,32 @@
       }
     }
   });
+  /// Edits the agent proposed to the open document (`propose_edit` → a
+  /// `data-edit_draft` part). Each is applied to the pane once, and only if it
+  /// arrived while the pane was open: the parts already in a restored
+  /// transcript are marked seen on the first pass so reopening a document
+  /// never replays an old edit over it.
+  const seenEdits = new Set<string>();
+  let editsPrimed = false;
+  $effect(() => {
+    const msgs = chat.messages as any[];
+    const open = openArtifact;
+    let latest: { key: string; raw: string; summary: string } | null = null;
+    for (const m of msgs) {
+      if (m?.role !== 'assistant') continue;
+      (m.parts ?? []).forEach((p: any, j: number) => {
+        if (p?.type !== 'data-edit_draft' || !p.data?.raw) return;
+        const key = `${m.id}:${j}`;
+        if (seenEdits.has(key)) return;
+        seenEdits.add(key);
+        latest = { key, raw: String(p.data.raw), summary: String(p.data.summary ?? '') };
+      });
+    }
+    if (!editsPrimed) { editsPrimed = true; return; }
+    const l = latest as { key: string; raw: string; summary: string } | null;
+    if (l && open) untrack(() => { openRevision = { text: l.raw, seq: ++revisionSeq, edit: l.summary }; });
+  });
+
   let messagesEl = $state<HTMLDivElement>();
   let agents = $state<{ id: string; name: string; llm: string; target: string; ep_path: string; system_default: boolean; enabled_tools?: string[]; mcp_servers?: string[] }[]>([]);
   let selectedAgent = $state<string>(loadLS<string>(LS_AGENT, ''));
@@ -260,7 +286,12 @@
             // opposite of what removing a tool should do. Absent and empty are
             // different: absent is "never configured", empty is "configured down
             // to nothing".
-            ...(Array.isArray(a?.enabled_tools) ? { enabled_tools: a.enabled_tools } : {}),
+            // With a document open, the agent may also propose an edit to it —
+            // propose_edit stores nothing (the pane applies it, unsaved), so it
+            // widens nothing. Only added to an explicit list: absent stays absent.
+            ...(Array.isArray(a?.enabled_tools)
+              ? { enabled_tools: openArtifact && !a.enabled_tools.includes('propose_edit') ? [...a.enabled_tools, 'propose_edit'] : a.enabled_tools }
+              : {}),
             // The agent's MCP servers (Configuration tab), so the engine discovers and
             // can call their tools; without them the chat wrapper falls back to FlowR's.
             ...(a?.mcp_servers?.length ? { mcp_servers: a.mcp_servers } : {}),
@@ -560,6 +591,7 @@
       if (!alive) return;
       try {
         pendingApprovals = await listPendingApprovals();
+        if (!pendingApprovals.length) approvalNudge = false;
       } catch { /* transient — the next tick retries */ }
     };
     tick();
@@ -664,10 +696,18 @@
     };
   });
 
+  /// A run paused on a permission question is still this conversation's turn.
+  /// Sending now starts a second run beside it; when the first resumes, its tool
+  /// results land in the new reply, which never saw those calls ("No tool
+  /// invocation found for tool call ID"). So the composer waits for the answer.
+  const awaitingApproval = $derived(pendingApprovals.length > 0);
+  let approvalNudge = $state(false);
+
   function sendMessage() {
     const text = inputValue.trim();
     // An attachment on its own is a legitimate message.
     if ((!text && attachments.length === 0) || busy) return;
+    if (awaitingApproval) { approvalNudge = true; return; }
     inputValue = '';
     if (!sessionId) {
       // Landing state: mint the conversation now. Navigating remounts this page
@@ -988,14 +1028,19 @@
           </div>
 
           <span class="bar-spacer"></span>
-          <span class="chat-input-hint">Enter to send · Shift+Enter for new line</span>
+          {#if awaitingApproval}
+            <span class="chat-input-hint" class:nudge={approvalNudge}>The agent is waiting on a permission question — answer it to continue</span>
+          {:else}
+            <span class="chat-input-hint">Enter to send · Shift+Enter for new line</span>
+          {/if}
 
           {#if busy}
             <button class="send-btn" onclick={() => chat.stop()} title="Stop generating" aria-label="Stop generating">
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
             </button>
           {:else}
-            <button class="send-btn" onclick={sendMessage} disabled={!inputValue.trim()} aria-label="Send">
+            <button class="send-btn" onclick={sendMessage} disabled={!inputValue.trim() || awaitingApproval}
+                    title={awaitingApproval ? 'Answer the permission question first' : 'Send'} aria-label="Send">
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2L7 9M14 2l-5 12-2-5-5-2z"/></svg>
             </button>
           {/if}
@@ -1043,6 +1088,7 @@
 
 <style>
   .tool-note { opacity: 0.75; font-style: italic; }
+  .chat-input-hint.nudge { color: var(--warn, #b26b00); }
 
   /* Collapsed execution log — the streamed working notes, kept after the run. */
   .exec-log {
