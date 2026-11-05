@@ -126,9 +126,11 @@ fn adb_refusal(e: &str) -> Response {
     let (code, msg) = crate::handlers::call_adb::adb_code(e);
     let msg = msg.trim_start_matches("ADB: ").to_string();
     let status = match code.as_deref() {
-        Some("not_found" | "branch_not_found" | "tag_not_found") => StatusCode::NOT_FOUND,
+        Some("not_found" | "branch_not_found" | "tag_not_found" | "merge_not_found") => StatusCode::NOT_FOUND,
         Some("branch_exists" | "tag_exists" | "key_exists" | "key_on_branch" | "target_not_empty"
-            | "branch_has_children" | "tag_pinned" | "merged_record") => StatusCode::CONFLICT,
+            | "branch_has_children" | "tag_pinned" | "merged_record"
+            // Merges (DB-10, DB-19, DB-11; ADB .ai/MERGE.md): the answer lists what to resolve.
+            | "merge_conflicts" | "merge_stale" | "revert_conflicts") => StatusCode::CONFLICT,
         Some("forbidden" | "sealed_key") => StatusCode::FORBIDDEN,
         Some("unauthorized" | "internal" | "wrong_engine" | "durable_required") => StatusCode::BAD_GATEWAY,
         Some("timeout") => StatusCode::GATEWAY_TIMEOUT,
