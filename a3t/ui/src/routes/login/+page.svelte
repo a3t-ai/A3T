@@ -19,7 +19,7 @@
       if (!r) return;
       showForm = true;
       if (r.error || !r.identity) { formError = r.error ?? 'Sign-in failed.'; return; }
-      await fileRequest(r.identity);
+      await fromProvider(r.identity);
     })();
     return unsub;
   });
@@ -43,7 +43,10 @@
   const EARLY_ACCESS_HOOK = '/webhook/a3t/early-access';
   let showForm = $state(false);
   let submitting = $state(false);
-  let submitted = $state<Identity | null>(null);
+  type Request = { name: string; email: string; company: string; use_case: string; provider?: Provider; verified?: boolean };
+  let submitted = $state<Request | null>(null);
+  // `website` is a honeypot: hidden from people, filled in by form-filling bots.
+  let form = $state({ name: '', email: '', company: '', use_case: '', website: '' });
   let formError = $state('');
   let leaving = $state<Provider | null>(null);
 
@@ -56,18 +59,33 @@
     catch { leaving = null; formError = `Could not start signing in with ${PROVIDER_LABEL[p]}.`; }
   }
 
-  /// The provider vouched for the name and email; that is the request.
-  async function fileRequest(who: Identity) {
+  /// Back from a provider: it vouched for the name and email.
+  function fromProvider(who: Identity) {
+    return fileRequest({
+      name: who.name, email: who.email, company: '',
+      use_case: `Signed in with ${PROVIDER_LABEL[who.provider]}${who.verified ? '' : ' (email not verified)'}`,
+      provider: who.provider, verified: who.verified,
+    });
+  }
+
+  /// Or typed in by hand.
+  async function submitForm(e: Event) {
+    e.preventDefault();
+    if (form.website) { submitted = { ...form }; return; } // a bot: look accepted, send nothing
+    await fileRequest({ name: form.name.trim(), email: form.email.trim(), company: form.company.trim(), use_case: form.use_case.trim() });
+    if (submitted) form = { name: '', email: '', company: '', use_case: '', website: '' };
+  }
+
+  async function fileRequest(who: Request) {
     submitting = true; formError = '';
     try {
       const payload = {
         id: `ea-${crypto.randomUUID().slice(0, 8)}`,
         name: who.name,
         email: who.email,
-        company: '',
-        use_case: `Signed in with ${PROVIDER_LABEL[who.provider]}${who.verified ? '' : ' (email not verified)'}`,
-        provider: who.provider,
-        email_verified: who.verified,
+        company: who.company,
+        use_case: who.use_case,
+        ...(who.provider ? { provider: who.provider, email_verified: who.verified } : {}),
         created_at: new Date().toISOString(),
       };
       const res = await fetch(`${API_BASE}${EARLY_ACCESS_HOOK}`, {
@@ -136,13 +154,13 @@
         {#if submitted}
           <div class="modal-success">
             <div class="success-check">✓</div>
-            <h2>Request received</h2>
-            <p>Thanks{submitted.name ? `, ${submitted.name.split(' ')[0]}` : ''} — we'll reach out at <b>{submitted.email}</b> when a spot opens up.</p>
+            <h2>Thank you{submitted.name ? `, ${submitted.name.split(' ')[0]}` : ''}</h2>
+            <p>We've saved your request{submitted.provider ? ` (via ${PROVIDER_LABEL[submitted.provider]})` : ''}. We'll be in touch soon at <b>{submitted.email}</b> to set up your account.</p>
             <button type="button" class="auth-submit" onclick={closeForm}>Done</button>
           </div>
         {:else}
           <h2>Request Early Access</h2>
-          <p class="modal-sub">A3T is invite-only during private beta. Sign in with one of these so we know who you are — we only use your name and email.</p>
+          <p class="modal-sub">A3T is invite-only during private beta. Tell us a bit about you.</p>
           {#if formError}<div class="auth-error">{formError}</div>{/if}
           {#if submitting}
             <p class="ea-wait"><span class="spinner dark"></span> Sending your request…</p>
@@ -161,7 +179,33 @@
                 <span>{leaving === 'github' ? 'Opening GitHub…' : 'Continue with GitHub'}</span>
               </button>
             </div>
-            <p class="ea-note">This only shares your name and email with us — it doesn't create an account or give you access. We'll email you when a spot opens up.</p>
+            <p class="ea-note">Signing in only shares your name and email with us — it doesn't create an account or give you access.</p>
+
+            <div class="ea-or"><span>or fill in</span></div>
+
+            <form onsubmit={submitForm}>
+              <div class="field">
+                <label for="ea-name">Name</label>
+                <input id="ea-name" bind:value={form.name} placeholder="Jane Doe" required />
+              </div>
+              <div class="field">
+                <label for="ea-email">Work email</label>
+                <input id="ea-email" type="email" bind:value={form.email} placeholder="jane@company.com" required />
+              </div>
+              <div class="field">
+                <label for="ea-company">Company <span class="opt">(optional)</span></label>
+                <input id="ea-company" bind:value={form.company} placeholder="Acme Inc." />
+              </div>
+              <div class="field">
+                <label for="ea-use">What do you want to build? <span class="opt">(optional)</span></label>
+                <textarea id="ea-use" rows="3" bind:value={form.use_case} placeholder="Multi-agent workflows for…"></textarea>
+              </div>
+              <div class="hp" aria-hidden="true">
+                <label for="ea-website">Website</label>
+                <input id="ea-website" bind:value={form.website} tabindex="-1" autocomplete="off" />
+              </div>
+              <button type="submit" class="auth-submit">Submit request</button>
+            </form>
           {/if}
         {/if}
       </div>
@@ -402,7 +446,10 @@
   .ea-btn:hover:not(:disabled) { background: var(--bg-subtle); border-color: var(--text-4); }
   .ea-btn:disabled { opacity: 0.6; cursor: default; }
   .ea-btn svg { width: 20px; height: 20px; flex: none; }
-  .ea-note { margin-top: 18px; font-size: 12.5px; color: var(--text-3); line-height: 1.55; }
+  .ea-note { margin-top: 12px; font-size: 12px; color: var(--text-4); line-height: 1.5; }
+  .ea-or { display: flex; align-items: center; gap: 12px; margin: 20px 0 16px; font-size: 11.5px; color: var(--text-4); text-transform: uppercase; letter-spacing: 0.06em; }
+  .ea-or::before, .ea-or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
   .ea-wait { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-2); padding: 12px 0; }
   .modal-success { text-align: center; padding: 12px 0 4px; }
   .success-check {
