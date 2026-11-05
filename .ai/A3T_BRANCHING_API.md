@@ -2,7 +2,8 @@
 
 5 Nov 2026. For whoever builds the console and Studio screens for branch, fork, merge
 (promote), tags, layers and agents. Design: `.ai/A3T_AGENTS_AS_REPOS_SPEC.md`; ADB
-build notes: `ADB/.ai/BRANCHING.md`.
+build notes: `ADB/.ai/BRANCHING.md`. §9 gives the user flows per persona, §10 what good
+looks like, §11 the APIs those flows still need (BR-n).
 
 ## 1. Overview
 
@@ -270,3 +271,139 @@ Status, 5 Nov 2026:
 Limits: no branch of a pod branch; a hosted branch can't move into a pod; FOLLOW LINKS,
 history and PATTERN reads don't see layers; AQL `MERGE` (entity merge) can't reach
 records in a namespace.
+
+## 9. UX: user flows per persona
+
+The console has four personas (`.ai/A3T_UI_LIMITATIONS.md`, 3 Nov): the learner or agent
+owner, the developer, the security reviewer, and the SRE. They share the same screens and
+differ only in where they start. Branching adds no persona-specific screens. It adds one
+control to the agent hub, a few dialogs, and a branch scope that every existing tab
+honours.
+
+### 9.1 Screens
+
+| # | Screen | What it shows |
+|---|---|---|
+| S1 | **Branch switcher** in the agent header: `main ▾` | Branches of the agent, newest first; "New branch…"; "Compare with main" |
+| S2 | **Branch scope** on every agent tab (Overview, Activity, Memory, Chat, Health) | A coloured banner: "Branch `try-new-recall` · cut 2 h ago from main · isolated: nothing reaches production, outbound calls blocked". The URL carries `?branch=` so a link opens the same view |
+| S3 | **Agent → Versions** tab: Branches · Tags · Layers | One list per kind, with owner, age, size and placement (hosted / own pod / hibernating); row actions |
+| S4 | **Compare** (branch vs main) | Memory diff by type (added, changed, forgotten), main's changes since the branch point on the same keys, and the flow diff once flows branch too |
+| S5 | **Promote dialog** | New agent name, what is carried (SEMANTIC, PROCEDURAL, TOOLS) and what stays behind (EPISODIC, WORKING, links), then progress and a link to the new agent and its Deploy tab |
+| S6 | **Fork dialog** (agent ⋯ menu → "Fork agent") | New name, a "copies N records now" estimate, what is not copied |
+| S7 | **Inherited memory** on Controls | Layers this agent reads (mount / pin@tag, sealed, memory types) and, on a layer space, the agents that read it |
+| S8 | **Lineage** on Overview | "Forked from X on 5 Nov", "Promoted from X / try-new-recall", "Template crawl v3, upgrade v4 available", "Inherits compliance@v1 (sealed)" |
+
+### 9.2 Learner or agent owner: try a change safely
+
+Starts from chat home ("Try a change without touching production") or the agent's S1.
+
+| Step | What the user does and sees | API | Status |
+|---|---|---|---|
+| 1 | Opens S1 → "New branch…". The name is suggested (`try-5nov`) and checked as they type; parent is `main` | `POST /agents/{id}/branches` | planned (§6) |
+| 2 | Lands on the agent in branch scope (S2). The banner says what isolation means in one line | branch object | planned |
+| 3 | Chats with the agent on the branch | chat / run with `memory_branch` | **BR-4** |
+| 4 | Memory tab shows only what the branch learned ("+12 facts, 2 changed, 1 forgotten") and lets them toggle "branch only / everything the branch sees" | memory read on a branch | **BR-14** (UI-1 + branch) |
+| 5 | Compare (S4): plain language first ("The branch knows 12 new things and changed 2"), detail on demand | branch diff | **BR-2** |
+| 6a | Keeps it: Promote (S5) → new agent → Deploy tab to move traffic | `POST …/promote` | planned; **BR-5**, **BR-7** |
+| 6b | Throws it away: "Discard branch", one confirm, says what is deleted | `DELETE …/branches/{name}` | planned |
+| — | Forks someone's agent to own a copy (S6) | `POST /agents/{id}/fork` | planned |
+
+### 9.3 Developer: branch, run, diff, promote (Studio)
+
+Starts from Agent → Code ("Open in Studio") or the CLI (`a3t agent branch …`).
+
+| Step | What the user does and sees | API | Status |
+|---|---|---|---|
+| 1 | Studio Versions panel lists branches beside flow versions; "Branch from here" on any version or tag | `branch_list`, `tag_list` | planned |
+| 2 | Runs and debugs with a run target selector `memory: main ▾ / try-new-recall`; steps that would call out show "blocked on branch" or "mocked" | run with `memory_branch`; side-effect classes | **BR-4**, **BR-6** |
+| 3 | Edits flows on the branch: draft flow versions held under the branch | flow branch (registry versions) | **BR-6** |
+| 4 | Split-view diff: flows on the left, procedures and tools on the right, conflicts flagged ("main changed `check_trade` since your branch point") | branch diff with parent changes | **BR-2** |
+| 5 | Rebase when main moved: "Main has 40 changes since your branch point; 3 touch keys you changed" → Rebase | rebase | **BR-9** |
+| 6 | Promote → new agent → canvas Deploy; the old agent keeps serving until traffic moves | promote + create agent | planned; **BR-5** |
+| 7 | Tags the release (`v2`) so its memory point is kept for audit and rollback | `POST /agents/{id}/tags` | planned |
+| 8 | Drops merged or stale branches; the list nudges branches untouched for 14 days | `branch_drop`; last activity | planned; **BR-3** |
+
+### 9.4 Security reviewer or layer owner: inherit and govern
+
+Starts from chat home ("Review security") or agent → Controls.
+
+| Step | What the user does and sees | API | Status |
+|---|---|---|---|
+| 1 | Builds a shared space (a compliance agent), tags it `v1` | `tag_create` | planned |
+| 2 | On each consuming agent, Controls → Inherited memory (S7) → "Add layer": pick the agent, mount or pin@tag, memory types, sealed | `PUT /agents/{id}/layers` | planned |
+| 3 | On the layer agent, sees who reads it and at which tag before changing anything | reverse layer lookup | **BR-10** |
+| 4 | Sees a refused write in the Decision log, readable ("tried to overwrite sealed key `limit:eu` from compliance@v1") | refusal as an audit record | **BR-13** |
+| 5 | Reviews who branched, forked or promoted which agent and what memory left with it | branch, fork and promote in the audit log | **BR-13** |
+| 6 | Sets who may branch production memory and which agents may mount which layers | Cedar `memory:*` | planned (§6); **BR-12** |
+| 7 | Rule change: tags `v2`, A3T branches each consumer with `v2`, replays, shows an impact report per agent | governance replay | **BR-15** (spec phase 5) |
+| 8 | "What did the agent know at 14:32 on 3 March": a run's memory point opens the Memory tab as of that point | memory point on runs; clone or read at a point | **BR-8**, **BR-14** |
+
+### 9.5 SRE: placement, cost, cleanup, rollback
+
+Starts from chat home ("Check health") or agent → Health and Runtimes.
+
+| Step | What the user does and sees | API | Status |
+|---|---|---|---|
+| 1 | Runtimes lists branch engines: hosted or own pod, running or hibernating, size, last activity | branch stats and runtime state | **BR-3**, **BR-16** |
+| 2 | Sees branches holding up erasure ("2 FORGETs waiting on hibernating branch") and wakes or drops them | `pending_forgets`; wake | available (field); **BR-16** |
+| 3 | Moves a heavy branch into its own pod, hibernates it, wakes it | controller | **BR-16** (controller not built) |
+| 4 | Rolls back after a promote: redeploy the original agent (untouched by promote) from the Deploy tab | deployments | available |
+| 5 | Cleans up: bulk drop of stale branches, refused while a branch has children or a tag is pinned, with the reason shown | `branch_drop`, `tag_drop` | planned |
+| 6 | Watches a long promote finish without holding the page open | promote as a job | **BR-5** |
+
+## 10. What good looks like
+
+The bar the flows above aim for, from the 3 Nov persona review and from how branching
+products people already know behave (git hosting, database branching, preview
+deployments):
+
+1. **Safe by default, and visibly so.** A branch can't touch production memory or call
+   out. The S2 banner says so on every screen, not only at creation.
+2. **One place, one gesture.** Branching starts from the agent header (S1), not a
+   separate page. Every existing tab works in branch scope; nothing is rebuilt for
+   branches.
+3. **Know before you commit.** Promote, fork and drop each show what moves, what stays
+   and what is deleted, in counts and plain words, before the confirm button.
+4. **Diff is the centre.** "What did the branch change, and what changed on main
+   meanwhile" is answered before promote, in plain language first and detail on demand.
+5. **Lineage is always visible.** Every agent says where it came from (template version,
+   fork, promote) and what it inherits; upgrades and pinned tags show where they apply.
+6. **No dead ends.** Actions the user may not take are shown disabled with the reason
+   (policy, children, pinned tag), not failed after the click. Errors name the next step.
+7. **Long work is a job.** Promote and fork show progress, survive a page reload and
+   notify when done.
+8. **Cheap to explore, easy to clean.** Branches are cheap, so the UI encourages them,
+   and it surfaces stale ones and their cost so they don't pile up.
+9. **Audited without asking.** Every branch, fork, promote, tag and layer change is in
+   the Decision log with who, when and what memory moved.
+10. **Same screens for everyone.** Personas differ only in where they start.
+
+## 11. APIs the UX still needs
+
+Beyond §6 (FlowR agent endpoints, planned): what the flows in §9 need and no planned API
+gives yet. The UI shows a named gap (BR-n) until each exists, as with UI-n.
+
+| # | Need | Used by | Proposed API | Size |
+|---|---|---|---|---|
+| BR-1 | The §6 FlowR endpoints themselves, with `created_by` from the session, and agent ids (not namespaces) in requests and answers | every flow | §6 as planned | M |
+| BR-2 | **Branch diff**: per memory type, rows added, changed (before/after) and forgotten on the branch; parent changes since the point on the same keys (conflicts); counts first, rows paged | S4, promote review, rebase | ADB `branch_diff {namespace, name, memory?, cursor?}` → `{counts: {SEMANTIC: {added, changed, forgotten}, …}, conflicts: n, rows: [...], next}`; `GET /agents/{id}/branches/{name}/diff` | M |
+| BR-3 | **Branch stats** in the list: records and bytes on the branch, last write, last read | S1, S3, stale nudges, SRE | Add `{records, bytes, last_write_ts, last_read_ts}` to the Branch object | S |
+| BR-4 | **Talk to and run a branch**: `/chat` and `execute_flow` take `memory_branch`; runs record it | learner step 3, developer step 2 | Spec §4.3; `memory_branch` on run, chat and session; `list_runs?branch=` | L (gateway guard) |
+| BR-5 | **Promote and fork as jobs**: id, progress (records written / total), cancel, result; FlowR creates the agent only after the copy succeeds, and removes the half-written space if it fails | S5, S6, SRE step 6 | `POST …/promote` → `202 {job}`; `GET /jobs/{id}` (SSE); ADB batches report progress | M |
+| BR-6 | **Flow branches and side-effect classes**: draft flow versions under a branch; each step's class (`none`, `read`, `idempotent`, `effect`) visible in the run view | developer steps 2–3 | Spec §4.1 (registry versions) and §4.3 | L |
+| BR-7 | **Lineage on the agent**: `forked_from {agent, at}`, `promoted_from {agent, branch, at}`, template version, layers; children listed | S8, Agents list | Agent record fields written by fork and promote; `GET /agents/{id}/lineage` → `{parents, children}` | S |
+| BR-8 | **Fork or read at a tag or a past point** ("restore yesterday", audit) | security step 8 | `space_clone {namespace, into, at?: tag \| ts}`; AQL `AS OF` on namespace reads through the API | M |
+| BR-9 | **Rebase**: move the branch point, report keys both sides changed | developer step 5 | ADB `branch_rebase {namespace, name, to?}` → `{conflicts: [...]}` (spec §3.8) | M |
+| BR-10 | **Who reads this layer**: spaces that mount or pin a space, and at which tag | S7, security step 3 | ADB `layers_dependents {space}` → `[{namespace, mode, tag, sealed}]` | S |
+| BR-11 | **Releases**: a tag that ties the memory point to the flow versions live at that moment | developer step 7, rollback | Tag gains `flows: [{name, version}]`; `POST /agents/{id}/tags` fills it | S |
+| BR-12 | **Can I?** before the click: Cedar check for `memory:*` on this agent, in one call | every action button | `POST /authz/check {actions: [...], resource}` → `{action: {allowed, reason}}` | S |
+| BR-13 | **Audit and events**: branch, fork, promote, tag, layer and sealed-refusal records in the Decision log; console notices when a job ends | security steps 4–5; notifications | Records on the FlowR audit stream (with UI-3 filtering); `job.done` on the console SSE | S |
+| BR-14 | **Memory on a branch or at a point**: UI-1 with `branch=` and `scope=branch-only \| view`; a run's memory point (`{space, branch, offset, layers}`) on the run record | learner step 4, security step 8 | `GET /agents/{id}/memory?branch=&scope=&at=`; spec §3.10 | M (after UI-1) |
+| BR-15 | **Rule-change replay and impact report** | security step 7 | Spec §4.4, phase 5 | L |
+| BR-16 | **Branch runtime**: state (hosted, pod running, hibernating), wake, hibernate, move to a pod | SRE steps 1–3 | A3T controller: `GET/POST /agents/{id}/branches/{name}/runtime` | L |
+| BR-17 | **Error codes**: refusals carry a stable code beside the sentence (`name_taken`, `has_children`, `target_not_empty`, `tag_pinned`, `sealed_key`, …), so the UI can offer the fix | every dialog | gRPC status detail / FlowR `{code, message}` | S |
+
+**Order for the UI.** BR-1, BR-3, BR-7, BR-12 and BR-17 are small and unlock S1, S3,
+S5–S8 with honest states. BR-2 and BR-4 make the learner and developer loops real and
+should come next. BR-5 matters once spaces are large. BR-6, BR-15 and BR-16 follow the
+spec's phases 3–5.
