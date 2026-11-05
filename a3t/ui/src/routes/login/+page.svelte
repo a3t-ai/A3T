@@ -3,6 +3,7 @@
   import { login, isAuthenticated } from '$lib/stores/auth';
   import { API_BASE } from '$lib/config';
   import { onMount } from 'svelte';
+  import { startEarlyAccess, finishEarlyAccess, PROVIDER_LABEL, type Provider, type Identity } from '$lib/core/auth/earlyAccess';
 
   let email = $state('');
   let password = $state('');
@@ -12,6 +13,14 @@
   onMount(() => {
     // Already logged in? Redirect to app
     const unsub = isAuthenticated.subscribe(v => { if (v) goto('/'); });
+    // Back from Google / LinkedIn / GitHub: file the request with the verified identity.
+    void (async () => {
+      const r = await finishEarlyAccess();
+      if (!r) return;
+      showForm = true;
+      if (r.error || !r.identity) { formError = r.error ?? 'Sign-in failed.'; return; }
+      await fileRequest(r.identity);
+    })();
     return unsub;
   });
 
@@ -34,26 +43,31 @@
   const EARLY_ACCESS_HOOK = '/webhook/a3t/early-access';
   let showForm = $state(false);
   let submitting = $state(false);
-  let submitted = $state(false);
+  let submitted = $state<Identity | null>(null);
   let formError = $state('');
-  // `website` is a honeypot: hidden from people, filled in by form-filling bots.
-  let form = $state({ name: '', email: '', company: '', use_case: '', website: '' });
+  let leaving = $state<Provider | null>(null);
 
-  function openForm() { showForm = true; submitted = false; formError = ''; }
+  function openForm() { showForm = true; submitted = null; formError = ''; }
   function closeForm() { showForm = false; }
 
-  async function submitRequest(e: Event) {
-    e.preventDefault();
-    formError = '';
-    submitting = true;
+  async function go(p: Provider) {
+    formError = ''; leaving = p;
+    try { await startEarlyAccess(p); }
+    catch { leaving = null; formError = `Could not start signing in with ${PROVIDER_LABEL[p]}.`; }
+  }
+
+  /// The provider vouched for the name and email; that is the request.
+  async function fileRequest(who: Identity) {
+    submitting = true; formError = '';
     try {
-      if (form.website) { submitted = true; return; } // a bot: look accepted, send nothing
       const payload = {
         id: `ea-${crypto.randomUUID().slice(0, 8)}`,
-        name: form.name.trim(),
-        email: form.email.trim(),
-        company: form.company.trim(),
-        use_case: form.use_case.trim(),
+        name: who.name,
+        email: who.email,
+        company: '',
+        use_case: `Signed in with ${PROVIDER_LABEL[who.provider]}${who.verified ? '' : ' (email not verified)'}`,
+        provider: who.provider,
+        email_verified: who.verified,
         created_at: new Date().toISOString(),
       };
       const res = await fetch(`${API_BASE}${EARLY_ACCESS_HOOK}`, {
@@ -63,11 +77,8 @@
       });
       const data = await res.json().catch(() => null);
       // 200 with delivered 0 = no trigger on that path: the request went nowhere.
-      if (!res.ok || !data?.delivered) {
-        throw new Error(data?.message || data?.error || 'Request failed. Please try again later.');
-      }
-      submitted = true;
-      form = { name: '', email: '', company: '', use_case: '', website: '' };
+      if (!res.ok || !data?.delivered) throw new Error(data?.message || data?.error || 'Request failed. Please try again later.');
+      submitted = who;
     } catch (err: any) {
       formError = err?.message || 'Something went wrong. Please try again.';
     } finally {
@@ -126,38 +137,32 @@
           <div class="modal-success">
             <div class="success-check">✓</div>
             <h2>Request received</h2>
-            <p>Thanks — we've logged your request. We'll reach out at the email you provided when a spot opens up.</p>
+            <p>Thanks{submitted.name ? `, ${submitted.name.split(' ')[0]}` : ''} — we'll reach out at <b>{submitted.email}</b> when a spot opens up.</p>
             <button type="button" class="auth-submit" onclick={closeForm}>Done</button>
           </div>
         {:else}
           <h2>Request Early Access</h2>
-          <p class="modal-sub">A3T is invite-only during private beta. Tell us a bit about you.</p>
+          <p class="modal-sub">A3T is invite-only during private beta. Sign in with one of these so we know who you are — we only use your name and email.</p>
           {#if formError}<div class="auth-error">{formError}</div>{/if}
-          <form onsubmit={submitRequest}>
-            <div class="field">
-              <label for="ea-name">Name</label>
-              <input id="ea-name" bind:value={form.name} placeholder="Jane Doe" required />
+          {#if submitting}
+            <p class="ea-wait"><span class="spinner dark"></span> Sending your request…</p>
+          {:else}
+            <div class="ea-providers">
+              <button type="button" class="ea-btn" disabled={!!leaving} onclick={() => go('google')}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.2-2.1 3.5-5.1 3.5-8.7z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"/><path fill="#FBBC05" d="M5.4 14.4a7.2 7.2 0 0 1 0-4.7V6.6h-4a12 12 0 0 0 0 10.9l4-3.1z"/><path fill="#EA4335" d="M12 4.8c1.7 0 3.3.6 4.5 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"/></svg>
+                <span>{leaving === 'google' ? 'Opening Google…' : 'Continue with Google'}</span>
+              </button>
+              <button type="button" class="ea-btn" disabled={!!leaving} onclick={() => go('linkedin')}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#0A66C2"/><path fill="#fff" d="M7.1 9.5H4.6V19h2.5V9.5zM5.9 5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM19.4 13.6c0-2.6-1.4-4.3-3.7-4.3-1.3 0-2.2.7-2.6 1.4V9.5h-2.4V19h2.5v-5c0-1.3.6-2.2 1.8-2.2 1.1 0 1.6.8 1.6 2.2v5h2.5v-5.4z"/></svg>
+                <span>{leaving === 'linkedin' ? 'Opening LinkedIn…' : 'Continue with LinkedIn'}</span>
+              </button>
+              <button type="button" class="ea-btn" disabled={!!leaving} onclick={() => go('github')}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>
+                <span>{leaving === 'github' ? 'Opening GitHub…' : 'Continue with GitHub'}</span>
+              </button>
             </div>
-            <div class="field">
-              <label for="ea-email">Work email</label>
-              <input id="ea-email" type="email" bind:value={form.email} placeholder="jane@company.com" required />
-            </div>
-            <div class="field">
-              <label for="ea-company">Company <span class="opt">(optional)</span></label>
-              <input id="ea-company" bind:value={form.company} placeholder="Acme Inc." />
-            </div>
-            <div class="field">
-              <label for="ea-use">What do you want to build? <span class="opt">(optional)</span></label>
-              <textarea id="ea-use" rows="3" bind:value={form.use_case} placeholder="Multi-agent workflows for…"></textarea>
-            </div>
-            <div class="hp" aria-hidden="true">
-              <label for="ea-website">Website</label>
-              <input id="ea-website" bind:value={form.website} tabindex="-1" autocomplete="off" />
-            </div>
-            <button type="submit" class="auth-submit" disabled={submitting}>
-              {#if submitting}<span class="spinner"></span> Submitting…{:else}Submit request{/if}
-            </button>
-          </form>
+            <p class="ea-note">This only shares your name and email with us — it doesn't create an account or give you access. We'll email you when a spot opens up.</p>
+          {/if}
         {/if}
       </div>
     </div>
@@ -249,7 +254,6 @@
   .field label {
     font-size: 12px; font-weight: 500; color: var(--text-2);
   }
-  .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
   .field input {
     padding: 10px 14px;
     border: 1px solid var(--border);
@@ -292,6 +296,7 @@
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
+  .spinner.dark { border-color: var(--border); border-top-color: var(--spec); }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   .auth-footer {
@@ -385,6 +390,20 @@
     box-shadow: 0 0 0 2px var(--spec-bg);
   }
   .opt { color: var(--text-5); font-weight: 400; }
+  .ea-providers { display: flex; flex-direction: column; gap: 10px; }
+  .ea-btn {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    height: 44px; padding: 0 16px;
+    background: var(--bg-surface); color: var(--text-1);
+    border: 1px solid var(--border); border-radius: var(--r-sm);
+    font: 500 14px var(--font-sans); cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .ea-btn:hover:not(:disabled) { background: var(--bg-subtle); border-color: var(--text-4); }
+  .ea-btn:disabled { opacity: 0.6; cursor: default; }
+  .ea-btn svg { width: 20px; height: 20px; flex: none; }
+  .ea-note { margin-top: 18px; font-size: 12.5px; color: var(--text-3); line-height: 1.55; }
+  .ea-wait { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-2); padding: 12px 0; }
   .modal-success { text-align: center; padding: 12px 0 4px; }
   .success-check {
     width: 52px; height: 52px;
