@@ -252,6 +252,30 @@ do:
         updated_by: string
         updated_at: string
       _resource: a3t/a3t-platform-db
+# The A3T error log (UX ST-1, F5): one row per handled error, written only by
+# system/a3t-error-handler. Append-only once ADB DB-13 lands.
+- create-errors:
+    call: lancedb
+    with:
+      operation: create_table
+      table: a3t_errors
+      mode: create_if_not_exists
+      schema:
+        id: string
+        created_at: string
+        class: string
+        code: string
+        status: string
+        type: string
+        title: string
+        detail: string
+        flow: string
+        version: string
+        step: string
+        run_id: string
+        principal: string
+        user_message: string
+      _resource: a3t/a3t-platform-db
 - seed-default-org:
     call: lancedb
     with:

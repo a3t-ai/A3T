@@ -3,6 +3,9 @@ document:
   namespace: a3t
   name: a3t-test-resource
   version: 1.0.0
+metadata:
+  a3t:
+    onError: system/a3t-error-handler
 do:
 - route:
     switch:

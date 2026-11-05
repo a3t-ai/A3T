@@ -8,6 +8,9 @@ document:
       Dispatch a message to any configured agent.
       Reads agent config + template spec, then runs call:a3t:agent.
       Input: { agent_id, message, session_id, org_id }
+metadata:
+  a3t:
+    onError: system/a3t-error-handler
 do:
 - load-agent:
     call: lancedb

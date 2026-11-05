@@ -16,6 +16,7 @@ document:
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
   a3t:
+    onError: system/a3t-error-handler
     durability: transient
 do:
 # A refusal (no read on the source, no write on the target) fails the run with

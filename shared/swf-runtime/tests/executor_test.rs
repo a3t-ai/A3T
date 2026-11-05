@@ -417,3 +417,183 @@ do:
     assert_eq!(result["messages_is_array"], true, "messages should be array, got: {:?}", result);
     assert_eq!(result["messages_length"], 0);
 }
+
+// ── ST-1: a catch handler sees what it caught, and filters by type ──
+
+#[tokio::test]
+async fn catch_exposes_the_error_as_context_error() {
+    let yaml = r#"
+document:
+  dsl: '1.0.3'
+  namespace: test
+  name: try-error
+  version: '1.0.0'
+do:
+  - safe:
+      try:
+        do:
+          - willFail:
+              raise:
+                error:
+                  type: https://a3t.io/errors/input
+                  status: 400
+                  title: Bad input
+                  detail: name is required
+        catch:
+          do:
+            - recover:
+                set:
+                  caught: true
+"#;
+    let wf = parse_yaml(yaml).unwrap();
+    let executor = WorkflowExecutor::new();
+    let mut ctx = make_ctx();
+    let result = executor.execute(&wf, json!({}), &mut ctx).await.unwrap();
+    assert_eq!(result["caught"], true);
+    let e = &ctx.context["error"];
+    assert_eq!(e["type"], "https://a3t.io/errors/input");
+    assert_eq!(e["status"], 400);
+    assert_eq!(e["title"], "Bad input");
+    assert_eq!(e["detail"], "name is required");
+}
+
+#[tokio::test]
+async fn catch_filter_lets_other_errors_through() {
+    let yaml = r#"
+document:
+  dsl: '1.0.3'
+  namespace: test
+  name: try-filter
+  version: '1.0.0'
+do:
+  - safe:
+      try:
+        do:
+          - willFail:
+              raise:
+                error:
+                  type: https://serverlessworkflow.io/spec/1.0.0/errors/authorization
+                  status: 403
+                  title: Denied
+        catch:
+          errors:
+            with:
+              type: timeout
+          do:
+            - recover:
+                set:
+                  caught: true
+"#;
+    let wf = parse_yaml(yaml).unwrap();
+    let executor = WorkflowExecutor::new();
+    let mut ctx = make_ctx();
+    let err = executor.execute(&wf, json!({}), &mut ctx).await.unwrap_err();
+    assert!(err.error_type_uri().ends_with("/authorization"));
+
+    // The same filter by last segment or status catches it.
+    let caught = yaml.replace("type: timeout", "status: 403");
+    let wf = parse_yaml(&caught).unwrap();
+    let mut ctx = make_ctx();
+    let result = executor.execute(&wf, json!({}), &mut ctx).await.unwrap();
+    assert_eq!(result["caught"], true);
+}
+
+#[test]
+fn error_object_maps_runtime_errors() {
+    use swf_runtime::RuntimeError;
+    let o = swf_runtime::executor::error_object(&RuntimeError::Timeout("call:llm after 30s".into()));
+    assert_eq!(o["status"], 408);
+    assert!(o["type"].as_str().unwrap().ends_with("/timeout"));
+    let o = swf_runtime::executor::error_object(&RuntimeError::Denied {
+        task: "send".into(), reason: "egress not allowed".into(), policy_ids: vec!["P-12".into()],
+    });
+    assert_eq!(o["status"], 403);
+    assert_eq!(o["instance"], "send");
+    assert!(o["detail"].as_str().unwrap().contains("P-12"));
+}
+
+/// Stands in for run:workflow: answers like system/a3t-error-handler, and
+/// records the input it was given.
+struct FakeErrorHandler {
+    seen: std::sync::Mutex<Vec<Value>>,
+}
+
+#[async_trait::async_trait]
+impl TaskHandler for FakeErrorHandler {
+    fn task_type(&self) -> &str { "run:workflow" }
+    async fn execute(
+        &self,
+        task: &swf_parser::NamedTask,
+        _input: Value,
+        _ctx: &mut ExecutionContext,
+    ) -> swf_runtime::error::Result<TaskResult> {
+        let inp = match &task.task {
+            swf_parser::Task::Run(swf_parser::RunTask::Workflow(w)) => w.input.clone().unwrap_or_default(),
+            _ => json!({}),
+        };
+        self.seen.lock().unwrap().push(inp);
+        Ok(TaskResult::new(json!({
+            "class": "input", "status": 400, "title": "Invalid input",
+            "user_message": "Couldn't save the agent: name is required.", "ref": "run-1"
+        })))
+    }
+}
+
+fn failing_flow(on_error: &str, error_type: &str) -> String {
+    format!(r#"
+document:
+  dsl: '1.0.3'
+  namespace: a3t
+  name: a3t-agents
+  version: '1.0.0'
+metadata:
+  a3t:
+    onError: {on_error}
+do:
+  - save:
+      raise:
+        error:
+          type: {error_type}
+          status: 400
+          title: Bad
+          detail: name missing
+"#)
+}
+
+#[tokio::test]
+async fn on_error_hook_replaces_the_failure_with_the_handlers_message() {
+    let handler = Arc::new(FakeErrorHandler { seen: Default::default() });
+    let mut executor = WorkflowExecutor::new();
+    executor.register_handler(handler.clone());
+    let wf = parse_yaml(&failing_flow("system/a3t-error-handler", "https://serverlessworkflow.io/spec/1.0.0/errors/validation")).unwrap();
+    let mut ctx = make_ctx();
+    let err = executor.execute(&wf, json!({}), &mut ctx).await.unwrap_err();
+    assert_eq!(err.error_type_uri(), "https://a3t.io/errors/input");
+    assert!(err.to_string().contains("Couldn't save the agent: name is required."));
+    let seen = handler.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["flow"], "a3t/a3t-agents");
+    assert_eq!(seen[0]["error"]["detail"], "name missing");
+    assert_eq!(seen[0]["run_id"], "test-001");
+}
+
+#[tokio::test]
+async fn on_error_hook_passes_an_already_handled_error_through() {
+    let handler = Arc::new(FakeErrorHandler { seen: Default::default() });
+    let mut executor = WorkflowExecutor::new();
+    executor.register_handler(handler.clone());
+    let wf = parse_yaml(&failing_flow("system/a3t-error-handler", "https://a3t.io/errors/input")).unwrap();
+    let mut ctx = make_ctx();
+    let err = executor.execute(&wf, json!({}), &mut ctx).await.unwrap_err();
+    assert_eq!(err.error_type_uri(), "https://a3t.io/errors/input");
+    assert!(handler.seen.lock().unwrap().is_empty(), "logged once, by the inner flow");
+}
+
+#[tokio::test]
+async fn without_a_handler_the_original_error_stands() {
+    let executor = WorkflowExecutor::new(); // no run:workflow registered
+    let wf = parse_yaml(&failing_flow("system/a3t-error-handler", "https://example.com/x")).unwrap();
+    let mut ctx = make_ctx();
+    let err = executor.execute(&wf, json!({}), &mut ctx).await.unwrap_err();
+    assert_eq!(err.error_type_uri(), "https://example.com/x");
+}

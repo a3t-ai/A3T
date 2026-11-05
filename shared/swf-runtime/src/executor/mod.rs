@@ -24,6 +24,10 @@ use crate::context::ExecutionContext;
 use crate::error::{RuntimeError, Result};
 use crate::traits::{FlowDirective, TaskHandler, TaskResult};
 
+/// Error types an `onError` handler raises: an error of this type was already
+/// handled (classified and logged) and passes through enclosing flows' hooks.
+pub const HANDLED_ERROR_PREFIX: &str = "https://a3t.io/errors/";
+
 /// Generic workflow executor — dispatches tasks to registered handlers
 pub struct WorkflowExecutor {
     handlers: HashMap<String, Arc<dyn TaskHandler>>,
@@ -63,6 +67,55 @@ fn compose_template(inherited: Option<Value>, current: Value) -> Value {
         result.entry(k.clone()).or_insert_with(|| v.clone());
     }
     Value::Object(result)
+}
+
+/// A runtime error in the CNCF error shape (`type`, `status`, `title`,
+/// `detail`, `instance`): what a `catch` handler sees as `$context.error`.
+pub fn error_object(err: &RuntimeError) -> Value {
+    let (status, title, detail, instance): (u16, String, String, Option<String>) = match err {
+        RuntimeError::TaskFailed { task, message } => (500, "Task failed".into(), message.clone(), Some(task.clone())),
+        RuntimeError::Denied { task, reason, policy_ids } => (
+            403,
+            "Not allowed".into(),
+            if policy_ids.is_empty() { reason.clone() } else { format!("{reason} (policies: {})", policy_ids.join(", ")) },
+            Some(task.clone()),
+        ),
+        RuntimeError::Expression(m) => (400, "Expression error".into(), m.clone(), None),
+        RuntimeError::Validation { location, message } => (400, "Invalid input".into(), message.clone(), Some(location.clone())),
+        RuntimeError::Timeout(m) => (408, "Timed out".into(), m.clone(), None),
+        RuntimeError::WorkflowNotFound { namespace, name } => (404, "Flow not found".into(), format!("{namespace}/{name}"), None),
+        RuntimeError::ResourceNotFound(m) => (404, "Resource not found".into(), m.clone(), None),
+        RuntimeError::UnsupportedVersion(m) => (400, "Unsupported DSL version".into(), m.clone(), None),
+        RuntimeError::Communication(m) => (502, "Communication error".into(), m.clone(), None),
+        RuntimeError::Raised { status, title, detail, instance, .. } => (*status, title.clone(), detail.clone(), instance.clone()),
+        RuntimeError::Internal(m) => (500, "Internal error".into(), m.clone(), None),
+        RuntimeError::Halted(m) => (500, "Halted".into(), m.clone(), None),
+    };
+    serde_json::json!({
+        "type": err.error_type_uri(),
+        "status": status,
+        "title": title,
+        "detail": detail,
+        "instance": instance,
+    })
+}
+
+/// Does a caught error match a catch's `errors.with`? A type matches by its
+/// full URI or by its last segment (`authorization`, `timeout`, …).
+fn error_matches(caught: &Value, want: &swf_parser::flow_control::ErrorMatch) -> bool {
+    if let Some(t) = want.error_type.as_deref() {
+        let have = caught["type"].as_str().unwrap_or("");
+        let last = have.rsplit('/').next().unwrap_or(have);
+        if have != t && last != t {
+            return false;
+        }
+    }
+    if let Some(s) = want.status {
+        if caught["status"].as_u64() != Some(s as u64) {
+            return false;
+        }
+    }
+    true
 }
 
 impl WorkflowExecutor {
@@ -148,10 +201,14 @@ impl WorkflowExecutor {
             "aesop.principal.kind" = ctx.principal.kind(),
             "aesop.principal.id" = %ctx.principal.id(),
         );
-        current = self
+        let ran = self
             .execute_task_list(&workflow.tasks, current, ctx, &workflow_id)
             .instrument(flow_run_span)
-            .await?;
+            .await;
+        current = match ran {
+            Ok(v) => v,
+            Err(err) => return Err(self.on_flow_failed(workflow, &workflow_id, err, ctx).await),
+        };
 
         // Transform workflow output
         if let Some(ref output_def) = workflow.output {
@@ -165,6 +222,97 @@ impl WorkflowExecutor {
 
         info!(workflow = %workflow_id, "workflow completed");
         Ok(current)
+    }
+
+    /// The "flow failed" hook (ST-1, F3/AC-1). A flow that declares
+    /// `metadata.a3t.onError: <namespace>/<name>` hands an uncaught failure to
+    /// that flow, which classifies and logs it and answers
+    /// `{type, status, title, user_message, ref}`; the run then fails with that
+    /// plain-language error instead of the raw one.
+    ///
+    /// Each error is handled once: an error already of an `https://a3t.io/errors/`
+    /// type (handled by a subflow's hook) passes through. A halted run is not a
+    /// failure. If the handler itself fails, the original error stands.
+    async fn on_flow_failed(
+        &self,
+        workflow: &WorkflowDefinition,
+        workflow_id: &str,
+        err: RuntimeError,
+        ctx: &mut ExecutionContext,
+    ) -> RuntimeError {
+        if matches!(err, RuntimeError::Halted(_)) {
+            return err;
+        }
+        let Some(target) = workflow
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("a3t"))
+            .and_then(|a| a.get("onError"))
+            .and_then(|v| v.as_str())
+        else {
+            return err;
+        };
+        let caught = error_object(&err);
+        if caught["type"].as_str().unwrap_or("").starts_with(HANDLED_ERROR_PREFIX) {
+            return err;
+        }
+        let Some((ns, name)) = target.split_once('/') else {
+            warn!(on_error = %target, "metadata.a3t.onError is not <namespace>/<name>");
+            return err;
+        };
+        if format!("{ns}/{name}") == workflow_id {
+            return err; // the handler itself failed: never recurse
+        }
+        let handler_input = serde_json::json!({
+            "error": caught,
+            "flow": workflow_id,
+            "version": workflow.document.version,
+            "run_id": ctx.instance_id,
+            "principal": ctx.principal.id(),
+            "step": caught["instance"],
+        });
+        let task = NamedTask {
+            name: "on-error".to_string(),
+            task: Task::Run(swf_parser::RunTask::Workflow(swf_parser::run::WorkflowProcess {
+                namespace: ns.to_string(),
+                name: name.to_string(),
+                version: None,
+                input: Some(handler_input.clone()),
+            })),
+            condition: None,
+            input: None,
+            output: None,
+            export: None,
+            timeout: None,
+            then: None,
+            metadata: None,
+        };
+        match self
+            .execute_single_task(&task, handler_input, ctx, &format!("{workflow_id}/onError"))
+            .await
+        {
+            Ok(res) => {
+                let out = res.output;
+                let class = out["class"].as_str().unwrap_or("bug");
+                RuntimeError::Raised {
+                    error_type: out["type"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("{HANDLED_ERROR_PREFIX}{class}")),
+                    status: out["status"].as_u64().map(|s| s as u16).unwrap_or(caught["status"].as_u64().unwrap_or(500) as u16),
+                    title: out["title"].as_str().unwrap_or("Failed").to_string(),
+                    detail: out["user_message"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| err.to_string()),
+                    instance: out["ref"].as_str().map(str::to_string).or_else(|| Some(ctx.instance_id.clone())),
+                }
+            }
+            Err(handler_err) => {
+                warn!(flow = %workflow_id, error = %handler_err, "onError handler failed; keeping the original error");
+                err
+            }
+        }
     }
 
     /// Execute an ordered list of named tasks
@@ -471,12 +619,27 @@ impl WorkflowExecutor {
             }
 
             Task::Raise(raise_task) => {
+                // The text fields may be expressions, so a catch handler can
+                // re-raise with what it worked out (`title: ${ .message }`).
+                let text = |v: &Option<String>| -> String {
+                    let raw = v.clone().unwrap_or_default();
+                    if raw.contains("${") {
+                        match self.eval_value_recursive(&Value::String(raw.clone()), &input, &ctx.context) {
+                            Ok(Value::String(s)) => s,
+                            Ok(Value::Null) => String::new(),
+                            Ok(other) => other.to_string(),
+                            Err(_) => raw,
+                        }
+                    } else {
+                        raw
+                    }
+                };
                 Err(RuntimeError::Raised {
-                    error_type: raise_task.error.error_type.clone().unwrap_or_default(),
+                    error_type: text(&raise_task.error.error_type),
                     status: raise_task.error.status.unwrap_or(500),
-                    title: raise_task.error.title.clone().unwrap_or_default(),
-                    detail: raise_task.error.detail.clone().unwrap_or_default(),
-                    instance: raise_task.error.instance.clone(),
+                    title: text(&raise_task.error.title),
+                    detail: text(&raise_task.error.detail),
+                    instance: raise_task.error.instance.as_ref().map(|_| text(&raise_task.error.instance)),
                 })
             }
 
@@ -808,16 +971,27 @@ impl WorkflowExecutor {
             Ok(output) => Ok(TaskResult::new(output)),
             Err(err @ RuntimeError::Halted(_)) => Err(err),
             Err(err) => {
-                if let Some(ref catch) = try_task.catch {
-                    // TODO: match error filter
-                    debug!(error = %err, "try caught error, running catch handler");
-                    let catch_output = self.execute_task_list(
-                        &catch.tasks, input, ctx, &format!("{}/catch", task_path)
-                    ).await?;
-                    Ok(TaskResult::new(catch_output))
-                } else {
-                    Err(err)
+                let Some(ref catch) = try_task.catch else { return Err(err) };
+                let caught = error_object(&err);
+                // `errors.with`: catch only what matches; anything else goes on up.
+                if let Some(want) = catch.errors.as_ref().and_then(|f| f.with.as_ref()) {
+                    if !error_matches(&caught, want) {
+                        return Err(err);
+                    }
                 }
+                debug!(error = %err, "try caught error, running catch handler");
+                // The handler sees what it caught as `$context.error`, in the
+                // CNCF error shape (type, status, title, detail, instance).
+                if !ctx.context.is_object() {
+                    ctx.context = serde_json::json!({});
+                }
+                if let Some(obj) = ctx.context.as_object_mut() {
+                    obj.insert("error".to_string(), caught);
+                }
+                let catch_output = self.execute_task_list(
+                    &catch.tasks, input, ctx, &format!("{}/catch", task_path)
+                ).await?;
+                Ok(TaskResult::new(catch_output))
             }
         }
     }
