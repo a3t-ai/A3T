@@ -206,6 +206,12 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/branches", get(list_branches).post(create_branch))
         .route("/agents/:agent_id/branches/:name", delete(drop_branch))
         .route("/agents/:agent_id/branches/:name/promote", post(promote_branch))
+        // Merges (UX "Two kinds of merge"; ADB .ai/MERGE.md, DB-10/DB-19). Bodies
+        // pass through to ADB, so its field names stay the contract.
+        .route("/agents/:agent_id/branches/:name/conflicts", get(branch_conflicts))
+        .route("/agents/:agent_id/branches/:name/merge", post(merge_branch))
+        .route("/agents/:agent_id/branches/:name/rebase", post(rebase_branch))
+        .route("/agents/:agent_id/merges/:merge_id/revert", post(revert_merge))
         .route("/agents/:agent_id/fork", post(fork_agent))
         .route("/agents/:agent_id/tags", get(list_tags).post(create_tag))
         .route("/agents/:agent_id/tags/:name", delete(drop_tag))
@@ -323,6 +329,62 @@ async fn promote_branch(State(s): St, p: P, Path((id, name)): Path<(String, Stri
     both(copy_into_new_agent(s.as_ref(), &who(p), &id, &b, "branch_promote", json!({ "name": name })).await)
 }
 
+/// Three-way diff of a branch against its base and main now: `{base, main, clean,
+/// conflicts}`. `?memories=PROCEDURAL,SEMANTIC` narrows it.
+async fn branch_conflicts(
+    State(s): St, p: P, Path((id, name)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    both(async {
+        let (_, sp) = agent_space(s.as_ref(), &who(p), &id, false).await?;
+        let mut body = json!({ "name": name });
+        if let Some(m) = q.get("memories").filter(|m| !m.is_empty()) {
+            body["memories"] = json!(m.split(',').map(|x| x.trim().to_uppercase()).collect::<Vec<_>>());
+        }
+        ok(adb(s.as_ref(), &sp, "branch_conflicts", body).await?)
+    }.await)
+}
+
+/// The caller's body for a merge or rebase, with the branch and who did it set by
+/// the server (a body can't name someone else).
+fn merge_body(b: Option<Json<Value>>, name: &str, by: &str) -> Value {
+    let mut body = b.map(|Json(b)| b).filter(|b| b.is_object()).unwrap_or_else(|| json!({}));
+    body["name"] = json!(name);
+    body["merged_by"] = json!(by);
+    body
+}
+
+/// Kind 2, procedures back into this agent: `{main_offset, resolutions, memories?}`
+/// → `{merge_id, offset, changed, added, ended}`; 409 `merge_conflicts` /
+/// `merge_stale` with what to resolve.
+async fn merge_branch(State(s): St, p: P, Path((id, name)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        ok(adb(s.as_ref(), &sp, "branch_merge", merge_body(body, &name, principal.id())).await?)
+    }.await)
+}
+
+/// Kind 1's first step: move the branch onto main now with resolutions, so a
+/// promote carries prod's newer memory. `{main_offset, resolutions}`.
+async fn rebase_branch(State(s): St, p: P, Path((id, name)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        ok(adb(s.as_ref(), &sp, "branch_rebase", merge_body(body, &name, principal.id())).await?)
+    }.await)
+}
+
+/// Undo a kind 2 merge: the previous versions come back as new versions; records
+/// changed since come back as 409 `revert_conflicts`.
+async fn revert_merge(State(s): St, p: P, Path((id, merge_id)): Path<(String, String)>) -> Response {
+    both(async {
+        let principal = who(p);
+        let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        ok(adb(s.as_ref(), &sp, "merge_revert", json!({ "merge_id": merge_id, "reverted_by": principal.id() })).await?)
+    }.await)
+}
+
 /// `{new_agent: {id?, name?}}`.
 async fn fork_agent(State(s): St, p: P, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
     let b = body.map(|Json(b)| b).unwrap_or_else(|| json!({}));
@@ -412,5 +474,20 @@ mod tests {
         assert_eq!(row["name"], "Bot v2");
         assert_eq!(row["created_by"], "u1");
         assert!(new_agent_row(&src, &json!({"id": "a|b"}), "u").is_err());
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn a_merge_body_names_the_branch_and_the_caller_whatever_it_says() {
+        let b = Some(Json(json!({ "main_offset": 41, "resolutions": [], "name": "other", "merged_by": "someone-else" })));
+        let body = merge_body(b, "try-new-recall", "usr-ann");
+        assert_eq!(body["name"], "try-new-recall");
+        assert_eq!(body["merged_by"], "usr-ann");
+        assert_eq!(body["main_offset"], 41, "the rest passes through unchanged");
+        assert_eq!(merge_body(None, "b", "u"), json!({ "name": "b", "merged_by": "u" }));
     }
 }
