@@ -2,6 +2,7 @@
 // Each navigation updates both panel state and browser URL.
 // On load, URL is read to restore state.
 
+import { navigating } from '$lib/core/status/activity';
 import { contextPrefix, splitContextPath, contextFromUrl } from './context.svelte.ts';
 
 export interface PanelDef {
@@ -82,12 +83,14 @@ function updateUrl(type: string, props: Record<string, any> = {}) {
 // ── Public API ──
 
 export function navigateTo(type: string, title: string, props: Record<string, any> = {}) {
+  navigating();
   counter++;
   panels = [{ id: `panel-${counter}`, type, title, icon: type[0]?.toUpperCase(), props }];
   updateUrl(type, props);
 }
 
 export function navigateToDetail(type: string, title: string, itemId: string, props: Record<string, any> = {}) {
+  navigating();
   counter++;
   const fullProps = { ...props, selectedId: itemId };
   panels = [{ id: `panel-${counter}`, type, title, icon: type[0]?.toUpperCase(), props: fullProps }];

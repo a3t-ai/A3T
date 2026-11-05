@@ -9,7 +9,7 @@
   import { activity, type Activity } from '$lib/core/status/activity';
   import { messages, notifications, openNotifications, type Message } from '$lib/core/status/messages';
 
-  const DELAY = 350;          // busy this long before the bar says so
+  const DELAY = 250;          // busy this long before the bar says so
   const DONE = 1600;          // "Saved" stays this long
   const LIFE: Record<Message['type'], number> = { success: 2500, info: 4000, warning: 7000, error: 9000 };
 

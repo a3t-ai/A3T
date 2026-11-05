@@ -29,12 +29,29 @@ function top(): Kind | null {
   return k;
 }
 
+/// A page is several requests in a row (the list, then its context, then
+/// counts), each quick on its own. Measuring each one alone meant a page that
+/// took a second never showed "Loading…": every gap restarted the clock. So a
+/// request that starts within GRACE of the last one ending continues the same
+/// wait, and the bar stays until the console has been idle for GRACE.
+const GRACE = 300;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let lastKind: Kind | null = null;
+
 export function begin(kind: Kind): number {
   const id = next++;
-  const was = spans.size;
+  const continuing = spans.size > 0 || idleTimer !== null;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   spans.set(id, kind);
-  state.update((s) => ({ ...s, kind: top(), since: was ? s.since : Date.now() }));
+  state.update((s) => ({ ...s, kind: top(), since: continuing ? s.since : Date.now() }));
   return id;
+}
+
+/// Opening a page: the wait starts at the click, before its first request
+/// goes out. Ends on its own; the page's requests carry it on from there.
+export function navigating() {
+  const id = begin('loading');
+  setTimeout(() => end(id), 50);
 }
 
 /// `ok`: it worked — a finished save says "Saved" once nothing else is saving.
@@ -43,6 +60,19 @@ export function end(id: number, ok = true) {
   if (!kind) return;
   spans.delete(id);
   const k = top();
+  if (k) lastKind = k;
+  if (!k) {
+    // Idle — but hold the busy state for GRACE in case the next request of the
+    // same page is about to start. A finished save still says "Saved" now.
+    if (idleTimer) clearTimeout(idleTimer);
+    const held: Kind = kind === 'saving' || kind === 'deleting' ? 'loading' : (lastKind ?? kind);
+    idleTimer = setTimeout(() => { idleTimer = null; if (!spans.size) state.update((s) => ({ ...s, kind: null })); }, GRACE);
+    state.update((s) => {
+      const done = ok && (kind === 'saving' || kind === 'deleting') ? { word: kind === 'deleting' ? 'Deleted' : 'Saved', at: Date.now() } : s.done;
+      return { ...s, kind: done && done !== s.done ? null : held, done };
+    });
+    return;
+  }
   state.update((s) => {
     const stillWriting = k === 'saving' || k === 'deleting';
     const done = ok && !stillWriting && (kind === 'saving' || kind === 'deleting') ? { word: kind === 'deleting' ? 'Deleted' : 'Saved', at: Date.now() } : s.done;
