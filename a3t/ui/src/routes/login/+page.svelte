@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { login, isAuthenticated } from '$lib/stores/auth';
-  import { mcpCall } from '$lib/services/api';
+  import { API_BASE } from '$lib/config';
   import { onMount } from 'svelte';
 
   let email = $state('');
@@ -28,13 +28,16 @@
     }
   }
 
-  // ── Request Early Access — persisted via execute_flow on the MCP endpoint
-  // (same /message mechanism the console uses for templates/agents). ──
+  // ── Request Early Access. The visitor isn't signed in, so this posts to a public
+  // webhook (/webhook/* needs no token), whose trigger runs the `a3t/a3t-early-access`
+  // flow with the posted body as its input. /message (execute_flow) needs a token. ──
+  const EARLY_ACCESS_HOOK = '/webhook/a3t/early-access';
   let showForm = $state(false);
   let submitting = $state(false);
   let submitted = $state(false);
   let formError = $state('');
-  let form = $state({ name: '', email: '', company: '', use_case: '' });
+  // `website` is a honeypot: hidden from people, filled in by form-filling bots.
+  let form = $state({ name: '', email: '', company: '', use_case: '', website: '' });
 
   function openForm() { showForm = true; submitted = false; formError = ''; }
   function closeForm() { showForm = false; }
@@ -44,6 +47,7 @@
     formError = '';
     submitting = true;
     try {
+      if (form.website) { submitted = true; return; } // a bot: look accepted, send nothing
       const payload = {
         id: `ea-${crypto.randomUUID().slice(0, 8)}`,
         name: form.name.trim(),
@@ -52,11 +56,18 @@
         use_case: form.use_case.trim(),
         created_at: new Date().toISOString(),
       };
-      // Same call path as the console's template/agent lists → POST /message (public, CORS-enabled).
-      const res = await mcpCall('execute_flow', { name: 'a3t-early-access', namespace: 'a3t', input: payload });
-      if (!res.ok) throw new Error(res.error || 'Request failed');
+      const res = await fetch(`${API_BASE}${EARLY_ACCESS_HOOK}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => null);
+      // 200 with delivered 0 = no trigger on that path: the request went nowhere.
+      if (!res.ok || !data?.delivered) {
+        throw new Error(data?.message || data?.error || 'Request failed. Please try again later.');
+      }
       submitted = true;
-      form = { name: '', email: '', company: '', use_case: '' };
+      form = { name: '', email: '', company: '', use_case: '', website: '' };
     } catch (err: any) {
       formError = err?.message || 'Something went wrong. Please try again.';
     } finally {
@@ -138,6 +149,10 @@
             <div class="field">
               <label for="ea-use">What do you want to build? <span class="opt">(optional)</span></label>
               <textarea id="ea-use" rows="3" bind:value={form.use_case} placeholder="Multi-agent workflows for…"></textarea>
+            </div>
+            <div class="hp" aria-hidden="true">
+              <label for="ea-website">Website</label>
+              <input id="ea-website" bind:value={form.website} tabindex="-1" autocomplete="off" />
             </div>
             <button type="submit" class="auth-submit" disabled={submitting}>
               {#if submitting}<span class="spinner"></span> Submitting…{:else}Submit request{/if}
@@ -234,6 +249,7 @@
   .field label {
     font-size: 12px; font-weight: 500; color: var(--text-2);
   }
+  .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
   .field input {
     padding: 10px 14px;
     border: 1px solid var(--border);
