@@ -37,6 +37,17 @@ export function realmUrl(): string {
   return base.replace('://console.', '://keycloak.').replace(/\/$/, '') + `/realms/${REALM}`;
 }
 
+/// Is sign-in with a provider set up here? The realm's discovery document is
+/// public and CORS-enabled; until the realm exists it is a 404, and sending a
+/// visitor there would strand them on Keycloak's "Page not found".
+let available: Promise<boolean> | null = null;
+export function providersAvailable(): Promise<boolean> {
+  available ??= fetch(`${realmUrl()}/.well-known/openid-configuration`)
+    .then((r) => r.ok)
+    .catch(() => false);
+  return available;
+}
+
 const redirectUri = () => `${window.location.origin}/login`;
 
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
