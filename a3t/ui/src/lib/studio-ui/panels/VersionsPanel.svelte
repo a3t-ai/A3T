@@ -103,7 +103,7 @@
         </span>
       {/if}
       <button class="btn ghost sm" disabled={picked.length !== 2} onclick={compare} title="Tick two rows (the editor counts as one)">⇆ Compare{picked.length ? ` (${picked.length}/2)` : ''}</button>
-      <button class="lnk" onclick={refresh} disabled={loading}>{loading ? 'Loading…' : '↻ Refresh'}</button>
+      <button class="lnk" onclick={refresh} disabled={loading}>↻ Refresh</button>
     </div>
     <table>
       <thead><tr><th class="ck"></th><th>Version</th><th></th><th></th></tr></thead>
@@ -123,7 +123,7 @@
               {#if v === pushedVersion}<span class="pill ed" title="The version the editor started from">editor’s base</span>{/if}
             </td>
             <td class="acts">
-              <button class="lnk" disabled={!!busy} onclick={() => load(v)} title="Put this version's text in the editor">{busy === `load:${v}` ? 'Loading…' : 'Load'}</button>
+              <button class="lnk" disabled={!!busy} onclick={() => load(v)} title="Put this version's text in the editor">Load</button>
               {#if v !== active}<button class="lnk" disabled={!!busy} onclick={() => activate(v)} title="Roll back or forward to this version">{busy === `act:${v}` ? 'Activating…' : 'Make active'}</button>{/if}
             </td>
           </tr>

@@ -152,7 +152,8 @@
       <button class="lnk" onclick={() => navigateTo('logs', 'Decision log', { q: agent.id })}>Decision log →</button>
       <button class="lnk" onclick={() => navigateTo('executions', 'Executions')}>Executions →</button>
     </div>
-    {#if loading}<p class="dim">Loading…</p>
+    {#if loading}
+      <!-- the header bar shows loading -->
     {:else}
       <ol class="tl">
         {#each timeline as it}

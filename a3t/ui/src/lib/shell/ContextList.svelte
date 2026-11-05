@@ -284,7 +284,7 @@
 
   <div class="ctx-body">
     {#if loading && items.length === 0}
-      <div class="ctx-note">Loading…</div>
+      <!-- the header bar shows loading -->
     {:else if error}
       <div class="ctx-note err">{error}</div>
     {:else if shown.length === 0}

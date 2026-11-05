@@ -152,7 +152,7 @@
     <input placeholder="Filter" bind:value={filter} />
     <button title="Refresh" onclick={() => load()} disabled={loading}>↻</button>
   </div>
-  {#if loading && !inventory.tree.length}<div class="ex-empty">Loading…</div>{/if}
+
   {#if !loading && !shown.length}<div class="ex-empty">{filter ? 'Nothing matches.' : 'No project in view — pick one in the project switcher (or turn on Show platform for a3t / system).'}</div>{/if}
   {#if notice}
     <div class="ex-note" class:bad={!notice.ok}><span>{notice.text}</span><button title="Dismiss" onclick={() => (notice = null)}>×</button></div>

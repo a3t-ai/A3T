@@ -53,7 +53,7 @@
 {#if !doc}
   <div class="note">Open an agent.</div>
 {:else if !doc.loaded}
-  <div class="note">Loading…</div>
+  <!-- the header bar shows loading -->
 {:else if doc.error}
   <div class="err">{doc.error}</div>
 {:else}

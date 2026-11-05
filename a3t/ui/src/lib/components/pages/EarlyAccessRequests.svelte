@@ -61,7 +61,7 @@
   </div>
 
   {#if loading}
-    <div class="ea-empty">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if error}
     <div class="ea-empty ea-err">{error}</div>
   {:else if requests.length === 0}

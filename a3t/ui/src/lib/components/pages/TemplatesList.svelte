@@ -577,7 +577,7 @@ do:
                   </div>
                   <p class="sf-hint">Agents instantiated from this template — one template, many agents.</p>
                   {#if agentsLoading}
-                    <div class="sf-placeholder">Loading agents...</div>
+                    <!-- the header bar shows loading -->
                   {:else if templateAgents.length === 0}
                     <div class="sf-placeholder">No agents created from this template yet.</div>
                   {:else}

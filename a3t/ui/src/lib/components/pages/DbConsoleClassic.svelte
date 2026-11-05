@@ -305,7 +305,7 @@
         <div class="panel-body">
           {#if panelTab === 'connections'}
             {#if loadingResources}
-              <div class="panel-empty">Loading resources...</div>
+              <!-- the header bar shows loading -->
             {:else if dbResources.length === 0}
               <div class="panel-empty">No databases in this project. Add one in Resources — or turn on “Show platform” in the project menu for the platform's own.</div>
             {:else}

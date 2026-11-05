@@ -52,7 +52,7 @@
     <SaveBar {doc} {workspace} valid={!parsed.error && !nameProblem} />
   </div>
   {#if !doc.loaded}
-    <div class="note">Loading {doc.ref.name}…</div>
+    <!-- the header bar shows loading -->
   {:else if doc.error}
     <div class="err">Could not load {doc.ref.name}: {doc.error}</div>
   {:else}

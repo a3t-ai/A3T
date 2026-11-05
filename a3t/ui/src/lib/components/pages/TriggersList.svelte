@@ -391,7 +391,7 @@
 
 
   {#if loading}
-    <div class="trg-empty">Loading...</div>
+    <!-- the header bar shows loading -->
   {:else}
     {#snippet triggerRows(list: Trigger[])}
     <div class="trg-list">

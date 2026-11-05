@@ -745,7 +745,7 @@
             {#if (bindings.mcp_servers ?? []).length === 0}
               <p class="pf-hint">No MCP servers selected. Pick them in <strong>Configuration</strong>; their tools appear here.</p>
             {:else if toolsLoading}
-              <p class="pf-hint">Discovering tools from {bindings.mcp_servers.length} MCP server{bindings.mcp_servers.length === 1 ? '' : 's'}…</p>
+              <!-- the header bar shows loading -->
             {:else}
               <div class="perm-groups">
                 {#each serverTools as srv (srv.server)}

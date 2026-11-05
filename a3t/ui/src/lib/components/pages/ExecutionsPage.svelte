@@ -162,7 +162,7 @@
     </div>
     <div class="head-actions">
       <label class="auto"><input type="checkbox" checked={auto} onchange={toggleAuto} /> Auto-refresh</label>
-      <button class="btn" onclick={() => load()} disabled={loading}>{loading ? 'Loading…' : '↻ Refresh'}</button>
+      <button class="btn" onclick={() => load()} disabled={loading}>↻ Refresh</button>
     </div>
   </header>
 
@@ -181,7 +181,7 @@
       {#if error}
         <div class="state err">{error}</div>
       {:else if loading && rows.length === 0}
-        <div class="state">Loading…</div>
+        <!-- the header bar shows loading -->
       {:else if shown.length === 0}
         <div class="state">No executions{fStatus !== 'all' ? ` with status "${fStatus}"` : ''} yet.</div>
       {:else}
@@ -220,7 +220,7 @@
         {#if runsMode}
           <RunView runId={detail.instance_id} onrerun={(id) => { void load(); openDetail({ ...detail!, instance_id: id }); }} />
         {:else}
-        {#if detailLoading}<div class="state sm">Loading detail…</div>{/if}
+
 
         {#if detail.error}
           <h3 class="err-h">Error</h3>

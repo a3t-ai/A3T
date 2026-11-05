@@ -150,7 +150,7 @@
         {/snippet}
       </FlowEditorPane>
     {:else}
-      <div class="loading">Loading {doc.ref.project}/{doc.ref.name}…{#if message}<span class="msg"> {message}</span>{/if}</div>
+      <div class="loading">{#if message}<span class="msg"> {message}</span>{/if}</div>
     {/if}
   </div>
 </div>

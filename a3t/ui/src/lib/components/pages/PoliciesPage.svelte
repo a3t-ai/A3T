@@ -170,7 +170,7 @@
   </header>
 
   {#if loading}
-    <div class="state">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if loadError}
     <div class="state err">{loadError}</div>
   {:else if edition === 'ce'}

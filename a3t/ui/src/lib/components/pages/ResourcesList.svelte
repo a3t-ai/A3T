@@ -731,7 +731,8 @@ do:
       <div class="panel-content" class:panel-content-flush={panelTab === 'definition'}>
         {#if panelTab === 'definition'}
           {#if flowYamlLoading}
-            <div class="pf"><div class="pf-empty-state">Loading flow definition…</div></div>
+            <!-- the header bar shows loading -->
+
           {:else if flowYaml}
             <div class="flow-def-pane">
               <FlowEditorPane aiKind="flow" aiName={selected?.name ?? ''} initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} />
@@ -1040,11 +1041,11 @@ do:
           <div class="pf">
             <div class="logs-head">
               <h3>Execution Logs</h3>
-              <button class="btn ghost sm" disabled={execLoading} onclick={() => loadExecutions(selected)}>{execLoading ? 'Loading…' : 'Refresh'}</button>
+              <button class="btn ghost sm" disabled={execLoading} onclick={() => loadExecutions(selected)}>Refresh</button>
             </div>
             <p class="pf-hint">Recent runs of this flow, newest first.</p>
             {#if execLoading}
-              <div class="pf-empty-state">Loading executions…</div>
+              <!-- the header bar shows loading -->
             {:else if flowExecutions.length === 0}
               <div class="pf-empty-state">No executions yet. Run this flow from the Test tab.</div>
             {:else}
@@ -1283,7 +1284,7 @@ do:
         </div>
       {/if}
     {:else}
-      <div class="loading-msg">Loading resources...</div>
+      <!-- the header bar shows loading -->
     {/if}
   </div>
 </div>

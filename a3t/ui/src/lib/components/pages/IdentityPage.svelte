@@ -139,7 +139,7 @@
   </div>
 
   {#if loading}
-    <div class="state">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if edition === 'ce'}
     <div class="state">
       <p><strong>Enterprise</strong> feature. Identity federation and user provisioning are available on an EE runtime.</p>

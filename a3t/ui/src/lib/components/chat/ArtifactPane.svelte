@@ -321,7 +321,7 @@
               </div>
             {:else}
               <div class="pane-hint">
-                {agentSpecState === 'loading' ? 'Loading the agent’s template…'
+                {agentSpecState === 'loading' ? ''
                   : 'This agent has no template to draw — open its template directly.'}
               </div>
             {/if}

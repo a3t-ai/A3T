@@ -61,7 +61,7 @@
     <div class="head-actions">
       <button class="btn ghost" onclick={() => navigateTo('settings', 'Settings')}>⚙ Log settings</button>
       <label class="auto"><input type="checkbox" checked={auto} onchange={toggleAuto} /> Auto-refresh</label>
-      <button class="btn" onclick={load} disabled={loading}>{loading ? 'Loading…' : '↻ Refresh'}</button>
+      <button class="btn" onclick={load} disabled={loading}>↻ Refresh</button>
     </div>
   </header>
 
@@ -82,7 +82,7 @@
       <p class="sub">This is a Community (CE) runtime — it runs allow-all, so no authorization decisions are recorded. Connect to an EE runtime (Settings → Runtime) to see the log.</p>
     </div>
   {:else if loading && records.length === 0}
-    <div class="state">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if shown.length === 0}
     <div class="state">No decisions recorded yet{denialsOnly ? ' (no denials)' : ''}.</div>
   {:else}

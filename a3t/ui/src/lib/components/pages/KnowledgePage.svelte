@@ -319,7 +319,7 @@
             </div>
             <div class="hud-scale">
               <button class="scale-select" onclick={loadGraph} disabled={loading} title="Reload from LanceDB">
-                {loading ? 'Loading…' : `↻ ${stats?.sampled ?? 0}/${nodeCount} shown`}
+                {`↻ ${stats?.sampled ?? 0}/${nodeCount} shown`}
               </button>
             </div>
           </div>
@@ -383,7 +383,7 @@
                   </button>
                 {/each}
                 {#if selectedNode.loadingConns}
-                  <span class="no-conn">Loading connections…</span>
+                  <!-- the header bar shows loading -->
                 {:else if selectedNode.connError}
                   <span class="no-conn">⚠ {selectedNode.connError}</span>
                 {:else if !selectedNode.connections?.length}
@@ -451,7 +451,7 @@
               <span class="vc-vec">Vector (first 8 of re)</span>
             </div>
             {#if vectorRows.length === 0}
-              <div class="vec-row"><span class="vc-name">{vectorsLoaded ? 'No entities yet — ingest triples first.' : 'Loading…'}</span></div>
+              <div class="vec-row"><span class="vc-name">{vectorsLoaded ? 'No entities yet — ingest triples first.' : ''}</span></div>
             {/if}
             {#each vectorRows as row}
               <div class="vec-row">

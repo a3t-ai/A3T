@@ -519,7 +519,7 @@
         {:else if pdbMsg}
           <p class="msg">{pdbMsg}</p>
         {:else}
-          <p class="dim">Loading…</p>
+          <!-- the header bar shows loading -->
         {/if}
       </div>
 
@@ -551,7 +551,7 @@
           <p class="msg">{embMsg}</p>
           <div class="row-actions"><button class="btn ghost" onclick={loadEmbedding}>Retry</button></div>
         {:else}
-          <p class="dim">Loading…</p>
+          <!-- the header bar shows loading -->
         {/if}
       </div>
 
@@ -601,7 +601,7 @@
           <p class="msg">{cacheMsg}</p>
           <div class="row-actions"><button class="btn ghost" onclick={loadCache}>Retry</button></div>
         {:else}
-          <p class="dim">Loading…</p>
+          <!-- the header bar shows loading -->
         {/if}
       </div>
 

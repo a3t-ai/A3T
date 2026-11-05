@@ -161,7 +161,7 @@
   {#if deployMsg}<div class="deploy-banner">{deployMsg}</div>{/if}
 
   {#if loading}
-    <div class="status-msg">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if error}
     <div class="status-msg err">{error}</div>
   {:else}

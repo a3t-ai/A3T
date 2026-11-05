@@ -14,7 +14,7 @@
 {#if !doc || !kind}
   <div class="note">Open an item to ask the AI about it.</div>
 {:else if !doc.loaded && !doc.isNew}
-  <div class="note">Loading…</div>
+  <!-- the header bar shows loading -->
 {:else}
   {#key doc.address}
     <DesignerChat kind={AI_KIND[kind.id] ?? 'resource'} name={`${doc.ref.project}/${doc.ref.name}`} readonly={!kind.push}

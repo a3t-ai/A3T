@@ -123,7 +123,7 @@
   {/if}
 
   {#if loading}
-    <p class="dim">Loading…</p>
+    <!-- the header bar shows loading -->
   {:else if orgs.length === 0}
     <p class="dim">{isSuper ? 'No organisations yet.' : "You aren't in any organisation."}</p>
   {:else}

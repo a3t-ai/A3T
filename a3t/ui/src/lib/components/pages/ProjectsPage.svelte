@@ -551,7 +551,8 @@
       <div class="pj-form">
         <p class="pj-note">Each flow keeps every version released here. Callers that pin one (<span class="mono">run: workflow … version: 1.0.0</span>) keep it; everyone else gets the active one. Activate rolls that back or forward — one release at a time, never all callers' pins.</p>
         {#if panel === 'create'}<p class="dim">Releases appear here once the project has flows.</p>
-        {:else if releasesLoading}<p class="dim">Loading…</p>
+        {:else if releasesLoading}
+          <!-- the header bar shows loading -->
         {:else if releases.length === 0}<p class="dim">No flows in this project yet.</p>
         {:else}
           <table class="pj-table">

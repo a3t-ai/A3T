@@ -100,7 +100,7 @@
   {#if error}
     <div class="home-note err">{error}</div>
   {:else if loading}
-    <div class="home-note">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else}
     {#snippet cards(list: AppItem[])}
       <div class="home-grid">

@@ -256,7 +256,7 @@
 {#if error}
   <div class="rv-msg">{error}</div>
 {:else if !run}
-  <div class="rv-empty">Loading run…</div>
+  <!-- the header bar shows loading -->
 {:else}
   <div class="rv">
     <div class="rv-head">

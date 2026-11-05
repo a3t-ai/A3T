@@ -42,7 +42,8 @@
     What each agent remembers — working, episodic, semantic and procedural memory, kept in ADB. Open an agent to see how its memory is set up.
     <span class="dim">Reading the entries themselves, and what an agent learned when, needs the agent-memory API (UI-1, UI-5).</span>
   </div>
-  {#if loading}<p class="dim">Loading…</p>
+  {#if loading}
+    <!-- the header bar shows loading -->
   {:else if error}<p class="err">{error}</p>
   {:else}
     <table class="tbl">

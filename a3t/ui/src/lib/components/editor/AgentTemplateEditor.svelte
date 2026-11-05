@@ -940,7 +940,7 @@
     {#if cfgGetArr('mcp_servers').length === 0}
       <p class="perm-hint">This template has no tools to govern yet. Add one or more <strong>MCP servers</strong> on the <button type="button" class="linkish" onclick={() => activeTab = 'tools'}>Tools</button> tab first — the ceiling controls which of <em>their</em> tools an agent may use.</p>
     {:else if toolsLoading}
-      <p class="perm-hint">Discovering tools from the selected MCP servers…</p>
+      <!-- the header bar shows loading -->
     {:else}
       {#if availableTools.length > 0}
         <p class="perm-hint">Uncheck a tool to block it for agents from this template. All checked = unrestricted; the policy engine denies anything unchecked even if the model tries it.</p>

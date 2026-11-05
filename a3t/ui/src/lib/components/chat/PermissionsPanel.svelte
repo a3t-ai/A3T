@@ -60,7 +60,7 @@
   </div>
 
   {#if loading && items.length === 0}
-    <p class="pp-empty">Loading…</p>
+    <!-- the header bar shows loading -->
   {:else if items.length === 0}
     <p class="pp-empty">
       Nothing asked yet. When the agent needs a tool it isn’t already allowed, it

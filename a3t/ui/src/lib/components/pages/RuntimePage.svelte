@@ -298,7 +298,7 @@
   {#if toast}<div class="toast {toast.kind}">{toast.text}</div>{/if}
 
   {#if loading}
-    <p class="muted">Loading…</p>
+    <!-- the header bar shows loading -->
   {:else if error}
     <p class="err">{error}</p>
 
@@ -445,7 +445,7 @@
                   {#if ex}
                     <tr class="run-detail"><td colspan="4">
                       {#if ex.loading}
-                        <p class="muted small">Loading…</p>
+                        <!-- the header bar shows loading -->
                       {:else}
                         <div class="io-meta mono muted">{r.instanceId}{#if ex.current_step} · step {ex.current_step}{/if}</div>
                         {#if ex.error && !refused}<div class="io-err">{ex.error}</div>{/if}
