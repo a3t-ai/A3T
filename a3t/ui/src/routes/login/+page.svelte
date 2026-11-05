@@ -18,6 +18,7 @@
       const r = await finishEarlyAccess();
       if (!r) return;
       showForm = true;
+      void providersAvailable().then((ok) => (providersOn = ok));   // so "try again" has the buttons
       if (r.error || !r.identity) { formError = r.error ?? 'Sign-in failed.'; return; }
       await fromProvider(r.identity);
     })();
