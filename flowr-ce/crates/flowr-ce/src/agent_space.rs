@@ -325,10 +325,15 @@ async fn copy_into_new_agent(s: &dyn StorageBackend, principal: &Principal, id: 
     Ok((StatusCode::CREATED, Json(json!({ "agent": new_row, "memory": copied }))).into_response())
 }
 
-/// `{new_agent: {id?, name?}}`.
+/// `{new_agent: {id?, name?}, allow_stale?}`.
 async fn promote_branch(State(s): St, p: P, Path((id, name)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
     let b = body.map(|Json(b)| b).unwrap_or_else(|| json!({}));
-    both(copy_into_new_agent(s.as_ref(), &who(p), &id, &b, "branch_promote", json!({ "name": name })).await)
+    let mut extra = json!({ "name": name });
+    // Past ADB's gate (main changed since the branch point; rebase is the normal path).
+    if b.get("allow_stale").and_then(|v| v.as_bool()) == Some(true) {
+        extra["allow_stale"] = json!(true);
+    }
+    both(copy_into_new_agent(s.as_ref(), &who(p), &id, &b, "branch_promote", extra).await)
 }
 
 /// Three-way diff of a branch against its base and main now: `{base, main, clean,
@@ -432,26 +437,55 @@ async fn get_layers(State(s): St, p: P, Path(id): Path<String>) -> Response {
     }.await)
 }
 
+/// The agent whose memory space is `namespace`, if any.
+async fn agent_of_space(storage: &dyn StorageBackend, namespace: &str) -> Result<Option<String>, Response> {
+    let rows = query_platform_table(storage, TABLE, Some(format!("namespace = {}", sql_quote(namespace))), 1)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(rows.first().and_then(|r| r.get("agent_id")).and_then(|v| v.as_str()).map(str::to_string))
+}
+
+/// The layers to store: what the caller asked for, minus any history layer, plus
+/// the history layers the space has now. A promoted agent's history layer (D1) is
+/// made by promote; a caller can neither add one (it would read another agent's
+/// conversations) nor lose it by sending a list without it, since `layers_set`
+/// replaces the whole list.
+fn with_history_layers(requested: Vec<Value>, current: &Value) -> Vec<Value> {
+    let is_history = |l: &Value| l.get("mode").and_then(|m| m.as_str()) == Some("history");
+    let now = current.get("layers").map(|l| l.get("layers").unwrap_or(l)).and_then(|l| l.as_array());
+    let mut out: Vec<Value> = requested.into_iter().filter(|l| !is_history(l)).collect();
+    out.extend(now.into_iter().flatten().filter(|l| is_history(l)).cloned());
+    out
+}
+
 /// `{layers: [{agent | space, mode, tag?, memories, sealed?}]}`: a layer names another
-/// agent (`agent`, resolved to its space; read access needed) or a namespace (`space`).
+/// agent, by id (`agent`) or by its namespace (`space`, as `GET` answers). Either way
+/// the caller needs read access to that agent, and it must be in this agent's org: a
+/// namespace no agent owns is refused, so a layer can't reach another org's memory.
 async fn put_layers(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        let requested = b.get("layers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let current = adb(s.as_ref(), &sp, "layers_get", json!({})).await?;
         let mut layers = Vec::new();
-        for l in b.get("layers").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        for l in with_history_layers(requested, &json!({})) {
             let mut l = l;
-            if let Some(agent) = l.get("agent").and_then(|v| v.as_str()).map(str::to_string) {
-                let (_, other) = agent_space(s.as_ref(), &principal, &agent, false).await?;
-                if other.org_id != sp.org_id {
-                    return Err(err(StatusCode::BAD_REQUEST, format!("agent {agent:?} is in another org: layers stay in one org's memory")));
-                }
-                let m = l.as_object_mut().ok_or_else(|| err(StatusCode::BAD_REQUEST, "a layer is an object"))?;
-                m.remove("agent");
-                m.insert("space".into(), json!(other.namespace));
+            let m = l.as_object_mut().ok_or_else(|| err(StatusCode::BAD_REQUEST, "a layer is an object"))?;
+            let agent = match (m.remove("agent").and_then(|v| v.as_str().map(str::to_string)), m.get("space").and_then(|v| v.as_str())) {
+                (Some(agent), _) => agent,
+                (None, Some(space)) => agent_of_space(s.as_ref(), space).await?
+                    .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("no agent has the memory space {space:?}: a layer names an agent in this org")))?,
+                (None, None) => return Err(err(StatusCode::BAD_REQUEST, "a layer names an agent or its space")),
+            };
+            let (_, other) = agent_space(s.as_ref(), &principal, &agent, false).await?;
+            if other.org_id != sp.org_id {
+                return Err(err(StatusCode::BAD_REQUEST, format!("agent {agent:?} is in another org: layers stay in one org's memory")));
             }
+            m.insert("space".into(), json!(other.namespace));
             layers.push(l);
         }
+        let layers = with_history_layers(layers, &current);
         ok(adb(s.as_ref(), &sp, "layers_set", json!({ "layers": layers })).await?)
     }.await)
 }
@@ -489,6 +523,20 @@ mod tests {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    #[test]
+    fn history_layers_can_neither_be_added_nor_lost() {
+        let old = json!({ "space": "acme--bot", "mode": "history", "tag": "promoted-acme--bot2", "memories": ["EPISODIC"] });
+        let pin = json!({ "space": "acme--compliance", "mode": "pin", "tag": "v1", "memories": ["SEMANTIC"] });
+        let forged = json!({ "space": "other--secret", "mode": "history", "tag": "t", "memories": ["EPISODIC"] });
+        // A list without it keeps it; a forged one is dropped. Both answer shapes.
+        for current in [json!({ "layers": [old.clone(), pin.clone()] }), json!({ "layers": { "layers": [old.clone()] } })] {
+            assert_eq!(with_history_layers(vec![pin.clone(), forged.clone()], &current), vec![pin.clone(), old.clone()]);
+        }
+        // No layers yet.
+        assert_eq!(with_history_layers(vec![pin.clone()], &json!({ "layers": null })), vec![pin.clone()]);
+        assert!(with_history_layers(vec![forged], &json!({})).is_empty());
+    }
 
     #[test]
     fn a_merge_body_names_the_branch_and_the_caller_whatever_it_says() {
