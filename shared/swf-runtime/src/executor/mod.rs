@@ -118,6 +118,25 @@ fn error_matches(caught: &Value, want: &swf_parser::flow_control::ErrorMatch) ->
     true
 }
 
+/// Retries a `catch.retry` allows after the first attempt (`limit.attempt.count`).
+fn retry_count(retry: &swf_parser::retry::RetryPolicy) -> u32 {
+    retry.limit.as_ref().and_then(|l| l.attempt.as_ref()).map(|a| a.count).unwrap_or(0)
+}
+
+/// The wait before retry `attempt` (1 = the first retry): `delay`, grown by
+/// `backoff` — constant (the default), linear (× attempt) or exponential (× 2^(attempt-1)).
+fn retry_delay(retry: &swf_parser::retry::RetryPolicy, attempt: u32) -> std::time::Duration {
+    let base = retry.delay.as_ref()
+        .map(|d| d.seconds.unwrap_or(0) + d.minutes.unwrap_or(0) * 60)
+        .unwrap_or(0);
+    let factor: u64 = match retry.backoff.as_ref() {
+        Some(b) if b.exponential.is_some() => 1u64 << (attempt.saturating_sub(1)).min(16),
+        Some(b) if b.linear.is_some() => attempt as u64,
+        _ => 1,
+    };
+    std::time::Duration::from_secs(base.saturating_mul(factor))
+}
+
 impl WorkflowExecutor {
     pub fn new() -> Self {
         Self {
@@ -967,32 +986,54 @@ impl WorkflowExecutor {
         ctx: &mut ExecutionContext,
         task_path: &str,
     ) -> Result<TaskResult> {
-        match self.execute_task_list(&try_task.tasks, input.clone(), ctx, &format!("{}/try", task_path)).await {
-            Ok(output) => Ok(TaskResult::new(output)),
-            Err(err @ RuntimeError::Halted(_)) => Err(err),
-            Err(err) => {
-                let Some(ref catch) = try_task.catch else { return Err(err) };
-                let caught = error_object(&err);
-                // `errors.with`: catch only what matches; anything else goes on up.
-                if let Some(want) = catch.errors.as_ref().and_then(|f| f.with.as_ref()) {
-                    if !error_matches(&caught, want) {
-                        return Err(err);
-                    }
+        let mut attempt: u32 = 1;
+        loop {
+            // Each attempt is its own scope in the journal (`try`, `try#2`, …),
+            // so a retry runs again instead of replaying the failure, and a
+            // resumed run still finds every attempt where it left it.
+            let scope = if attempt == 1 { format!("{}/try", task_path) } else { format!("{}/try#{}", task_path, attempt) };
+            let err = match self.execute_task_list(&try_task.tasks, input.clone(), ctx, &scope).await {
+                Ok(output) => return Ok(TaskResult::new(output)),
+                Err(err @ RuntimeError::Halted(_)) => return Err(err),
+                Err(err) => err,
+            };
+            let Some(ref catch) = try_task.catch else { return Err(err) };
+            let caught = error_object(&err);
+            // `errors.with`: catch only what matches; anything else goes on up.
+            if let Some(want) = catch.errors.as_ref().and_then(|f| f.with.as_ref()) {
+                if !error_matches(&caught, want) {
+                    return Err(err);
                 }
-                debug!(error = %err, "try caught error, running catch handler");
-                // The handler sees what it caught as `$context.error`, in the
-                // CNCF error shape (type, status, title, detail, instance).
-                if !ctx.context.is_object() {
-                    ctx.context = serde_json::json!({});
-                }
-                if let Some(obj) = ctx.context.as_object_mut() {
-                    obj.insert("error".to_string(), caught);
-                }
-                let catch_output = self.execute_task_list(
-                    &catch.tasks, input, ctx, &format!("{}/catch", task_path)
-                ).await?;
-                Ok(TaskResult::new(catch_output))
             }
+            // `retry`: try again while attempts remain. A policy denial is never
+            // retried: the decision would be the same (UX F4).
+            if let Some(ref retry) = catch.retry {
+                if !matches!(err, RuntimeError::Denied { .. }) && attempt <= retry_count(retry) {
+                    let wait = retry_delay(retry, attempt);
+                    debug!(error = %err, attempt, wait_ms = wait.as_millis() as u64, "try failed; retrying");
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
+                    }
+                    attempt += 1;
+                    continue;
+                }
+            }
+            debug!(error = %err, "try caught error, running catch handler");
+            // The handler sees what it caught as `$context.error`, in the
+            // CNCF error shape (type, status, title, detail, instance), plus
+            // how many attempts were made.
+            if !ctx.context.is_object() {
+                ctx.context = serde_json::json!({});
+            }
+            if let Some(obj) = ctx.context.as_object_mut() {
+                let mut caught = caught;
+                caught["attempts"] = serde_json::json!(attempt);
+                obj.insert("error".to_string(), caught);
+            }
+            let catch_output = self.execute_task_list(
+                &catch.tasks, input, ctx, &format!("{}/catch", task_path)
+            ).await?;
+            return Ok(TaskResult::new(catch_output));
         }
     }
 

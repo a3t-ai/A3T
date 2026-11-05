@@ -597,3 +597,83 @@ async fn without_a_handler_the_original_error_stands() {
     let err = executor.execute(&wf, json!({}), &mut ctx).await.unwrap_err();
     assert_eq!(err.error_type_uri(), "https://example.com/x");
 }
+
+/// Fails its first `fail_times` calls with `err`, then answers {ok: true}.
+struct Flaky {
+    calls: std::sync::atomic::AtomicU32,
+    fail_times: u32,
+    denied: bool,
+}
+
+#[async_trait::async_trait]
+impl TaskHandler for Flaky {
+    fn task_type(&self) -> &str { "call:llm" }
+    async fn execute(&self, task: &swf_parser::NamedTask, _i: Value, _c: &mut ExecutionContext) -> swf_runtime::error::Result<TaskResult> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if n <= self.fail_times {
+            return Err(if self.denied {
+                swf_runtime::RuntimeError::Denied { task: task.name.clone(), reason: "no".into(), policy_ids: vec![] }
+            } else {
+                swf_runtime::RuntimeError::Communication("provider answered 429 Too Many Requests".into())
+            });
+        }
+        Ok(TaskResult::new(json!({ "ok": true })))
+    }
+}
+
+const RETRY_FLOW: &str = r#"
+document:
+  dsl: '1.0.3'
+  namespace: test
+  name: retry
+  version: '1.0.0'
+do:
+  - ask:
+      try:
+        do:
+          - llm:
+              call: llm
+        catch:
+          retry:
+            limit:
+              attempt:
+                count: 3
+          do:
+            - gave-up:
+                set:
+                  gave_up: true
+"#;
+
+#[tokio::test]
+async fn catch_retry_runs_again_until_it_succeeds() {
+    let flaky = Arc::new(Flaky { calls: Default::default(), fail_times: 2, denied: false });
+    let mut executor = WorkflowExecutor::new();
+    executor.register_handler(flaky.clone());
+    let mut ctx = make_ctx();
+    let out = executor.execute(&parse_yaml(RETRY_FLOW).unwrap(), json!({}), &mut ctx).await.unwrap();
+    assert_eq!(out["ok"], true);
+    assert_eq!(flaky.calls.load(std::sync::atomic::Ordering::SeqCst), 3, "1 try + 2 retries");
+}
+
+#[tokio::test]
+async fn catch_retry_gives_up_after_its_limit_and_reports_attempts() {
+    let flaky = Arc::new(Flaky { calls: Default::default(), fail_times: 99, denied: false });
+    let mut executor = WorkflowExecutor::new();
+    executor.register_handler(flaky.clone());
+    let mut ctx = make_ctx();
+    let out = executor.execute(&parse_yaml(RETRY_FLOW).unwrap(), json!({}), &mut ctx).await.unwrap();
+    assert_eq!(out["gave_up"], true);
+    assert_eq!(flaky.calls.load(std::sync::atomic::Ordering::SeqCst), 4, "1 try + 3 retries");
+    assert_eq!(ctx.context["error"]["attempts"], 4);
+}
+
+#[tokio::test]
+async fn a_denial_is_never_retried() {
+    let flaky = Arc::new(Flaky { calls: Default::default(), fail_times: 99, denied: true });
+    let mut executor = WorkflowExecutor::new();
+    executor.register_handler(flaky.clone());
+    let mut ctx = make_ctx();
+    let out = executor.execute(&parse_yaml(RETRY_FLOW).unwrap(), json!({}), &mut ctx).await.unwrap();
+    assert_eq!(out["gave_up"], true);
+    assert_eq!(flaky.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
