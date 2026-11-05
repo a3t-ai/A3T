@@ -26,12 +26,21 @@ do:
       principal: '${ .principal // "" }'
       step: '${ .step // (.error.instance // "") }'
       kind: '${ ((.error.type // "") | split("/") | last) }'
+      # ADB's stable code (DB-18), tagged by call:adb as a trailing [adb:<code>].
+      adb: '${ (.error.detail // "") | [capture("\\[adb:(?<c>[a-z_]+)\\]$") | .c] | .[0] }'
+      why: '${ (.error.detail // "") | sub(" \\[adb:[a-z_]+\\]$"; "") | sub("^ADB: "; "") }'
       class: >-
         ${ (.error // {}) as $e
+        | ((($e.detail // "") | [capture("\\[adb:(?<c>[a-z_]+)\\]$") | .c] | .[0])) as $adb
         | (($e.type // "") | split("/") | last) as $k
         | ($e.status // 500) as $s
         | ((($e.detail // "") + " " + ($e.title // "")) | ascii_downcase) as $d
-        | if $k == "authorization" or $s == 403 then "policy"
+        | if $adb != null then
+            (if ["forbidden", "sealed_key"] | index($adb) then "policy"
+             elif $adb == "timeout" then "limit"
+             elif ["internal", "wrong_engine", "durable_required", "unauthorized"] | index($adb) then "bug"
+             else "input" end)
+          elif $k == "authorization" or $s == 403 then "policy"
           elif ($k | test("limit|budget")) then "limit"
           elif $k == "timeout" or $s == 408 or $s == 429 or $s == 503 or $s == 504
                or ($d | test("rate.?limit|too many requests|\\b429\\b|timed? ?out|temporar|connection (reset|refused|closed)|unavailable|overloaded"))
@@ -46,7 +55,7 @@ do:
         ${ {"policy": "Not allowed", "transient": "Unavailable", "limit": "Limit reached",
             "input": "Couldn't do that", "bug": "Failed"}[$context.class] }
       user_message: >-
-        ${ ($context.e.detail // "" | if length > 300 then .[0:300] + "…" else . end) as $why
+        ${ ($context.why // "" | if length > 300 then .[0:300] + "…" else . end) as $why
         | if $context.class == "policy" then "Not allowed: " + $why + ". Ask an admin if you need this."
           elif $context.class == "transient" then "A service A3T depends on didn't answer in time. Please try again in a minute."
           elif $context.class == "limit" then "This hit a limit: " + $why + "."
@@ -66,7 +75,7 @@ do:
             - id: '${ "err-" + $context.run_id + "-" + (now | tostring) }'
               created_at: '${ now | todateiso8601 }'
               class: '${ $context.class }'
-              code: '${ $context.class + "." + $context.kind }'
+              code: '${ if $context.adb then "adb." + $context.adb else $context.class + "." + $context.kind end }'
               status: '${ ($context.e.status // 500) | tostring }'
               type: '${ $context.e.type // "" }'
               title: '${ $context.e.title // "" }'

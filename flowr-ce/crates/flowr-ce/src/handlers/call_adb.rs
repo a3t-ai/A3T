@@ -184,8 +184,30 @@ fn flight_err(ep: &AdbEndpoint, e: tonic::Status) -> String {
         tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::DeadlineExceeded => {
             format!("ADB request to {} failed: {}", ep.flight, e.message())
         }
-        _ => format!("ADB: {}", e.message()),
+        // DB-18: a refusal carries its stable code in the `adb-code` metadata.
+        _ => with_code(format!("ADB: {}", e.message()), e.metadata().get("adb-code").and_then(|v| v.to_str().ok())),
     }
+}
+
+/// `text` with ADB's stable error code (DB-18) as a trailing `[adb:<code>]` tag,
+/// which the A3T error handler and the REST edge read with [`adb_code`].
+pub fn with_code(text: String, code: Option<&str>) -> String {
+    match code.filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')) {
+        Some(c) => format!("{text} [adb:{c}]"),
+        None => text,
+    }
+}
+
+/// The ADB code tagged on an error by [`with_code`], and the text without the tag.
+pub fn adb_code(text: &str) -> (Option<String>, String) {
+    if let Some(start) = text.rfind(" [adb:") {
+        if let Some(rest) = text[start + 6..].strip_suffix(']') {
+            if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_') {
+                return (Some(rest.to_string()), text[..start].to_string());
+            }
+        }
+    }
+    (None, text.to_string())
 }
 
 /// Rows of an ADB platform table (`do_get`).
@@ -255,7 +277,7 @@ pub async fn adb_query(ep: &AdbEndpoint, query: &str, variables: Option<&Value>)
     let answer = flight_action(ep, "aql", &body).await?;
     if answer.get("success").and_then(|s| s.as_bool()) != Some(true) {
         let err = answer.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
-        return Err(format!("ADB: {err}"));
+        return Err(with_code(format!("ADB: {err}"), answer.get("code").and_then(|c| c.as_str())));
     }
     Ok(answer.get("data").cloned().unwrap_or(Value::Null))
 }
@@ -303,6 +325,28 @@ mod tests {
             {"id": "a", "memory_type": "WORKING", "data": {"name": "alice", "score": 95}, "metadata": {}}
         ]}});
         assert_eq!(result_rows(&r), json!([{"id": "a", "memory_type": "WORKING", "name": "alice", "score": 95}]));
+    }
+
+    #[test]
+    fn codes_ride_along_and_come_back_off() {
+        let t = with_code("ADB: namespace \"a\" already has a branch \"x\"".into(), Some("branch_exists"));
+        assert_eq!(t, "ADB: namespace \"a\" already has a branch \"x\" [adb:branch_exists]");
+        let (code, msg) = adb_code(&t);
+        assert_eq!(code.as_deref(), Some("branch_exists"));
+        assert_eq!(msg, "ADB: namespace \"a\" already has a branch \"x\"");
+        assert_eq!(adb_code("ADB: plain").0, None);
+        // Nothing odd is ever tagged.
+        assert_eq!(with_code("x".into(), Some("Bad Code]")), "x");
+    }
+
+    #[test]
+    fn flight_refusals_carry_their_code() {
+        let ep = adb_endpoint("http://adb:8080", None);
+        let mut st = tonic::Status::already_exists("tag \"v1\" exists");
+        st.metadata_mut().insert("adb-code", "tag_exists".parse().unwrap());
+        assert_eq!(flight_err(&ep, st), "ADB: tag \"v1\" exists [adb:tag_exists]");
+        let st = tonic::Status::unavailable("connection refused");
+        assert!(flight_err(&ep, st).starts_with("ADB request to"));
     }
 
     #[test]

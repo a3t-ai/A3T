@@ -40,6 +40,8 @@ do:
     - input: { when: '${ .fault == "bad-input" }', then: bad-input }
     - denied: { when: '${ .fault == "denial" }', then: denial }
     - bug: { when: '${ .fault == "bug" }', then: bug }
+    - adbexists: { when: '${ .fault == "adb-exists" }', then: adb-exists }
+    - adbsealed: { when: '${ .fault == "adb-sealed" }', then: adb-sealed }
     - default: { then: fine }
 - fine:
     set: { ok: true }
@@ -59,6 +61,12 @@ do:
 - bug:
     raise:
       error: { type: 'https://serverlessworkflow.io/spec/1.0.0/errors/runtime', status: 500, title: Boom, detail: 'index out of range' }
+- adb-exists:
+    raise:
+      error: { type: 'https://serverlessworkflow.io/spec/1.0.0/errors/communication', status: 502, title: Communication error, detail: 'ADB: namespace "acme--bot" already has a branch "try" [adb:branch_exists]' }
+- adb-sealed:
+    raise:
+      error: { type: 'https://serverlessworkflow.io/spec/1.0.0/errors/communication', status: 502, title: Communication error, detail: 'ADB: limit:eu belongs to the sealed layer "acme--compliance" [adb:sealed_key]' }
 "#;
 
 const SUPER: &[&str] = &["SuperAdmin", "Admin"];
@@ -116,6 +124,10 @@ async fn every_fault_is_classified_logged_once_and_shown_in_plain_words() {
         ("bad-input", "input", "Couldn't do that: name is required"),
         ("denial", "policy", "Not allowed: email outside acme.com"),
         ("bug", "bug", "Something failed on our side. Reference:"),
+        // ADB refusals (DB-18 codes, tagged by call:adb): the code decides the
+        // class, and the tag never reaches the person.
+        ("adb-exists", "input", "Couldn't do that: namespace \"acme--bot\" already has a branch \"try\""),
+        ("adb-sealed", "policy", "Not allowed: limit:eu belongs to the sealed layer"),
     ];
     for (fault, class, words) in cases {
         let (status, _, err) = w.run(DEV, "st1-fault", json!({ "fault": fault })).await;
@@ -123,6 +135,7 @@ async fn every_fault_is_classified_logged_once_and_shown_in_plain_words() {
         assert!(err.contains(&format!("https://a3t.io/errors/{class}")), "{fault}: class {class} expected in {err}");
         assert!(err.contains(words), "{fault}: expected “{words}” in {err}");
         assert!(!err.contains("index out of range") || fault != "bug", "the raw detail of a bug never reaches the user: {err}");
+        assert!(!err.contains("[adb:"), "the code tag never reaches the user: {err}");
     }
 
     // One row per failure, each with its class, newest first.
@@ -130,8 +143,10 @@ async fn every_fault_is_classified_logged_once_and_shown_in_plain_words() {
     let rows = log["errors"].as_array().unwrap();
     assert_eq!(rows.len(), cases.len(), "exactly one row per failure: {log}");
     assert_eq!(log["counts"]["transient"], 2);
-    assert_eq!(log["counts"]["input"], 1);
-    assert_eq!(log["counts"]["policy"], 1);
+    assert_eq!(log["counts"]["input"], 2);
+    assert_eq!(log["counts"]["policy"], 2);
+    let exists = rows.iter().find(|r| r["code"] == "adb.branch_exists").expect("the ADB code is recorded");
+    assert_eq!(exists["class"], "input");
     assert_eq!(log["counts"]["bug"], 1);
     let bug = rows.iter().find(|r| r["class"] == "bug").unwrap();
     assert_eq!(bug["detail"], "index out of range", "the log keeps the raw detail for P0");
@@ -141,7 +156,7 @@ async fn every_fault_is_classified_logged_once_and_shown_in_plain_words() {
 
     // A filter narrows it.
     let policy = w.errors(json!({ "class": "policy" })).await;
-    assert_eq!(policy["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(policy["errors"].as_array().unwrap().len(), 2);
 
     // Only a superadmin reads the log.
     let (status, out, _) = w.run(DEV, "a3t-error-log", json!({ "action": "list" })).await;

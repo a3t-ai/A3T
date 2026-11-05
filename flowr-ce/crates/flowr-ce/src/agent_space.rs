@@ -117,6 +117,29 @@ fn err(code: StatusCode, msg: impl Into<String>) -> Response {
     (code, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// An ADB refusal as the REST answer (BR-17): `{error, code}` with the status
+/// that fits ADB's stable code (DB-18), so the console can offer the fix.
+fn adb_refusal(e: &str) -> Response {
+    if e.starts_with("ADB request to") {
+        return err(StatusCode::BAD_GATEWAY, e);
+    }
+    let (code, msg) = crate::handlers::call_adb::adb_code(e);
+    let msg = msg.trim_start_matches("ADB: ").to_string();
+    let status = match code.as_deref() {
+        Some("not_found" | "branch_not_found" | "tag_not_found") => StatusCode::NOT_FOUND,
+        Some("branch_exists" | "tag_exists" | "key_exists" | "key_on_branch" | "target_not_empty"
+            | "branch_has_children" | "tag_pinned" | "merged_record") => StatusCode::CONFLICT,
+        Some("forbidden" | "sealed_key") => StatusCode::FORBIDDEN,
+        Some("unauthorized" | "internal" | "wrong_engine" | "durable_required") => StatusCode::BAD_GATEWAY,
+        Some("timeout") => StatusCode::GATEWAY_TIMEOUT,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    match code {
+        Some(c) => (status, Json(json!({ "error": msg, "code": c }))).into_response(),
+        None => err(status, msg),
+    }
+}
+
 fn who(p: Option<Extension<Principal>>) -> Principal {
     p.map(|Extension(p)| p).unwrap_or_else(|| Principal::service("anonymous"))
 }
@@ -164,10 +187,7 @@ async fn adb(storage: &dyn StorageBackend, space: &Space, action: &str, mut body
     if let Some(m) = body.as_object_mut() {
         m.entry("namespace").or_insert_with(|| json!(space.namespace));
     }
-    flight_action(&ep, action, &body).await.map_err(|e| {
-        let code = if e.starts_with("ADB request to") { StatusCode::BAD_GATEWAY } else { StatusCode::BAD_REQUEST };
-        err(code, e.trim_start_matches("ADB: ").to_string())
-    })
+    flight_action(&ep, action, &body).await.map_err(|e| adb_refusal(&e))
 }
 
 fn ok(v: Value) -> Reply {
