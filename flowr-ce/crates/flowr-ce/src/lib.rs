@@ -8,6 +8,7 @@
 
 pub(crate) mod server;
 pub mod access;
+pub mod agent_space;
 pub mod approval;
 pub mod token_stream;
 pub mod canvas;
@@ -367,6 +368,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let registry_routes = registry::registry_router(storage.clone());
     let canvas_routes = canvas::canvas_router(storage.clone());
     let ops_routes = ops::ops_router(storage.clone());
+    let agent_space_routes = agent_space::router(storage.clone());
 
     let (tx, _) = broadcast::channel::<String>(100);
     let state = Arc::new(AppState { storage, tx });
@@ -432,6 +434,8 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         .merge(Router::new().nest("/canvas", canvas_routes))
         // Runtime console: deployments, pause/resume, runtime state, metrics
         .merge(Router::new().nest("/ops", ops_routes))
+        // Agents as repos: an agent's memory space, branches, tags, layers, fork, promote
+        .merge(agent_space_routes)
 }
 
 /// Spawn the background execution worker

@@ -151,7 +151,7 @@ agent inherits. One level deep: a layer can't have layers itself.
 | Action | Request body | Answer |
 |---|---|---|
 | `layers_set` | `{namespace, layers: [Layer]}`; replaces the whole list, `[]` removes all | the Layers object |
-| `layers_get` | `{namespace}` | `{layers: Layers \| null}` |
+| `layers_get` | `{namespace}` | `{layers: [Layer]}` (empty when none) |
 
 ```json
 {
@@ -180,8 +180,9 @@ FORGET in the layer space reaches every space that reads it.
 
 ## 6. Agents (FlowR)
 
-The UI manages agents through FlowR, not ADB. Agent CRUD exists; agent-level branch,
-fork and promote endpoints don't, so build against the planned shapes below.
+The UI manages agents through FlowR, not ADB. Agent CRUD is the `a3t-agents` flow; the
+memory endpoints are FlowR REST (`flowr-ce/src/agent_space.rs`, BR-1, 5 Nov; not yet in
+an image).
 
 ### Today: the `a3t-agents` flow
 
@@ -196,24 +197,56 @@ see `agents` in `a3t/ui/src/lib/services/a3t.ts`.
 | `update` | `id`, `org_id`, `timestamp`, `data` (fields to change) |
 | `delete` | `id`, `org_id` |
 
-An agent's memory space is `<project>--<agent>`: agent `support-bot` in project `acme`
-uses `acme--support-bot`. That is the `namespace` in every ADB call above.
+### An agent's memory space
 
-### Planned: agent branch endpoints (not built)
+A memory space is a **namespace in the org's ADB**: each org has its own shard and
+sequencer; a space is not a shard. All agents of an org share that ADB (until per-org
+resources exist: `a3t/agent-memory`, or `A3T_ADB_RESOURCE`).
 
-Spec §4.7: REST under `/agents/<id>/branches` plus the same as MCP tools. FlowR resolves
-the agent to its namespace and calls the ADB action; bodies and answers are ADB's.
+Decided 5 Nov (user): **each agent has a space of its own**, recorded in the platform
+table `agent_memory` (`agent_id`, `org_id`, `namespace`, `updated_by`, `updated_at`).
+`agent_configs` keeps its columns.
 
-| Method and path | ADB action | Body |
-|---|---|---|
-| `GET /agents/{id}/branches` | `branch_list` | none |
-| `POST /agents/{id}/branches` | `branch_create` | `{name, parent?}`; `created_by` = the signed-in user |
-| `DELETE /agents/{id}/branches/{name}` | `branch_drop` | none |
-| `POST /agents/{id}/branches/{name}/promote` | `branch_promote` | `{new_agent: {id, name}}`; FlowR derives `into` and creates the agent |
-| `POST /agents/{id}/fork` | `space_clone` | `{new_agent: {id, name}}` |
-| `GET` / `POST /agents/{id}/tags`, `DELETE /agents/{id}/tags/{name}` | `tag_list`, `tag_create`, `tag_drop` | `{name}` for create |
-| `GET` / `PUT /agents/{id}/layers` | `layers_get`, `layers_set` | `{layers: [Layer]}`, `space` given as an agent id |
-| a run with `memory_branch` | `BRANCH` on every statement | run field (spec §4.3) |
+- New agents: the UI calls `PUT /agents/{id}/memory` right after creating the agent; the
+  default namespace is `<project>--<agent id>` (project = the agent's `namespace` column).
+- Existing agents have no row and keep the namespace their template names
+  (`call:a3t:agent` `memory_namespace`), so nothing moves. The memory endpoints answer
+  `409 {error, default_namespace}` for them until a space is set; to keep their memory,
+  set it to the template's namespace.
+- `call:a3t:agent` running as an agent (session `<agent id>:…`) with a row uses that
+  space; otherwise the template's resource and namespace, as before.
+
+### Endpoints (built, BR-1)
+
+Under the auth middleware. Reads need read access to the agent's project, writes need
+write access; `created_by` is the signed-in user. FlowR fills `namespace`; bodies and
+answers are otherwise ADB's (§2–§5). ADB refusals: `400 {error}` with ADB's sentence;
+ADB unreachable: `502`.
+
+| Method and path | ADB action | Body | Answer |
+|---|---|---|---|
+| `GET /agents/{id}/memory` | none | | `{agent_id, resource, namespace, own}`; `own: false` → `namespace: null` + `default_namespace` |
+| `PUT /agents/{id}/memory` | none | `{namespace?}` (default `<project>--<id>`) | `{agent_id, resource, namespace, own: true}` |
+| `GET /agents/{id}/branches` | `branch_list` | | `{branches: [Branch]}` |
+| `POST /agents/{id}/branches` | `branch_create` | `{name, parent?}` | `201` Branch |
+| `DELETE /agents/{id}/branches/{name}` | `branch_drop` | | `{dropped}` |
+| `POST /agents/{id}/branches/{name}/promote` | `branch_promote` | `{new_agent: {id?, name?}}` | `201 {agent, memory}` |
+| `POST /agents/{id}/fork` | `space_clone` | `{new_agent: {id?, name?}}` | `201 {agent, memory}` |
+| `GET /agents/{id}/tags` | `tag_list` | | `{tags: [Tag]}` |
+| `POST /agents/{id}/tags` | `tag_create` | `{name}` | `201` Tag |
+| `DELETE /agents/{id}/tags/{name}` | `tag_drop` | | `{dropped}` |
+| `GET /agents/{id}/layers` | `layers_get` | | `{layers: [Layer]}` (empty when none) |
+| `PUT /agents/{id}/layers` | `layers_set` | `{layers: [Layer]}`; a layer names `agent` (an agent id of the same org) or `space` (a namespace) | Layers |
+
+Promote and fork create the new agent: a copy of the source's `agent_configs` row (same
+template, project and org) with the new `id` (default `agt-<12 hex>`) and `name`
+(default `<name> (copy)`), and its `agent_memory` row with `<project>--<new id>`. The
+memory is copied first; the rows are written only if the copy succeeded. An existing
+agent id is refused (`409`).
+
+Not built yet: runs on a branch (`memory_branch`, BR-4), MCP tools for these, Cedar
+`memory:*` checks (project access only, for now), agent ids instead of namespaces inside
+ADB's answers (Branch, Tag, Layers still carry `namespace`).
 
 Cedar actions (planned): `memory:branch`, `memory:promote`, `memory:fork`, `memory:tag`,
 `memory:mount`, `memory:pin`.

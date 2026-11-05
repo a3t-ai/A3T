@@ -528,11 +528,22 @@ impl TaskHandler for AgentHandler {
         // ── Phase 3: RECALL MEMORY ─────────────────────────
         // Only with `memory_resource` (an ADB resource): agent_memory.rs, F1–F2.
         fire_before(self, ctx, "recall_memory", "call:adb").await;
-        let memory = match config.config.memory_resource.as_deref() {
+        // An agent with a memory space of its own (`agent_memory`, agent_space.rs) uses
+        // it: a namespace in the org's ADB. Otherwise the template's resource and
+        // namespace, as before.
+        let own = match crate::agent_space::agent_of_session(&config.session_id) {
+            Some(agent) => crate::agent_space::space_of(storage.as_ref(), agent).await,
+            None => None,
+        };
+        let (memory_resource, memory_namespace) = match &own {
+            Some(sp) => (Some(sp.resource.as_str()), sp.namespace.as_str()),
+            None => (config.config.memory_resource.as_deref(), config.config.memory_namespace.as_str()),
+        };
+        let memory = match memory_resource {
             Some(resource) => match AgentMemory::connect(
                 storage.as_ref(),
                 resource,
-                &config.config.memory_namespace,
+                memory_namespace,
                 &config.session_id,
                 ctx.principal.id(),
             )
