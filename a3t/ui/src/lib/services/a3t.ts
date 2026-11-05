@@ -5,7 +5,7 @@
 // Flow input lands at `.` (not `.input`), so we pass { input: { action, ...data } }.
 // Auth context (org_id, user_id) is injected from the session store.
 
-import { flows } from './api';
+import { flows, plainError } from './api';
 import { getSession } from '$lib/stores/auth';
 
 // ── Helpers ──
@@ -26,7 +26,7 @@ function genId(prefix: string) {
 async function exec(flowName: string, input: Record<string, any>) {
   const res = await flows.execute(flowName, 'a3t', input);
   console.log(`[a3t] exec ${flowName}:`, res);
-  if (!res.ok) throw new Error(res.error ?? `Flow ${flowName} failed`);
+  if (!res.ok) throw new Error(plainError(res.error ?? `Flow ${flowName} failed`));
 
   // execute_flow returns async — extract instance_id and poll for completion
   const text = typeof res.data === 'string' ? res.data : res.data?.text ?? '';
@@ -44,7 +44,7 @@ async function exec(flowName: string, input: Record<string, any>) {
     if (!status.ok) continue;
     const d = typeof status.data === 'string' ? JSON.parse(status.data) : status.data;
     if (d?.status === 'completed' || d?.status === 'Completed') return d?.output ?? d;
-    if (d?.status === 'failed' || d?.status === 'Failed') throw new Error(d?.error ?? 'Flow failed');
+    if (d?.status === 'failed' || d?.status === 'Failed') throw new Error(plainError(d?.error ?? 'Flow failed'));
   }
   throw new Error(`Flow ${flowName} timed out`);
 }

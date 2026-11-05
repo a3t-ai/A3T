@@ -568,6 +568,15 @@ import { actionKind, begin, end, openConnection, reached, requestKind } from '$l
 
 // ── Shared exec helper: execute_flow + poll for result ──
 
+/// A failure the A3T base handled (UX ST-1) reaches the console as the engine's
+/// text, e.g. "Workflow execution failed. … - Error: raised error
+/// [https://a3t.io/errors/input]: Couldn't do that: name is required". Show the
+/// person only the plain message; anything else is returned unchanged.
+export function plainError(raw: string): string {
+  const m = /raised error \[https:\/\/a3t\.io\/errors\/[a-z]+\]: ([\s\S]*)$/.exec(raw ?? '');
+  return m ? m[1].trim() : raw;
+}
+
 export async function execFlow(
   flowName: string,
   namespace: string,
@@ -599,7 +608,7 @@ export async function execFlow(
     const execRes = await mcpCall('execute_flow', { name: actualFlowName, namespace, input: actualInput });
     if (!execRes.ok) {
       end(span, false);
-      const err = execRes.error ?? `Failed to execute ${flowName}`;
+      const err = plainError(execRes.error ?? `Failed to execute ${flowName}`);
       if (!silent) messages.error(err, { source: flowName });
       return { ok: false, error: err };
     }
@@ -652,7 +661,7 @@ export async function execFlow(
       }
       if (d?.status === 'Failed' || d?.status === 'failed') {
         end(span, false);
-        const err = d.error ?? `${flowName} failed`;
+        const err = plainError(d.error ?? `${flowName} failed`);
         if (!silent) messages.error(err, { source: flowName });
         return { ok: false, error: err };
       }
