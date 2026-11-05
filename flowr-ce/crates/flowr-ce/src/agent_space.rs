@@ -186,8 +186,10 @@ async fn agent_space(storage: &dyn StorageBackend, principal: &Principal, id: &s
 
 async fn adb(storage: &dyn StorageBackend, space: &Space, action: &str, mut body: Value) -> Result<Value, Response> {
     let ep = resolve_adb(storage, &space.resource).await.map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    // Always the agent's own space: a request body can never aim an action at
+    // another agent's memory (merge bodies pass through from the caller).
     if let Some(m) = body.as_object_mut() {
-        m.entry("namespace").or_insert_with(|| json!(space.namespace));
+        m.insert("namespace".into(), json!(space.namespace));
     }
     flight_action(&ep, action, &body).await.map_err(|e| adb_refusal(&e))
 }
@@ -346,7 +348,7 @@ async fn branch_conflicts(
 }
 
 /// The caller's body for a merge or rebase, with the branch and who did it set by
-/// the server (a body can't name someone else).
+/// the server (a body can't name someone else); `adb()` sets the namespace.
 fn merge_body(b: Option<Json<Value>>, name: &str, by: &str) -> Value {
     let mut body = b.map(|Json(b)| b).filter(|b| b.is_object()).unwrap_or_else(|| json!({}));
     body["name"] = json!(name);
@@ -377,11 +379,18 @@ async fn rebase_branch(State(s): St, p: P, Path((id, name)): Path<(String, Strin
 
 /// Undo a kind 2 merge: the previous versions come back as new versions; records
 /// changed since come back as 409 `revert_conflicts`.
-async fn revert_merge(State(s): St, p: P, Path((id, merge_id)): Path<(String, String)>) -> Response {
+/// `{force_skip?}`: revert what didn't change since and report the rest.
+async fn revert_merge(State(s): St, p: P, Path((id, merge_id)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
-        ok(adb(s.as_ref(), &sp, "merge_revert", json!({ "merge_id": merge_id, "reverted_by": principal.id() })).await?)
+        let mut req = json!({ "merge_id": merge_id, "reverted_by": principal.id() });
+        if let Some(Json(b)) = body {
+            if let Some(f) = b.get("force_skip").and_then(|v| v.as_bool()) {
+                req["force_skip"] = json!(f);
+            }
+        }
+        ok(adb(s.as_ref(), &sp, "merge_revert", req).await?)
     }.await)
 }
 
