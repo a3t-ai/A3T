@@ -564,7 +564,7 @@ export const idp = {
 
 import { messages } from '$lib/core/status/messages';
 
-import { actionKind, begin, end, reached, requestKind } from '$lib/core/status/activity';
+import { actionKind, begin, end, openConnection, reached, requestKind } from '$lib/core/status/activity';
 
 // ── Shared exec helper: execute_flow + poll for result ──
 
@@ -692,6 +692,8 @@ export function streamChat(
   afterSeq = 0,
 ): { close: () => void } {
   const ctrl = new AbortController();
+  const closeConn = openConnection();
+  ctrl.signal.addEventListener('abort', closeConn);
 
   (async () => {
     try {
@@ -739,6 +741,8 @@ export function streamChat(
       dispatch();
     } catch {
       // Aborted or network drop — the caller falls back to polling + rehydration.
+    } finally {
+      closeConn();
     }
   })();
 

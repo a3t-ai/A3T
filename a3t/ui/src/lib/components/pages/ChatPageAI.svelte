@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { inBackground } from '$lib/core/status/activity';
+  import { inBackground, openConnection } from '$lib/core/status/activity';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import { setActiveSelection, getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { splitContextPath } from '$lib/stores/context.svelte.ts';
@@ -304,6 +304,12 @@
   });
 
   const busy = $derived(chat.status === 'submitted' || chat.status === 'streaming');
+  // The reply stream is a connection too: the blue line runs while it is open.
+  $effect(() => {
+    if (!busy) return;
+    const close = openConnection();
+    return close;
+  });
 
   // A finished turn is when the server first has a transcript (and a title) for a
   // brand-new conversation, so re-read the index then rather than polling.

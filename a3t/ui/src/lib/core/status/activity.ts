@@ -15,12 +15,17 @@ export interface Activity {
   connection: Connection;
   /** Just finished: "Saved", "Deleted", "Connected" — shown briefly. */
   done: { word: string; at: number } | null;
+  /** Every connection in flight, background refreshes included: the blue line
+   *  runs from the first one opening to the last one closing. */
+  conns: number;
 }
 
 const RANK: Record<Kind, number> = { loading: 1, running: 2, saving: 3, deleting: 3 };
 const spans = new Map<number, Kind>();
 let next = 1;
-const state = writable<Activity>({ kind: null, since: 0, connection: 'connecting', done: null });
+const state = writable<Activity>({ kind: null, since: 0, connection: 'connecting', done: null, conns: 0 });
+let conns = 0;
+const setConns = (d: number) => { conns = Math.max(0, conns + d); state.update((s) => ({ ...s, conns })); };
 export const activity = { subscribe: state.subscribe };
 
 function top(): Kind | null {
@@ -67,13 +72,24 @@ export function begin(kind: Kind): number {
   // (so end() is harmless) but leave the bar alone.
   if (kind === 'loading' && (bgDepth > 0 || (Date.now() - lastInput > USER_WINDOW && spans.size === 0 && idleTimer === null))) {
     background.add(id);
+    setConns(1);
     return id;
   }
   const continuing = spans.size > 0 || idleTimer !== null;
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   spans.set(id, kind);
-  state.update((s) => ({ ...s, kind: top(), since: continuing ? s.since : Date.now() }));
+  conns += 1;
+  state.update((s) => ({ ...s, conns, kind: top(), since: continuing ? s.since : Date.now() }));
   return id;
+}
+
+/// A connection the request layer does not make (a chat reply streaming over
+/// SSE): it runs the blue line while open, and never says "Loading…" — the
+/// chat shows its own progress. Returns the close function; safe to call twice.
+export function openConnection(): () => void {
+  setConns(1);
+  let open = true;
+  return () => { if (open) { open = false; setConns(-1); } };
 }
 
 /// Opening a page: the wait starts at the click, before its first request
@@ -86,9 +102,10 @@ export function navigating() {
 
 /// `ok`: it worked — a finished save says "Saved" once nothing else is saving.
 export function end(id: number, ok = true) {
-  if (background.delete(id)) return;
+  if (background.delete(id)) { setConns(-1); return; }
   const kind = spans.get(id);
   if (!kind) return;
+  setConns(-1);
   spans.delete(id);
   const k = top();
   if (k) lastKind = k;
