@@ -38,8 +38,28 @@ const GRACE = 300;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let lastKind: Kind | null = null;
 
+/// Background refreshes (polling a page, checking for approvals) must not
+/// make an idle page say "Loading…". The bar shows only what the user is
+/// waiting for: requests that start soon after they did something — a click,
+/// a key, opening a page — or while the app is first loading. Writes always
+/// count. Background reads still run; they are just not announced.
+const USER_WINDOW = 1500;
+let lastInput = Date.now();          // app start counts as the user waiting
+if (typeof window !== 'undefined') {
+  const mark = () => { lastInput = Date.now(); };
+  window.addEventListener('pointerdown', mark, true);
+  window.addEventListener('keydown', mark, true);
+}
+const background = new Set<number>();
+
 export function begin(kind: Kind): number {
   const id = next++;
+  // A read nobody asked for, with nothing user-driven in flight: track it
+  // (so end() is harmless) but leave the bar alone.
+  if (kind === 'loading' && Date.now() - lastInput > USER_WINDOW && spans.size === 0 && idleTimer === null) {
+    background.add(id);
+    return id;
+  }
   const continuing = spans.size > 0 || idleTimer !== null;
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   spans.set(id, kind);
@@ -50,12 +70,14 @@ export function begin(kind: Kind): number {
 /// Opening a page: the wait starts at the click, before its first request
 /// goes out. Ends on its own; the page's requests carry it on from there.
 export function navigating() {
+  lastInput = Date.now();
   const id = begin('loading');
   setTimeout(() => end(id), 50);
 }
 
 /// `ok`: it worked — a finished save says "Saved" once nothing else is saving.
 export function end(id: number, ok = true) {
+  if (background.delete(id)) return;
   const kind = spans.get(id);
   if (!kind) return;
   spans.delete(id);
