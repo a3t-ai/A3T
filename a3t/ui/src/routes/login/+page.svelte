@@ -13,7 +13,7 @@
   onMount(() => {
     // Already logged in? Redirect to app
     const unsub = isAuthenticated.subscribe(v => { if (v) goto('/'); });
-    // Back from Google / LinkedIn / GitHub: file the request with the verified identity.
+    // Back from LinkedIn: file the request with the verified identity.
     void (async () => {
       const r = await finishEarlyAccess();
       if (!r) return;
@@ -174,17 +174,9 @@
           {:else}
 {#if providersOn}
             <div class="ea-providers">
-              <button type="button" class="ea-btn" disabled={!!leaving} onclick={() => go('google')}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.2-2.1 3.5-5.1 3.5-8.7z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"/><path fill="#FBBC05" d="M5.4 14.4a7.2 7.2 0 0 1 0-4.7V6.6h-4a12 12 0 0 0 0 10.9l4-3.1z"/><path fill="#EA4335" d="M12 4.8c1.7 0 3.3.6 4.5 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"/></svg>
-                <span>{leaving === 'google' ? 'Opening Google…' : 'Continue with Google'}</span>
-              </button>
               <button type="button" class="ea-btn" disabled={!!leaving} onclick={() => go('linkedin')}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="4" fill="#0A66C2"/><path fill="#fff" d="M7.1 9.5H4.6V19h2.5V9.5zM5.9 5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM19.4 13.6c0-2.6-1.4-4.3-3.7-4.3-1.3 0-2.2.7-2.6 1.4V9.5h-2.4V19h2.5v-5c0-1.3.6-2.2 1.8-2.2 1.1 0 1.6.8 1.6 2.2v5h2.5v-5.4z"/></svg>
                 <span>{leaving === 'linkedin' ? 'Opening LinkedIn…' : 'Continue with LinkedIn'}</span>
-              </button>
-              <button type="button" class="ea-btn" disabled={!!leaving} onclick={() => go('github')}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>
-                <span>{leaving === 'github' ? 'Opening GitHub…' : 'Continue with GitHub'}</span>
               </button>
             </div>
             <p class="ea-note">Signing in only shares your name and email with us — it doesn't create an account or give you access.</p>
