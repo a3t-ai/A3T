@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { inBackground } from '$lib/core/status/activity';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import { setActiveSelection, getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { splitContextPath } from '$lib/stores/context.svelte.ts';
@@ -594,10 +595,10 @@
         if (!pendingApprovals.length) approvalNudge = false;
       } catch { /* transient — the next tick retries */ }
     };
-    tick();
+    void inBackground(tick);
     // 3s: a suspended run is already waiting on a human, so this is never the
     // slow part, and it stops as soon as the question is answered.
-    const id = setInterval(tick, 3000);
+    const id = setInterval(() => void inBackground(tick), 3000);
     return () => { alive = false; clearInterval(id); };
   });
 

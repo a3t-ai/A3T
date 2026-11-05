@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { inBackground } from '$lib/core/status/activity';
   // Logs — the authorization decision log (every Cedar allow/deny recorded at the
   // choke points). This is the platform's security-relevant event stream. In CE
   // (allow-all) there are no decisions to record, so it reads empty.
@@ -43,7 +44,7 @@
 
   function toggleAuto() {
     auto = !auto;
-    if (auto) timer = setInterval(load, 4000); else { clearInterval(timer); timer = null; }
+    if (auto) timer = setInterval(() => void inBackground(load), 4000); else { clearInterval(timer); timer = null; }
   }
 
   onMount(load);

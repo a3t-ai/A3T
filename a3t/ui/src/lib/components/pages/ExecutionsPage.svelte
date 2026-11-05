@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { inBackground } from '$lib/core/status/activity';
   import { inContext, itemProject } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   // Executions — the run history persisted in the storage backend. Lists recent
@@ -92,7 +93,7 @@
 
   function toggleAuto() {
     auto = !auto;
-    if (auto) { timer = setInterval(load, 4000); } else { clearInterval(timer); timer = null; }
+    if (auto) { timer = setInterval(() => void inBackground(() => load()), 4000); } else { clearInterval(timer); timer = null; }
   }
 
   onMount(() => load());

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { inBackground } from '$lib/core/status/activity';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   /// The Runtime console — where live systems are operated.
   ///
@@ -170,7 +171,7 @@
   let timer: ReturnType<typeof setInterval> | undefined;
   onMount(() => {
     load();
-    timer = setInterval(() => { if (!document.hidden && !busy && !pausing && !terminating && !newRt) load(); }, 5000);
+    timer = setInterval(() => { if (!document.hidden && !busy && !pausing && !terminating && !newRt) void inBackground(load); }, 5000);
   });
   onDestroy(() => clearInterval(timer));
 

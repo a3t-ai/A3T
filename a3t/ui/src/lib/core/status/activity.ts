@@ -52,11 +52,20 @@ if (typeof window !== 'undefined') {
 }
 const background = new Set<number>();
 
+/// A scheduled refresh (a page polling every few seconds). Its reads never show
+/// "Loading…" however long they take — only a failure reaches the bar, as an
+/// error or warning. Wrap the timer's callback: `setInterval(() => inBackground(load), 5000)`.
+let bgDepth = 0;
+export async function inBackground<T>(fn: () => Promise<T> | T): Promise<T> {
+  bgDepth++;
+  try { return await fn(); } finally { bgDepth--; }
+}
+
 export function begin(kind: Kind): number {
   const id = next++;
   // A read nobody asked for, with nothing user-driven in flight: track it
   // (so end() is harmless) but leave the bar alone.
-  if (kind === 'loading' && Date.now() - lastInput > USER_WINDOW && spans.size === 0 && idleTimer === null) {
+  if (kind === 'loading' && (bgDepth > 0 || (Date.now() - lastInput > USER_WINDOW && spans.size === 0 && idleTimer === null))) {
     background.add(id);
     return id;
   }
