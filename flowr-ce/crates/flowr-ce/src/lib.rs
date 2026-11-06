@@ -2030,6 +2030,10 @@ async fn mcp_create_flow_cncf(
         Ok(r) => r,
         Err(e) => return CallToolResult::error(format!("Invalid CNCF SWF YAML: {}", e)),
     };
+    // A missing base or an overridden lock is refused when the flow is saved.
+    if let Err(e) = flowr_mcp_core::flow_base::load_definition(storage.as_ref(), &record).await {
+        return CallToolResult::error(format!("Refused: {e}"));
+    }
 
     // This path is save-over-existing (delete + register below), so it is also
     // the EDIT path. Ownership must survive an edit: whoever created the flow
@@ -2679,7 +2683,7 @@ pub(crate) async fn run_request(
     }
 
     // Parse stored CNCF YAML via swf-parser
-    let swf_workflow = match record.parse() {
+    let swf_workflow = match flowr_mcp_core::flow_base::load_definition(storage.as_ref(), &record).await {
         Ok(wf) => wf,
         Err(e) => {
             let error_msg = format!("Failed to parse workflow: {}", e);

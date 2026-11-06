@@ -12,6 +12,9 @@ document:
       namespace a3t and the pre-projects `default`, tests in a3t-test). The a3t
       org keeps the id org-default, which users, agents and settings carry.
       The caller becomes an admin of both. Idempotent. Superadmin only.
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
 do:
 - whoami:
     set:

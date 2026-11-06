@@ -37,37 +37,9 @@ pub struct WorkflowExecutor {
     step_hook: Option<Arc<dyn crate::traits::StepHook>>,
 }
 
-/// Compose a subflow's `a3t` template over the inherited (parent) one,
-/// **attenuate-only** (E2 #4): the capability sets `exposedTools`/`enabledTools`
-/// INTERSECT, so a subflow can only narrow them; a set the subflow omits is
-/// inherited unchanged (it cannot widen by staying silent). Other fields take the
-/// subflow's value, falling back to the parent's. With no inherited template this
-/// is just the subflow's own template (root-flow behavior).
-fn compose_template(inherited: Option<Value>, current: Value) -> Value {
-    let Some(parent) = inherited.as_ref().and_then(|v| v.as_object()) else {
-        return current;
-    };
-    let mut result = current.as_object().cloned().unwrap_or_default();
-    for key in ["exposedTools", "enabledTools"] {
-        let cur = result.get(key).and_then(|v| v.as_array()).cloned();
-        let par = parent.get(key).and_then(|v| v.as_array()).cloned();
-        match (cur, par) {
-            (Some(cur), Some(par)) => {
-                let inter: Vec<Value> = cur.into_iter().filter(|x| par.contains(x)).collect();
-                result.insert(key.to_string(), Value::Array(inter));
-            }
-            (None, Some(par)) => {
-                result.insert(key.to_string(), Value::Array(par));
-            }
-            _ => {}
-        }
-    }
-    // Inherit any parent field the subflow didn't set (e.g. policyRef, tags).
-    for (k, v) in parent {
-        result.entry(k.clone()).or_insert_with(|| v.clone());
-    }
-    Value::Object(result)
-}
+// A subflow's `a3t` template composes over its parent's attenuate-only (E2 #4):
+// a subflow can narrow the capability sets but never widen them.
+use swf_parser::extends::compose_template;
 
 /// A runtime error in the CNCF error shape (`type`, `status`, `title`,
 /// `detail`, `instance`): what a `catch` handler sees as `$context.error`.

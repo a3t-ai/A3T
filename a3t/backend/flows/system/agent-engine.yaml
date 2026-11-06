@@ -10,6 +10,9 @@ document:
       Extensions defined here are the hook points — wrapper workflows
       can override them with before/after tasks.
 
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
 use:
   extensions:
     - on_turn_start:

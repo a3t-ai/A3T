@@ -44,6 +44,11 @@ pub fn get_tools() -> Vec<Tool> {
         },
         // Flow CRUD tools
         Tool {
+            name: "check_conformance".to_string(),
+            description: "Which platform flows (a3t, system) are on a base: covered, uncovered, exempt, broken.".to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
             name: "list_flows".to_string(),
             description: "List all registered workflows.".to_string(),
             input_schema: json!({
@@ -1396,6 +1401,7 @@ pub async fn dispatch_tool_call(
     match name {
         // Task documentation
         "list_task_types" => list_task_types(&args).await,
+        "check_conformance" => CallToolResult::json(crate::flow_base::conformance(storage).await),
         "get_task_type" => get_task_type(&args).await,
 
         // Flow CRUD
@@ -1998,6 +2004,9 @@ async fn create_flow(
         Ok(r) => r,
         Err(e) => return CallToolResult::error(format!("Invalid CNCF SWF workflow: {}", e)),
     };
+    if let Err(e) = crate::flow_base::load_definition(storage, &record).await {
+        return CallToolResult::error(format!("Refused: {e}"));
+    }
     // Whoever created the flow stays its owner across re-saves; only a genuinely
     // new flow takes the current caller. Otherwise anyone able to save could take
     // ownership, and with it the authority that bounds the flow's agent grants.

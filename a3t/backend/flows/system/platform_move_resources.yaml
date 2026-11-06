@@ -10,6 +10,9 @@ document:
       api_key_ref) at the new place. Flows that mention them are reported.
       Input: { from, to, names: [...], dry_run: true }. A dry run (the default)
       only reports. Superadmin only.
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
 do:
 - whoami:
     set:

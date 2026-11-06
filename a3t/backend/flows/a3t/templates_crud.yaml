@@ -7,7 +7,7 @@ document:
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
   a3t:
-    onError: system/a3t-error-handler
+    extends: system/a3t-base@1.0.0
     durability: transient
 do:
 - route:

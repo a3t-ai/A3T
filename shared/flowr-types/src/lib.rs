@@ -21,3 +21,6 @@ pub use workflow::{
     CallTask, CallTarget, RunTask, Extension, SwfUseBlock,
     parse_yaml, parse_json,
 };
+
+/// The CNCF parser, for crates that work with definitions (`flowr_mcp_core::flow_base`).
+pub use swf_parser;

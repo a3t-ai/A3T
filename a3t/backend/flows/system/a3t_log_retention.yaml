@@ -5,6 +5,9 @@ document:
   version: 1.0.0
   metadata:
     description: 'Scheduled purge of on-disk run history (executions) + audit_log per Settings > Infrastructure > Logs & Retention. Deny-safe: unset/Forever purges nothing.'
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
 do:
 - read-exec-retention:
     call: lancedb

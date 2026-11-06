@@ -1,7 +1,7 @@
 //! UX steel thread ST-1, step 1: a failure in any A3T flow is handled the same
 //! way. Real executor, real `run:workflow` and `call:lancedb`, a temporary
-//! platform DB. A fault flow declares `metadata.a3t.onError` like every A3T
-//! flow and raises each error class on demand (fault injection, ST-1.8):
+//! platform DB. A fault flow extends the A3T base like every A3T flow, and raises
+//! each error class on demand (fault injection, ST-1.8):
 //!
 //! - the run fails with the plain-language message, not the raw error;
 //! - exactly one row lands in `a3t_errors`, with the right class;
@@ -15,6 +15,7 @@ use flowr_types::{ExecutionRequest, ExecutionStatus, Resource, WorkflowRecord};
 use serde_json::{json, Value};
 
 const FLOWS: &[&str] = &[
+    "system/a3t_base.yaml",
     "system/a3t_error_handler.yaml",
     "a3t/a3t_error_log.yaml",
     "a3t/agents_crud.yaml",
@@ -30,7 +31,7 @@ document:
   version: 1.0.0
 metadata:
   a3t:
-    onError: system/a3t-error-handler
+    extends: system/a3t-base@1.0.0
     durability: transient
 do:
 - pick:
@@ -195,4 +196,59 @@ async fn the_log_answers_empty_before_anything_failed() {
     let w = World::new().await;
     let log = w.errors(json!({})).await;
     assert_eq!(log["errors"], json!([]));
+}
+
+/// `create_flow` as a caller, on the path that doesn't depend on a project guard.
+async fn save(w: &World, yaml: &str) -> (bool, String) {
+    let p = flowr_policy::Principal::human("usr-test", SUPER.iter().map(|r| r.to_string()).collect());
+    let r = flowr_mcp_core::handle_tool_call(w.storage.as_ref(), &p, "create_flow", Some(json!({ "yaml": yaml }))).await;
+    let text = r.content.iter().map(|c| match c { flowr_mcp_core::protocol::ToolContent::Text { text } => text.clone(), #[allow(unreachable_patterns)] _ => String::new() }).collect::<String>();
+    (r.is_error != Some(true), text)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_base_binds_its_children() {
+    let w = World::new().await;
+    let flow = |name: &str, a3t: &str| format!("document: {{ dsl: 1.0.3, namespace: a3t, name: {name}, version: 1.0.0 }}\nmetadata:\n  a3t:\n{a3t}\ndo:\n- x:\n    set: {{ ok: true }}\n");
+
+    // A lock can't be overridden, at save.
+    let (ok, why) = save(&w, &flow("bad-lock", "    extends: system/a3t-base@1.0.0\n    onError: a3t/mine")).await;
+    assert!(!ok && why.contains("can't override onError"), "{why}");
+
+    // A missing base or version is refused at save.
+    let (ok, why) = save(&w, &flow("no-base", "    extends: system/a3t-base@9.9.9")).await;
+    assert!(!ok && why.contains("can't be loaded"), "{why}");
+
+    // And if the base goes away later, the flow fails instead of running without it.
+    let good = flow("on-base", "    extends: system/a3t-base@1.0.0");
+    assert!(save(&w, &good).await.0);
+    assert_eq!(w.run(DEV, "on-base", json!({})).await.0, ExecutionStatus::Completed);
+    w.storage.workflows().delete("system", "a3t-base").await.unwrap();
+    let principal = flowr_policy::Principal::human("usr-test", DEV.iter().map(|r| r.to_string()).collect());
+    let req = ExecutionRequest::new("a3t", "on-base").with_input(json!({})).with_principal(principal);
+    let err = flowr_ce::execute_workflow(w.storage.clone(), &w.http, req).await.expect_err("ran without its base");
+    assert!(err.to_string().contains("can't be loaded"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_platform_flow_is_on_the_base() {
+    let w = World::new().await;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../a3t/backend/flows");
+    let mut files = 0;
+    for dir in ["a3t", "system"] {
+        for e in std::fs::read_dir(root.join(dir)).unwrap() {
+            let path = e.unwrap().path();
+            if path.extension().and_then(|x| x.to_str()) != Some("yaml") { continue; }
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            if !yaml.contains("\ndo:") { continue; } // a schema document, not a flow
+            let rec = WorkflowRecord::from_yaml(&yaml).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            w.storage.workflows().register(rec).await.unwrap();
+            files += 1;
+        }
+    }
+    let report = flowr_mcp_core::flow_base::conformance(w.storage.as_ref()).await;
+    assert_eq!(report["uncovered"], json!([]), "{report}");
+    assert_eq!(report["broken"], json!([]), "{report}");
+    assert_eq!(report["exempt"].as_array().unwrap().len(), 2, "the base and its handler: {report}");
+    assert!(report["covered"].as_array().unwrap().len() + 2 >= files, "{report}");
 }

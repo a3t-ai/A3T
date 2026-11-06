@@ -44,7 +44,7 @@ async fn one_org_admin_cannot_see_another_org() {
     let db = dir.path().join("platform.lance");
     storage.resources().create(Resource::new("a3t-platform-db", "lancedb", json!({ "db_path": db.to_str().unwrap() })).with_namespace("a3t")).await.unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../a3t/backend/flows");
-    for f in ["system/a3t_projects_install.yaml", "a3t/a3t_profile.yaml", "a3t/a3t_orgs.yaml", "a3t/a3t_projects.yaml", "a3t/a3t_share.yaml", "a3t/a3t_releases.yaml"] {
+    for f in ["system/a3t_base.yaml", "system/a3t_error_handler.yaml", "system/a3t_projects_install.yaml", "a3t/a3t_profile.yaml", "a3t/a3t_orgs.yaml", "a3t/a3t_projects.yaml", "a3t/a3t_share.yaml", "a3t/a3t_releases.yaml"] {
         storage.workflows().register(WorkflowRecord::from_yaml(&std::fs::read_to_string(root.join(f)).unwrap()).unwrap()).await.unwrap();
     }
 
@@ -181,7 +181,9 @@ async fn moving_platform_resources_keeps_secrets_server_side() {
     let dir = tempfile::tempdir().unwrap();
     let storage = flowr_ce::init_storage(dir.path().to_str().unwrap()).await.unwrap();
     let flows = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../a3t/backend/flows");
-    storage.workflows().register(WorkflowRecord::from_yaml(&std::fs::read_to_string(flows.join("system/platform_move_resources.yaml")).unwrap()).unwrap()).await.unwrap();
+    for f in ["system/a3t_base.yaml", "system/a3t_error_handler.yaml", "system/platform_move_resources.yaml"] {
+        storage.workflows().register(WorkflowRecord::from_yaml(&std::fs::read_to_string(flows.join(f)).unwrap()).unwrap()).await.unwrap();
+    }
     storage.resources().create(Resource::new("router-key", "secret", json!({ "value": "sk-or-v1-0123456789abcdef" })).with_namespace("default")).await.unwrap();
     storage.resources().create(Resource::new("glm", "openai", json!({ "model": "glm", "api_key_ref": "default/router-key" })).with_namespace("default")).await.unwrap();
     storage.resources().create(Resource::new("deepseek", "openai", json!({ "model": "ds", "api_key_ref": "default/router-key" })).with_namespace("a3t")).await.unwrap();

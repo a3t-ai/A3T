@@ -4,6 +4,9 @@ document:
   name: agent-template
   version: '2.0.0'
 
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
 use:
   functions:
     recallWorking:

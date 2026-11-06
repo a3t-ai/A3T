@@ -10,7 +10,7 @@ use flowr_storage::StorageBackend;
 use flowr_types::{ExecutionRequest, ExecutionStatus, Resource, WorkflowRecord};
 use serde_json::{json, Value};
 
-const FLOWS: &[&str] = &["system/a3t_projects_install.yaml", "a3t/a3t_profile.yaml", "a3t/a3t_orgs.yaml", "a3t/a3t_projects.yaml"];
+const FLOWS: &[&str] = &["system/a3t_base.yaml", "system/a3t_error_handler.yaml", "system/a3t_projects_install.yaml", "a3t/a3t_profile.yaml", "a3t/a3t_orgs.yaml", "a3t/a3t_projects.yaml"];
 
 struct World {
     storage: Arc<dyn StorageBackend>,

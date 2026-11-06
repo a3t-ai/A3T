@@ -8,6 +8,8 @@
 apiVersion: workflow.a3t.io/v1alpha1
 kind: Flow
 metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
   name: a3t-resource-setup
   namespace: system
 

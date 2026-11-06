@@ -41,6 +41,7 @@ pub mod directive;
 pub mod resource;
 pub mod lifecycle;
 pub mod use_block;
+pub mod extends;
 mod parser;
 
 // Re-exports

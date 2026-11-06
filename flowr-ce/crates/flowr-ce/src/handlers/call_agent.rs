@@ -2007,7 +2007,7 @@ async fn execute_tool_flow(
     let record = storage.workflows().get(namespace, name).await
         .map_err(|e| format!("Tool workflow {}/{} not found: {}", namespace, name, e))?;
 
-    let swf_workflow = record.parse()
+    let swf_workflow = flowr_mcp_core::flow_base::load_definition(storage.as_ref(), &record).await
         .map_err(|e| format!("Failed to parse tool workflow: {}", e))?;
 
     let mut child_executor = swf_runtime::WorkflowExecutor::new();

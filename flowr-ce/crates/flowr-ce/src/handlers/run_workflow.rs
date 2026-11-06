@@ -78,7 +78,7 @@ impl TaskHandler for RunWorkflowHandler {
         })?;
 
         // Parse CNCF YAML
-        let swf_workflow = record.parse()
+        let swf_workflow = flowr_mcp_core::flow_base::load_definition(storage.as_ref(), &record).await
             .map_err(|e| RuntimeError::task_failed(&task.name, format!("Failed to parse nested workflow: {}", e)))?;
 
         // Create child executor with same handlers

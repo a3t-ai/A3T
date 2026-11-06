@@ -3,6 +3,9 @@ document:
   namespace: system
   name: a3t-triggers-setup
   version: 1.0.0
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
 do:
 - trigger-templates:
     call: http

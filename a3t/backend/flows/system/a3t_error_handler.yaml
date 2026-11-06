@@ -15,6 +15,8 @@ document:
 # Called while another run is failing: nothing to resume, so no step journal.
 metadata:
   a3t:
+    # The base's handler can't sit on the base: its own failure must not call itself.
+    conformanceExempt: the base's error handler
     durability: transient
 do:
 - classify:
