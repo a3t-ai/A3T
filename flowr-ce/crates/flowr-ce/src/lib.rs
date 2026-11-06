@@ -800,6 +800,11 @@ impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
             self.blocked.lock().unwrap().push(b.clone());
             anyhow::bail!("{}", b);
         }
+        // AC-18: a trigger's run counts against the org's quota like any other.
+        if let Err(e) = flowr_mcp_core::flow_base::admit(namespace).await {
+            info!(target = %flow_ref, reason = %e, "trigger skipped (org quota)");
+            anyhow::bail!("{e}");
+        }
         let instance_id = Uuid::now_v7();
         let request = flowr_types::ExecutionRequest {
             instance_id,
@@ -1375,6 +1380,9 @@ async fn chat_ui_stream_handler(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
     };
+    if let Err(e) = flowr_mcp_core::flow_base::admit(&namespace).await {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error": e, "code": "org_quota"}))).into_response();
+    }
     let request = flowr_types::ExecutionRequest::new(&namespace, &name)
         .with_input(input)
         .with_principal(on_branch);

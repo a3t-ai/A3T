@@ -215,7 +215,7 @@ impl TaskHandler for GatewayClient {
         // Explicitly the gateway pool: a runtime has no router installed (only the
         // process holding the store does), and without one everything goes to `default`.
         let mut start = NewTask::start(&run);
-        start.pool = GATEWAY_POOL.to_string();
+        start.pool = gateway_pool_for(storage.as_ref(), &ctx.namespace).await;
         let (id, _) = engine.start(run, start).await.map_err(|e| RuntimeError::task_failed(&task.name, format!("gateway: {e}")))?;
         let mut notices = engine.subscribe(&run_topic(id));
         let t0 = Instant::now();
@@ -273,6 +273,44 @@ impl GatewayPolicy for PlaceholderPolicy {
         }
         Decision { allow: true, reason: "policy placeholder: allow".into() }
     }
+}
+
+/// AC-15: what the policy says about this call. There's nobody to ask at the gateway, so an
+/// `Ask` that reaches it is a refusal.
+pub async fn policy_decision(action: flowr_policy::Action, resource: flowr_policy::Resource, call: &Call) -> Decision {
+    let Ok(principal) = serde_json::from_value::<flowr_policy::Principal>(call.principal.clone()) else {
+        return Decision { allow: false, reason: "the caller's identity can't be read".into() };
+    };
+    let req = flowr_policy::ExecutionRequest { principal, action, resource, context: Default::default(), attributes: Default::default(), params: Value::Null };
+    match flowr_policy::policy_hook().check(&req).await.non_interactive() {
+        flowr_policy::PolicyDecision::Allow => Decision { allow: true, reason: "policy: allow".into() },
+        flowr_policy::PolicyDecision::Deny { reason, policy_ids } => Decision { allow: false, reason: format!("policy: {reason} ({})", policy_ids.join(", ")) },
+        flowr_policy::PolicyDecision::Ask { .. } => Decision { allow: false, reason: "policy: this needs an approval the gateway can't ask for".into() },
+    }
+}
+
+/// AC-15: the gateway pool of the caller's project in this environment (its environment row,
+/// read at most every 30 s per project), else the shared `gateway` pool.
+async fn gateway_pool_for(storage: &dyn StorageBackend, project: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<String, (Instant, String)>>> = Mutex::new(None);
+    if let Some((at, pool)) = CACHE.lock().unwrap().as_ref().and_then(|c| c.get(project)) {
+        if at.elapsed() < Duration::from_secs(30) {
+            return pool.clone();
+        }
+    }
+    let env = crate::agent_space::environment();
+    let pool = crate::agent_space::environments::of_project(storage, project)
+        .await
+        .ok()
+        .and_then(|rows| rows.into_iter().find(|r| r.get("name").and_then(|n| n.as_str()) == Some(env.as_str())))
+        .and_then(|r| r.get("gateway_pool").and_then(|p| p.as_str()).map(String::from))
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| GATEWAY_POOL.to_string());
+    let mut cache = CACHE.lock().unwrap();
+    cache.get_or_insert_with(HashMap::new).insert(project.to_string(), (Instant::now(), pool.clone()));
+    pool
 }
 
 /// One call as the gateway sees it.
@@ -357,7 +395,13 @@ impl TaskHandler for GatewayStep {
         // Resolve.
         let via = resolve(&call);
         // Decide.
-        let decision = PlaceholderPolicy.decide(&call);
+        let mut decision = PlaceholderPolicy.decide(&call);
+        // AC-15: then the policy, on the real target, as the caller.
+        if decision.allow {
+            if let Some(h) = real_handler(&task_type) {
+                decision = policy_decision(h.policy_action(), h.policy_resource(&call_task), &call).await;
+            }
+        }
         let t0 = Instant::now();
         let outcome: std::result::Result<Value, String> = if !decision.allow {
             Err(format!("denied by the gateway: {}", decision.reason))

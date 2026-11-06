@@ -1358,7 +1358,8 @@ async fn call_llm(
     };
 
     let resource = storage.resources().get(ns, name).await
-        .map_err(|e| format!("LLM resource '{}' not found: {}", resource_name, e))?;
+        .map_err(|e| format!("LLM resource '{}' not found: {}", resource_name, e))?
+        .in_environment();
 
     let api_url = resource.config.get("api_url")
         .or_else(|| resource.config.get("base_url"))
@@ -1624,7 +1625,7 @@ async fn resolve_agent_mcp_url(
         None => vec![("default", resource_name), ("a3t", resource_name)],
     };
     for (ns, name) in &candidates {
-        if let Ok(r) = storage.resources().get(ns, name).await {
+        if let Ok(r) = storage.resources().get(ns, name).await.map(|r| r.in_environment()) {
             let url = r.config.get("url").or_else(|| r.config.get("endpoint")).and_then(|v| v.as_str());
             return Ok(match url {
                 Some(u) if !u.is_empty() => flowr_mcp_core::mcp_message_url(u),

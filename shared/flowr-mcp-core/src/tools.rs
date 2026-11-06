@@ -2141,6 +2141,9 @@ async fn execute_flow(
         Ok(p) => p,
         Err(e) => return CallToolResult::error(e),
     };
+    if let Err(e) = crate::flow_base::admit(namespace).await {
+        return CallToolResult::error(e);
+    }
     let request = ExecutionRequest::new(namespace, name)
         .with_input(input)
         .with_principal(principal.clone());
@@ -3081,5 +3084,20 @@ mod mcp_url_tests {
         assert_eq!(mcp_message_url("http://localhost:3002"), "http://localhost:3002/message");
         // Only a trailing /sse is rewritten.
         assert_eq!(mcp_message_url("http://sse.example/x"), "http://sse.example/x/message");
+    }
+}
+
+#[cfg(test)]
+mod environment_mask_tests {
+    use super::masked_config;
+    use serde_json::json;
+
+    /// AC-13: a per-environment secret is never shown either.
+    #[test]
+    fn secrets_inside_an_environment_are_masked() {
+        let config = json!({ "api_key": "prod-secret", "environments": { "dev": { "api_key": "dev-secret", "api_url": "https://dev" } } });
+        let shown = masked_config("llm", &config).to_string();
+        assert!(!shown.contains("prod-secret") && !shown.contains("dev-secret"), "{shown}");
+        assert!(shown.contains("https://dev"), "{shown}");
     }
 }

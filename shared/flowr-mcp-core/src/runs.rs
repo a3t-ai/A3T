@@ -413,6 +413,7 @@ async fn start_run(storage: &dyn StorageBackend, principal: &Principal, args: &V
         bps.as_array_mut().unwrap().push(json!({ "step_key": "*", "when": "before", "hit": 1 }));
     }
     let on_branch = crate::flow_base::run_principal(principal, args)?;
+    crate::flow_base::admit(ns).await?;
     let run = new_run(ns, name, args.get("input").cloned().unwrap_or(json!({})), &on_branch, debug, Some(bps));
     let task = NewTask::start(&run);
     let (id, _) = e.start(run, task).await.map_err(|e| e.to_string())?;

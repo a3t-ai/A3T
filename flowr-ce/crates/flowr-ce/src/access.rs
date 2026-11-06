@@ -42,6 +42,7 @@ pub const ORG_LABEL: &str = "a3t.io/org";
 /// The label that makes a runtime a single project's own (isolated personal projects).
 pub const PROJECT_LABEL: &str = "a3t.io/project";
 const REFRESH: Duration = Duration::from_secs(5);
+static PROJECT_GUARD: std::sync::OnceLock<Arc<ProjectGuard>> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
 struct Project {
@@ -69,6 +70,8 @@ pub struct Snapshot {
     orgs: HashMap<String, String>,
     /// org handle → runtime policy (`isolated` | `shared`)
     org_runtime: HashMap<String, String>,
+    /// org handle → the most runs active at once (`settings.quota.max_active_runs`, AC-18)
+    org_max_runs: HashMap<String, usize>,
 }
 
 impl Snapshot {
@@ -97,6 +100,11 @@ impl Snapshot {
                 .and_then(|v| v.get("runtime").and_then(|r| r.as_str()).map(String::from)).unwrap_or_default();
             if !runtime.is_empty() {
                 snap.org_runtime.insert(s(o, "slug"), runtime);
+            }
+            let max_runs = serde_json::from_str::<Value>(&s(o, "settings")).ok()
+                .and_then(|v| v.pointer("/quota/max_active_runs").and_then(|n| n.as_u64()));
+            if let Some(m) = max_runs {
+                snap.org_max_runs.insert(s(o, "slug"), m as usize);
             }
         }
         snap
@@ -320,8 +328,43 @@ pub fn effective_namespace(_kind: ItemKind, namespace: &str, _name: &str, _type_
 }
 
 /// Install the guard (FlowR EE, policy enforcing).
+/// AC-18: whether a new run of `namespace` is admitted: its org's active runs, across its
+/// projects, are under `settings.quota.max_active_runs`. An org with no quota, and the
+/// platform's own namespaces, always are. A failed count admits: the quota protects
+/// neighbours, and it must not stop an org because the count couldn't be read.
+pub async fn admit(storage: &dyn StorageBackend, namespace: &str) -> Result<(), String> {
+    if PLATFORM.contains(&namespace) || namespace == crate::router::GATEWAY_NAMESPACE {
+        return Ok(());
+    }
+    let snap = guard_snapshot(namespace).await;
+    let Some(snap) = snap else { return Ok(()) };
+    let Some(project) = snap.projects.get(namespace).filter(|p| p.owner_kind == "org") else { return Ok(()) };
+    let Some(&max) = snap.org_max_runs.get(&project.owner) else { return Ok(()) };
+    let namespaces: Vec<String> = snap.projects.iter().filter(|(_, p)| p.owner_kind == "org" && p.owner == project.owner).map(|(n, _)| n.clone()).collect();
+    let Some(engine) = storage.engine() else { return Ok(()) };
+    use flowr_storage::engine::{RunPhase, RunQuery};
+    let q = RunQuery { namespaces: Some(namespaces), phases: vec![RunPhase::Pending, RunPhase::Running, RunPhase::Waiting], limit: max + 1, ..Default::default() };
+    match engine.list(q).await {
+        Ok(page) if page.items.len() >= max => Err(format!("org_quota: {} has reached its limit of {max} active runs. Try again when some finish, or ask an admin to raise it.", project.owner)),
+        _ => Ok(()),
+    }
+}
+
+/// The access snapshot, when the project guard is installed.
+async fn guard_snapshot(namespace: &str) -> Option<Arc<Snapshot>> {
+    let g = PROJECT_GUARD.get()?;
+    Some(g.snapshot_for(Some(namespace)).await)
+}
+
 pub fn install(storage: Arc<dyn StorageBackend>) {
-    flowr_policy::namespace::set_namespace_guard(Arc::new(ProjectGuard::new(storage)));
+    let for_admission = Arc::clone(&storage);
+    flowr_mcp_core::flow_base::set_admission(Arc::new(move |namespace: String| {
+        let storage = Arc::clone(&for_admission);
+        Box::pin(async move { admit(storage.as_ref(), &namespace).await })
+    }));
+    let guard = Arc::new(ProjectGuard::new(storage));
+    let _ = PROJECT_GUARD.set(Arc::clone(&guard));
+    flowr_policy::namespace::set_namespace_guard(guard);
 }
 
 #[cfg(test)]

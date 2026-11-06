@@ -60,4 +60,23 @@ async fn a_deny_blocks_each_lifecycle_action() {
     assert_eq!(r.status().as_u16(), 403);
     let r = client.put(format!("{url}/agents/bot/deployments/dev")).json(&json!({ "version": "1" })).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 404, "no such version, but not refused by policy");
+
+    // AC-15: the gateway asks the same policy, as the caller, and says why.
+    let call = flowr_ce::gateway::Call {
+        task_type: "call:http".into(),
+        target: "https://x".into(),
+        caller_run: "r".into(),
+        caller_step: None,
+        namespace: "t".into(),
+        flow: "f".into(),
+        principal: serde_json::to_value(flowr_policy::Principal::human("alice", vec![])).unwrap(),
+    };
+    let resource = flowr_policy::Resource::new("Tool", "x");
+    let denied = flowr_ce::gateway::policy_decision(flowr_policy::Action::new("memory:branch").unwrap(), resource.clone(), &call).await;
+    assert!(!denied.allow && denied.reason.contains("denied"), "{denied:?}");
+    let ok = flowr_ce::gateway::policy_decision(flowr_policy::Action::new("mcp:call").unwrap(), resource.clone(), &call).await;
+    assert!(ok.allow, "{ok:?}");
+    let mut unknown = call.clone();
+    unknown.principal = Value::Null;
+    assert!(!flowr_ce::gateway::policy_decision(flowr_policy::Action::new("mcp:call").unwrap(), resource, &unknown).await.allow, "no identity, no call");
 }

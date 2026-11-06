@@ -7,6 +7,7 @@ use flowr_storage::StorageBackend;
 use flowr_types::swf_parser::{extends, WorkflowDefinition};
 use flowr_types::WorkflowRecord;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 /// A chain deeper than this is a mistake: system → A3T → product is three.
 const MAX_DEPTH: usize = 8;
@@ -35,6 +36,23 @@ pub async fn load_definition(storage: &dyn StorageBackend, record: &WorkflowReco
         resolved = extends::apply_base(child, &resolved)?;
     }
     Ok(resolved)
+}
+
+/// AC-18: asked before a run starts; `Err` is the plain message to refuse it with.
+pub type Admission = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+static ADMISSION: std::sync::OnceLock<Admission> = std::sync::OnceLock::new();
+
+/// Install the admission check (once, at server start). CE without one admits everything.
+pub fn set_admission(check: Admission) {
+    let _ = ADMISSION.set(check);
+}
+
+/// AC-18: whether a new run of `namespace` may start.
+pub async fn admit(namespace: &str) -> Result<(), String> {
+    match ADMISSION.get() {
+        Some(check) => check(namespace.to_string()).await,
+        None => Ok(()),
+    }
 }
 
 /// AC-6: the principal a run starts as: on the branch `args` names (`memory_branch`), if

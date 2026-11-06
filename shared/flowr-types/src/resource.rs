@@ -202,3 +202,42 @@ impl Resource {
         format!("{}/{}", self.namespace, self.name)
     }
 }
+
+impl Resource {
+    /// AC-13: this resource as this process's environment sees it (`A3T_ENVIRONMENT`, default
+    /// `prod`): `config.environments.<env>` laid over the rest of `config`. What a flow is
+    /// handed at run time; what's stored and shown keeps every environment's values.
+    pub fn in_environment(mut self) -> Self {
+        let env = std::env::var("A3T_ENVIRONMENT").ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "prod".to_string());
+        self.config = config_in_environment(&self.config, &env);
+        self
+    }
+}
+
+/// `config` with `environments.<env>`'s fields laid over it, and `environments` removed.
+pub fn config_in_environment(config: &Value, env: &str) -> Value {
+    let Some(obj) = config.as_object() else { return config.clone() };
+    let mut out = obj.clone();
+    let overlay = out.remove("environments");
+    if let Some(fields) = overlay.as_ref().and_then(|o| o.get(env)).and_then(|o| o.as_object()) {
+        for (k, v) in fields {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_environment_overlays_its_values() {
+        let c = json!({ "url": "https://prod", "model": "m", "environments": { "dev": { "url": "https://dev" }, "qa": { "url": "https://qa", "model": "q" } } });
+        assert_eq!(config_in_environment(&c, "dev"), json!({ "url": "https://dev", "model": "m" }));
+        assert_eq!(config_in_environment(&c, "qa"), json!({ "url": "https://qa", "model": "q" }));
+        assert_eq!(config_in_environment(&c, "prod"), json!({ "url": "https://prod", "model": "m" }));
+        assert_eq!(config_in_environment(&json!("x"), "dev"), json!("x"));
+    }
+}

@@ -185,7 +185,8 @@ pub async fn resolve_adb(storage: &dyn flowr_storage::StorageBackend, resource: 
         .resources()
         .get(ns, name)
         .await
-        .map_err(|e| format!("ADB resource {ns}/{name} not found: {e}"))?;
+        .map_err(|e| format!("ADB resource {ns}/{name} not found: {e}"))?
+        .in_environment();
     let url = r
         .config
         .get("url")

@@ -154,7 +154,7 @@ async fn resolve_mcp_url_from_resource(ctx: &ExecutionContext, resource_name: &s
         ("default", resource_name)
     };
 
-    let resource = storage.resources().get(ns, name).await.ok()?;
+    let resource = storage.resources().get(ns, name).await.ok()?.in_environment();
     // Try url field, then endpoint, then server
     resource.config.get("url").and_then(|v| v.as_str())
         .or_else(|| resource.config.get("endpoint").and_then(|v| v.as_str()))

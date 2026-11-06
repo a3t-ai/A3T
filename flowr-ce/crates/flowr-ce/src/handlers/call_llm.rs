@@ -80,7 +80,7 @@ impl TaskHandler for LlmHandler {
                     ("default", resource_name)
                 };
                 storage.resources().get(ns, rn).await
-                    .map(|r| r.config)
+                    .map(|r| r.in_environment().config)
                     .unwrap_or(json!({}))
             } else { json!({}) }
         } else { json!({}) };

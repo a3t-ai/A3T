@@ -2,13 +2,15 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: a3t-orgs
-  version: 1.0.0
+  version: 1.1.0
   metadata:
     description: >
       Organisations and their members. A user is independent and can be in
       several orgs, as member, admin or securityadmin. Superadmin creates and
       deletes orgs; superadmin or the org's admins manage its members.
-      Input: { action: list | create | delete | set_member | remove_member | set_runtime, ... }.
+      Input: { action: list | create | delete | set_member | remove_member | set_runtime | set_quota, ... }.
+      Org quota (set_quota { org, max_active_runs }): superadmin only. FlowR refuses new runs
+      once the org has that many active across its projects (AC-18).
       Runtime policy (set_runtime { org, runtime: isolated | shared }): an
       isolated org's flows run only on its own runtimes (label a3t.io/org);
       shared ones on the platform's shared runtimes. FlowR enforces it at placement.
@@ -93,6 +95,9 @@ do:
     - set-runtime:
         when: '${ $context._args.action == "set_runtime" }'
         then: runtime-check
+    - set-quota:
+        when: '${ $context._args.action == "set_quota" }'
+        then: quota-check
     - default:
         then: list
 - list:
@@ -320,6 +325,46 @@ do:
 - member-done:
     set:
       ok: true
+    then: end
+
+# ── org quota (superadmin only: an org can't raise its own) ──
+- quota-check:
+    switch:
+    - missing:
+        when: '${ $context._target == null }'
+        then: no-org
+    - not-super:
+        when: '${ (($context._principal.roles // []) | index("SuperAdmin")) == null }'
+        then: need-super-quota
+    - bad-value:
+        when: '${ ($context._args.max_active_runs | type) != "number" or $context._args.max_active_runs < 1 }'
+        then: bad-quota
+    - default:
+        then: quota-write
+- need-super-quota:
+    set:
+      ok: false
+      error: Only a platform superadmin can set an org's quota.
+    then: end
+- bad-quota:
+    set:
+      ok: false
+      error: max_active_runs is a number of at least 1.
+    then: end
+- quota-write:
+    call: lancedb
+    with:
+      operation: update
+      table: orgs
+      filter: id = "${ $context._target.id }"
+      values:
+        settings: '${ ((($context._target.settings // "{}") | fromjson) + { quota: { max_active_runs: $context._args.max_active_runs } }) | tojson }'
+        updated_at: '${ now | todate }'
+      _resource: a3t/a3t-platform-db
+- quota-done:
+    set:
+      ok: true
+      max_active_runs: '${ $context._args.max_active_runs }'
     then: end
 
 # ── runtime policy (superadmin or the org's admins) ──
