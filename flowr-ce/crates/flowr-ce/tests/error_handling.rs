@@ -5,7 +5,7 @@
 //!
 //! - the run fails with the plain-language message, not the raw error;
 //! - exactly one row lands in `a3t_errors`, with the right class;
-//! - the log is readable by a superadmin only;
+//! - the log is readable by an Admin or SuperAdmin only;
 //! - an A3T flow that declares the hook still answers normally.
 
 use std::sync::Arc;
@@ -70,7 +70,7 @@ do:
 "#;
 
 const SUPER: &[&str] = &["SuperAdmin", "Admin"];
-const DEV: &[&str] = &["Admin", "Operator"];
+const DEV: &[&str] = &["Operator", "Viewer"];
 
 struct World {
     storage: Arc<dyn StorageBackend>,
@@ -158,11 +158,11 @@ async fn every_fault_is_classified_logged_once_and_shown_in_plain_words() {
     let policy = w.errors(json!({ "class": "policy" })).await;
     assert_eq!(policy["errors"].as_array().unwrap().len(), 2);
 
-    // Only a superadmin reads the log.
+    // Only an admin reads the log.
     let (status, out, _) = w.run(DEV, "a3t-error-log", json!({ "action": "list" })).await;
     assert_eq!(status, ExecutionStatus::Completed);
     assert_eq!(out["ok"], false);
-    assert!(out["error"].as_str().unwrap().contains("superadmin"));
+    assert!(out["error"].as_str().unwrap().contains("admin"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -276,6 +276,23 @@ do:
         principal: string
         user_message: string
       _resource: a3t/a3t-platform-db
+- create-early-access:
+    call: lancedb
+    with:
+      operation: create_table
+      table: early_access_requests
+      mode: create_if_not_exists
+      schema:
+        id: string
+        name: string
+        email: string
+        company: string
+        use_case: string
+        provider: string
+        email_verified: string
+        status: string
+        created_at: string
+      _resource: a3t/a3t-platform-db
 - seed-default-org:
     call: lancedb
     with:

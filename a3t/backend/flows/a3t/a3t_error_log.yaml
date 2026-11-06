@@ -8,7 +8,8 @@ document:
       Reads the A3T error log (a3t_errors), written by system/a3t-error-handler
       (UX ST-1, F5). Input: { action: "list", flow?, class?, run_id?, since?,
       limit? }. Output: { ok, errors: [newest first], counts: {class: n} } or
-      { ok: false, error }. Superadmin only for now: rows can hold other users'
+      { ok: false, error }. Admin and SuperAdmin (decided 5 Nov). Rows have no org yet,
+      so any org's Admin sees every org's errors, and rows can hold other users'
       details. Per-agent and per-org views come with agent ids on runs (UI-2).
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
@@ -19,14 +20,14 @@ metadata:
 do:
 - whoami:
     set:
-      _super: '${ (($context._principal // {}).roles // []) | index("SuperAdmin") != null }'
+      _admin: '${ (($context._principal // {}).roles // []) | (index("Admin") != null or index("SuperAdmin") != null) }'
       _args: '${ (.input // .) }'
     export:
       as: .
 - check:
     switch:
-    - not-super:
-        when: '${ $context._super != true }'
+    - not-admin:
+        when: '${ $context._admin != true }'
         then: deny
     - not-list:
         when: '${ ($context._args.action // "list") != "list" }'
@@ -36,7 +37,7 @@ do:
 - deny:
     set:
       ok: false
-      error: Only a superadmin can read the error log.
+      error: Only an admin can read the error log.
     then: end
 - unknown:
     set:
