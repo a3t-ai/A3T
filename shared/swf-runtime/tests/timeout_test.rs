@@ -30,6 +30,7 @@ async fn a_task_over_its_timeout_is_stopped_and_catchable() {
         engine.eval(input, expr, &scope).map_err(|e| e.to_string())
     });
     let mut ctx = ExecutionContext {
+        limits: Default::default(),
         instance_id: "r".into(), namespace: "t".into(), name: "slow".into(), version: "1.0.0".into(),
         context: Value::Null, secrets: Default::default(), runtime: RuntimeInfo::default(), storage: None,
         http_client: None, extensions: Vec::new(), eval_fn: None,

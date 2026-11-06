@@ -248,6 +248,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/branches/:name/rebase", post(rebase_branch))
         .route("/agents/:agent_id/merges/:merge_id/revert", post(revert_merge))
         .route("/agents/:agent_id/fork", post(fork_agent))
+        .route("/agents/:agent_id/transfer", post(transfer_agent))
         .route("/agents/:agent_id/tags", get(list_tags).post(create_tag))
         .route("/agents/:agent_id/tags/:name", delete(drop_tag))
         .route("/agents/:agent_id/layers", get(get_layers).put(put_layers))
@@ -256,6 +257,8 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/versions/:version/manifest", get(manifest::get_manifest))
         .route("/agents/:agent_id/deployments", get(list_deployments))
         .route("/agents/:agent_id/runs", get(list_runs))
+        .route("/agents/:agent_id/usage", get(agent_usage))
+        .route("/projects/:project/usage", get(project_usage))
         .route("/agents/:agent_id/deployments/:environment", axum::routing::put(pin_deployment))
         .merge(merge_requests::routes())
         .merge(environments::routes())
@@ -474,6 +477,46 @@ async fn revert_merge(State(s): St, p: P, Path((id, merge_id)): Path<(String, St
 async fn fork_agent(State(s): St, p: P, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
     let b = body.map(|Json(b)| b).unwrap_or_else(|| json!({}));
     both(copy_into_new_agent(s.as_ref(), &who(p), &id, &b, "space_clone", json!({})).await)
+}
+
+/// DB-17: `{project, new_agent?: {id?, name?}, tools?}`: a copy for another project, in any
+/// org, carrying only procedures (and tools with `tools`): no episodes or facts. Needs write
+/// access to both projects; `memory:fork` is checked on the source.
+async fn transfer_agent(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
+    both(async {
+        let principal = who(p);
+        let s = s.as_ref();
+        let (row, sp) = agent_space(s, &principal, &id, true).await?;
+        allowed(&principal, flowr_policy::actions::MEMORY_FORK, &id).await?;
+        let project = col(&b, "project");
+        if project.is_empty() {
+            return Err(err(StatusCode::BAD_REQUEST, "project is required"));
+        }
+        crate::access::rest_write(&principal, &project).await.map_err(IntoResponse::into_response)?;
+        let rows = query_platform_table(s, "projects", Some(format!("namespace = {}", sql_quote(&project))), 1).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let target = rows.first().ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no project {project:?}")))?;
+        let org_id = col(target, "owner_id");
+        let (new_id, mut new_row) = new_agent_row(&row, &b, principal.id())?;
+        if agent_row(s, &new_id).await.is_ok() {
+            return Err(err(StatusCode::CONFLICT, format!("agent {new_id:?} already exists")));
+        }
+        if let Some(m) = new_row.as_object_mut() {
+            m.insert("namespace".into(), json!(project));
+            m.insert("org_id".into(), json!(org_id));
+        }
+        let into = default_namespace(&project, &new_id);
+        let tools = b.get("tools").and_then(|v| v.as_bool()).unwrap_or(false);
+        let copied = adb(s, &sp, "space_clone", json!({ "into": into, "procedures_only": true, "tools": tools })).await?;
+        write_new_agent(s, &new_row, &new_id, &org_id, &into, principal.id()).await?;
+        let new_space = Space { agent_id: new_id.clone(), resource: org_adb(&org_id), org_id, namespace: into };
+        let lineage = json!({ "transferred_from": { "agent": id, "memory": copied.get("from"), "procedures_only": true } });
+        let mut answer = json!({ "agent": new_row, "memory": copied });
+        match new_version(s, &new_row, &new_space, &Value::Null, "", lineage, principal.id()).await {
+            Ok(v) => answer["version"] = v,
+            Err(_) => answer["version_error"] = json!(format!("agent {new_id} was created without a first version")),
+        }
+        Ok((StatusCode::CREATED, Json(answer)).into_response())
+    }.await)
 }
 
 async fn list_tags(State(s): St, p: P, Path(id): Path<String>) -> Response {
@@ -704,6 +747,75 @@ pub async fn record_run(s: &dyn StorageBackend, run_id: &str, sp: &Space, branch
 }
 
 const BRANCH_MAIN: &str = "main";
+
+/// AC-17: `agent_usage`, one row per agent turn: the provider's tokens and the turn's time.
+pub const USAGE: &str = "agent_usage";
+const USAGE_COLUMNS: [&str; 9] = ["run_id", "agent_id", "project", "environment", "llm", "prompt_tokens", "completion_tokens", "duration_ms", "at"];
+
+pub async fn record_usage(s: &dyn StorageBackend, run_id: &str, sp: &Space, llm: &str, tokens: (u64, u64), took: std::time::Duration) {
+    let project = agent_row(s, &sp.agent_id).await.map(|r| project_of(&r)).unwrap_or_default();
+    let row = json!({
+        "run_id": run_id, "agent_id": sp.agent_id, "project": project, "environment": environment(), "llm": llm,
+        "prompt_tokens": tokens.0.to_string(), "completion_tokens": tokens.1.to_string(),
+        "duration_ms": (took.as_millis() as u64).to_string(), "at": chrono::Utc::now().to_rfc3339(),
+    });
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: Map<String, Value> = USAGE_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    let written = async {
+        db.create_table(USAGE, Some(&schema), "create_if_not_exists").await?;
+        db.insert(USAGE, std::slice::from_ref(&row)).await
+    };
+    if let Err(e) = written.await {
+        tracing::warn!(error = %e, run = run_id, "recording the agent's usage failed");
+    }
+}
+
+/// Usage rows rolled up per environment: `{environment: {turns, prompt_tokens,
+/// completion_tokens, duration_ms}}`.
+fn roll_up(rows: &[Value]) -> Value {
+    let mut out = Map::new();
+    for r in rows {
+        let e = out.entry(col(r, "environment")).or_insert_with(|| json!({ "turns": 0, "prompt_tokens": 0, "completion_tokens": 0, "duration_ms": 0 }));
+        let add = |e: &mut Value, k: &str, n: u64| e[k] = json!(e[k].as_u64().unwrap_or(0) + n);
+        add(e, "turns", 1);
+        for k in ["prompt_tokens", "completion_tokens", "duration_ms"] {
+            add(e, k, col(r, k).parse().unwrap_or(0));
+        }
+    }
+    Value::Object(out)
+}
+
+async fn usage_rows(s: &dyn StorageBackend, filter: String) -> Result<Vec<Value>, Response> {
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: Map<String, Value> = USAGE_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    db.create_table(USAGE, Some(&schema), "create_if_not_exists").await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    query_platform_table(s, USAGE, Some(filter), 100_000).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+/// `{by_environment, turns}`: an agent's usage.
+async fn agent_usage(State(s): St, p: P, Path(id): Path<String>) -> Response {
+    both(async {
+        agent_space(s.as_ref(), &who(p), &id, false).await?;
+        let rows = usage_rows(s.as_ref(), format!("agent_id = {}", sql_quote(&id))).await?;
+        ok(json!({ "by_environment": roll_up(&rows), "turns": rows }))
+    }.await)
+}
+
+/// `{by_agent: {agent: {environment: …}}}`: a project's usage.
+async fn project_usage(State(s): St, p: P, Path(project): Path<String>) -> Response {
+    both(async {
+        if !crate::access::can_read_item(&who(p), ItemKind::Agent, &project, "", "").await {
+            return Err(err(StatusCode::NOT_FOUND, format!("no project {project:?}")));
+        }
+        let rows = usage_rows(s.as_ref(), format!("project = {}", sql_quote(&project))).await?;
+        let mut agents: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+        for r in rows {
+            agents.entry(col(&r, "agent_id")).or_default().push(r);
+        }
+        let by_agent: Map<String, Value> = agents.iter().map(|(a, r)| (a.clone(), roll_up(r))).collect();
+        ok(json!({ "by_agent": by_agent }))
+    }.await)
+}
 
 /// An agent's recorded turns. Order isn't guaranteed: sort by `at`.
 async fn list_runs(State(s): St, p: P, Path(id): Path<String>) -> Response {

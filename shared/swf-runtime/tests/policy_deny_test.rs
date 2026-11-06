@@ -32,6 +32,7 @@ fn install_deny_all() {
 
 fn make_ctx() -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "deny-001".to_string(),
         namespace: "test".to_string(),
         name: "deny".to_string(),

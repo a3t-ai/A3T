@@ -9,6 +9,7 @@ use swf_runtime::traits::{TaskHandler, TaskResult};
 
 fn make_ctx() -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "test-001".to_string(),
         namespace: "test".to_string(),
         name: "test".to_string(),

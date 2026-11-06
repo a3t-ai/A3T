@@ -64,6 +64,7 @@ impl TaskHandler for NoopHandler {
 
 fn ctx() -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "run-1".to_string(),
         namespace: "a3t".to_string(),
         name: "annotated".to_string(),

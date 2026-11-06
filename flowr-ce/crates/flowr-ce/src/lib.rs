@@ -2753,6 +2753,7 @@ pub(crate) async fn run_request(
 
     // Create execution context
     let mut exec_ctx = swf_runtime::ExecutionContext {
+        limits: Default::default(),
         instance_id: request.instance_id.to_string(),
         namespace: request.namespace.clone(),
         name: request.name.clone(),

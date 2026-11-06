@@ -31,6 +31,7 @@ const ECHO_WAT: &str = r#"
 
 fn make_ctx() -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "wasm-run-1".to_string(),
         namespace: "test".to_string(),
         name: "wasm".to_string(),

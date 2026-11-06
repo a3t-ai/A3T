@@ -146,6 +146,9 @@ impl WorkflowExecutor {
     ) -> Result<Value> {
         let workflow_id = format!("{}/{}", workflow.document.namespace, workflow.document.name);
         info!(workflow = %workflow_id, tasks = workflow.tasks.len(), "executing workflow");
+        if let Some(max) = workflow.metadata.as_ref().and_then(|m| m.pointer("/a3t/limits/max_steps")).and_then(|v| v.as_u64()) {
+            ctx.limits.narrow(max);
+        }
 
         // Validate workflow input schema
         if let Some(ref input_def) = workflow.input {
@@ -342,6 +345,11 @@ impl WorkflowExecutor {
             };
 
             debug!(task = %named_task.name, idx = task_idx, "executing task");
+
+            // AC-8: a run that keeps looping stops at its step limit.
+            if let Err(max) = ctx.limits.step() {
+                return Err(RuntimeError::task_failed(&named_task.name, format!("this run stopped at its limit of {max} steps")));
+            }
 
             // Debug: log context _messages type
             if let Some(msgs) = ctx.context.get("_messages") {

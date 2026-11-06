@@ -52,6 +52,39 @@ pub struct ExecutionContext {
     /// InfoSec-owned policies can gate on `principal.template.*`. Empty when the
     /// flow declares no `metadata.a3t`.
     pub template_meta: serde_json::Map<String, Value>,
+
+    /// AC-8: steps this run has taken and may take, shared with its subflows.
+    pub limits: RunLimits,
+}
+
+/// AC-8: a run's step budget. A looping flow stops here instead of holding a worker. The most
+/// is `FLOWR_RUN_MAX_STEPS` (default 100,000); a flow can ask for less with
+/// `metadata.a3t.limits.max_steps`, never more.
+#[derive(Debug, Clone)]
+pub struct RunLimits {
+    steps: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    max: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        let max = std::env::var("FLOWR_RUN_MAX_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(100_000);
+        Self { steps: Default::default(), max: std::sync::Arc::new(max.into()) }
+    }
+}
+
+impl RunLimits {
+    /// Lower the budget (attenuate only).
+    pub fn narrow(&self, max: u64) {
+        self.max.fetch_min(max, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Count a step; `Err(limit)` when it passes the budget.
+    pub fn step(&self) -> std::result::Result<(), u64> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (taken, max) = (self.steps.fetch_add(1, SeqCst) + 1, self.max.load(SeqCst));
+        if taken > max { Err(max) } else { Ok(()) }
+    }
 }
 
 /// The fallback principal for a flow with no caller-supplied identity: the

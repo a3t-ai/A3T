@@ -121,6 +121,7 @@ impl TaskHandler for RunWorkflowHandler {
             // E2 #4: inherit the parent's capability template so the subflow's
             // executor composes attenuate-only (it can narrow, never widen).
             template_meta: ctx.template_meta.clone(),
+            limits: ctx.limits.clone(),
         };
 
         // Execute

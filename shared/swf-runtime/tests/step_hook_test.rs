@@ -62,6 +62,7 @@ impl StepHook for Journal {
 
 fn ctx() -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "run-1".into(),
         namespace: "t".into(),
         name: "w".into(),

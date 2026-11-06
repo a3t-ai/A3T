@@ -560,6 +560,8 @@ impl TaskHandler for AgentHandler {
             },
             None => None,
         };
+        let turn_started = std::time::Instant::now();
+        let mut turn_usage = (0u64, 0u64);
         let recalled = match &memory {
             Some(m) => Some(m.recall(&config.config.memory_config, &config.message).await),
             None => None,
@@ -723,6 +725,13 @@ impl TaskHandler for AgentHandler {
                     ),
                 ).await?;
                 let llm_result = llm_result.map_err(|e| RuntimeError::Communication(format!("LLM call failed: {}", e)))?;
+
+                // AC-17: what this turn has used so far.
+                if let Some(u) = llm_result.get("usage") {
+                    let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                    turn_usage.0 += n("prompt_tokens");
+                    turn_usage.1 += n("completion_tokens");
+                }
 
                 state.iteration += 1;
 
@@ -1110,6 +1119,10 @@ impl TaskHandler for AgentHandler {
         }
 
         // ── Phase 8: STORE MEMORY ──────────────────────────
+        // AC-17: tokens and time for this turn, per agent and environment.
+        if let Some(sp) = &own {
+            crate::agent_space::record_usage(storage.as_ref(), &ctx.instance_id, sp, config.config.llm_resource.as_deref().unwrap_or_default(), turn_usage, turn_started.elapsed()).await;
+        }
         ctx.context = state.to_context_value(&config);
         fire_before(self, ctx, "store_memory", "call:adb").await;
         if let Some(m) = &memory {
@@ -1416,6 +1429,8 @@ async fn call_llm(
 
     if let Some(session) = stream_session {
         body["stream"] = json!(true);
+        // AC-17: ask for the usage in the last frame (providers that don't know it ignore it).
+        body["stream_options"] = json!({ "include_usage": true });
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
@@ -1473,6 +1488,7 @@ async fn call_llm(
         "tool_calls": tool_calls,
         "raw_tool_calls": raw_tool_calls,
         "stop_reason": resp_json["choices"][0].get("finish_reason"),
+        "usage": resp_json.get("usage"),
     }))
 }
 
@@ -1492,6 +1508,8 @@ struct StreamAccumulator {
     calls: std::collections::BTreeMap<u64, PartialCall>,
     finish_reason: Option<String>,
     done: bool,
+    /// AC-17: what the provider says this call used (its last frame, on request).
+    usage: Option<Value>,
 }
 
 #[derive(Default)]
@@ -1506,6 +1524,9 @@ impl StreamAccumulator {
     /// Feed one raw SSE line. Returns chunks to publish (text deltas, and a
     /// `tool` notice the first time a call becomes identifiable).
     fn push_line(&mut self, line: &str) -> Vec<(&'static str, String)> {
+        if let Some(u) = line.trim().strip_prefix("data:").and_then(|d| serde_json::from_str::<Value>(d.trim()).ok()).and_then(|f| f.get("usage").filter(|u| !u.is_null()).cloned()) {
+            self.usage = Some(u);
+        }
         let mut out = Vec::new();
         let Some(payload) = line.trim_end_matches(['\n', '\r']).strip_prefix("data:") else {
             return out;
@@ -1570,6 +1591,7 @@ impl StreamAccumulator {
             "tool_calls": tool_calls,
             "raw_tool_calls": raw_tool_calls,
             "stop_reason": self.finish_reason,
+            "usage": self.usage,
         })
     }
 }
@@ -2038,6 +2060,7 @@ async fn execute_tool_flow(
     });
 
     let mut child_ctx = ExecutionContext {
+        limits: ctx.limits.clone(),
         instance_id: format!("{}/tool-{}-{}", ctx.instance_id, namespace, name),
         namespace: namespace.to_string(),
         name: name.to_string(),

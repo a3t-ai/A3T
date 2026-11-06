@@ -112,6 +112,7 @@ do:
 "#;
         let workflow = swf_parser::parse_yaml(yaml).unwrap();
         let mut ctx = ExecutionContext {
+            limits: Default::default(),
             instance_id: "test-001".to_string(),
             namespace: "test".to_string(),
             name: "mock-test".to_string(),
@@ -149,6 +150,7 @@ do:
 "#;
         let workflow = swf_parser::parse_yaml(yaml).unwrap();
         let mut ctx = ExecutionContext {
+            limits: Default::default(),
             instance_id: "test-002".to_string(),
             namespace: "test".to_string(),
             name: "future".to_string(),

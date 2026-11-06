@@ -8,6 +8,7 @@ use swf_runtime::{ExecutionContext, Principal, RuntimeInfo, WorkflowExecutor};
 
 fn ctx(principal: Principal) -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "run-1".to_string(),
         namespace: "a3t".to_string(),
         name: "who".to_string(),

@@ -48,6 +48,7 @@ impl TaskHandler for NoopHandler {
 
 fn ctx_with(principal: Principal) -> ExecutionContext {
     ExecutionContext {
+        limits: Default::default(),
         instance_id: "run-42".to_string(),
         namespace: "acme".to_string(),
         name: "campaign".to_string(),

@@ -112,3 +112,48 @@ async fn a_branch_run_is_refused_outbound_with_a_plain_message_and_a_decision_ro
     let st = flowr_ce::execute_workflow(storage.clone(), &reqwest::Client::new(), req).await.unwrap();
     assert!(!st.error.clone().unwrap_or_default().contains("memory branch"), "{st:?}");
 }
+
+/// AC-8: a looping flow stops at its step limit, which it can lower and a subflow shares.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_looping_run_stops_at_its_step_limit() {
+    let (_dir, storage) = world().await;
+    const LOOP: &str = r#"
+document:
+  dsl: 1.0.3
+  namespace: t
+  name: looper
+  version: 1.0.0
+metadata:
+  a3t:
+    limits:
+      max_steps: 25
+do:
+- again:
+    set:
+      n: 1
+    then: again
+"#;
+    const CALLS_LOOP: &str = r#"
+document:
+  dsl: 1.0.3
+  namespace: t
+  name: calls-looper
+  version: 1.0.0
+do:
+- nested:
+    run:
+      workflow:
+        namespace: t
+        name: looper
+        version: 1.0.0
+"#;
+    for y in [LOOP, CALLS_LOOP] {
+        storage.workflows().register(WorkflowRecord::from_yaml(y).unwrap()).await.unwrap();
+    }
+    for flow in ["looper", "calls-looper"] {
+        let req = ExecutionRequest::new("t", flow).with_input(json!({})).with_principal(alice());
+        let st = flowr_ce::execute_workflow(storage.clone(), &reqwest::Client::new(), req).await.unwrap();
+        assert_eq!(st.status, ExecutionStatus::Failed, "{flow}: {st:?}");
+        assert!(st.error.clone().unwrap_or_default().contains("limit of 25 steps"), "{flow}: {:?}", st.error);
+    }
+}
