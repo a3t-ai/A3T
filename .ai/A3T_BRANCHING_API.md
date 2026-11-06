@@ -251,6 +251,27 @@ ADB's answers (Branch, Tag, Layers still carry `namespace`).
 Cedar actions (planned): `memory:branch`, `memory:promote`, `memory:fork`, `memory:tag`,
 `memory:mount`, `memory:pin`.
 
+### Agent versions and deployments (AC-5)
+
+A version is what the agent was at one moment. It's never changed: a change is the next
+version. Promote and fork write the new agent's version 1, with its lineage.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /agents/{id}/versions` | | `{versions: [Version]}`, oldest first |
+| `POST /agents/{id}/versions` | `{flows?: [{namespace, name, version}], note?}` | `201` Version. Unknown flow version → `400` |
+| `GET /agents/{id}/versions/{n}` | | Version, or `404` |
+| `GET /agents/{id}/deployments` | | `{deployments: [{agent_id, environment, version, previous, deployed_by, deployed_at}]}` |
+| `PUT /agents/{id}/deployments/{env}` | `{version}` | The pin. Unknown version → `404`. Roll back by pinning `previous` |
+
+`Version = {agent_id, version, template: {id, version}, flows, memory: {namespace, tag,
+point: {offset, ts}}, layers, lineage, note, created_by, created_at}`. `lineage` is `null`,
+`{promoted_from: {agent, branch, memory}}` or `{forked_from: {agent, memory}}`. Each version
+creates the ADB tag `agent-v<n>`, which keeps that memory past the 90 days of history.
+
+**Not yet:** a pin only records the choice; nothing moves traffic until AC-11a. Two versions
+created at the same instant could get one number.
+
 ## 7. Branch pod protocol (internal)
 
 Between the org ADB and a branch pod, or from the A3T controller. A UI never calls

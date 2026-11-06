@@ -20,6 +20,8 @@
 //! | `POST /agents/{id}/fork` | `space_clone`, then the new agent's rows |
 //! | `GET` / `POST /agents/{id}/tags`, `DELETE /agents/{id}/tags/{name}` | `tag_list` / `tag_create` / `tag_drop` |
 //! | `GET` / `PUT /agents/{id}/layers` | `layers_get` / `layers_set` |
+//! | `GET` / `POST /agents/{id}/versions`, `GET /agents/{id}/versions/{n}` | `tag_create`, the `agent_versions` row (AC-5) |
+//! | `GET /agents/{id}/deployments`, `PUT /agents/{id}/deployments/{env}` | none (the `agent_deployments` row) |
 //!
 //! Reads need read access to the agent's project (its `namespace` column), writes
 //! need write access (`access::rest_write`). ADB refusals come back as `400
@@ -218,6 +220,10 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/tags", get(list_tags).post(create_tag))
         .route("/agents/:agent_id/tags/:name", delete(drop_tag))
         .route("/agents/:agent_id/layers", get(get_layers).put(put_layers))
+        .route("/agents/:agent_id/versions", get(list_versions).post(create_version))
+        .route("/agents/:agent_id/versions/:version", get(get_version))
+        .route("/agents/:agent_id/deployments", get(list_deployments))
+        .route("/agents/:agent_id/deployments/:environment", axum::routing::put(pin_deployment))
         .with_state(storage)
 }
 
@@ -318,11 +324,24 @@ async fn copy_into_new_agent(s: &dyn StorageBackend, principal: &Principal, id: 
         return Err(err(StatusCode::CONFLICT, format!("agent {new_id:?} already exists")));
     }
     let into = default_namespace(&project_of(&row), &new_id);
+    let branch = extra.get("name").cloned();
     let mut body = extra;
     body["into"] = json!(into);
     let copied = adb(s, &sp, action, body).await?;
     write_new_agent(s, &new_row, &new_id, &sp.org_id, &into, principal.id()).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "agent": new_row, "memory": copied }))).into_response())
+    // AC-5: the new agent's first version says where it came from. The agent exists by
+    // now, so a failure here is reported, not fatal.
+    let lineage = match branch {
+        Some(b) => json!({ "promoted_from": { "agent": id, "branch": b, "memory": copied.get("from") } }),
+        None => json!({ "forked_from": { "agent": id, "memory": copied.get("from") } }),
+    };
+    let new_space = Space { agent_id: new_id.clone(), resource: sp.resource.clone(), org_id: sp.org_id.clone(), namespace: into.clone() };
+    let mut answer = json!({ "agent": new_row, "memory": copied });
+    match new_version(s, &new_row, &new_space, &Value::Null, "", lineage, principal.id()).await {
+        Ok(v) => answer["version"] = v,
+        Err(_) => answer["version_error"] = json!(format!("agent {new_id} was created without a first version: create one with POST /agents/{new_id}/versions")),
+    }
+    Ok((StatusCode::CREATED, Json(answer)).into_response())
 }
 
 /// `{new_agent: {id?, name?}, allow_stale?}`.
@@ -487,6 +506,147 @@ async fn put_layers(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Va
         }
         let layers = with_history_layers(layers, &current);
         ok(adb(s.as_ref(), &sp, "layers_set", json!({ "layers": layers })).await?)
+    }.await)
+}
+
+// ── Agent versions and deployments (AC-5) ───────────────────────────────────
+
+/// `agent_versions`: what one version of an agent is, never changed once written.
+/// `agent_deployments`: which version each environment runs. The JSON columns are text,
+/// as in every platform table.
+pub const VERSIONS: &str = "agent_versions";
+pub const DEPLOYMENTS: &str = "agent_deployments";
+const VERSION_COLUMNS: [&str; 10] = ["agent_id", "version", "template", "flows", "memory", "layers", "lineage", "note", "created_by", "created_at"];
+const DEPLOYMENT_COLUMNS: [&str; 6] = ["agent_id", "environment", "version", "previous", "deployed_by", "deployed_at"];
+
+async fn version_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: Map<String, Value> = VERSION_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    db.create_table(VERSIONS, Some(&schema), "create_if_not_exists").await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let mut rows = query_platform_table(s, VERSIONS, Some(format!("agent_id = {}", sql_quote(id))), 100_000)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    rows.sort_by_key(version_number);
+    Ok(rows)
+}
+
+fn version_number(row: &Value) -> u64 {
+    col(row, "version").parse().unwrap_or(0)
+}
+
+/// A stored row as the API shows it: the JSON columns parsed.
+fn version_json(row: &Value) -> Value {
+    let mut v = row.clone();
+    if let Some(m) = v.as_object_mut() {
+        for k in ["template", "flows", "memory", "layers", "lineage"] {
+            let parsed = m.get(k).and_then(|x| x.as_str()).and_then(|x| serde_json::from_str::<Value>(x).ok()).unwrap_or(Value::Null);
+            m.insert(k.to_string(), parsed);
+        }
+    }
+    v
+}
+
+/// Write the next version of the agent: its template, `flows` (each checked against the
+/// registry), its memory at this moment as an ADB tag, and its layers. The tag keeps
+/// that memory past the 90 days of history.
+async fn new_version(s: &dyn StorageBackend, row: &Value, sp: &Space, flows: &Value, note: &str, lineage: Value, by: &str) -> Result<Value, Response> {
+    let id = &sp.agent_id;
+    let flows = flows.as_array().cloned().unwrap_or_default();
+    for f in &flows {
+        let (ns, name, version) = (col(f, "namespace"), col(f, "name"), col(f, "version"));
+        if s.workflows().get_version(&ns, &name, &version).await.is_err() {
+            return Err(err(StatusCode::BAD_REQUEST, format!("flows: {ns}/{name} has no version {version:?}")));
+        }
+    }
+    let number = version_rows(s, id).await?.iter().map(version_number).max().unwrap_or(0) + 1;
+    let tag = format!("agent-v{number}");
+    let tagged = adb(s, sp, "tag_create", json!({ "name": tag, "created_by": by })).await?;
+    let layers = adb(s, sp, "layers_get", json!({})).await?.get("layers").cloned().unwrap_or(json!([]));
+    let memory = json!({ "namespace": sp.namespace, "tag": tag, "point": { "offset": tagged["point_offset"], "ts": tagged["point_ts"] } });
+    let template = json!({ "id": col(row, "template_id"), "version": col(row, "template_version") });
+    let stored = json!({
+        "agent_id": id,
+        "version": number.to_string(),
+        "template": template.to_string(),
+        "flows": Value::Array(flows).to_string(),
+        "memory": memory.to_string(),
+        "layers": layers.to_string(),
+        "lineage": lineage.to_string(),
+        "note": note,
+        "created_by": by,
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    db.insert(VERSIONS, std::slice::from_ref(&stored)).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("memory tagged {tag}, but the version row failed: {e}")))?;
+    Ok(version_json(&stored))
+}
+
+async fn list_versions(State(s): St, p: P, Path(id): Path<String>) -> Response {
+    both(async {
+        agent_space(s.as_ref(), &who(p), &id, false).await?;
+        let rows = version_rows(s.as_ref(), &id).await?;
+        ok(json!({ "versions": rows.iter().map(version_json).collect::<Vec<_>>() }))
+    }.await)
+}
+
+/// `{flows?: [{namespace, name, version}], note?}`. There is no update: a change is the
+/// next version.
+async fn create_version(State(s): St, p: P, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let b = body.map(|Json(b)| b).unwrap_or_else(|| json!({}));
+        let (row, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        let v = new_version(s.as_ref(), &row, &sp, b.get("flows").unwrap_or(&Value::Null), &col(&b, "note"), Value::Null, principal.id()).await?;
+        Ok((StatusCode::CREATED, Json(v)).into_response())
+    }.await)
+}
+
+async fn get_version(State(s): St, p: P, Path((id, version)): Path<(String, String)>) -> Response {
+    both(async {
+        agent_space(s.as_ref(), &who(p), &id, false).await?;
+        let rows = version_rows(s.as_ref(), &id).await?;
+        match rows.iter().find(|r| col(r, "version") == version) {
+            Some(r) => ok(version_json(r)),
+            None => Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no version {version:?}"))),
+        }
+    }.await)
+}
+
+async fn deployment_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: Map<String, Value> = DEPLOYMENT_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    db.create_table(DEPLOYMENTS, Some(&schema), "create_if_not_exists").await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    query_platform_table(s, DEPLOYMENTS, Some(format!("agent_id = {}", sql_quote(id))), 1000).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+async fn list_deployments(State(s): St, p: P, Path(id): Path<String>) -> Response {
+    both(async {
+        agent_space(s.as_ref(), &who(p), &id, false).await?;
+        ok(json!({ "deployments": deployment_rows(s.as_ref(), &id).await? }))
+    }.await)
+}
+
+/// `{version}`: pin the environment to that version. Rolling back is pinning the previous
+/// one. This records the pin; moving the traffic is the controller's (AC-11a).
+async fn pin_deployment(State(s): St, p: P, Path((id, environment)): Path<(String, String)>, Json(b): Json<Value>) -> Response {
+    both(async {
+        let principal = who(p);
+        agent_space(s.as_ref(), &principal, &id, true).await?;
+        if environment.is_empty() || !environment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(err(StatusCode::BAD_REQUEST, format!("environment {environment:?}: letters, digits and '-'")));
+        }
+        let version = b.get("version").map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+        if !version_rows(s.as_ref(), &id).await?.iter().any(|r| col(r, "version") == version) {
+            return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no version {version:?}")));
+        }
+        let previous = deployment_rows(s.as_ref(), &id).await?.iter().find(|r| col(r, "environment") == environment).map(|r| col(r, "version")).unwrap_or_default();
+        let row = json!({
+            "agent_id": id, "environment": environment, "version": version, "previous": previous,
+            "deployed_by": principal.id(), "deployed_at": chrono::Utc::now().to_rfc3339(),
+        });
+        let db = open_platform_db(s.as_ref(), Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+        db.upsert(DEPLOYMENTS, &["agent_id", "environment"], std::slice::from_ref(&row)).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        ok(row)
     }.await)
 }
 
