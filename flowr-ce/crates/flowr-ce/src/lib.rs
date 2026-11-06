@@ -1774,6 +1774,13 @@ pub(crate) async fn handle_agent_tool_call(
     // historically bypassed the site-A policy hook entirely. Gate the write
     // operations through the hook so authorization (RBAC — e.g. authoring needs
     // the Admin role) actually applies. Reads (list_/get_) fall through untouched.
+    // This path also skips the project gate `call_tool` applies, so a role alone
+    // would let an Admin overwrite any flow in any project, `system` included.
+    if name == "create_flow" {
+        if let Some(denied) = flowr_mcp_core::ns_gate::check(storage.as_ref(), principal, name, &args).await {
+            return Some(denied);
+        }
+    }
     const GATED_WRITES: &[&str] =
         &["create_flow", "create_agent", "create_agent_template", "delete_agent"];
     if GATED_WRITES.contains(&name) {

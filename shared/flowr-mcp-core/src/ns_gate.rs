@@ -18,15 +18,10 @@ fn s<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
 
 /// `document.namespace` of a flow definition given as YAML or JSON.
 fn definition_namespace(args: &Value) -> Option<String> {
+    // Parsed, not scanned: `document: { namespace: x }` is the same document.
     if let Some(y) = s(args, "yaml") {
-        let doc = y.split("\ndo:").next().unwrap_or(y);
-        for line in doc.lines() {
-            if let Some(v) = line.trim_start().strip_prefix("namespace:") {
-                if line.starts_with("  ") || line.starts_with('\t') {
-                    return Some(v.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
-                }
-            }
-        }
+        let doc: Value = serde_yaml::from_str(y).ok()?;
+        return doc.get("document").and_then(|d| d.get("namespace")).and_then(|v| v.as_str()).map(String::from);
     }
     args.get("json").and_then(|j| j.get("document")).and_then(|d| d.get("namespace")).and_then(|v| v.as_str()).map(String::from)
 }
@@ -141,4 +136,23 @@ pub async fn can_see(principal: &Principal, namespace: &str, flow: &str, started
         return me.is_some() && me == ran;
     }
     g.access(principal, &ns).await >= NsAccess::Read
+}
+
+#[cfg(test)]
+mod definition_namespace_tests {
+    use super::*;
+
+    #[test]
+    fn the_namespace_is_parsed_whatever_the_yaml_style() {
+        let block = json!({ "yaml": "document:\n  dsl: 1.0.3\n  namespace: system\n  name: x\n  version: 1.0.0\ndo: []\n" });
+        let flow_style = json!({ "yaml": "document: { dsl: 1.0.3, namespace: system, name: x, version: 1.0.0 }\ndo: []\n" });
+        let quoted = json!({ "yaml": "document:\n  namespace: \"system\"\n" });
+        let as_json = json!({ "json": { "document": { "namespace": "system" } } });
+        for a in [block, flow_style, quoted, as_json] {
+            assert_eq!(definition_namespace(&a).as_deref(), Some("system"), "{a}");
+        }
+        // A `namespace:` outside the document doesn't count.
+        let elsewhere = json!({ "yaml": "document: { name: x }\ndo:\n  - a:\n      with: { namespace: system }\n" });
+        assert_eq!(definition_namespace(&elsewhere), None);
+    }
 }
