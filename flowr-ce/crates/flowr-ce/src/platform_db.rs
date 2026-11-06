@@ -34,6 +34,11 @@ pub trait PlatformDb: Send + Sync {
     async fn create_table(&self, table: &str, schema: Option<&Map<String, Value>>, mode: &str) -> Result<Value, String>;
     async fn update(&self, table: &str, filter: &str, values: &Map<String, Value>) -> Result<(), String>;
     async fn delete(&self, table: &str, filter: &str) -> Result<(), String>;
+    /// A table's columns even with no rows, for copying it; `None` if this backend
+    /// can't tell without a row.
+    async fn columns(&self, _table: &str) -> Result<Option<Vec<String>>, String> {
+        Ok(None)
+    }
     /// Make `rows` (fields → strings) the whole table, with `columns` — one step,
     /// creating the table if needed (copying across backends, [`switch`]).
     async fn replace_table(&self, table: &str, columns: &[String], rows: &[Value]) -> Result<(), String>;
@@ -141,9 +146,18 @@ pub async fn switch(storage: &dyn flowr_storage::StorageBackend, target: &Value)
     let mut rows = 0;
     for table in from.list_tables().await? {
         let batches = from.query(&table, None, usize::MAX >> 1).await?;
+        // An empty table has no batches, so its columns come from its schema. Copying
+        // it with none made an id-only table that the schema install then left alone
+        // (a3t-audit on vc-dev, 3 Nov). Unknown columns: skip it, and the install makes it.
         let columns: Vec<String> = match batches.first() {
             Some(b) => b.schema().fields().iter().map(|f| f.name().clone()).collect(),
-            None => Vec::new(),
+            None => match from.columns(&table).await? {
+                Some(c) => c,
+                None => {
+                    warn!(table = %table, "empty table with unknown columns: not copied");
+                    continue;
+                }
+            },
         };
         let data = crate::handlers::call_lancedb::batches_to_json(&batches);
         to.replace_table(&table, &columns, &data).await.map_err(|e| format!("copying {table}: {e}"))?;
@@ -258,6 +272,12 @@ impl LanceDbPlatform {
 
 #[async_trait]
 impl PlatformDb for LanceDbPlatform {
+    async fn columns(&self, table: &str) -> Result<Option<Vec<String>>, String> {
+        let t = self.db().await?.open_table(table).execute().await.map_err(|e| format!("open table '{table}' error: {e}"))?;
+        let schema = t.schema().await.map_err(|e| format!("schema of '{table}': {e}"))?;
+        Ok(Some(schema.fields().iter().map(|f| f.name().clone()).collect()))
+    }
+
     fn describe(&self) -> String {
         format!("lancedb:{}", self.path)
     }
@@ -552,5 +572,23 @@ impl PlatformDb for EmbeddedAdbPlatform {
         let cols: Vec<String> = if columns.is_empty() && !rows.is_empty() { vec!["id".into()] } else { columns.to_vec() };
         let rows = rows.iter().map(|r| text_row(r, Some(&cols))).collect();
         self.write(adb_core::log::Effect::TableReplace { table: table.to_string(), columns: cols, rows }).await.map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod empty_table_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_empty_lance_table_reports_its_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LanceDbPlatform::new(dir.path().join("p.lance").to_str().unwrap());
+        let schema = serde_json::json!({ "id": "string", "org_id": "string", "created_at": "string" });
+        db.create_table("audit_log", schema.as_object(), "create_if_not_exists").await.unwrap();
+        assert!(db.query("audit_log", None, 10).await.unwrap().iter().all(|b| b.num_rows() == 0));
+        let cols = db.columns("audit_log").await.unwrap().expect("Lance knows its schema");
+        for c in ["id", "org_id", "created_at"] {
+            assert!(cols.iter().any(|x| x == c), "{c} in {cols:?}");
+        }
     }
 }
