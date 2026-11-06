@@ -323,6 +323,7 @@ async fn runtime_trigger(storage: &Arc<dyn StorageBackend>) {
         let _ = manager.delete(&id).await;
     }
     let trigger = Trigger {
+        environment: None,
         id: id.clone(),
         name: format!("canvas {ns}/{name}"),
         namespace: ns.clone(),
@@ -2190,6 +2191,7 @@ async fn mcp_create_agent(
                 let path = trigger_def.get("path").and_then(|v| v.as_str())
                     .unwrap_or(&default_path);
                 flowr_ce_agents::Trigger {
+                    environment: None,
                     id: Uuid::now_v7().to_string(),
                     name: format!("{}-webhook", agent_id),
                     namespace: "system".to_string(),
@@ -2213,6 +2215,7 @@ async fn mcp_create_agent(
                 let expression = trigger_def.get("expression").and_then(|v| v.as_str())
                     .unwrap_or("*/5 * * * *");
                 flowr_ce_agents::Trigger {
+                    environment: None,
                     id: Uuid::now_v7().to_string(),
                     name: format!("{}-cron", agent_id),
                     namespace: "system".to_string(),

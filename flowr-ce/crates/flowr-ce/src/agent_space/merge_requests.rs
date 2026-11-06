@@ -13,8 +13,11 @@
 //! normal immutable registry version that isn't made active. Prod is the active version
 //! now. A flow both sides changed differently is a conflict.
 //!
-//! How many approvals and how much evidence a merge needs is `A3T_MERGE_APPROVALS` and
-//! `A3T_MERGE_EVIDENCE` (default 1 each) until environments carry their rules (AC-12).
+//! Kind `deploy` pins a version to an environment whose rule asks for approval (AC-12):
+//! no conflicts, the same gate, and rolling back pins the version before.
+//!
+//! How many approvals and how much evidence are needed is the target environment's rule
+//! (`environments.rs`); a merge's target is the project's production environment.
 
 use super::*;
 
@@ -22,8 +25,8 @@ use axum::routing::put;
 
 pub const MERGES: &str = "agent_merges";
 pub const BRANCH_FLOWS: &str = "agent_branch_flows";
-const MERGE_COLUMNS: [&str; 16] = [
-    "id", "agent_id", "branch", "kind", "status", "resolutions", "flow_resolutions", "approvals", "evidence", "required_approvals",
+const MERGE_COLUMNS: [&str; 18] = [
+    "id", "agent_id", "branch", "kind", "environment", "version", "status", "resolutions", "flow_resolutions", "approvals", "evidence", "required_approvals",
     "required_evidence", "result", "created_by", "created_at", "updated_by", "updated_at",
 ];
 const FLOW_COLUMNS: [&str; 6] = ["agent_id", "branch", "namespace", "name", "base_version", "branch_version"];
@@ -180,8 +183,16 @@ async fn save_branch_flow(State(s): St, p: P, Path((id, name)): Path<(String, St
 
 // ── The merge record (AC-23) ────────────────────────────────────────────────
 
-fn required(var: &str) -> usize {
-    std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+/// The rule of the environment a request changes: `(environment, approvals, evidence)`.
+async fn rule_for(s: &dyn StorageBackend, project: &str, environment: Option<&str>) -> Result<(String, String, String), Response> {
+    let env = match environment {
+        Some(name) => environments::find(s, project, name).await?,
+        None => {
+            let all = environments::of_project(s, project).await.map_err(internal)?;
+            all.into_iter().find(environments::is_production).ok_or_else(|| err(StatusCode::CONFLICT, format!("project {project:?} has no production environment")))?
+        }
+    };
+    Ok((col(&env, "name"), col(&env, "required_approvals"), col(&env, "required_evidence")))
 }
 
 fn request_json(row: &Value) -> Value {
@@ -229,6 +240,10 @@ async fn with_live_state(s: &dyn StorageBackend, sp: &Space, mut v: Value) -> Re
         return Ok(v);
     }
     let kind = col(&v, "kind");
+    if kind == "deploy" {
+        v["blocked_by"] = json!(blocked_by(&v));
+        return Ok(v);
+    }
     let mut body = json!({ "name": col(&v, "branch") });
     if kind == "2" {
         body["memories"] = json!(["PROCEDURAL"]);
@@ -263,7 +278,7 @@ pub fn blocked_by(v: &Value) -> Vec<String> {
             Err(e) => out.push(e),
         }
     }
-    let need = |k: &str| v.get(k).and_then(|x| x.as_str()).and_then(|x| x.parse::<usize>().ok()).unwrap_or(1);
+    let need = |k: &str| v.get(k).and_then(|x| x.as_str()).and_then(|x| x.parse::<usize>().ok()).unwrap_or(0);
     let (have_a, need_a) = (list("approvals").len(), need("required_approvals"));
     if have_a < need_a {
         out.push(format!("approvals: {have_a} of {need_a}"));
@@ -276,26 +291,39 @@ pub fn blocked_by(v: &Value) -> Vec<String> {
 }
 
 /// `{branch, kind: 1 | 2}`. Kind 1: behaviour, as a new agent. Kind 2: procedures, back
-/// into this agent.
+/// into this agent. `{kind: "deploy", environment, version}`: pin a version.
 async fn create_request(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
     both(async {
         let principal = who(p);
-        let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
-        let branch = col(&b, "branch");
-        if branch.is_empty() {
-            return Err(err(StatusCode::BAD_REQUEST, "branch is required"));
-        }
+        let (agent, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
         let kind = b.get("kind").map(|k| k.as_str().map(String::from).unwrap_or_else(|| k.to_string())).unwrap_or_default();
-        if kind != "1" && kind != "2" {
-            return Err(err(StatusCode::BAD_REQUEST, "kind is 1 (a new agent) or 2 (procedures back into this agent)"));
-        }
+        let branch = col(&b, "branch");
+        let version = b.get("version").map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+        let target = match kind.as_str() {
+            "1" | "2" => {
+                if branch.is_empty() {
+                    return Err(err(StatusCode::BAD_REQUEST, "branch is required"));
+                }
+                None
+            }
+            "deploy" => {
+                if col(&b, "environment").is_empty() || version.is_empty() {
+                    return Err(err(StatusCode::BAD_REQUEST, "a deploy needs environment and version"));
+                }
+                if !version_rows(s.as_ref(), &id).await?.iter().any(|r| col(r, "version") == version) {
+                    return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no version {version:?}")));
+                }
+                Some(col(&b, "environment"))
+            }
+            _ => return Err(err(StatusCode::BAD_REQUEST, "kind is 1 (a new agent), 2 (procedures back into this agent) or deploy")),
+        };
+        let (environment, approvals, evidence) = rule_for(s.as_ref(), &project_of(&agent), target.as_deref()).await?;
         let now = chrono::Utc::now().to_rfc3339();
         let v = json!({
             "id": format!("mr-{}", &uuid::Uuid::now_v7().simple().to_string()[..16]),
-            "agent_id": id, "branch": branch, "kind": kind, "status": "open",
+            "agent_id": id, "branch": branch, "kind": kind, "environment": environment, "version": version, "status": "open",
             "resolutions": [], "flow_resolutions": [], "approvals": [], "evidence": [],
-            "required_approvals": required("A3T_MERGE_APPROVALS").to_string(),
-            "required_evidence": required("A3T_MERGE_EVIDENCE").to_string(),
+            "required_approvals": approvals, "required_evidence": evidence,
             "result": null, "created_by": principal.id(), "created_at": now,
         });
         // Reading the conflicts first refuses a branch that doesn't exist.
@@ -407,10 +435,17 @@ async fn apply(State(s): St, p: P, Path((id, mr)): Path<(String, String)>, body:
     both(async {
         let principal = who(p);
         let s = s.as_ref();
-        let (_, sp) = agent_space(s, &principal, &id, true).await?;
-        allowed(&principal, flowr_policy::actions::MEMORY_MERGE, &id).await?;
+        let (agent, sp) = agent_space(s, &principal, &id, true).await?;
         let stored = load(s, &id, &mr).await?;
         must_be_open(&stored)?;
+        let target = environments::find(s, &project_of(&agent), &col(&stored, "environment")).await?;
+        let production = environments::is_production(&target);
+        let deploy = col(&stored, "kind") == "deploy";
+        if deploy && production {
+            allowed(&principal, flowr_policy::actions::DEPLOY_PROD, &id).await?;
+        } else if !deploy {
+            allowed(&principal, flowr_policy::actions::MEMORY_MERGE, &id).await?;
+        }
         let mut v = with_live_state(s, &sp, stored).await?;
         let blocked = blocked_by(&v);
         if !blocked.is_empty() {
@@ -419,7 +454,9 @@ async fn apply(State(s): St, p: P, Path((id, mr)): Path<(String, String)>, body:
         let branch = col(&v, "branch");
         let main_offset = v["main"]["offset"].clone();
         let resolutions = v["resolutions"].clone();
-        let result = if col(&v, "kind") == "2" {
+        let result = if deploy {
+            json!({ "pin": write_pin(s, &id, &col(&v, "environment"), &col(&v, "version"), principal.id()).await? })
+        } else if col(&v, "kind") == "2" {
             let r = adb(s, &sp, "branch_merge", json!({ "name": branch, "memories": ["PROCEDURAL"], "main_offset": main_offset, "resolutions": resolutions, "merged_by": principal.id() })).await?;
             json!({ "merge_id": r.get("merge_id"), "adb": r })
         } else {
@@ -457,7 +494,14 @@ async fn rollback(State(s): St, p: P, Path((id, mr)): Path<(String, String)>, bo
         if col(&v, "status") != "merged" {
             return Err((StatusCode::CONFLICT, Json(json!({ "error": format!("this merge request is {}", col(&v, "status")), "code": "merge_not_merged" }))).into_response());
         }
-        let undone = if col(&v, "kind") == "2" {
+        let undone = if col(&v, "kind") == "deploy" {
+            // The version before; a first pin has none to go back to.
+            let previous = v["result"]["pin"]["previous"].as_str().unwrap_or_default().to_string();
+            if previous.is_empty() {
+                return Err((StatusCode::CONFLICT, Json(json!({ "error": "this was the environment's first version: there's none to go back to", "code": "no_previous" }))).into_response());
+            }
+            json!({ "pin": write_pin(s, &id, &col(&v, "environment"), &previous, principal.id()).await? })
+        } else if col(&v, "kind") == "2" {
             let force = body.and_then(|Json(b)| b.get("force_skip").and_then(|x| x.as_bool())).unwrap_or(false);
             adb(s, &sp, "merge_revert", json!({ "merge_id": v["result"]["merge_id"], "reverted_by": principal.id(), "force_skip": force })).await?
         } else {

@@ -159,7 +159,7 @@ impl TriggerManager {
         let mut results = Vec::new();
 
         for trigger in triggers.values() {
-            if !trigger.enabled {
+            if !trigger.active_here() {
                 continue;
             }
 
@@ -203,7 +203,7 @@ impl TriggerManager {
         workflow_executor: &dyn WorkflowExecutor,
     ) -> Option<TriggerDeliveryResult> {
         let trigger = self.triggers.read().await.get(trigger_id).cloned()?;
-        if !trigger.enabled {
+        if !trigger.active_here() {
             return None;
         }
         let TriggerConfig::AdbTopic { topic, message_template, .. } = &trigger.config else { return None };
@@ -255,7 +255,7 @@ impl TriggerManager {
         let mut results = Vec::new();
 
         for trigger in triggers.values() {
-            if !trigger.enabled {
+            if !trigger.active_here() {
                 continue;
             }
 
@@ -311,7 +311,7 @@ impl TriggerManager {
             let triggers = self.triggers.read().await;
             triggers
                 .values()
-                .filter(|t| t.enabled && t.namespace == namespace)
+                .filter(|t| t.active_here() && t.namespace == namespace)
                 .filter(|t| match &t.config {
                     TriggerConfig::Event { source, filter, .. } => {
                         (source == event_type || source == "*")
@@ -359,7 +359,7 @@ impl TriggerManager {
         let mut due = Vec::new();
 
         for trigger in triggers.values() {
-            if !trigger.enabled {
+            if !trigger.active_here() {
                 continue;
             }
             if let TriggerConfig::Cron { expression, message, .. } = &trigger.config {

@@ -51,6 +51,10 @@ impl TaskHandler for AdbHandler {
         let ep = if let Some(u) = with.get("url").and_then(|v| v.as_str()) {
             adb_endpoint(u, with.get("flight_url").and_then(|v| v.as_str()))
         } else if let Some(r) = with.get("_resource").and_then(|v| v.as_str()) {
+            // D4: a run on a branch reaches memory through the non-prod ADB when there is one.
+            let org = crate::agent_space::org_adb("");
+            let swapped = ctx.principal.memory_branch().filter(|_| r == org).and_then(|_| crate::agent_space::environments::non_prod_resource());
+            let r = swapped.as_deref().unwrap_or(r);
             let storage = ctx
                 .storage
                 .as_ref()

@@ -539,7 +539,9 @@ impl TaskHandler for AgentHandler {
             Some(sp) => (Some(sp.resource.as_str()), sp.namespace.as_str()),
             None => (config.config.memory_resource.as_deref(), config.config.memory_namespace.as_str()),
         };
-        let memory = match memory_resource {
+        // D4: on a branch, memory goes straight to the non-prod ADB when there is one.
+        let non_prod = ctx.principal.memory_branch().and_then(|_| crate::agent_space::environments::non_prod_resource());
+        let memory = match memory_resource.map(|r| non_prod.as_deref().unwrap_or(r)) {
             Some(resource) => match AgentMemory::connect(
                 storage.as_ref(),
                 resource,

@@ -46,6 +46,7 @@ use crate::handlers::call_adb::{flight_action, resolve_adb};
 use crate::handlers::call_lancedb::{query_platform_table, sql_quote, DEFAULT_PLATFORM_DB_PATH, PLATFORM_DB_RESOURCE};
 use crate::platform_db::open_platform_db;
 
+pub mod environments;
 mod merge_requests;
 
 /// The org's ADB (the agents' memory). One for every org until per-org resources exist.
@@ -255,6 +256,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/runs", get(list_runs))
         .route("/agents/:agent_id/deployments/:environment", axum::routing::put(pin_deployment))
         .merge(merge_requests::routes())
+        .merge(environments::routes())
         .with_state(storage)
 }
 
@@ -311,6 +313,11 @@ async fn create_branch(State(s): St, p: P, Path(id): Path<String>, Json(b): Json
         }
         let r = adb(s.as_ref(), &sp, "branch_create", body).await?;
         merge_requests::snapshot_branch_flows(s.as_ref(), &id, name).await?;
+        // D4: with a non-prod pod, branch memory lives there, off prod's compute.
+        let r = match environments::non_prod_flight() {
+            Some(url) => adb(s.as_ref(), &sp, "branch_place", json!({ "name": name, "url": url })).await?,
+            None => r,
+        };
         Ok((StatusCode::CREATED, Json(r)).into_response())
     }.await)
 }
@@ -727,26 +734,36 @@ async fn list_deployments(State(s): St, p: P, Path(id): Path<String>) -> Respons
 async fn pin_deployment(State(s): St, p: P, Path((id, environment)): Path<(String, String)>, Json(b): Json<Value>) -> Response {
     both(async {
         let principal = who(p);
-        agent_space(s.as_ref(), &principal, &id, true).await?;
-        if environment == "prod" || environment == "production" {
+        let (agent, _) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        let env = environments::find(s.as_ref(), &project_of(&agent), &environment).await?;
+        if environments::is_production(&env) {
             allowed(&principal, flowr_policy::actions::DEPLOY_PROD, &id).await?;
         }
-        if environment.is_empty() || !environment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            return Err(err(StatusCode::BAD_REQUEST, format!("environment {environment:?}: letters, digits and '-'")));
+        // AC-10: an environment with an approval rule takes its pins through a merge request.
+        if environments::needs_approval(&env) {
+            return Err((StatusCode::CONFLICT, Json(json!({
+                "error": format!("{environment} needs approval: open a merge request with kind \"deploy\", environment and version"),
+                "code": "approval_required",
+            }))).into_response());
         }
         let version = b.get("version").map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())).unwrap_or_default();
-        if !version_rows(s.as_ref(), &id).await?.iter().any(|r| col(r, "version") == version) {
-            return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no version {version:?}")));
-        }
-        let previous = deployment_rows(s.as_ref(), &id).await?.iter().find(|r| col(r, "environment") == environment).map(|r| col(r, "version")).unwrap_or_default();
-        let row = json!({
-            "agent_id": id, "environment": environment, "version": version, "previous": previous,
-            "deployed_by": principal.id(), "deployed_at": chrono::Utc::now().to_rfc3339(),
-        });
-        let db = open_platform_db(s.as_ref(), Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
-        db.upsert(DEPLOYMENTS, &["agent_id", "environment"], std::slice::from_ref(&row)).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        ok(row)
+        ok(write_pin(s.as_ref(), &id, &environment, &version, principal.id()).await?)
     }.await)
+}
+
+/// Pin `environment` to `version`, remembering the one before.
+async fn write_pin(s: &dyn StorageBackend, id: &str, environment: &str, version: &str, by: &str) -> Result<Value, Response> {
+    if !version_rows(s, id).await?.iter().any(|r| col(r, "version") == version) {
+        return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no version {version:?}")));
+    }
+    let previous = deployment_rows(s, id).await?.iter().find(|r| col(r, "environment") == environment).map(|r| col(r, "version")).unwrap_or_default();
+    let row = json!({
+        "agent_id": id, "environment": environment, "version": version, "previous": previous,
+        "deployed_by": by, "deployed_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    db.upsert(DEPLOYMENTS, &["agent_id", "environment"], std::slice::from_ref(&row)).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(row)
 }
 
 #[cfg(test)]

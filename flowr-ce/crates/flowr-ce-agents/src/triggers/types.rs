@@ -28,6 +28,21 @@ pub struct Trigger {
     /// Optional description
     #[serde(default)]
     pub description: Option<String>,
+    /// AC-12: the environment this trigger belongs to; it fires only in processes serving
+    /// it (`A3T_ENVIRONMENT`, default `prod`). `None`: every environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
+impl Trigger {
+    /// Whether it fires in this process: enabled, and of this process's environment.
+    pub fn active_here(&self) -> bool {
+        self.enabled && self.environment.as_deref().is_none_or(|e| e == current_environment())
+    }
+}
+
+fn current_environment() -> String {
+    std::env::var("A3T_ENVIRONMENT").ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "prod".to_string())
 }
 
 fn default_ns() -> String { "default".to_string() }
