@@ -244,8 +244,7 @@ template, project and org) with the new `id` (default `agt-<12 hex>`) and `name`
 memory is copied first; the rows are written only if the copy succeeded. An existing
 agent id is refused (`409`).
 
-Not built yet: runs on a branch (`memory_branch`, BR-4), MCP tools for these, Cedar
-`memory:*` checks (project access only, for now), agent ids instead of namespaces inside
+Not built yet: MCP tools for these, agent ids instead of namespaces inside
 ADB's answers (Branch, Tag, Layers still carry `namespace`).
 
 Cedar actions (planned): `memory:branch`, `memory:promote`, `memory:fork`, `memory:tag`,
@@ -271,6 +270,41 @@ creates the ADB tag `agent-v<n>`, which keeps that memory past the 90 days of hi
 
 **Not yet:** a pin only records the choice; nothing moves traffic until AC-11a. Two versions
 created at the same instant could get one number.
+
+### Merge requests (AC-22, AC-23, AC-10, AC-11a)
+
+One record per merge, of either kind. Use these rather than the direct `/merge` and
+`/promote` routes: only these apply the gate. A UI shows `blocked_by` as it stands.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET` / `POST /agents/{id}/branches/{name}/flows` | `{yaml}` | `{flows: [{namespace, name, base_version, branch_version, prod_version, state}]}` / the row. A draft is a new version, left inactive. Same version with other content → `409 version_exists` |
+| `GET` / `POST /agents/{id}/merge-requests` | `{branch, kind: 1 \| 2}` | `{merge_requests}` / `201` MergeRequest |
+| `GET /agents/{id}/merge-requests/{mr}` | | MergeRequest, with conflicts as they are now |
+| `PUT .../{mr}/resolutions` | `{resolutions?, flow_resolutions?}` | MergeRequest |
+| `POST .../{mr}/approvals` | `{note?}` | MergeRequest. Your own → `403 self_approval` |
+| `POST .../{mr}/evidence` | `{kind, ref, note?}` | MergeRequest |
+| `POST .../{mr}/apply` | `{new_agent?: {id?, name?}}` | MergeRequest, `merged`. In the way → `409 merge_blocked` with `blocked_by` |
+| `POST .../{mr}/rollback` | `{force_skip?}` | MergeRequest, `rolled_back` |
+
+`MergeRequest = {id, agent_id, branch, kind, status: open | merged | rolled_back, conflicts,
+flows, resolutions, flow_resolutions, approvals, evidence, required_approvals,
+required_evidence, base, main, blocked_by, result, created_by, created_at}`.
+
+- `resolutions` are ADB's (`{lineage, memory, take: branch | main | edit, value?}`).
+- `flow_resolutions` are `{namespace, name, take: branch | prod | edit, version?}`; `edit` names a
+  version saved on the branch. A flow's `state` is `unchanged`, `clean`, `same` or `conflict`.
+- Kind 2's `result` has `merge_id`. Kind 1's has `promoted_agent`, `agent`, `flows` and
+  `moved_triggers`. Rollback of kind 1 moves the triggers back; the new agent stays.
+
+### Runs and policy (AC-6, AC-7, AC-14, AC-20)
+
+- A run on a branch: `memory_branch` in `execute_flow`, `POST /chat` or `send_message`. Its memory
+  calls go to the branch, and HTTP and MCP calls out are refused with a plain message.
+- `GET /agents/{id}/runs` → `{runs: [{run_id, agent_id, agent_version, environment,
+  memory_namespace, memory_branch, memory_point, at}]}`, one per agent turn.
+- A policy deny answers `403 {error, code: "policy_denied"}`. Actions: `memory:branch`,
+  `memory:merge`, `memory:promote`, `memory:fork`, `memory:layers`, `deploy:prod`.
 
 ## 7. Branch pod protocol (internal)
 

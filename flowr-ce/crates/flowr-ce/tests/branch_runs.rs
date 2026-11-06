@@ -104,6 +104,8 @@ async fn a_branch_run_is_refused_outbound_with_a_plain_message_and_a_decision_ro
     let rows = decisions(&storage).await;
     let row = rows.iter().find(|r| r["target"].as_str().is_some_and(|t| t.contains("/never"))).unwrap_or_else(|| panic!("no decision row in {rows:?}"));
     assert_eq!(row["decision"], json!("deny"), "{row}");
+    assert_eq!(row["memory_branch"], json!("try"), "{row}");
+    assert_eq!(row["environment"], json!("prod"), "{row}");
 
     // On main the same flow does try the call (and fails on the closed port, not on a refusal).
     let req = ExecutionRequest::new("t", "calls-out").with_input(json!({})).with_principal(alice());

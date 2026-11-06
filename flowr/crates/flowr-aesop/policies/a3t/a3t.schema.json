@@ -272,6 +272,78 @@
             "Session"
           ]
         }
+      },
+      "memory:branch": {
+        "appliesTo": {
+          "principalTypes": [
+            "User",
+            "Agent",
+            "Service"
+          ],
+          "resourceTypes": [
+            "Agent"
+          ]
+        }
+      },
+      "memory:merge": {
+        "appliesTo": {
+          "principalTypes": [
+            "User",
+            "Agent",
+            "Service"
+          ],
+          "resourceTypes": [
+            "Agent"
+          ]
+        }
+      },
+      "memory:promote": {
+        "appliesTo": {
+          "principalTypes": [
+            "User",
+            "Agent",
+            "Service"
+          ],
+          "resourceTypes": [
+            "Agent"
+          ]
+        }
+      },
+      "memory:fork": {
+        "appliesTo": {
+          "principalTypes": [
+            "User",
+            "Agent",
+            "Service"
+          ],
+          "resourceTypes": [
+            "Agent"
+          ]
+        }
+      },
+      "memory:layers": {
+        "appliesTo": {
+          "principalTypes": [
+            "User",
+            "Agent",
+            "Service"
+          ],
+          "resourceTypes": [
+            "Agent"
+          ]
+        }
+      },
+      "deploy:prod": {
+        "appliesTo": {
+          "principalTypes": [
+            "User",
+            "Agent",
+            "Service"
+          ],
+          "resourceTypes": [
+            "Agent"
+          ]
+        }
       }
     }
   }

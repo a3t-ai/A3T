@@ -283,3 +283,22 @@ permit(
   principal is User && principal has roles &&
   (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
 };
+
+// AC-14: an agent's memory lifecycle. The project gate has already checked write access;
+// InfoSec narrows these with `forbid`s. The runtime service covers CE-style calls with
+// no signed-in user.
+permit(
+  principal,
+  action in [Action::"memory:branch", Action::"memory:merge", Action::"memory:promote", Action::"memory:fork", Action::"memory:layers"],
+  resource
+) when { principal is User || principal is Service };
+
+// Going to production is for admins.
+permit(
+  principal,
+  action == Action::"deploy:prod",
+  resource
+) when {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};

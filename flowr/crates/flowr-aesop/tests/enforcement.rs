@@ -20,7 +20,7 @@ fn req(principal: Principal, destructive: bool) -> ExecutionRequest {
 }
 
 fn human() -> Principal {
-    Principal::Human { user_id: "sriram".into(), roles: vec!["admin".into()] }
+    Principal::Human { memory_branch: None, user_id: "sriram".into(), roles: vec!["admin".into()] }
 }
 
 fn agent_for_user() -> Principal {
@@ -39,7 +39,7 @@ fn agent_for_user() -> Principal {
 
 fn agent_ambient() -> Principal {
     // No on_behalf_of — ambient trust, which the baseline refuses.
-    Principal::Agent { agent_id: AgentId("rogue".into()), on_behalf_of: None, flow_id: None, roles: vec![], owner: None }
+    Principal::Agent { memory_branch: None, agent_id: AgentId("rogue".into()), on_behalf_of: None, flow_id: None, roles: vec![], owner: None }
 }
 
 #[tokio::test]
@@ -140,7 +140,7 @@ async fn service_allowed_on_safe_tool() {
     // call:lancedb) is permitted for non-destructive tools — else the platform's
     // own flows break.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Service { service_id: "flow-runtime".into() };
+    let p = Principal::Service { memory_branch: None, service_id: "flow-runtime".into() };
     assert!(matches!(hook.check(&req(p, false)).await, PolicyDecision::Allow));
 }
 
@@ -148,7 +148,7 @@ async fn service_allowed_on_safe_tool() {
 async fn service_denied_on_destructive_tool() {
     // ...but even the runtime service is denied a destructive tool (forbid wins).
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Service { service_id: "flow-runtime".into() };
+    let p = Principal::Service { memory_branch: None, service_id: "flow-runtime".into() };
     match hook.check(&req(p, true)).await {
         PolicyDecision::Deny { .. } => {}
         other => panic!("destructive tool must be denied even for service — got {other:?}"),
@@ -430,7 +430,7 @@ async fn flow_ceiling_binds_any_principal_not_just_agents() {
     // the flow's declared surface is denied regardless of who runs it.
     let hook = CedarHook::baseline().unwrap();
     let tmpl = serde_json::json!({ "exposedTools": ["search_docs"] });
-    let human_flow = Principal::Human { user_id: "alice".into(), roles: vec![] };
+    let human_flow = Principal::Human { memory_branch: None, user_id: "alice".into(), roles: vec![] };
     assert!(matches!(
         hook.check(&tool_req_as(human_flow.clone(), "search_docs", tmpl.clone())).await,
         PolicyDecision::Allow
@@ -665,7 +665,7 @@ fn session_req(principal: Principal, action: flowr_policy::Action, owner: &str, 
 }
 
 fn viewer(id: &str) -> Principal {
-    Principal::Human { user_id: id.into(), roles: vec!["Viewer".into()] }
+    Principal::Human { memory_branch: None, user_id: id.into(), roles: vec!["Viewer".into()] }
 }
 
 #[tokio::test]
@@ -694,7 +694,7 @@ async fn a_different_user_may_not_read_or_delete_someone_elses_session() {
 async fn infosec_may_read_any_session_for_audit() {
     let hook = CedarHook::baseline().unwrap();
     for role in ["SuperAdmin", "SecurityAdmin"] {
-        let p = Principal::Human { user_id: "auditor".into(), roles: vec![role.into()] };
+        let p = Principal::Human { memory_branch: None, user_id: "auditor".into(), roles: vec![role.into()] };
         assert!(matches!(
             hook.check(&session_req(p, actions::session_read(), "alice", false)).await,
             PolicyDecision::Allow
@@ -707,7 +707,7 @@ async fn infosec_read_access_does_not_extend_to_deleting_someone_elses_session()
     // The audit exception is read-only on purpose: an auditor reviewing a
     // transcript must not be able to destroy the evidence.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Human { user_id: "auditor".into(), roles: vec!["SuperAdmin".into()] };
+    let p = Principal::Human { memory_branch: None, user_id: "auditor".into(), roles: vec!["SuperAdmin".into()] };
     assert!(matches!(
         hook.check(&session_req(p, actions::session_delete(), "alice", false)).await,
         PolicyDecision::Deny { .. }
@@ -718,7 +718,7 @@ async fn infosec_read_access_does_not_extend_to_deleting_someone_elses_session()
 async fn plain_admin_is_not_an_auditor() {
     // Admin governs the registry, not other people's conversations.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Human { user_id: "ops".into(), roles: vec!["Admin".into()] };
+    let p = Principal::Human { memory_branch: None, user_id: "ops".into(), roles: vec!["Admin".into()] };
     assert!(matches!(
         hook.check(&session_req(p, actions::session_read(), "alice", false)).await,
         PolicyDecision::Deny { .. }
@@ -1068,4 +1068,27 @@ async fn runtime_state_is_admin_only_on_every_tier() {
             other => panic!("a viewer's agent must be refused ({action:?}) — got {other:?}"),
         }
     }
+}
+
+/// AC-14: the baseline allows an agent's memory lifecycle for people; production is for admins.
+fn lifecycle(principal: Principal, action: &str) -> ExecutionRequest {
+    ExecutionRequest {
+        principal,
+        action: flowr_policy::Action::new(action).unwrap(),
+        resource: Resource::new("Agent", "bot"),
+        context: Default::default(),
+        attributes: Default::default(),
+        params: serde_json::json!({}),
+    }
+}
+
+#[tokio::test]
+async fn the_baseline_allows_the_memory_lifecycle_and_keeps_prod_for_admins() {
+    let hook = CedarHook::baseline().unwrap();
+    for action in ["memory:branch", "memory:merge", "memory:promote", "memory:fork", "memory:layers"] {
+        let req = lifecycle(user_with_roles(&["Editor"]), action);
+        assert!(matches!(hook.check(&req).await, PolicyDecision::Allow), "{action}");
+    }
+    assert!(matches!(hook.check(&lifecycle(user_with_roles(&["Admin"]), "deploy:prod")).await, PolicyDecision::Allow));
+    assert!(matches!(hook.check(&lifecycle(user_with_roles(&["Editor"]), "deploy:prod")).await, PolicyDecision::Deny { .. }));
 }

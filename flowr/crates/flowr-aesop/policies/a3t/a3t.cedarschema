@@ -92,6 +92,14 @@ action "runtime:terminate" appliesTo { principal: [User, Agent, Service], resour
 action "session:read"   appliesTo { principal: [User, Agent, Service], resource: [Session] };
 action "session:delete" appliesTo { principal: [User, Agent, Service], resource: [Session] };
 
+// An agent's memory lifecycle and going to production (AC-14), on the agent itself.
+action "memory:branch" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+action "memory:merge" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+action "memory:promote" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+action "memory:fork" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+action "memory:layers" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+action "deploy:prod" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+
 action "resource:create" appliesTo { principal: [User, Agent, Service], resource: [Resource] };
 action "resource:update" appliesTo { principal: [User, Agent, Service], resource: [Resource] };
 action "resource:delete" appliesTo { principal: [User, Agent, Service], resource: [Resource] };

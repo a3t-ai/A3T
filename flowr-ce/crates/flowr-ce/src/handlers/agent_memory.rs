@@ -118,6 +118,8 @@ pub struct AgentMemory {
     session_id: String,
     /// Who the session belongs to (the principal): reflected facts carry it.
     owner: String,
+    /// AC-20: the newest memory point of an answer this turn (DB-7): what it read.
+    point: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
 }
 
 /// A double-quoted AQL string literal.
@@ -129,6 +131,11 @@ pub(crate) fn aql_str(s: &str) -> String {
 fn records(result: &Value) -> Vec<Value> {
     let data = result.get("data").unwrap_or(result);
     data.get("records").and_then(|r| r.as_array()).cloned().unwrap_or_default()
+}
+
+/// An answer's memory point (ADB DB-7), wherever the wire put its metadata.
+fn point_of(result: &Value) -> Option<Value> {
+    result.pointer("/metadata/point").or_else(|| result.pointer("/data/metadata/point")).filter(|p| !p.is_null()).cloned()
 }
 
 fn created_at(r: &Value) -> String {
@@ -226,12 +233,22 @@ impl AgentMemory {
             Some(b) => format!("{} BRANCH {}", aql_str(namespace), aql_str(b)),
             None => aql_str(namespace),
         };
-        Ok(Self { ep, namespace_clause, session_id: session_id.to_string(), owner: owner.to_string() })
+        Ok(Self { ep, namespace_clause, session_id: session_id.to_string(), owner: owner.to_string(), point: Default::default() })
+    }
+
+    /// AC-20: the memory point of what this turn read (`None`: an ADB without DB-7, or no read).
+    pub fn memory_point(&self) -> Option<Value> {
+        self.point.lock().unwrap().clone()
     }
 
     async fn query(&self, aql: &str) -> Vec<Value> {
         match adb_query(&self.ep, aql, None).await {
-            Ok(r) => records(&r),
+            Ok(r) => {
+                if let Some(p) = point_of(&r) {
+                    *self.point.lock().unwrap() = Some(p);
+                }
+                records(&r)
+            }
             Err(e) => {
                 warn!(error = %e, aql = %aql, "agent memory: recall failed; continuing without it");
                 Vec::new()

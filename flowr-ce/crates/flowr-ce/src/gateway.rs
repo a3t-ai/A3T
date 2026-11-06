@@ -412,9 +412,21 @@ async fn record(storage: &dyn StorageBackend, gateway_run: &str, call: &Call, vi
         "reason": d.reason,
         "outcome": match outcome { Ok(_) => "ok".to_string(), Err(e) => format!("error: {e}") },
         "took_ms": took.as_millis().to_string(),
+        // AC-20. The agent version and memory point are on the caller's `agent_runs` row
+        // (`caller_run`).
+        "environment": crate::agent_space::environment(),
+        "memory_branch": serde_json::from_value::<flowr_policy::Principal>(call.principal.clone()).ok().and_then(|p| p.memory_branch().map(String::from)).unwrap_or_default(),
     });
-    if let Err(e) = db.insert("gateway_decisions", &[row]).await {
-        warn!(error = %e, "gateway: recording the decision failed");
+    if let Err(first) = db.insert("gateway_decisions", std::slice::from_ref(&row)).await {
+        // A table made before these columns existed refuses them: keep the decision.
+        let mut older = row.clone();
+        if let Some(m) = older.as_object_mut() {
+            m.remove("environment");
+            m.remove("memory_branch");
+        }
+        if let Err(e) = db.insert("gateway_decisions", &[older]).await {
+            warn!(error = %e, first = %first, "gateway: recording the decision failed");
+        }
     }
 }
 

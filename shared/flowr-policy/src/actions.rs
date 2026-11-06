@@ -47,6 +47,13 @@ pub const AGENT_STOP: &str = "agent:stop";
 // Memory (ClawDB)
 pub const MEMORY_READ: &str = "memory:read";
 pub const MEMORY_WRITE: &str = "memory:write";
+// An agent's memory lifecycle (AC-14), checked in the engine before acting.
+pub const MEMORY_BRANCH: &str = "memory:branch";
+pub const MEMORY_MERGE: &str = "memory:merge";
+pub const MEMORY_PROMOTE: &str = "memory:promote";
+pub const MEMORY_FORK: &str = "memory:fork";
+pub const MEMORY_LAYERS: &str = "memory:layers";
+pub const DEPLOY_PROD: &str = "deploy:prod";
 
 // LLM
 pub const LLM_CALL: &str = "llm:call";

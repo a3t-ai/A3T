@@ -568,6 +568,10 @@ impl TaskHandler for AgentHandler {
                 state.system_prompt.push_str(&section);
             }
         }
+        // AC-20: this turn names its agent version, environment and the memory it read.
+        if let (Some(sp), Some(m)) = (&own, &memory) {
+            crate::agent_space::record_run(storage.as_ref(), &ctx.instance_id, sp, ctx.principal.memory_branch(), m.memory_point()).await;
+        }
         fire_after(self, ctx, "recall_memory", "call:adb").await;
 
         // ── Phase 4: PROCEDURAL CHECK ──────────────────────

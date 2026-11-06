@@ -46,6 +46,8 @@ use crate::handlers::call_adb::{flight_action, resolve_adb};
 use crate::handlers::call_lancedb::{query_platform_table, sql_quote, DEFAULT_PLATFORM_DB_PATH, PLATFORM_DB_RESOURCE};
 use crate::platform_db::open_platform_db;
 
+mod merge_requests;
+
 /// The org's ADB (the agents' memory). One for every org until per-org resources exist.
 pub const ORG_ADB: &str = "a3t/agent-memory";
 pub const TABLE: &str = "agent_memory";
@@ -196,6 +198,33 @@ async fn adb(storage: &dyn StorageBackend, space: &Space, action: &str, mut body
     flight_action(&ep, action, &body).await.map_err(|e| adb_refusal(&e))
 }
 
+/// AC-14: the policy's decision on a lifecycle action on this agent, before it happens. A
+/// refusal is logged and answers `403 {error, code: "policy_denied"}`; there's nobody to
+/// ask mid-request, so an `Ask` is a refusal. CE allows everything.
+async fn allowed(principal: &Principal, action: &str, agent_id: &str) -> Result<(), Response> {
+    let action = flowr_policy::Action::new(action).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let req = flowr_policy::ExecutionRequest {
+        principal: principal.clone(),
+        action: action.clone(),
+        resource: flowr_policy::Resource::new("Agent", agent_id),
+        context: Default::default(),
+        attributes: Default::default(),
+        params: Value::Null,
+    };
+    let reason = match flowr_policy::policy_hook().check(&req).await.non_interactive() {
+        flowr_policy::PolicyDecision::Allow => return Ok(()),
+        flowr_policy::PolicyDecision::Deny { reason, policy_ids } => {
+            tracing::warn!(agent = agent_id, principal = %principal.id(), action = ?action, %reason, ?policy_ids, "lifecycle action denied by policy");
+            reason
+        }
+        flowr_policy::PolicyDecision::Ask { .. } => {
+            tracing::warn!(agent = agent_id, principal = %principal.id(), action = ?action, "lifecycle action needs an approval, refused");
+            "this needs an approval".to_string()
+        }
+    };
+    Err((StatusCode::FORBIDDEN, Json(json!({ "error": format!("Policy refused this: {reason}"), "code": "policy_denied" }))).into_response())
+}
+
 fn ok(v: Value) -> Reply {
     Ok(Json(v).into_response())
 }
@@ -223,7 +252,9 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/versions", get(list_versions).post(create_version))
         .route("/agents/:agent_id/versions/:version", get(get_version))
         .route("/agents/:agent_id/deployments", get(list_deployments))
+        .route("/agents/:agent_id/runs", get(list_runs))
         .route("/agents/:agent_id/deployments/:environment", axum::routing::put(pin_deployment))
+        .merge(merge_requests::routes())
         .with_state(storage)
 }
 
@@ -272,12 +303,14 @@ async fn create_branch(State(s): St, p: P, Path(id): Path<String>, Json(b): Json
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        allowed(&principal, flowr_policy::actions::MEMORY_BRANCH, &id).await?;
         let name = b.get("name").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "name is required"))?;
         let mut body = json!({ "name": name, "created_by": principal.id() });
         if let Some(parent) = b.get("parent").and_then(|v| v.as_str()) {
             body["parent"] = json!(parent);
         }
         let r = adb(s.as_ref(), &sp, "branch_create", body).await?;
+        merge_requests::snapshot_branch_flows(s.as_ref(), &id, name).await?;
         Ok((StatusCode::CREATED, Json(r)).into_response())
     }.await)
 }
@@ -318,7 +351,14 @@ async fn write_new_agent(s: &dyn StorageBackend, row: &Value, id: &str, org: &st
 /// Shared by promote and fork: the new agent must not exist, its namespace is
 /// `<project>--<new id>`.
 async fn copy_into_new_agent(s: &dyn StorageBackend, principal: &Principal, id: &str, b: &Value, action: &str, extra: Value) -> Reply {
+    let answer = copy_new_agent(s, principal, id, b, action, extra, Value::Null).await?;
+    Ok((StatusCode::CREATED, Json(answer)).into_response())
+}
+
+/// As [`copy_into_new_agent`], with the flows of the new agent's first version.
+async fn copy_new_agent(s: &dyn StorageBackend, principal: &Principal, id: &str, b: &Value, action: &str, extra: Value, flows: Value) -> Result<Value, Response> {
     let (row, sp) = agent_space(s, principal, id, true).await?;
+    allowed(principal, if action == "space_clone" { flowr_policy::actions::MEMORY_FORK } else { flowr_policy::actions::MEMORY_PROMOTE }, id).await?;
     let (new_id, new_row) = new_agent_row(&row, b, principal.id())?;
     if agent_row(s, &new_id).await.is_ok() {
         return Err(err(StatusCode::CONFLICT, format!("agent {new_id:?} already exists")));
@@ -337,11 +377,11 @@ async fn copy_into_new_agent(s: &dyn StorageBackend, principal: &Principal, id: 
     };
     let new_space = Space { agent_id: new_id.clone(), resource: sp.resource.clone(), org_id: sp.org_id.clone(), namespace: into.clone() };
     let mut answer = json!({ "agent": new_row, "memory": copied });
-    match new_version(s, &new_row, &new_space, &Value::Null, "", lineage, principal.id()).await {
+    match new_version(s, &new_row, &new_space, &flows, "", lineage, principal.id()).await {
         Ok(v) => answer["version"] = v,
         Err(_) => answer["version_error"] = json!(format!("agent {new_id} was created without a first version: create one with POST /agents/{new_id}/versions")),
     }
-    Ok((StatusCode::CREATED, Json(answer)).into_response())
+    Ok(answer)
 }
 
 /// `{new_agent: {id?, name?}, allow_stale?}`.
@@ -387,6 +427,7 @@ async fn merge_branch(State(s): St, p: P, Path((id, name)): Path<(String, String
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        allowed(&principal, flowr_policy::actions::MEMORY_MERGE, &id).await?;
         ok(adb(s.as_ref(), &sp, "branch_merge", merge_body(body, &name, principal.id())).await?)
     }.await)
 }
@@ -397,6 +438,7 @@ async fn rebase_branch(State(s): St, p: P, Path((id, name)): Path<(String, Strin
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        allowed(&principal, flowr_policy::actions::MEMORY_MERGE, &id).await?;
         ok(adb(s.as_ref(), &sp, "branch_rebase", merge_body(body, &name, principal.id())).await?)
     }.await)
 }
@@ -408,6 +450,7 @@ async fn revert_merge(State(s): St, p: P, Path((id, merge_id)): Path<(String, St
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        allowed(&principal, flowr_policy::actions::MEMORY_MERGE, &id).await?;
         let mut req = json!({ "merge_id": merge_id, "reverted_by": principal.id() });
         if let Some(Json(b)) = body {
             if let Some(f) = b.get("force_skip").and_then(|v| v.as_bool()) {
@@ -485,6 +528,7 @@ async fn put_layers(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Va
     both(async {
         let principal = who(p);
         let (_, sp) = agent_space(s.as_ref(), &principal, &id, true).await?;
+        allowed(&principal, flowr_policy::actions::MEMORY_LAYERS, &id).await?;
         let requested = b.get("layers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let current = adb(s.as_ref(), &sp, "layers_get", json!({})).await?;
         let mut layers = Vec::new();
@@ -612,6 +656,58 @@ async fn get_version(State(s): St, p: P, Path((id, version)): Path<(String, Stri
     }.await)
 }
 
+/// AC-20: `agent_runs`, one row per agent turn: which version in which environment, and
+/// the memory it read. Best effort: a failed write is logged and never fails the turn.
+pub const RUNS: &str = "agent_runs";
+const RUN_COLUMNS: [&str; 8] = ["run_id", "agent_id", "agent_version", "environment", "memory_namespace", "memory_branch", "memory_point", "at"];
+
+/// The environment this process serves (`A3T_ENVIRONMENT`, default `prod`).
+pub fn environment() -> String {
+    std::env::var("A3T_ENVIRONMENT").ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "prod".to_string())
+}
+
+pub async fn record_run(s: &dyn StorageBackend, run_id: &str, sp: &Space, branch: Option<&str>, point: Option<Value>) {
+    let environment = environment();
+    let version = async {
+        // The pinned version here, else the latest.
+        let pinned = deployment_rows(s, &sp.agent_id).await.ok()?.iter().find(|r| col(r, "environment") == environment).map(|r| col(r, "version"));
+        match pinned {
+            Some(v) => Some(v),
+            None => version_rows(s, &sp.agent_id).await.ok()?.last().map(|r| col(r, "version")),
+        }
+    }
+    .await
+    .unwrap_or_default();
+    let row = json!({
+        "run_id": run_id, "agent_id": sp.agent_id, "agent_version": version, "environment": environment,
+        "memory_namespace": sp.namespace, "memory_branch": branch.unwrap_or(BRANCH_MAIN),
+        "memory_point": point.map(|p| p.to_string()).unwrap_or_default(), "at": chrono::Utc::now().to_rfc3339(),
+    });
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: Map<String, Value> = RUN_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    let written = async {
+        db.create_table(RUNS, Some(&schema), "create_if_not_exists").await?;
+        db.insert(RUNS, std::slice::from_ref(&row)).await
+    };
+    if let Err(e) = written.await {
+        tracing::warn!(error = %e, run = run_id, "recording the agent run failed");
+    }
+}
+
+const BRANCH_MAIN: &str = "main";
+
+/// An agent's recorded turns. Order isn't guaranteed: sort by `at`.
+async fn list_runs(State(s): St, p: P, Path(id): Path<String>) -> Response {
+    both(async {
+        agent_space(s.as_ref(), &who(p), &id, false).await?;
+        let db = open_platform_db(s.as_ref(), Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+        let schema: Map<String, Value> = RUN_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+        db.create_table(RUNS, Some(&schema), "create_if_not_exists").await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let rows = query_platform_table(s.as_ref(), RUNS, Some(format!("agent_id = {}", sql_quote(&id))), 1000).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        ok(json!({ "runs": rows }))
+    }.await)
+}
+
 async fn deployment_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
     let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
     let schema: Map<String, Value> = DEPLOYMENT_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
@@ -632,6 +728,9 @@ async fn pin_deployment(State(s): St, p: P, Path((id, environment)): Path<(Strin
     both(async {
         let principal = who(p);
         agent_space(s.as_ref(), &principal, &id, true).await?;
+        if environment == "prod" || environment == "production" {
+            allowed(&principal, flowr_policy::actions::DEPLOY_PROD, &id).await?;
+        }
         if environment.is_empty() || !environment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(err(StatusCode::BAD_REQUEST, format!("environment {environment:?}: letters, digits and '-'")));
         }
