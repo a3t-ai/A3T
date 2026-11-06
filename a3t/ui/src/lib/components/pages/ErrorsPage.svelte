@@ -1,7 +1,7 @@
 <script lang="ts">
   // The A3T error log (UX ST-1): every failure the A3T base handled, one row
   // each, written by system/a3t-error-handler and read through a3t-error-log.
-  // P0 (superadmin) depth: class, flow, step and the raw detail beside the
+  // Admin and SuperAdmin depth: class, flow, step and the raw detail beside the
   // message the user was shown.
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
   import { execFlow } from '$lib/services/api';

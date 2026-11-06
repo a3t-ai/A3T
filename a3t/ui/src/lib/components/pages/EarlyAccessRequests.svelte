@@ -22,7 +22,9 @@
     error = '';
     // a3t-early-access reads (.input // {}).action — pass the wrapped list action.
     const res = await execFlow('a3t-early-access', 'a3t', { input: { action: 'list' } }, { silent: true });
-    if (res.ok) {
+    if (res.ok && res.data?.ok === false) {
+      error = res.data.error ?? 'Refused';
+    } else if (res.ok) {
       const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
       requests = (rows as EARequest[])
         .slice()
