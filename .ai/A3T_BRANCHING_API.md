@@ -297,6 +297,22 @@ required_evidence, base, main, blocked_by, result, created_by, created_at}`.
 - Kind 2's `result` has `merge_id`. Kind 1's has `promoted_agent`, `agent`, `flows` and
   `moved_triggers`. Rollback of kind 1 moves the triggers back; the new agent stays.
 
+### Capability manifest (AC-16)
+
+`GET /agents/{id}/versions/{n}/manifest?against=m` → `{manifest: {hosts, mcp_servers, llm, memory,
+subflows, calls, layers, unreadable}, diff?: {added, removed}}`. An open kind 1 merge request also
+answers `manifest_diff`: what the branch's flows add to prod's. A target written as an expression
+is listed as written. Tools an agent gets at run time aren't in it.
+
+### Environments (AC-12) and quotas
+
+- `GET /projects/{p}/environments`, `PUT` / `DELETE /projects/{p}/environments/{name}`: `{production?,
+  runtime_pool?, gateway_pool?, memory_resource?, required_approvals?, required_evidence?}`.
+- An environment with a rule takes pins through `POST .../merge-requests {kind: "deploy", environment,
+  version}`; a direct pin answers `409 approval_required`.
+- `a3t-orgs {action: "set_quota", org, max_active_runs}` (superadmin). Over it, a new run is refused;
+  `POST /chat` answers `429 {code: "org_quota"}`.
+
 ### Runs and policy (AC-6, AC-7, AC-14, AC-20)
 
 - A run on a branch: `memory_branch` in `execute_flow`, `POST /chat` or `send_message`. Its memory

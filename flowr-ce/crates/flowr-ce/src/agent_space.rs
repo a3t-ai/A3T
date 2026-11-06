@@ -47,6 +47,7 @@ use crate::handlers::call_lancedb::{query_platform_table, sql_quote, DEFAULT_PLA
 use crate::platform_db::open_platform_db;
 
 pub mod environments;
+pub mod manifest;
 mod merge_requests;
 
 /// The org's ADB (the agents' memory). One for every org until per-org resources exist.
@@ -252,6 +253,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/layers", get(get_layers).put(put_layers))
         .route("/agents/:agent_id/versions", get(list_versions).post(create_version))
         .route("/agents/:agent_id/versions/:version", get(get_version))
+        .route("/agents/:agent_id/versions/:version/manifest", get(manifest::get_manifest))
         .route("/agents/:agent_id/deployments", get(list_deployments))
         .route("/agents/:agent_id/runs", get(list_runs))
         .route("/agents/:agent_id/deployments/:environment", axum::routing::put(pin_deployment))

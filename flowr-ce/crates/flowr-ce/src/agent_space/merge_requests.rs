@@ -213,7 +213,7 @@ fn request_row(v: &Value, by: &str) -> Value {
             let text = m.get(k).cloned().unwrap_or(Value::Null).to_string();
             m.insert(k.to_string(), json!(text));
         }
-        for k in ["conflicts", "flows", "main", "base", "blocked_by"] {
+        for k in ["conflicts", "flows", "main", "base", "blocked_by", "manifest_diff"] {
             m.remove(k);
         }
         m.insert("updated_by".into(), json!(by));
@@ -253,7 +253,15 @@ async fn with_live_state(s: &dyn StorageBackend, sp: &Space, mut v: Value) -> Re
     v["base"] = d.get("base").cloned().unwrap_or(Value::Null);
     v["main"] = d.get("main").cloned().unwrap_or(Value::Null);
     if kind == "1" {
-        v["flows"] = json!(flow_diff(s, &sp.agent_id, &col(&v, "branch")).await?);
+        let flows = flow_diff(s, &sp.agent_id, &col(&v, "branch")).await?;
+        // AC-16: what this merge adds to what the agent can reach, by the flows it would run.
+        let as_of = |key: &str| -> Vec<Value> {
+            flows.iter().map(|f| json!({ "namespace": col(f, "namespace"), "name": col(f, "name"), "version": col(f, key) })).collect()
+        };
+        let current = manifest::of_flows(s, &as_of("prod_version")).await;
+        let proposed = manifest::of_flows(s, &as_of("branch_version")).await;
+        v["manifest_diff"] = manifest::diff(&current, &proposed);
+        v["flows"] = json!(flows);
     }
     v["blocked_by"] = json!(blocked_by(&v));
     Ok(v)
