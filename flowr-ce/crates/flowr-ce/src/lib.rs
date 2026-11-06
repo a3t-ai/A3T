@@ -2034,9 +2034,12 @@ async fn mcp_create_flow_cncf(
     if let Err(e) = flowr_mcp_core::flow_base::load_definition(storage.as_ref(), &record).await {
         return CallToolResult::error(format!("Refused: {e}"));
     }
+    // AC-4: released versions don't change, and a new one leaves the others in place.
+    if let Err(e) = flowr_mcp_core::flow_base::check_version(storage.as_ref(), &record).await {
+        return CallToolResult::error(format!("Refused: {e}"));
+    }
 
-    // This path is save-over-existing (delete + register below), so it is also
-    // the EDIT path. Ownership must survive an edit: whoever created the flow
+    // This path also saves a new version of an existing flow. Ownership must survive that: whoever created the flow
     // stays its owner, or anyone able to save would silently take it over —
     // and with it the authority bounding what the flow's agent may be granted.
     // Only a genuinely new flow takes the current caller as owner.
@@ -2053,7 +2056,6 @@ async fn mcp_create_flow_cncf(
     let version = record.version().to_string();
     let dsl = record.metadata.dsl.clone().unwrap_or_else(|| "1.0.3".to_string());
 
-    let _ = storage.workflows().delete(&namespace, &name).await;
     match storage.workflows().register(record).await {
         Ok(_) => {
             info!(namespace = %namespace, name = %name, version = %version, "CNCF workflow created");
@@ -2787,6 +2789,41 @@ pub(crate) async fn run_request(
 }
 
 // Old execute_workflow DELETED — replaced by execute_workflow (now renamed to execute_workflow above)
+
+#[cfg(test)]
+mod flow_version_tests {
+    use super::*;
+
+    fn flow(version: &str, title: &str) -> Value {
+        json!({ "yaml": format!("document:\n  dsl: 1.0.3\n  namespace: t\n  name: pinned\n  version: {version}\n  title: {title}\ndo:\n- a:\n    set:\n      ok: true\n") })
+    }
+
+    /// AC-4 on the path HTTP saves take, on the real store: a released version never
+    /// changes, and a new version leaves the old ones in place to pin.
+    #[tokio::test]
+    async fn a_save_keeps_old_versions_and_refuses_a_changed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = init_storage_with(dir.path().to_str().unwrap(), true).await.unwrap();
+        let alice = Principal::human("alice", vec!["Admin".to_string()]);
+        let bob = Principal::human("bob", vec!["Admin".to_string()]);
+        let failed = |r: &CallToolResult| r.is_error == Some(true);
+
+        assert!(!failed(&mcp_create_flow_cncf(&storage, &alice, &flow("1.0.0", "first")).await));
+        // The same content again is harmless.
+        assert!(!failed(&mcp_create_flow_cncf(&storage, &alice, &flow("1.0.0", "first")).await));
+        // Other content at that version is refused and changes nothing.
+        let refused = mcp_create_flow_cncf(&storage, &alice, &flow("1.0.0", "changed")).await;
+        assert!(failed(&refused) && format!("{refused:?}").contains("version_exists"), "{refused:?}");
+        assert!(storage.workflows().get_version("t", "pinned", "1.0.0").await.unwrap().raw_yaml.contains("first"));
+
+        // A new version: active, the old one still there, the owner unchanged.
+        assert!(!failed(&mcp_create_flow_cncf(&storage, &bob, &flow("1.1.0", "second")).await));
+        let (versions, active) = storage.workflows().versions("t", "pinned").await.unwrap();
+        assert_eq!((versions.len(), active.as_str()), (2, "1.1.0"), "{versions:?}");
+        assert!(storage.workflows().get_version("t", "pinned", "1.0.0").await.unwrap().raw_yaml.contains("first"));
+        assert_eq!(storage.workflows().get("t", "pinned").await.unwrap().metadata.owner.as_deref(), Some("alice"));
+    }
+}
 
 #[cfg(test)]
 mod cron_dedupe_tests {

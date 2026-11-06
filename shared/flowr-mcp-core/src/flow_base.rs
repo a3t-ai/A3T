@@ -37,6 +37,21 @@ pub async fn load_definition(storage: &dyn StorageBackend, record: &WorkflowReco
     Ok(resolved)
 }
 
+/// AC-4: a released version never changes. Saving the same version with other content is
+/// refused (the message starts with the stable code `version_exists`); saving it with
+/// the same content changes nothing and is fine, so a repeated deploy stays harmless.
+pub async fn check_version(storage: &dyn StorageBackend, record: &WorkflowRecord) -> Result<(), String> {
+    match storage.workflows().get_version(record.namespace(), record.name(), record.version()).await {
+        Ok(old) if old.raw_yaml != record.raw_yaml => Err(format!(
+            "version_exists: {}/{} version {} is already released with other content: give this one a new version",
+            record.namespace(),
+            record.name(),
+            record.version()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The namespaces whose flows must be on a base.
 pub const PLATFORM_NAMESPACES: &[&str] = &["a3t", "system"];
 

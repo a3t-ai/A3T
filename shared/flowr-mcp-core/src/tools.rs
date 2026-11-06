@@ -2007,6 +2007,9 @@ async fn create_flow(
     if let Err(e) = crate::flow_base::load_definition(storage, &record).await {
         return CallToolResult::error(format!("Refused: {e}"));
     }
+    if let Err(e) = crate::flow_base::check_version(storage, &record).await {
+        return CallToolResult::error(format!("Refused: {e}"));
+    }
     // Whoever created the flow stays its owner across re-saves; only a genuinely
     // new flow takes the current caller. Otherwise anyone able to save could take
     // ownership, and with it the authority that bounds the flow's agent grants.

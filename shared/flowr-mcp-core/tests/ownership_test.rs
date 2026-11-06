@@ -43,8 +43,9 @@ impl WorkflowStore for MemWorkflows {
             .cloned()
             .ok_or_else(|| FlowError::NotFound(format!("{namespace}/{name}")))
     }
-    async fn get_version(&self, ns: &str, name: &str, _v: &str) -> FlowResult<WorkflowRecord> {
-        self.get(ns, name).await
+    async fn get_version(&self, ns: &str, name: &str, v: &str) -> FlowResult<WorkflowRecord> {
+        let r = self.get(ns, name).await?;
+        if r.version() == v { Ok(r) } else { Err(FlowError::NotFound(format!("{ns}/{name} {v}"))) }
     }
     async fn list(&self, _namespace: &str) -> FlowResult<Vec<WorkflowSummary>> {
         Ok(vec![])
@@ -107,10 +108,14 @@ impl StorageBackend for TestStorage {
     }
 }
 
-fn yaml(title: &str) -> String {
+fn yaml_at(title: &str, version: &str) -> String {
     format!(
-        "document:\n  dsl: '1.0.3'\n  namespace: default\n  name: owned-flow\n  version: '1.0.0'\n  title: {title}\ndo:\n  - step1:\n      set:\n        a: 1\n"
+        "document:\n  dsl: '1.0.3'\n  namespace: default\n  name: owned-flow\n  version: '{version}'\n  title: {title}\ndo:\n  - step1:\n      set:\n        a: 1\n"
     )
+}
+
+fn yaml(title: &str) -> String {
+    yaml_at(title, "1.0.0")
 }
 
 fn human(id: &str) -> flowr_policy::Principal {
@@ -162,7 +167,9 @@ async fn editing_someone_elses_flow_does_not_transfer_ownership() {
     // re-stamped the owner, anyone who could save could take the flow over.
     let storage = Arc::new(TestStorage { workflows: MemWorkflows::default() });
     create(&storage, "usr-alice", "first").await;
-    create(&storage, "usr-bob", "bob edited this").await;
+    // AC-4: an edit is a new version.
+    let res = handle_tool_call(storage.as_ref(), &human("usr-bob"), "create_flow", Some(json!({ "yaml": yaml_at("bob edited this", "1.0.1") }))).await;
+    assert_ne!(res.is_error, Some(true), "create_flow failed: {res:?}");
 
     let rec = storage.workflows.get("default", "owned-flow").await.unwrap();
     assert_eq!(
@@ -172,4 +179,18 @@ async fn editing_someone_elses_flow_does_not_transfer_ownership() {
     );
     // …and the edit itself did land.
     assert!(rec.raw_yaml.contains("bob edited this"), "the edit should still be saved");
+}
+
+/// AC-4: a released version never changes; the same content again is harmless.
+#[tokio::test]
+async fn a_released_version_is_refused_with_other_content() {
+    let storage = Arc::new(TestStorage { workflows: MemWorkflows::default() });
+    create(&storage, "usr-alice", "first").await;
+    create(&storage, "usr-alice", "first").await;
+
+    let res = handle_tool_call(storage.as_ref(), &human("usr-alice"), "create_flow", Some(json!({ "yaml": yaml("changed") }))).await;
+    assert_eq!(res.is_error, Some(true), "{res:?}");
+    assert!(format!("{res:?}").contains("version_exists"), "{res:?}");
+    let rec = storage.workflows.get("default", "owned-flow").await.unwrap();
+    assert!(rec.raw_yaml.contains("first"), "the released content stays");
 }
