@@ -59,7 +59,7 @@ pub struct ExecutionContext {
 /// job of the flow-start call site; until it does, this preserves today's
 /// behavior (choke point B sees `Service{"flow-runtime"}`).
 pub fn default_flow_principal() -> flowr_policy::Principal {
-    flowr_policy::Principal::Service { service_id: "flow-runtime".into() }
+    flowr_policy::Principal::Service { service_id: "flow-runtime".into(), memory_branch: None }
 }
 
 /// Runtime information ($runtime argument)

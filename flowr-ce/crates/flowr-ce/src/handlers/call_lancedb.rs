@@ -107,7 +107,7 @@ async fn platform_db_for(ctx: &ExecutionContext, resource: Option<&str>) -> std:
     }
 }
 
-pub(crate) fn batches_to_json(batches: &[arrow_array::RecordBatch]) -> Vec<Value> {
+pub fn batches_to_json(batches: &[arrow_array::RecordBatch]) -> Vec<Value> {
     use arrow_array::Array;
     let mut rows = Vec::new();
     for batch in batches {

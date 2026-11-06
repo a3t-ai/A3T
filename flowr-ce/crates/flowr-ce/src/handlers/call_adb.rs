@@ -63,11 +63,84 @@ impl TaskHandler for AdbHandler {
             return Err(RuntimeError::task_failed(&task.name, "call:adb requires '_resource' (an adb resource) or 'url'"));
         };
 
+        // AC-6: a run on a memory branch reads and writes that branch.
+        let query = match ctx.principal.memory_branch() {
+            Some(b) => on_branch(&query, b).map_err(|e| RuntimeError::task_failed(&task.name, e))?,
+            None => query,
+        };
         info!(task = %task.name, flight = %ep.flight, "calling ADB");
         let result = adb_query(&ep, &query, with.get("variables"))
             .await
             .map_err(|e| RuntimeError::Communication(e))?;
         Ok(TaskResult::new(result))
+    }
+}
+
+/// AC-6: `aql` as a run on branch `branch` sends it: `BRANCH` added after its `NAMESPACE`.
+/// A write with no `NAMESPACE`, or naming another branch, is refused: it would reach
+/// memory outside the branch. A read with no `NAMESPACE` stays as it is.
+pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<String, String> {
+    // Words outside string literals, with where each ends.
+    let mut words: Vec<(String, usize)> = Vec::new();
+    let (mut quoted, mut escaped, mut word) = (false, false, String::new());
+    for (i, c) in aql.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                quoted = false;
+                words.push(("\"".into(), i + 1));
+            }
+        } else if c == '"' {
+            quoted = true;
+        } else if c.is_alphanumeric() || c == '_' || c == '$' {
+            word.push(c);
+            continue;
+        }
+        if !word.is_empty() {
+            words.push((std::mem::take(&mut word).to_ascii_uppercase(), i));
+        }
+    }
+    if !word.is_empty() {
+        words.push((word.to_ascii_uppercase(), aql.len()));
+    }
+    let position = |w: &str| words.iter().position(|(x, _)| x == w);
+    if let Some(i) = position("BRANCH") {
+        let same = words.get(i + 1).map(|(_, end)| aql[..*end].ends_with(&format!("\"{branch}\""))).unwrap_or(false);
+        return if same { Ok(aql.to_string()) } else { Err(format!("this run is on memory branch {branch:?} and can't reach another branch")) };
+    }
+    match position("NAMESPACE") {
+        Some(i) => {
+            let end = words.get(i + 1).map(|(_, e)| *e).ok_or("NAMESPACE names nothing")?;
+            Ok(format!("{} BRANCH {}{}", &aql[..end], crate::handlers::agent_memory::aql_str(branch), &aql[end..]))
+        }
+        None => {
+            let writes = ["STORE", "UPDATE", "FORGET", "LINK", "UNLINK", "MERGE"];
+            if words.first().is_some_and(|(w, _)| writes.contains(&w.as_str())) {
+                Err(format!("this run is on memory branch {branch:?}: a memory write must name its NAMESPACE, or it would reach main"))
+            } else {
+                Ok(aql.to_string())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod on_branch_tests {
+    use super::on_branch;
+
+    #[test]
+    fn branch_goes_after_namespace_and_writes_stay_on_it() {
+        let got = on_branch(r#"STORE INTO SEMANTIC (key = "NAMESPACE x", v = 1) NAMESPACE "crm" TTL 1h"#, "try").unwrap();
+        assert_eq!(got, r#"STORE INTO SEMANTIC (key = "NAMESPACE x", v = 1) NAMESPACE "crm" BRANCH "try" TTL 1h"#);
+        assert_eq!(on_branch(r#"RECALL FROM SEMANTIC ALL NAMESPACE $ns LIMIT 1"#, "try").unwrap(), r#"RECALL FROM SEMANTIC ALL NAMESPACE $ns BRANCH "try" LIMIT 1"#);
+        let same = r#"RECALL FROM SEMANTIC ALL NAMESPACE "crm" BRANCH "try""#;
+        assert_eq!(on_branch(same, "try").unwrap(), same);
+        assert!(on_branch(r#"RECALL FROM SEMANTIC ALL NAMESPACE "crm" BRANCH "other""#, "try").is_err());
+        assert!(on_branch(r#"STORE INTO WORKING (key = "k")"#, "try").is_err());
+        assert_eq!(on_branch(r#"RECALL FROM WORKING ALL"#, "try").unwrap(), r#"RECALL FROM WORKING ALL"#);
     }
 }
 

@@ -930,6 +930,7 @@ mod tests {
     async fn adb_sql_is_for_the_superadmin_only() {
         let body = json!({ "resource": "a3t/missing", "sql": "SELECT 1" });
         let agent = Principal::Agent {
+            memory_branch: None,
             agent_id: flowr_policy::AgentId("a".into()),
             on_behalf_of: None,
             flow_id: None,

@@ -110,6 +110,7 @@ mod tests {
     fn records_allow_and_deny() {
         let req = ExecutionRequest {
             principal: Principal::Agent {
+                memory_branch: None,
                 agent_id: AgentId("agt-1".into()),
                 on_behalf_of: Some("user::sriram".into()),
                 flow_id: None,

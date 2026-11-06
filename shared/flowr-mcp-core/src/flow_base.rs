@@ -37,6 +37,15 @@ pub async fn load_definition(storage: &dyn StorageBackend, record: &WorkflowReco
     Ok(resolved)
 }
 
+/// AC-6: the principal a run starts as: on the branch `args` names (`memory_branch`), if
+/// any. `main` and empty mean no branch.
+pub fn run_principal(principal: &flowr_policy::Principal, args: &Value) -> Result<flowr_policy::Principal, String> {
+    match args.get("memory_branch").and_then(|v| v.as_str()).filter(|b| !b.is_empty() && *b != "main") {
+        Some(b) => principal.on_branch(b),
+        None => Ok(principal.clone()),
+    }
+}
+
 /// AC-4: a released version never changes. Saving the same version with other content is
 /// refused (the message starts with the stable code `version_exists`); saving it with
 /// the same content changes nothing and is fine, so a repeated deploy stays harmless.

@@ -169,18 +169,18 @@ impl CedarHook {
 /// dependency-light and must not import aesop).
 fn to_aesop_principal(p: &Principal) -> AesopPrincipal {
     match p {
-        Principal::Human { user_id, roles } => AesopPrincipal::Human {
+        Principal::Human { user_id, roles, .. } => AesopPrincipal::Human {
             user_id: user_id.clone(),
             roles: roles.clone(),
         },
-        Principal::Agent { agent_id, on_behalf_of, flow_id, roles, owner } => AesopPrincipal::Agent {
+        Principal::Agent { agent_id, on_behalf_of, flow_id, roles, owner, .. } => AesopPrincipal::Agent {
             agent_id: AesopAgentId(agent_id.0.clone()),
             on_behalf_of: on_behalf_of.clone(),
             roles: roles.clone(),
             owner: owner.clone(),
             flow_id: flow_id.clone(),
         },
-        Principal::Service { service_id } => AesopPrincipal::Service {
+        Principal::Service { service_id, .. } => AesopPrincipal::Service {
             service_id: service_id.clone(),
         },
     }

@@ -76,6 +76,7 @@ async fn a_flow_sees_its_caller_and_cannot_forge_it() {
 #[tokio::test]
 async fn an_agent_run_acts_for_its_user() {
     let p = Principal::Agent {
+        memory_branch: None,
         agent_id: flowr_policy::AgentId("agt-1".into()),
         on_behalf_of: Some("usr-ann".into()),
         flow_id: None,

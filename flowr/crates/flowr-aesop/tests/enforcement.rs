@@ -25,6 +25,7 @@ fn human() -> Principal {
 
 fn agent_for_user() -> Principal {
     Principal::Agent {
+        memory_branch: None,
         agent_id: AgentId("pc-crawler-7".into()),
         on_behalf_of: Some("user::sriram".into()),
         flow_id: Some("acme/campaign".into()),
@@ -169,6 +170,7 @@ fn write_resource(principal: Principal, type_ref: &str) -> ExecutionRequest {
 
 fn user_with_roles(roles: &[&str]) -> Principal {
     Principal::Human {
+        memory_branch: None,
         user_id: "u1".into(),
         roles: roles.iter().map(|s| s.to_string()).collect(),
     }
@@ -202,7 +204,7 @@ async fn platform_superadmin_may_write_cedar_policy() {
     // canonical roles (`SuperAdmin` + `SecurityAdmin`); the guardrail honors those.
     let hook = CedarHook::baseline().unwrap();
     let roles = flowr_policy::roles::canonicalize("superadmin");
-    let principal = Principal::Human { user_id: "u1".into(), roles };
+    let principal = Principal::Human { memory_branch: None, user_id: "u1".into(), roles };
     let req = write_resource(principal, "cedar");
     assert!(matches!(hook.check(&req).await, PolicyDecision::Allow));
 }
@@ -472,6 +474,7 @@ async fn template_ceiling_enforces_exposed_intersect_enabled() {
     // configure the agent cannot talk it out of its limits, so the ceiling is
     // still a real boundary for everyone but its owner.
     let not_the_owner = Principal::Agent {
+        memory_branch: None,
         agent_id: AgentId("pc-crawler-7".into()),
         on_behalf_of: Some("user::someone-else".into()),
         flow_id: Some("acme/campaign".into()),
@@ -743,6 +746,7 @@ async fn an_agent_may_not_read_a_users_session_even_on_their_behalf() {
 
 fn agent_with_roles(roles: &[&str]) -> Principal {
     Principal::Agent {
+        memory_branch: None,
         agent_id: AgentId("dev-agent".into()),
         on_behalf_of: Some("usr-sriram".into()),
         flow_id: Some("a3t/dev".into()),
@@ -804,6 +808,7 @@ async fn a_triggered_run_is_never_asked() {
 
 fn agent_with_ceiling(roles: &[&str], exposed: &[&str]) -> (Principal, serde_json::Map<String, serde_json::Value>) {
     let p = Principal::Agent {
+        memory_branch: None,
         agent_id: AgentId("mytestagent".into()),
         on_behalf_of: Some("usr-sriram".into()),
         flow_id: Some("a3t/mytestagent".into()),
@@ -891,6 +896,7 @@ async fn dropping_the_ceiling_does_not_loosen_org_policy() {
 
 fn deployer(roles: &[&str]) -> Principal {
     Principal::Human {
+        memory_branch: None,
         user_id: "usr-sriram".into(),
         roles: roles.iter().map(|r| r.to_string()).collect(),
     }

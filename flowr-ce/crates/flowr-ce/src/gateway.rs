@@ -63,10 +63,13 @@ fn real_handler(task_type: &str) -> Option<Arc<dyn TaskHandler>> {
 /// Register the gateway: the client wrappers when `FLOWR_GATEWAY=pool`, and the
 /// gateway step everywhere (it only ever runs in gateway flows).
 pub fn register(executor: &mut swf_runtime::executor::WorkflowExecutor) {
-    if client_enabled() {
-        for t in OUTBOUND {
-            if let Some(inner) = real_handler(t) {
+    for t in OUTBOUND {
+        if let Some(inner) = real_handler(t) {
+            if client_enabled() {
                 executor.register_handler(Arc::new(GatewayClient { inner }));
+            } else {
+                // No gateway pool here (the console's own flows, CE): AC-7 still holds.
+                executor.register_handler(Arc::new(OutboundGuard { inner }));
             }
         }
     }
@@ -75,6 +78,81 @@ pub fn register(executor: &mut swf_runtime::executor::WorkflowExecutor) {
 
 fn storage_of(ctx: &ExecutionContext) -> Option<Arc<dyn StorageBackend>> {
     ctx.storage.as_ref().and_then(|s| s.downcast_ref::<Arc<dyn StorageBackend>>().cloned())
+}
+
+// ---------------------------------------------------------- no outbound outside prod
+
+/// AC-7 (D5): why a call may not leave A3T, if so: the run is on a memory branch, or this
+/// process serves a non-production environment (`A3T_ENVIRONMENT`, default prod). LLM
+/// calls stay allowed, as an agent can't run without its model; its tools can't go out.
+pub fn outbound_blocked(principal: &flowr_policy::Principal, task_type: &str, target: &str) -> Option<String> {
+    if task_type == "call:llm" {
+        return None;
+    }
+    if let Some(b) = principal.memory_branch() {
+        return Some(format!("This run is on memory branch \"{b}\", where calls out of A3T are off, so {target} was not called."));
+    }
+    let env = std::env::var("A3T_ENVIRONMENT").unwrap_or_default();
+    if !env.is_empty() && env != "prod" && env != "production" {
+        return Some(format!("Calls out of A3T are off in the {env} environment, so {target} was not called."));
+    }
+    None
+}
+
+/// [`outbound_blocked`] for a call that doesn't pass through the gateway step: refused with
+/// a plain message and a decision row.
+pub async fn refuse_outbound(storage: &dyn StorageBackend, principal: &flowr_policy::Principal, caller_run: &str, task_type: &str, target: &str) -> std::result::Result<(), String> {
+    let Some(reason) = outbound_blocked(principal, task_type, target) else { return Ok(()) };
+    let call = Call {
+        task_type: task_type.to_string(),
+        target: target.to_string(),
+        caller_run: caller_run.to_string(),
+        caller_step: swf_runtime::effects::step_key(),
+        namespace: String::new(),
+        flow: String::new(),
+        principal: serde_json::to_value(principal).unwrap_or(Value::Null),
+    };
+    let decision = Decision { allow: false, reason: reason.clone() };
+    record(storage, &uuid::Uuid::now_v7().to_string(), &call, "none", &decision, &Err(reason.clone()), Duration::ZERO).await;
+    Err(reason)
+}
+
+/// An outbound handler in a process with no gateway pool.
+pub struct OutboundGuard {
+    inner: Arc<dyn TaskHandler>,
+}
+
+#[async_trait]
+impl TaskHandler for OutboundGuard {
+    fn task_type(&self) -> &str {
+        self.inner.task_type()
+    }
+
+    fn source(&self) -> &str {
+        self.inner.source()
+    }
+
+    fn policy_resource(&self, task: &NamedTask) -> flowr_policy::Resource {
+        self.inner.policy_resource(task)
+    }
+
+    fn policy_action(&self) -> flowr_policy::Action {
+        self.inner.policy_action()
+    }
+
+    async fn execute(&self, task: &NamedTask, input: Value, ctx: &mut ExecutionContext) -> Result<TaskResult> {
+        let target = target_of(self.inner.task_type(), task);
+        if let Some(reason) = outbound_blocked(&ctx.principal, self.inner.task_type(), &target) {
+            match storage_of(ctx) {
+                Some(s) => {
+                    let _ = refuse_outbound(s.as_ref(), &ctx.principal, &ctx.instance_id, self.inner.task_type(), &target).await;
+                }
+                None => warn!(%target, "outbound refused; no storage to record the decision"),
+            }
+            return Err(RuntimeError::task_failed(&task.name, reason));
+        }
+        self.inner.execute(task, input, ctx).await
+    }
 }
 
 // ------------------------------------------------------------------ client side
@@ -184,6 +262,11 @@ pub struct PlaceholderPolicy;
 
 impl GatewayPolicy for PlaceholderPolicy {
     fn decide(&self, call: &Call) -> Decision {
+        if let Ok(p) = serde_json::from_value::<flowr_policy::Principal>(call.principal.clone()) {
+            if let Some(reason) = outbound_blocked(&p, &call.task_type, &call.target) {
+                return Decision { allow: false, reason };
+            }
+        }
         let deny = std::env::var("FLOWR_GATEWAY_DENY").unwrap_or_default();
         if let Some(p) = deny.split(',').map(str::trim).filter(|p| !p.is_empty()).find(|p| call.target.contains(p)) {
             return Decision { allow: false, reason: format!("denied by FLOWR_GATEWAY_DENY ({p})") };
@@ -390,6 +473,19 @@ mod tests {
         assert!(!d.allow && d.reason.contains("evil.example"));
         assert!(PlaceholderPolicy.decide(&call("https://api.example.com/x")).allow);
         std::env::remove_var("FLOWR_GATEWAY_DENY");
+    }
+
+    /// AC-7 in the gateway pool: the branch reaches Decide with the caller's principal.
+    #[test]
+    fn the_gateway_denies_a_tool_call_from_a_branch_and_allows_its_model() {
+        let p = flowr_policy::Principal::human("alice", vec![]).on_branch("try").unwrap();
+        let mut c = call("https://api.example.com/x");
+        c.principal = serde_json::to_value(&p).unwrap();
+        c.task_type = "call:http".into();
+        let d = PlaceholderPolicy.decide(&c);
+        assert!(!d.allow && d.reason.contains("try"), "{d:?}");
+        c.task_type = "call:llm".into();
+        assert!(PlaceholderPolicy.decide(&c).allow);
     }
 
     #[test]

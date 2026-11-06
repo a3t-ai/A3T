@@ -1369,9 +1369,14 @@ async fn chat_ui_stream_handler(
     for k in ["llm_resource", "enabled_tools", "mcp_servers", "context", "ui_context"] {
         if let Some(v) = body.get(k) { input[k] = v.clone(); }
     }
+    // AC-6: a chat with an agent on a memory branch (the branch comes with each message).
+    let on_branch = match flowr_mcp_core::flow_base::run_principal(&principal, &body) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
+    };
     let request = flowr_types::ExecutionRequest::new(&namespace, &name)
         .with_input(input)
-        .with_principal(principal.clone());
+        .with_principal(on_branch);
     let instance_id = request.instance_id;
     if let Err(e) = state.storage.queue().enqueue(request).await {
         return (StatusCode::INTERNAL_SERVER_ERROR,
@@ -2388,9 +2393,13 @@ async fn mcp_send_message(storage: &Arc<dyn StorageBackend>, principal: &Princip
     // the flow runs under the caller's identity, so the agent it spawns acts
     // on-behalf-of a real principal (not ambient) and its tool calls are gated
     // by the template ceiling rather than refused as ambient-agent.
+    let on_branch = match flowr_mcp_core::flow_base::run_principal(principal, args) {
+        Ok(p) => p,
+        Err(e) => return CallToolResult::error(e),
+    };
     let request = ExecutionRequest::new("system", "agent-template")
         .with_input(template_input)
-        .with_principal(principal.clone());
+        .with_principal(on_branch);
     let instance_id = request.instance_id;
 
     match storage.queue().enqueue(request).await {

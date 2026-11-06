@@ -412,7 +412,8 @@ async fn start_run(storage: &dyn StorageBackend, principal: &Principal, args: &V
     if args.get("pause_on_start").and_then(|v| v.as_bool()).unwrap_or(false) {
         bps.as_array_mut().unwrap().push(json!({ "step_key": "*", "when": "before", "hit": 1 }));
     }
-    let run = new_run(ns, name, args.get("input").cloned().unwrap_or(json!({})), principal, debug, Some(bps));
+    let on_branch = crate::flow_base::run_principal(principal, args)?;
+    let run = new_run(ns, name, args.get("input").cloned().unwrap_or(json!({})), &on_branch, debug, Some(bps));
     let task = NewTask::start(&run);
     let (id, _) = e.start(run, task).await.map_err(|e| e.to_string())?;
     Ok(CallToolResult::json(json!({ "run_id": id, "debug": debug })))

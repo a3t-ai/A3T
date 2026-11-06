@@ -2137,6 +2137,10 @@ async fn execute_flow(
     // runs its root `ExecutionContext` as this principal (not the service default)
     // and every step is gated as whoever started the flow — an API user, or an
     // agent's LLM calling `execute_flow` in-process as its Agent principal.
+    let principal = match crate::flow_base::run_principal(principal, args) {
+        Ok(p) => p,
+        Err(e) => return CallToolResult::error(e),
+    };
     let request = ExecutionRequest::new(namespace, name)
         .with_input(input)
         .with_principal(principal.clone());

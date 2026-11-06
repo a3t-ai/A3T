@@ -82,6 +82,7 @@ async fn ctx_principal_reaches_choke_point_and_context_is_populated() {
         .expect("first and only hook install in this binary");
 
     let actor = Principal::Agent {
+        memory_branch: None,
         agent_id: flowr_policy::AgentId("agent-007".into()),
         on_behalf_of: Some("user::sriram".into()),
         flow_id: Some("acme/campaign".into()),
@@ -118,7 +119,7 @@ async fn default_principal_is_the_runtime_service() {
     // behavior preserved for callers that have no better identity yet.
     let p = swf_runtime::default_flow_principal();
     match p {
-        Principal::Service { service_id } => assert_eq!(service_id, "flow-runtime"),
+        Principal::Service { service_id, .. } => assert_eq!(service_id, "flow-runtime"),
         other => panic!("default flow principal must be a Service, got {other:?}"),
     }
 }

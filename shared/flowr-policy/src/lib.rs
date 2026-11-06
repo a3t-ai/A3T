@@ -85,6 +85,10 @@ pub enum Principal {
         user_id: String,
         #[serde(default)]
         roles: Vec<String>,
+        /// AC-6: the memory branch this run reads and writes (`None`: main). Travels
+        /// with the principal, so subflows, agents and gateway calls can't lose it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_branch: Option<String>,
     },
     Agent {
         agent_id: AgentId,
@@ -108,23 +112,50 @@ pub enum Principal {
         /// the owner's own reach has to be requested from InfoSec.
         #[serde(default)]
         owner: Option<String>,
+        /// AC-6: the memory branch this run reads and writes (`None`: main). Travels
+        /// with the principal, so subflows, agents and gateway calls can't lose it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_branch: Option<String>,
     },
     Service {
         service_id: String,
+        /// AC-6: see `Human` (a run with no signed-in caller, as in CE without auth).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_branch: Option<String>,
     },
 }
 
 impl Principal {
+    /// AC-6: the memory branch this principal's run is on, if any.
+    pub fn memory_branch(&self) -> Option<&str> {
+        match self {
+            Principal::Human { memory_branch, .. } | Principal::Agent { memory_branch, .. } | Principal::Service { memory_branch, .. } => memory_branch.as_deref(),
+        }
+    }
+
+    /// AC-6: this principal on memory branch `branch`.
+    pub fn on_branch(&self, branch: &str) -> Result<Principal, String> {
+        let ok = !branch.is_empty() && branch.len() <= 64 && branch.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+        if !ok {
+            return Err(format!("memory_branch {branch:?}: use 1-64 letters, digits, '-', '_' or '.'"));
+        }
+        let mut p = self.clone();
+        match &mut p {
+            Principal::Human { memory_branch, .. } | Principal::Agent { memory_branch, .. } | Principal::Service { memory_branch, .. } => *memory_branch = Some(branch.to_string()),
+        }
+        Ok(p)
+    }
+
     /// Construct a human principal (e.g. mapped from validated JWT claims at
     /// the AuthN layer). `roles` come from the token; the policy — not this
     /// crate — decides what they grant.
     pub fn human(user_id: impl Into<String>, roles: Vec<String>) -> Self {
-        Principal::Human { user_id: user_id.into(), roles }
+        Principal::Human { user_id: user_id.into(), roles, memory_branch: None }
     }
 
     /// Construct a service principal (an internal, non-user caller).
     pub fn service(service_id: impl Into<String>) -> Self {
-        Principal::Service { service_id: service_id.into() }
+        Principal::Service { service_id: service_id.into(), memory_branch: None }
     }
 
     /// Telemetry discriminant (`aesop.principal.kind`).
@@ -140,7 +171,7 @@ impl Principal {
         match self {
             Principal::Human { user_id, .. } => user_id,
             Principal::Agent { agent_id, .. } => &agent_id.0,
-            Principal::Service { service_id } => service_id,
+            Principal::Service { service_id, .. } => service_id,
         }
     }
     pub fn on_behalf_of(&self) -> Option<&str> {
@@ -211,6 +242,8 @@ impl Principal {
             flow_id,
             roles,
             owner,
+            // An agent works on the branch its caller is on.
+            memory_branch: caller.memory_branch().map(String::from),
         }
     }
 }
@@ -507,6 +540,7 @@ mod tests {
     fn agent_req(action: &str, destructive: bool) -> ExecutionRequest {
         ExecutionRequest {
             principal: Principal::Agent {
+                memory_branch: None,
                 agent_id: AgentId("agt-1".into()),
                 on_behalf_of: Some("user::sriram".into()),
                 flow_id: Some("flow-1".into()),
@@ -551,6 +585,7 @@ mod tests {
     #[test]
     fn principal_telemetry_accessors() {
         let p = Principal::Agent {
+            memory_branch: None,
             agent_id: AgentId("agt-1".into()),
             on_behalf_of: Some("user::x".into()),
             flow_id: None,

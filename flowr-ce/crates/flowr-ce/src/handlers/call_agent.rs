@@ -544,6 +544,7 @@ impl TaskHandler for AgentHandler {
                 storage.as_ref(),
                 resource,
                 memory_namespace,
+                ctx.principal.memory_branch(),
                 &config.session_id,
                 ctx.principal.id(),
             )
@@ -1884,6 +1885,11 @@ async fn call_mcp_tool(
 
     // Resolve MCP server URL from resource
     let server_url = resolve_agent_mcp_url(storage, resource_name).await?;
+
+    // AC-7: outside production nothing leaves A3T. In-process tools stay inside.
+    if !is_local_mcp_url(&server_url) {
+        crate::gateway::refuse_outbound(storage.as_ref(), caller, session_id, "call:mcp", &format!("mcp:{resource_name}/{tool_name}")).await?;
+    }
 
     // E0.4c: local tools → in-process, authorized as the agent principal.
     // E2 #3: pass the template ceiling attributes so the hook can gate here.

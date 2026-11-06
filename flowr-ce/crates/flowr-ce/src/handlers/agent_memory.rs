@@ -113,14 +113,15 @@ pub struct Recalled {
 #[derive(Clone)]
 pub struct AgentMemory {
     ep: AdbEndpoint,
-    namespace: String,
+    /// What follows `NAMESPACE` in each statement: the space, and its branch if any.
+    namespace_clause: String,
     session_id: String,
     /// Who the session belongs to (the principal): reflected facts carry it.
     owner: String,
 }
 
 /// A double-quoted AQL string literal.
-fn aql_str(s: &str) -> String {
+pub(crate) fn aql_str(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -207,6 +208,7 @@ impl AgentMemory {
         storage: &dyn flowr_storage::StorageBackend,
         resource: &str,
         namespace: &str,
+        branch: Option<&str>,
         session_id: &str,
         owner: &str,
     ) -> Result<Self, String> {
@@ -219,7 +221,12 @@ impl AgentMemory {
                 Err(_) => resolve_adb(storage, &format!("a3t/{resource}")).await?,
             },
         };
-        Ok(Self { ep, namespace: namespace.to_string(), session_id: session_id.to_string(), owner: owner.to_string() })
+        // AC-6: on a branch every statement's `NAMESPACE x` is `NAMESPACE x BRANCH y`.
+        let namespace_clause = match branch {
+            Some(b) => format!("{} BRANCH {}", aql_str(namespace), aql_str(b)),
+            None => aql_str(namespace),
+        };
+        Ok(Self { ep, namespace_clause, session_id: session_id.to_string(), owner: owner.to_string() })
     }
 
     async fn query(&self, aql: &str) -> Vec<Value> {
@@ -235,7 +242,7 @@ impl AgentMemory {
     /// The facts most relevant to `message` (`RECALL … LIKE $q`), or `None` when
     /// this ADB can't rank (older, or no durable engine): the caller falls back.
     async fn relevant_facts(&self, message: &str, tier: &TierMode) -> Option<Vec<Value>> {
-        let mut aql = format!("RECALL FROM SEMANTIC LIKE $q NAMESPACE {}", aql_str(&self.namespace));
+        let mut aql = format!("RECALL FROM SEMANTIC LIKE $q NAMESPACE {}", self.namespace_clause.clone());
         if let Some(c) = tier.min_confidence {
             aql.push_str(&format!(" MIN_CONFIDENCE {c:?}"));
         }
@@ -253,7 +260,7 @@ impl AgentMemory {
     /// and the records their (non-fact) records link to or from — at least
     /// `min_weight`, strongest first, at most `limit`, none already in `facts`.
     async fn related(&self, facts: &[Value], limit: usize, min_weight: f64) -> Vec<(f64, Value)> {
-        let ns = aql_str(&self.namespace);
+        let ns = self.namespace_clause.clone();
         let mut entities: Vec<String> = Vec::new();
         let mut records: Vec<String> = Vec::new();
         for f in facts {
@@ -296,7 +303,7 @@ impl AgentMemory {
     }
 
     pub async fn recall(&self, tiers: &MemoryTierConfig, message: &str) -> Recalled {
-        let (sid, ns) = (aql_str(&self.session_id), aql_str(&self.namespace));
+        let (sid, ns) = (aql_str(&self.session_id), self.namespace_clause.clone());
         let mut out = Recalled::default();
         if tiers.working_read() {
             let n = tiers.working.limit.unwrap_or(20);
@@ -366,7 +373,7 @@ impl AgentMemory {
     /// Store the facts a reflection found (F-L3): `user` as a subject or object is
     /// the session's user. Returns how many were stored.
     pub async fn store_reflection(&self, facts: &[Reflected]) -> usize {
-        let ns = aql_str(&self.namespace);
+        let ns = self.namespace_clause.clone();
         let user = self.user_key();
         let end = |k: &str| if k == "user" { user.clone() } else { k.to_string() };
         let mut stored = 0;
@@ -396,7 +403,7 @@ impl AgentMemory {
 
     /// Store the turn: the user message in WORKING, the reply in EPISODIC.
     pub async fn store_turn(&self, tiers: &MemoryTierConfig, ttl_secs: u64, user: &str, reply: &str, tool_calls: u32, iterations: u32) {
-        let (sid, ns) = (aql_str(&self.session_id), aql_str(&self.namespace));
+        let (sid, ns) = (aql_str(&self.session_id), self.namespace_clause.clone());
         let mut writes = Vec::new();
         if tiers.working_write() && !user.is_empty() {
             writes.push(format!(
