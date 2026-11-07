@@ -34,7 +34,8 @@
     goto('/login');
   }
   import AppPalette from './AppPalette.svelte';
-  import ActiveApps from './ActiveApps.svelte';
+  import { openPalette } from '$lib/stores/layout.svelte.ts';
+  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
 
@@ -52,11 +53,15 @@
        when their side surfaces are unpinned. -->
   <nav class="hdr-menus">
     <AppPalette {activeType} />
-    <ActiveApps {activeType} />
     <ProjectSwitcher />
   </nav>
 
   <span style="flex: 1;"></span>
+  <button class="search" onclick={openPalette} title="Search apps and commands, or ask in Chat" aria-label="Search and commands">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg>
+    <span class="search-text">Search &amp; commands</span>
+    <span class="kbd">{mac ? '⌘' : 'Ctrl'} K</span>
+  </button>
 
   <button class="bell" class:has={unread > 0} onclick={() => openNotifications()} aria-label={unread ? `${unread} unread notification${unread === 1 ? '' : 's'}` : 'Notifications'} title="Notifications — warnings and errors">
     <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 11V7a4 4 0 018 0v4l1.5 1.5h-11zM6.5 14a1.5 1.5 0 003 0" /></svg>
@@ -104,7 +109,8 @@
 
 <style>
   .header {
-    grid-area: header;
+    flex: 0 0 58px;
+    height: 58px;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
     border-radius: 16px 16px 0 0;
@@ -133,6 +139,15 @@
     white-space: nowrap;
   }
 
+  .search { display: flex; align-items: center; gap: 8px; width: 260px; height: 34px; padding: 0 8px 0 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-page); color: var(--text-4); font: 400 13px var(--font-sans); cursor: pointer; }
+  .search:hover { border-color: var(--spec); color: var(--text-2); }
+  .search-text { flex: 1 1 auto; text-align: left; white-space: nowrap; overflow: hidden; }
+  .search .kbd { font: 500 10.5px var(--font-mono); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: var(--bg-subtle); color: var(--text-3); }
+  @media (max-width: 900px) { .search { width: auto; } .search-text, .search .kbd { display: none; } }
+  @media (max-width: 720px) {
+    .header { padding: 0 10px; gap: 8px; }
+    .brand .tagline, .user-name, .chevron { display: none; }
+  }
   .hdr-menus { display: flex; align-items: center; gap: 8px; margin-left: 6px; }
 
   .bell { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer; transition: background 0.12s, color 0.12s; }

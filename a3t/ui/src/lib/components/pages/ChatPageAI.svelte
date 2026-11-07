@@ -32,6 +32,12 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import { ARTIFACTS, LIST_KIND_TO_ITEM, toEditorText, type ArtifactKind } from '$lib/components/chat/artifacts';
   import { bumpContext, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
+  import { getChatSession, setChatSession } from '$lib/stores/layout.svelte.ts';
+
+  /// Docked: the Chat face of the shell's middle stack, beside whatever Details
+  /// shows. Its conversation is the shell's (layout store), not the URL's, so
+  /// talking never moves the page you are looking at.
+  let { docked = false }: { docked?: boolean } = $props();
 
   /// `id` is the client-side conversation id; `serverId` is the full server
   /// session key ("<agent>:<id>") that owns the transcript, and `agent` the agent
@@ -52,6 +58,7 @@
 
   /// Session id from /chat/<session>, so a URL is shareable and survives reload.
   function sessionFromUrl(): string | null {
+    if (docked) return getChatSession() || null;
     if (typeof window === 'undefined') return null;
     const seg = splitContextPath(window.location.pathname).rest.split('/').filter(Boolean);
     return seg[0] === 'chat' && seg[1] ? decodeURIComponent(seg[1]) : null;
@@ -63,6 +70,7 @@
   /// `props.selectedId` stale: the shell no longer knew which session was open,
   /// so the context list could not highlight it and switching apps lost it.
   function setSessionUrl(id: string, _replace = false) {
+    if (docked) { setChatSession(id); return; }
     setActiveSelection(id);
   }
 
@@ -723,6 +731,7 @@
       const id = newSessionId();
       setPendingMessage(withAttachments(text));
       attachments = []; attachError = '';
+      if (docked) { setChatSession(id); return; }  // the shell remounts the face on it
       trackOpen('chat', 'AI Chat');
       navigateToDetail('chat', 'AI Chat', id);
       return;
@@ -847,13 +856,13 @@
   }
 </script>
 
-<div class="chat-layout" bind:this={chatLayoutEl} bind:clientWidth={layoutW}
+<div class="chat-layout" class:docked bind:this={chatLayoutEl} bind:clientWidth={layoutW}
      style="grid-template-columns: 1fr{openArtifact ? ` 6px ${paneShown}px` : ''};">
   <!-- Left: conversation history -->
   <!-- Chat body. The conversation list is the shell's context pane now, so this
        owns only the agent selection and the transcript. -->
   <div class="chat-main" class:landing={landing}>
-    <SubmenuToggle appType="chat" floating />
+    {#if !docked}<SubmenuToggle appType="chat" floating />{/if}
     {#if landing}
       <!-- Chat's title bar: the section pages lead with a PageBanner, this leads
            with its own line of text. No session yet — the composer sits in the
@@ -1060,10 +1069,13 @@
           <button class="intent" onclick={it.go}><b>{it.title}</b><span>{it.sub}</span></button>
         {/each}
       </div>
-      <!-- Same Pinned / Latest lists as every other app home, below the composer. -->
-      <div class="landing-lists">
-        <AppHome appType="chat" embedded />
-      </div>
+      <!-- Same Pinned / Latest lists as every other app home, below the composer.
+           Docked, the Items face is one click away and the column is narrow. -->
+      {#if !docked}
+        <div class="landing-lists">
+          <AppHome appType="chat" embedded />
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -1188,6 +1200,14 @@
   .intent b { font-size: 13px; font-weight: 600; color: var(--text-1); }
   .intent span { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
   @media (max-width: 900px) { .intents { grid-template-columns: repeat(2, 1fr); } }
+  /* Docked in the shell's middle stack the column is narrow whatever the window
+     is, so the layout follows the column, not the viewport. */
+  .chat-layout.docked { container-type: inline-size; }
+  @container (max-width: 760px) {
+    .intents { grid-template-columns: repeat(2, 1fr); padding: 0 16px; }
+    .landing-head { padding: 0 16px 18px; }
+  }
+  @container (max-width: 380px) { .intents { grid-template-columns: 1fr; } }
   .landing-lists { max-width: 860px; margin: 0 auto; width: 100%; padding: 0 32px 24px; box-sizing: border-box; }
 
 

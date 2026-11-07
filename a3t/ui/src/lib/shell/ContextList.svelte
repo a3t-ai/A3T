@@ -1,12 +1,10 @@
 <script lang="ts">
-  /// The per-app context list: conversations in Chat, flows in the Studio,
-  /// resources in Resources. It occupies the side region next to the app rail and
-  /// is independently pinnable — unpinned it is revealed on demand from the Active
-  /// Apps menu, which is what frees the column for a wider main view.
+  /// The per-app list: conversations in Chat, flows in the Studio, resources in
+  /// Resources. It is the Items face of the shell's middle stack; the stack bar
+  /// above it owns pinning, and selecting an item opens it in Details.
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import {
-    APP_CONTEXT, contextLabel, isContextPinned, toggleContextPinned,
-    isContextOpen, closeContextPane, settleContextPane, trackOpen, contextRev_,
+    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_,
   } from '$lib/stores/apps.svelte.ts';
   import { deleteChatSession } from '$lib/services/api';
   import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
@@ -147,32 +145,18 @@
     trackOpen(appType, title);
     if (spec?.focuses) navigateToDetail(appType, title, item.id);
     else navigateTo(appType, title);
-    // A transient pane has done its job once something is chosen.
-    if (!isContextPinned()) settleContextPane();
+    // The item opens in Details; a popped-in Details or list follows from that.
+    settleContextPane();
   }
 
-  // An unpinned submenu is transient: a click anywhere on the page hides it.
-  // Pinning is how you keep it. The ≡ toggle is excluded so it can still toggle,
-  // and clicks inside the list (picking, filtering) leave it open.
   let asideEl: HTMLElement | undefined = $state();
-  $effect(() => {
-    if (isContextPinned() || !isContextOpen()) return;
-    const onDown = (e: PointerEvent) => {
-      const t = e.target as Element | null;
-      if (!t || asideEl?.contains(t) || t.closest('.smt')) return;
-      closeContextPane();
-    };
-    // Next tick: the click that opened the pane must not also close it.
-    const id = setTimeout(() => window.addEventListener('pointerdown', onDown, true));
-    return () => { clearTimeout(id); window.removeEventListener('pointerdown', onDown, true); };
-  });
 
   function newChat() {
     trackOpen('chat', 'AI Chat');
     // A fresh client id; the transcript row appears once the first turn completes.
     const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     navigateToDetail('chat', 'AI Chat', id);
-    if (!isContextPinned()) settleContextPane();
+    settleContextPane();
   }
 
   /// A blank editor: navigating with no selection is what FlowEditor treats as a
@@ -180,7 +164,7 @@
   function newFlow() {
     trackOpen('flow-editor', 'Studio');
     navigateTo('flow-editor', 'Studio');
-    if (!isContextPinned()) settleContextPane();
+    settleContextPane();
   }
 
   async function removeItem(e: MouseEvent, item: Item) {
@@ -233,7 +217,7 @@
   </div>
 {/snippet}
 
-<aside class="ctx" bind:this={asideEl} class:floating={!isContextPinned() && isContextOpen()}>
+<aside class="ctx" bind:this={asideEl}>
   <div class="ctx-head">
     <span class="ctx-title">{contextLabel(appType)}</span>
     <div class="ctx-actions">
@@ -258,21 +242,6 @@
           <path d="M14 8A6 6 0 112.6 5.5" /><path d="M2 2v4h4" />
         </svg>
       </button>
-      <button
-        class="ctx-icon"
-        class:on={isContextPinned()}
-        onclick={() => toggleContextPinned()}
-        title={isContextPinned() ? 'Unpin this list (widens the main view)' : 'Pin this list'}
-      >
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M8 10v4M5 3h6l-1 6H6L5 3z" />
-        </svg>
-      </button>
-      {#if !isContextPinned()}
-        <button class="ctx-icon" onclick={() => closeContextPane()} title="Close" aria-label="Close">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4L4 12M4 4l8 8" /></svg>
-        </button>
-      {/if}
     </div>
   </div>
 
@@ -318,21 +287,14 @@
 
 <style>
   .ctx {
-    grid-area: context;
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     /* Grid/flex items default to min-height:auto, which lets a long list grow past
        the row instead of scrolling — the bug that hid older conversations. */
     min-height: 0;
     overflow: hidden;
-    border-right: 1px solid var(--border);
     background: var(--bg-surface);
-  }
-  /* Unpinned, the pane is revealed over the main view rather than resizing it. */
-  .ctx.floating {
-    position: absolute; top: 0; bottom: 0; left: 0; z-index: 60;
-    width: 280px;
-    box-shadow: 6px 0 24px rgb(0 0 0 / 0.12);
   }
 
   .ctx-head {

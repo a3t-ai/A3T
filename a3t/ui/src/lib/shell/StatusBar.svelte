@@ -144,7 +144,7 @@
 </div>
 
 <style>
-  .status-bar { grid-area: status; position: relative; height: 3px; z-index: 120; }
+  .status-bar { flex: 0 0 3px; position: relative; height: 3px; z-index: 120; }
 
   /* The thin line across the top: solid while there is something to say,
      a moving stripe while busy. */

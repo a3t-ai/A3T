@@ -1,4 +1,6 @@
-// Shell state for the app shell's two navigational surfaces: the app rail and
+import * as L from './layout.svelte.ts';
+
+// Shell state: open apps, server pins, and the old rail and context-list API
 // the per-app context list.
 //
 // Both occupy the same side region and are independently pinnable, so the shell
@@ -12,12 +14,6 @@
 // page in this console already works.
 
 const LS_OPEN = 'a3t.shell.openApps';
-const LS_RAIL = 'a3t.shell.railPinned';
-// v2: the meaning changed. It used to mean "show the bar" (default on); it now
-// means "keep the bar even with nothing selected" (default off), because the
-// bar otherwise follows the selection. A new key so existing browsers adopt
-// the new default instead of inheriting `true` and never seeing the home page.
-const LS_CTX = 'a3t.shell.contextPinned.v2';
 const LS_CTX_W = 'a3t.shell.contextW';
 
 export interface OpenApp {
@@ -81,12 +77,6 @@ export function contextLabel(type: string | undefined | null): string {
 // ── State ──
 
 let openApps = $state<OpenApp[]>(load<OpenApp[]>(LS_OPEN, []));
-let railPinned = $state<boolean>(load<boolean>(LS_RAIL, true));
-let contextPinned = $state<boolean>(load<boolean>(LS_CTX, false));
-/// Transient reveal for an unpinned context list — the "open list pane" action
-/// on the Active Apps menu. Never persisted: an overlay should not survive a
-/// reload the user did not ask to keep it through.
-let contextOpen = $state<boolean>(false);
 let contextW = $state<number>(load<number>(LS_CTX_W, 260));
 
 export const RAIL_W = 104;
@@ -132,66 +122,54 @@ export function isOpen(type: string): boolean {
 }
 
 // ── Pinning ──
+//
+// The shell's layout store owns the pins now (Menu · Items|Chat · Details).
+// These keep their old names so callers written for the rail and the context
+// list go on working: the rail is the Menu stack, the context list is the Items
+// face of the middle stack.
 
 export function isRailPinned(): boolean {
-  return railPinned;
+  return L.isPinned('menu');
 }
 
 export function toggleRailPinned() {
-  railPinned = !railPinned;
-  save(LS_RAIL, railPinned);
+  L.togglePin('menu');
 }
 
 export function isContextPinned(): boolean {
-  return contextPinned;
+  return L.docked().mid;
 }
 
 export function toggleContextPinned() {
-  contextPinned = !contextPinned;
-  save(LS_CTX, contextPinned);
-  // Pinning absorbs any transient reveal, so the pane does not end up drawn twice.
-  if (contextPinned) { contextOpen = false; contextDismissed = false; }
+  L.togglePin('mid');
 }
 
-/// Closed with × (or by clicking the page). This overrides "show beside the
-/// selected item": without it, × on a page with an item open did nothing,
-/// because the selection alone kept the submenu docked. ≡ or pinning clears it.
-let contextDismissed = $state<boolean>(false);
 export function isContextDismissed(): boolean {
-  return contextDismissed;
+  return false;
 }
 
+/// The middle stack is popped in over the page.
 export function isContextOpen(): boolean {
-  return contextOpen;
+  return L.getOverlay() === 'mid';
 }
 
-/// Reveal the context list without pinning it — the Active Apps "list pane" path.
+/// Show the app's list: the Items face, popped in when it is not docked.
 export function openContextPane() {
-  contextOpen = true;
-  contextDismissed = false;
+  L.showMid('items');
 }
 
 export function closeContextPane() {
-  contextOpen = false;
-  contextDismissed = true;
+  if (L.getOverlay() === 'mid') L.closeOverlay();
 }
 
-/// End the floating reveal WITHOUT dismissing — picking an item from the
-/// submenu: it then stays docked beside the selection, as before.
+/// An item was picked from the list: a popped-in list steps aside for Details.
 export function settleContextPane() {
-  contextOpen = false;
+  L.revealDetails();
 }
 
-/// Whether the context list should be drawn for this app.
-///
-/// It follows the SELECTION: with nothing open the app shows its home page and
-/// the bar stays out of the way; opening an item reveals it with that item
-/// selected. Pinning is an override for keeping it on the home page too.
-///
-/// The layout derives the docked/floating split itself (it also needs the width),
-/// so this is the single definition of the rule for anything else that asks.
-export function contextVisible(type: string | undefined | null, hasSelection: boolean): boolean {
-  return hasContext(type) && (contextPinned || contextOpen || (hasSelection && !contextDismissed));
+/// Whether the app's list can be seen right now.
+export function contextVisible(type: string | undefined | null, _hasSelection: boolean): boolean {
+  return hasContext(type) && L.isVisible('mid') && L.getFace() === 'items';
 }
 
 // ── Pins ──

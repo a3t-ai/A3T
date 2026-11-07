@@ -1,0 +1,200 @@
+<script lang="ts">
+  /// The A3T shell: Top bar over three stacks — Menu · Items|Chat · Details.
+  ///
+  /// Every stack is always mounted; pins, Expand and pop-ins only change how it
+  /// is laid out (docked, full width, popped in from an edge, or hidden). So
+  /// pinning or expanding never remounts a page and never loses what is on it.
+  import { untrack } from 'svelte';
+  import StatusBar from './StatusBar.svelte';
+  import Topbar from './Topbar.svelte';
+  import Sidebar from './Sidebar.svelte';
+  import ContextList from './ContextList.svelte';
+  import PanelStack from './PanelStack.svelte';
+  import StackBar from './StackBar.svelte';
+  import Resizer from './Resizer.svelte';
+  import CommandPalette from './CommandPalette.svelte';
+  import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
+  import { getActivePanel } from '$lib/stores/panels.svelte.ts';
+  import { hasContext } from '$lib/stores/apps.svelte.ts';
+  import {
+    menuDocked, docked, getOverlay, openOverlay, closeOverlay, getFace, setFace, width,
+    togglePin, toggleFace, togglePalette, escape, revealDetails, getToast, getChatSession,
+    setChatSession, MENU_LABELS_AT,
+  } from '$lib/stores/layout.svelte.ts';
+
+  const panel = $derived(getActivePanel());
+  const activeType = $derived(panel?.type ?? '');
+  const selectedId = $derived(panel?.props?.selectedId ?? '');
+  const d = $derived(docked());
+  const overlay = $derived(getOverlay());
+  const face = $derived(getFace());
+
+  /// How each stack is laid out right now.
+  const menuMode = $derived(menuDocked() ? 'dock' : overlay === 'menu' ? 'pop' : 'off');
+  const midMode = $derived(d.mid ? (d.details ? 'col' : 'wide') : overlay === 'mid' ? 'pop' : 'off');
+  const detMode = $derived(d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
+
+  // Chat mounts the first time it is shown, then stays mounted so a reply keeps
+  // streaming while you look at Items.
+  let chatMounted = $state(false);
+  $effect(() => { if (face === 'chat' && midMode !== 'off') chatMounted = true; });
+
+  // Selecting an item puts Details where it can be seen. An app with no list
+  // has nothing to pick in Items, so its page is shown straight away.
+  let lastSel = '';
+  let lastType = '';
+  $effect(() => {
+    const sel = selectedId, type = activeType;
+    untrack(() => {
+      const selChanged = sel !== lastSel && !!sel;
+      const typeChanged = type !== lastType;
+      lastSel = sel; lastType = type;
+      if (selChanged || (typeChanged && type && !hasContext(type))) revealDetails();
+    });
+  });
+
+  // A pop-in closes on a click outside it. Edge tabs and the top bar's own
+  // controls are left alone so they can open or swap what floats.
+  let menuEl = $state<HTMLElement>();
+  let midEl = $state<HTMLElement>();
+  let detEl = $state<HTMLElement>();
+  $effect(() => {
+    const o = overlay;
+    if (!o) return;
+    const el = o === 'menu' ? menuEl : o === 'mid' ? midEl : detEl;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (!t || el?.contains(t) || t.closest('.edge, .scrim, [role="dialog"], .smt')) return;
+      closeOverlay();
+    };
+    const id = setTimeout(() => window.addEventListener('pointerdown', onDown, true));
+    return () => { clearTimeout(id); window.removeEventListener('pointerdown', onDown, true); };
+  });
+
+  function onKey(e: KeyboardEvent) {
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key.toLowerCase();
+    if (mod && k === 'k') { e.preventDefault(); togglePalette(); }
+    else if (mod && k === 'j') { e.preventDefault(); toggleFace(); }
+    else if (mod && e.key === '.') { e.preventDefault(); togglePin('details'); }
+    else if (mod && e.key === '\\') { e.preventDefault(); togglePin('menu'); }
+    else if (e.key === 'Escape' && !e.defaultPrevented) { if (escape()) e.preventDefault(); }
+  }
+
+  function newConversation() { setChatSession(''); setFace('chat'); }
+</script>
+
+<svelte:window onkeydown={onKey} />
+
+<div class="frame">
+  <StatusBar />
+  <Topbar />
+  <div class="body">
+    <div class="menu {menuMode}" bind:this={menuEl} style:width="{width('menu')}px">
+      <Sidebar wide={width('menu') >= MENU_LABELS_AT} />
+      {#if menuMode === 'pop'}<Resizer k="menu" label="menu" overlay />{/if}
+    </div>
+    {#if menuMode === 'dock'}<Resizer k="menu" label="menu" />{/if}
+
+    <section class="mid {midMode}" bind:this={midEl} aria-label="Items and Chat"
+      style:flex-basis={midMode === 'col' ? `${width('mid')}px` : undefined}
+      style:width={midMode === 'pop' ? `${width('chatPop')}px` : undefined}>
+      {#if midMode === 'pop'}<Resizer k="chatPop" edge="left" label="Items and Chat" overlay />{/if}
+      <StackBar stack="mid">
+        {#snippet left()}
+          <div class="seg" role="group" aria-label="Show">
+            <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
+            <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
+          </div>
+          {#if face === 'chat' && getChatSession()}
+            <button class="sb-btn" onclick={newConversation} title="New conversation" aria-label="New conversation">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10" /></svg>
+            </button>
+          {/if}
+        {/snippet}
+      </StackBar>
+      <div class="face" class:hidden={face !== 'items'}>
+        {#if hasContext(activeType)}
+          {#key activeType}<ContextList appType={activeType} />{/key}
+        {:else}
+          <div class="note">
+            <b>{panel?.title ?? 'This app'} has no list</b>
+            <span>Its page is in Details. Switch to Chat to ask about it.</span>
+            {#if !d.details}<button class="link" onclick={() => openOverlay('details')}>Open Details</button>{/if}
+          </div>
+        {/if}
+      </div>
+      <div class="face" class:hidden={face !== 'chat'}>
+        {#if chatMounted}
+          {#key getChatSession()}<ChatPageAI docked />{/key}
+        {/if}
+      </div>
+    </section>
+    {#if midMode === 'col'}<Resizer k="mid" label="Items and Chat" />{/if}
+
+    <section class="details {detMode}" bind:this={detEl} aria-label="Details"
+      style:width={detMode === 'pop' ? `${width('detailsPop')}px` : undefined}>
+      {#if detMode === 'pop'}<Resizer k="detailsPop" edge="left" label="Details" overlay />{/if}
+      <StackBar stack="details">
+        {#snippet left()}<span class="sbname">Details</span>{/snippet}
+      </StackBar>
+      <div class="page"><PanelStack /></div>
+    </section>
+
+    {#if midMode === 'off'}
+      <button class="edge" onclick={() => openOverlay('mid')} title="Open Items | Chat (Ctrl J)">Items · Chat</button>
+    {/if}
+    {#if detMode === 'off'}
+      <button class="edge" style:top={midMode === 'off' ? '210px' : '90px'} onclick={() => openOverlay('details')} title="Open Details">Details</button>
+    {/if}
+  </div>
+</div>
+
+<CommandPalette />
+{#if getToast()}<div class="toast" role="status">{getToast()}</div>{/if}
+
+<style>
+  .frame { height: calc(100vh - 12px); margin: 6px; background: var(--bg-page); border: 1px solid var(--border); border-radius: 16px 16px 0 0; overflow: hidden; display: flex; flex-direction: column; }
+  .body { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
+
+  /* Menu: docked at the left edge, or popped in over the page from it. */
+  .menu { flex: 0 0 auto; min-width: 0; position: relative; display: flex; flex-direction: column; }
+  .menu.off { display: none; }
+  .menu.pop { position: absolute; left: 0; top: 0; bottom: 0; z-index: 30; box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); }
+
+  /* Items | Chat */
+  .mid { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-page); position: relative; }
+  .mid.col { flex: 0 0 auto; border-right: 1px solid var(--border); }
+  .mid.wide { flex: 1 1 auto; }
+  .mid.pop, .details.pop { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; border-left: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
+  .mid.off, .details.off { display: none; }
+  .face { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .face.hidden { display: none; }
+
+  /* Details */
+  .details { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-page); position: relative; }
+  .page { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
+  .sbname { font: 500 11px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 9px; }
+  .seg button { border: 0; border-radius: 7px; background: transparent; padding: 3px 10px; font: 500 12px var(--font-sans); color: var(--text-3); cursor: pointer; }
+  .seg button[aria-pressed='true'] { background: var(--bg-surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
+  .sb-btn { width: 28px; height: 28px; margin-left: 4px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); cursor: pointer; }
+  .sb-btn:hover { border-color: var(--spec); color: var(--spec); }
+
+  .note { margin: 40px 20px; display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center; color: var(--text-3); font-size: 13px; }
+  .note b { color: var(--text-1); font-weight: 600; }
+  .link { margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); padding: 5px 12px; font: 500 12px var(--font-sans); color: var(--spec); cursor: pointer; }
+
+  /* Edge tab: where an unpinned stack waits. */
+  .edge { position: absolute; right: 0; top: 90px; z-index: 20; writing-mode: vertical-rl; transform: rotate(180deg); background: var(--spec); color: #fff; border: 0; border-radius: 0 8px 8px 0; padding: 12px 6px; font: 600 11px var(--font-mono); letter-spacing: 0.05em; cursor: pointer; }
+  .edge:focus-visible { outline: 2px solid var(--spec); outline-offset: 2px; }
+
+  .toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); background: var(--text-1); color: var(--bg-surface); border-radius: 10px; padding: 8px 14px; font-size: 13px; z-index: 210; pointer-events: none; }
+
+  :global(body.resizing) { cursor: col-resize; user-select: none; }
+
+  @media (max-width: 720px) {
+    .mid.pop, .details.pop, .menu.pop { width: calc(100% - 16px) !important; max-width: none; }
+  }
+</style>

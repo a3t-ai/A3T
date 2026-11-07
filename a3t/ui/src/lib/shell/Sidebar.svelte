@@ -2,6 +2,11 @@
   import { navigateTo, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { menuGroups as filteredMenuGroups } from '$lib/stores/auth';
   import { appIcon } from './appIcons';
+  import StackBar from './StackBar.svelte';
+  import { closeOverlay, getOverlay } from '$lib/stores/layout.svelte.ts';
+
+  /// Wide enough for labels (the menu's width is the user's, by dragging).
+  let { wide = false }: { wide?: boolean } = $props();
 
   let menuGroups = $derived($filteredMenuGroups);
   let activeType = $derived(getActivePanel()?.type ?? 'dashboard');
@@ -16,9 +21,12 @@
   function handleClick(type: string, label: string) {
     activeType = type;
     navigateTo(type, label);
+    // A popped-in menu steps aside once an app is picked.
+    if (getOverlay() === 'menu') closeOverlay();
   }
 
   function onEnter(e: MouseEvent, label: string) {
+    if (wide) return;  // the label is already on the button
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     tooltipText = label;
     tooltipX = rect.right + 10;
@@ -37,7 +45,8 @@
   }
 </script>
 
-<nav class="sidebar">
+<nav class="sidebar" class:wide aria-label="Menu">
+  <StackBar stack="menu" compact />
   <div class="sidebar-top">
     {#each menuGroups as group}
       <div class="nav-group">
@@ -47,12 +56,14 @@
             class="nav-btn"
             class:active={activeType === item.type}
             onclick={() => handleClick(item.type, item.label)}
+            aria-label={item.label}
             onmouseenter={(e) => onEnter(e, item.label)}
             onmouseleave={onLeave}
           >
             <svg class="nav-ico" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
               {@html getIcon(item.icon)}
             </svg>
+            {#if wide}<span class="nav-label">{item.label}</span>{/if}
           </button>
         {/each}
       </div>
@@ -73,7 +84,7 @@
 
 <style>
   .sidebar {
-    grid-area: sidebar;
+    height: 100%;
     background: var(--bg-surface);
     border-right: 1px solid var(--border);
     display: flex;
@@ -178,4 +189,6 @@
     border: 5px solid transparent;
     border-right-color: var(--text-1, #0f0f0f);
   }
+  .sidebar.wide .nav-btn { justify-content: flex-start; gap: 10px; padding: 9px 12px; }
+  .nav-label { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
