@@ -86,15 +86,26 @@ struct InputHandle {
 /// Manages pending human input requests
 pub struct InputManager {
     pending: RwLock<HashMap<String, InputHandle>>,
-    /// Completed requests (for audit)
+    /// The latest completed requests, up to [`COMPLETED_KEPT`], for `list_completed`.
     completed: RwLock<Vec<InputRequest>>,
 }
+
+const COMPLETED_KEPT: usize = 1000;
 
 impl InputManager {
     pub fn new() -> Self {
         Self {
             pending: RwLock::new(HashMap::new()),
             completed: RwLock::new(Vec::new()),
+        }
+    }
+
+    async fn keep_completed(&self, req: InputRequest) {
+        let mut completed = self.completed.write().await;
+        completed.push(req);
+        // Twice the limit before trimming, so a push doesn't move the whole Vec each time.
+        if completed.len() >= COMPLETED_KEPT * 2 {
+            completed.drain(..COMPLETED_KEPT);
         }
     }
 
@@ -131,14 +142,14 @@ impl InputManager {
         if handle.created.elapsed() > handle.timeout {
             let mut req = handle.request;
             req.status = InputStatus::Expired;
-            self.completed.write().await.push(req);
+            self.keep_completed(req).await;
             anyhow::bail!("Input request '{}' has expired", id);
         }
 
         // Update status
         let mut req = handle.request;
         req.status = InputStatus::Completed;
-        self.completed.write().await.push(req);
+        self.keep_completed(req).await;
 
         // Resume the workflow
         let _ = handle.reply_tx.send(response);
@@ -184,7 +195,7 @@ impl InputManager {
                 let mut req = handle.request;
                 req.status = InputStatus::Expired;
                 warn!(request_id = %id, "Input request expired");
-                self.completed.write().await.push(req);
+                self.keep_completed(req).await;
                 // Drop the sender — receiver gets an error, workflow handles timeout
             }
         }

@@ -238,7 +238,12 @@ impl EngineCore {
                 }
             }
             Change::JournalEvicted { run } => {
+                // All of what the finished run kept in memory for writing and resuming:
+                // its history is the host's to keep. A record appended later is not
+                // journalled here anyway (see `Change::Journal`).
                 self.journal.remove(run);
+                self.identities.remove(run);
+                self.checkpoints.remove(run);
                 self.evicted.insert(*run);
             }
             Change::Wait { run, wait_id, row } => {
@@ -968,6 +973,17 @@ impl EngineCore {
         Ok(n)
     }
 
+    /// Finished runs whose journal is still here and which ended before `cut`, up to
+    /// `limit`. Allocates only for the answer: this runs on a timer.
+    pub fn evictable(&self, cut: DateTime<Utc>, limit: usize) -> Vec<RunId> {
+        self.runs
+            .values()
+            .filter(|s| s.row.phase.is_terminal() && s.row.completed_at.is_some_and(|c| c < cut) && !self.evicted.contains(&s.row.run_id))
+            .map(|s| s.row.run_id)
+            .take(limit)
+            .collect()
+    }
+
     /// Let a run's journal leave memory (its history is the host's to keep).
     pub fn evict_journal(&mut self, run: RunId) {
         if self.runs.contains_key(&run) && !self.evicted.contains(&run) {
@@ -1245,6 +1261,28 @@ mod tests {
         let (_, _, e2) = core.claim_runs(after, DEFAULT_POOL, "w2", 5, LEASE).unwrap().into_iter().find(|(_, t, _)| t.run_id == task.run_id).unwrap();
         assert!(e2 > epoch);
         assert!(matches!(core.append(after, task.run_id, epoch, &[step("/a", 1)]), Err(StoreError::Fenced(_))));
+    }
+
+    #[test]
+    fn eviction_frees_what_a_finished_run_held() {
+        let mut core = EngineCore::new();
+        let now = Utc::now() + chrono::Duration::seconds(1);
+        let r = new_run("p", "f", false);
+        let id = r.run_id;
+        let t = NewTask::start(&r);
+        core.start(now, r, t).unwrap();
+        let (lease, _, epoch) = core.claim_runs(now, DEFAULT_POOL, "w", 1, LEASE).unwrap().remove(0);
+        core.append(now, id, epoch, &[step("/a", 1)]).unwrap();
+        assert!(core.evictable(now + chrono::Duration::seconds(9), 10).is_empty(), "still running");
+        core.release(now, id, epoch, RunPhase::Completed, RunOutcome::default(), &lease).unwrap();
+        core.checkpoints.entry(id).or_default().push((1, vec![0; 16], now));
+        assert_eq!(core.evictable(now + chrono::Duration::seconds(9), 10), vec![id]);
+        assert!(core.evictable(now - chrono::Duration::seconds(9), 10).is_empty(), "ended after the cut");
+
+        core.evict_journal(id);
+        assert!(!core.journal.contains_key(&id) && !core.identities.contains_key(&id) && !core.checkpoints.contains_key(&id));
+        assert!(core.runs.contains_key(&id), "the run itself stays until retention");
+        assert!(core.evictable(now + chrono::Duration::seconds(9), 10).is_empty(), "not listed twice");
     }
 
     #[test]

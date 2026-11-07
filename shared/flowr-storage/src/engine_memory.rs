@@ -175,7 +175,16 @@ impl Notifier for MemoryStore {
 
     fn subscribe(&self, topic: &str) -> BoxStream<'static, Value> {
         let (tx, rx) = unbounded();
-        self.subscribers.lock().unwrap().entry(topic.to_string()).or_default().push(tx);
+        let mut subs = self.subscribers.lock().unwrap();
+        subs.entry(topic.to_string()).or_default().push(tx);
+        // A finished run's topic never fires again, so sweep now and then (see `notify`).
+        if subs.len() >= 1024 && subs.len().is_power_of_two() {
+            subs.retain(|_, list| {
+                list.retain(|tx| !tx.is_closed());
+                !list.is_empty()
+            });
+        }
+        drop(subs);
         rx.boxed()
     }
 }
