@@ -1,12 +1,8 @@
 import * as L from './layout.svelte.ts';
 
-// Shell state: open apps, server pins, and the old rail and context-list API
-// the per-app context list.
-//
-// Both occupy the same side region and are independently pinnable, so the shell
-// has four layouts (rail+list, rail only, list only, neither). Unpinned surfaces
-// are still reachable from the header — the Squares palette for apps, the Active
-// Apps menu for the context list — so nothing becomes unreachable by unpinning.
+// Shell state: which apps have a list, open apps, server pins, and the rail and
+// context-list functions older callers use. The layout itself (Menu ·
+// Items|Chat · Details, pins, pop-ins) lives in layout.svelte.ts.
 //
 // "Active apps" is taskbar-shaped: an app opened stays in the list until it is
 // explicitly closed. It is deliberately NOT keep-alive — switching apps remounts
