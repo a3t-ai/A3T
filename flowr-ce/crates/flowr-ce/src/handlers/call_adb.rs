@@ -239,6 +239,16 @@ pub fn flight_client(ep: &AdbEndpoint) -> std::result::Result<AdbFlightClient, S
         .max_encoding_message_size(64 << 20))
 }
 
+/// Read a Flight answer stream to its end (the gRPC status after the last message),
+/// briefly. Dropping it after the answer instead resets the stream while ADB's trailers
+/// are on the way; once more than a few such resets are recent, h2 counts each late frame
+/// as a protocol error, and at 1,024 on a connection it closes that connection, failing
+/// every call on it at once (journal writes included).
+pub(crate) async fn finish<S: futures::Stream + Unpin>(stream: &mut S) {
+    use futures::StreamExt;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async { while stream.next().await.is_some() {} }).await;
+}
+
 /// A Flight `do_action` with a JSON body; the answer's JSON.
 pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::result::Result<Value, String> {
     use futures::StreamExt;
@@ -254,6 +264,7 @@ pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::r
         .await
         .ok_or_else(|| format!("ADB {kind}: no answer"))?
         .map_err(|e| flight_err(ep, e))?;
+    finish(&mut stream).await;
     serde_json::from_slice(&r.body).map_err(|e| format!("ADB {kind}: answer is not JSON: {e}"))
 }
 
@@ -342,6 +353,7 @@ pub async fn flight_put(ep: &AdbEndpoint, table: &str, batch: arrow_array::Recor
         .await
         .ok_or_else(|| format!("ADB insert {table}: no answer"))?
         .map_err(|e| flight_err(ep, e))?;
+    finish(&mut results).await;
     serde_json::from_slice(&r.app_metadata).map_err(|e| format!("ADB insert {table}: {e}"))
 }
 

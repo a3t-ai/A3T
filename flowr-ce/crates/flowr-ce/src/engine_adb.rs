@@ -148,6 +148,9 @@ impl Transport for FlightTransport {
                         Some(Err(e)) => return Err(StoreError::Backend(format!("ADB {op}: {}", e.message()))),
                         None => return Err(StoreError::Backend(format!("ADB {op}: no answer"))),
                     };
+                    // To the end: dropped here, the stream would be reset with ADB's
+                    // trailers in flight (see `finish`).
+                    crate::handlers::call_adb::finish(&mut s).await;
                     let v: Value = serde_json::from_slice(&answer.body).map_err(|e| StoreError::Backend(format!("ADB {op}: {e}")))?;
                     return unwrap(v);
                 }
