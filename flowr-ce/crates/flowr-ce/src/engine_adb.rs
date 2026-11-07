@@ -79,6 +79,13 @@ pub fn remote_from_env(data_dir: &str) -> Option<Client<FlightTransport>> {
     }
 }
 
+/// A failure of the connection, not an answer from ADB. An HTTP/2 GOAWAY reaches the
+/// caller as `Internal`, so a call must recognise it by its message.
+fn retriable(e: &tonic::Status) -> bool {
+    matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded)
+        || (e.code() == tonic::Code::Internal && e.message().contains("h2 protocol error"))
+}
+
 /// The engine wire over ADB's Flight: `do_action("engine")` per op,
 /// `do_action("engine_subscribe")` for notices.
 pub struct FlightTransport {
@@ -130,8 +137,17 @@ impl Transport for FlightTransport {
             match self.client().do_action(req).await {
                 Ok(r) => {
                     let mut s = r.into_inner();
-                    let answer = s.next().await.ok_or_else(|| StoreError::Backend(format!("ADB {op}: no answer")))?;
-                    let answer = answer.map_err(|e| StoreError::Backend(format!("ADB {op}: {}", e.message())))?;
+                    let answer = match s.next().await {
+                        Some(Ok(a)) => a,
+                        // The connection can also break after the call was accepted.
+                        Some(Err(e)) if retriable(&e) && attempt < 4 => {
+                            tokio::time::sleep(wait).await;
+                            wait *= 2;
+                            continue;
+                        }
+                        Some(Err(e)) => return Err(StoreError::Backend(format!("ADB {op}: {}", e.message()))),
+                        None => return Err(StoreError::Backend(format!("ADB {op}: no answer"))),
+                    };
                     let v: Value = serde_json::from_slice(&answer.body).map_err(|e| StoreError::Backend(format!("ADB {op}: {e}")))?;
                     return unwrap(v);
                 }
@@ -141,7 +157,7 @@ impl Transport for FlightTransport {
                 // Cancelled: the HTTP/2 connection went away under the call (an ADB
                 // restart or failover); the call did not reach ADB or is retried under
                 // the same arguments, which the engine core treats idempotently.
-                Err(e) if matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded) && attempt < 4 => {
+                Err(e) if retriable(&e) && attempt < 4 => {
                     tokio::time::sleep(wait).await;
                     wait *= 2;
                 }
