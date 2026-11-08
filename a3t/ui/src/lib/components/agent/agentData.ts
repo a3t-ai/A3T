@@ -115,6 +115,8 @@ export async function conversationsWith(agent: AgentRec): Promise<ChatSessionSum
 }
 
 export type Placement = {
+  /** The deployment's id, for pause / resume / undeploy. */
+  id: string;
   runtime: string; runtimeState: string; serving: string; deploymentState: string; canvas: string;
   stats: { runs: number; inFlight: number; failed: number; refused: number; completed: number; runsLastHour: number; errorRate: number; p50Ms?: number; p95Ms?: number; lastRunAt?: string; lastError?: string } | null;
   host: { cpu?: number; cpuLimit?: number; memUsed?: number; memLimit?: number } | null;
@@ -128,11 +130,27 @@ export async function placementOf(agent: AgentRec, f: Facts): Promise<{ placemen
   const match = (row: any) => row?.deployment && (row.deployment.agentRef === agent.id || row.deployment.agentRef?.endsWith(`/${agent.id}`) || (!!f.target && row.deployment.flowRef === f.target && row.deployment.kind === 'agent'));
   for (const rt of r.data?.runtimes ?? []) {
     const row = (rt.deployments ?? []).find(match);
-    if (row) return { placement: { runtime: rt.runtime?.name ?? '', runtimeState: rt.state, serving: row.serving, deploymentState: row.deployment.state, canvas: row.deployment.canvas, stats: row.stats ?? null, host: h }, error: '' };
+    if (row) return { placement: { id: row.deployment.id ?? '', runtime: rt.runtime?.name ?? '', runtimeState: rt.state, serving: row.serving, deploymentState: row.deployment.state, canvas: row.deployment.canvas, stats: row.stats ?? null, host: h }, error: '' };
   }
   const un = (r.data?.unplaced ?? []).find(match);
-  if (un) return { placement: { runtime: '', runtimeState: '', serving: 'unplaced', deploymentState: un.deployment.state, canvas: un.deployment.canvas, stats: un.stats ?? null, host: null }, error: '' };
+  if (un) return { placement: { id: un.deployment.id ?? '', runtime: '', runtimeState: '', serving: 'unplaced', deploymentState: un.deployment.state, canvas: un.deployment.canvas, stats: un.stats ?? null, host: null }, error: '' };
   return { placement: null, error: '' };
+}
+
+/// Where an agent came from: made new from a template, cloned (an independent
+/// copy) or forked (a copy that keeps its link to the parent). Read from its
+/// variables; agents made before lineage was stored are "from a template".
+export type Lineage = { kind: 'template' | 'clone' | 'fork'; from?: { id: string; name: string; exists: boolean } };
+export function lineageOf(agent: AgentRec, all: { id: string; name: string }[]): Lineage {
+  const v = json(agent.variables);
+  const id = v.forkedFrom ?? v.clonedFrom;
+  if (!id) return { kind: 'template' };
+  const parent = all.find((a) => a.id === id);
+  return { kind: v.forkedFrom ? 'fork' : 'clone', from: { id, name: parent?.name ?? v.fromName ?? id, exists: !!parent } };
+}
+/// Agents forked from this one (they follow it); clones are independent and not listed.
+export function forksOf(agent: AgentRec, all: AgentRec[]): AgentRec[] {
+  return all.filter((a) => json(a.variables).forkedFrom === agent.id);
 }
 
 // ── Formatting ──

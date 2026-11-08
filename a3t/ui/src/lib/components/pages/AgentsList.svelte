@@ -3,12 +3,16 @@
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import AgentHub from '$lib/components/agent/AgentHub.svelte';
+  import AgentGuide from '$lib/components/agent/AgentGuide.svelte';
+  import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
+  import { createAgent as createAgentRec, updateAgent } from '$lib/studio-core/adapters/agents';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { execFlow, mcpCall, canvasApi } from '$lib/services/api';
-  import { discoverServerTools, allToolNames, toolSections, isDestructive, serverRef, type ServerTools } from '$lib/services/mcpTools';
+  import { serverRef } from '$lib/services/mcpTools';
+  import { readTemplate } from '$lib/components/templates/templateSpec';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { can } from '$lib/stores/auth';
   import { onMount, untrack } from 'svelte';
@@ -22,7 +26,6 @@
   import { getProject, getProjects, inContext, projectOf, EXPOSED_ROLES } from '$lib/stores/context.svelte.ts';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
-  import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import ResourceSelect from '$lib/components/editor/ResourceSelect.svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
@@ -31,7 +34,7 @@
   let loading = $state(true);
   let error = $state('');
   let selected = $state('');
-  let propNode = $state('detail');
+  let propNode = $state('overview');
 
   let allAgents: any[] = $state([]);
   /// In view for the project; split by who created them.
@@ -123,54 +126,53 @@
     llm: 'a3t/claude-cli-max', mcp_servers: [] as string[], enabled_tools: null as string[] | null,
   });
   let creating = $state(false);
+  const newTplFacts = $derived(readTemplate(templates.find((t) => t.id === newAgent.template_id)?.spec_yaml));
 
   function newAgentPanel() {
     selected = '';
     newAgent = {
       name: '', namespace: newNamespace(), template_id: '', template_version: '1.0.0',
-      mode: 'session', target: '', ep_path: '', llm: 'a3t/claude-cli-max', mcp_servers: [],
+      mode: 'session', target: '', ep_path: '', llm: 'a3t/claude-cli-max', mcp_servers: [], enabled_tools: null,
     };
     creatingNew = true;
     propNode = 'identity';
+    makeKind = null;
   }
 
   // Tree nodes
-  /// A new agent is made in three steps; an existing one has a step per section.
+  /// A new agent is made in four steps; an existing one has a tab per question.
   const agentSteps = $derived.by((): WizardStep[] => creatingNew ? [
-    { id: 'identity', label: 'Identity', hint: 'Name it, choose the project it lives in and the template it is built from', ok: !!newAgent.name.trim() && !!newAgent.namespace && !!newAgent.template_id,
-      need: !newAgent.name.trim() ? 'Name the agent.' : !newAgent.template_id ? 'Pick a template.' : 'Pick a namespace.' },
-    { id: 'behaviour', label: 'Model & tools', hint: 'How long it lives, the model it thinks with, the MCP tools it may call' },
-    { id: 'serving', label: 'Serving', hint: 'The flow that serves it and its endpoint — one is made for it unless you pick one' },
+    { id: 'identity', label: 'Template & name', hint: 'The template it is built from, its name, and the project it lives in', ok: !!newAgent.name.trim() && !!newAgent.namespace && !!newAgent.template_id,
+      need: !newAgent.template_id ? 'Pick a template.' : !newAgent.name.trim() ? 'Name the agent.' : 'Pick a project.' },
+    { id: 'behaviour', label: 'Model & tools', hint: 'The model it thinks with, the tools it may call, and whether it remembers' },
+    { id: 'serving', label: "How it's started", hint: 'Its endpoint and the flow that serves it — the template\'s choice is filled in' },
+    { id: 'review', label: 'Review', hint: 'Check it, then create it. It is not deployed until you deploy it.' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    detail: 'What it is, whether it is working, and where to look next',
-    activity: 'What it did: conversations, runs, and what was blocked',
-    memory: 'What it keeps, and how',
-    policy: 'Who it acts as, what it may do, its hooks, what is logged',
-    health: 'How its deployment is doing: errors, latency, its runtime',
-    designer: 'Its flow and hooks — open in Studio to change and test',
-    canvas: 'Where it runs and how it is deployed',
-    config: 'Model, prompt and tool overrides for this agent',
-    template: 'The template it is built from', ownership: 'Who owns it and who can use it',
+    overview: 'What it is, whether it is working, where it came from',
+    configure: 'The few settings most people change — the rest is in the Studio',
+    branches: 'Prod, dev branches, releases and forks',
+    deploy: 'Where it runs — deploy, pause or undeploy in one click',
+    activity: 'What it did: conversations, runs, what was blocked, its memory',
+    settings: 'Its name, where it came from, and deleting it',
   };
 
-  /// An existing agent's tabs, ordered by the questions people bring: what is
-  /// it and is it working, what it did, what it remembers, what it may do, how
-  /// it is running — then how it is built, deployed and configured.
+  /// An existing agent's tabs: read it, change it, run it, look back, admin.
+  /// Testing and debugging are the Studio's.
   const treeNodes = [
-    { id: 'detail', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
+    { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
+    { id: 'configure', label: 'Configure', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
+    { id: 'branches', label: 'Branches', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
+    { id: 'deploy', label: 'Deploy', icon: '<path d="M8 1v9M4.5 6.5L8 10l3.5-3.5M2 13h12"/>' },
     { id: 'activity', label: 'Activity', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
-    { id: 'memory', label: 'Memory', icon: '<ellipse cx="8" cy="4" rx="6" ry="2.5"/><path d="M2 4v8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V4M2 8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/>' },
-    { id: 'policy', label: 'Controls', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
-    { id: 'health', label: 'Health', icon: '<path d="M8 14s-6-3.6-6-8a3.3 3.3 0 016-1.9A3.3 3.3 0 0114 6c0 4.4-6 8-6 8z"/>' },
-    { id: 'designer', label: 'Code', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>' },
-    { id: 'canvas', label: 'Deploy', icon: '<path d="M8 1v9M4.5 6.5L8 10l3.5-3.5M2 13h12"/>' },
-    { id: 'config', label: 'Configuration', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
-    { id: 'template', label: 'Template', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>' },
-    { id: 'ownership', label: 'Ownership & Access', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
+    { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
   /// The tabs the hub draws (one instance, so its data loads once per agent).
-  const HUB: Record<string, 'overview' | 'activity' | 'memory' | 'health'> = { detail: 'overview', activity: 'activity', memory: 'memory', health: 'health' };
+  const HUB: Record<string, 'overview' | 'activity' | 'deploy'> = { overview: 'overview', activity: 'activity', deploy: 'deploy' };
+  const GUIDE: Record<string, 'configure' | 'branches' | 'settings'> = { configure: 'configure', branches: 'branches', settings: 'settings' };
+  /// Tab names other pages still link with.
+  const TAB_ALIAS: Record<string, string> = { detail: 'overview', config: 'configure', policy: 'configure', canvas: 'deploy', health: 'deploy', memory: 'activity', ownership: 'settings' };
+  let activityStart = $state<'memory' | undefined>(undefined);
 
   async function loadAgents() {
     loading = true; error = '';
@@ -183,6 +185,7 @@
         mode: r.mode ?? 'session', status: r.status ?? 'draft',
         template_id: r.template_id, template_version: r.template_version ?? '1.0.0',
         variables: r.variables, resource_bindings: r.resource_bindings,
+        description: (parseJson(r.variables ?? '') || {}).description ?? '',
         created_at: r.created_at, created_by: r.owner ?? r.created_by ?? '',
       }));
     } else { error = res.error ?? 'Failed to load agents'; }
@@ -215,7 +218,9 @@
       const f = await mcpCall('list_flows', { namespace: ns });
       for (const w of (f.data?.workflows ?? [])) fl.push({ value: `${w.namespace ?? ns}/${w.name}`, label: `${w.namespace ?? ns}/${w.name}` });
     }
-    llmResources = llm; mcpResources = mcp; flowOptions = fl;
+    // One entry per reference: projects can list the same shared resource.
+    const once = (xs: { value: string; label: string }[]) => [...new Map(xs.map((x) => [x.value, x])).values()];
+    llmResources = once(llm); mcpResources = once(mcp); flowOptions = once(fl);
     await loadTriggerOptions();
   }
 
@@ -230,7 +235,8 @@
 
   function selectAgent(id: string) {
     selected = id;
-    propNode = 'detail';
+    propNode = 'overview';
+    makeKind = null;
     navigateToDetail('agents', 'Agents', id);
   }
 
@@ -279,22 +285,82 @@
     creating = false;
   }
 
+  /// Delete an agent, its endpoint and its own canvas. An error, or null.
+  async function removeAgent(a: any): Promise<string | null> {
+    const res = await execFlow('a3t-agents-delete', 'a3t', { id: a.id, org_id: 'org-default' });
+    if (!res.ok) return res.error ?? 'It was not deleted.';
+    const vars = parseJson(a.variables ?? '') || {};
+    const ep = vars.ep_path || `/agent/${a.id}/chat`;
+    // Its endpoint: the trigger made for it (by name), or the one on its path.
+    const tr = await mcpCall('list_triggers', {});
+    let d: any = tr.data; if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = []; } }
+    const list: any[] = Array.isArray(d) ? d : (d?.triggers ?? []);
+    const trig = list.find((t) => t?.name === `agent-${a.id}-chat`) ?? list.find((t) => t?.config?.path === ep && t?.name?.startsWith('agent-'));
+    const left: string[] = [];
+    if (trig?.id) { const r = await mcpCall('delete_trigger', { id: trig.id }); if (!r.ok) left.push(`its endpoint ${ep}`); }
+    // Its own canvas (made for it, bound by agentRef) — never a shared profile.
+    const own = canvases.find((c) => c.config?.agentRef === `a3t/${a.id}`);
+    if (own) { const r = await canvasApi.remove(own.namespace ?? 'a3t', own.name); if (!r.ok) left.push(`its canvas ${own.name}`); }
+    await Promise.all([loadAgents(), loadTriggerOptions(), loadCanvases()]);
+    return left.length ? `Deleted, but ${left.join(' and ')} could not be removed.` : null;
+  }
+
   async function deleteAgent() {
     if (!deleteTarget) return;
-    const agentId = deleteTarget.id;
-    const res = await execFlow('a3t-agents-delete', 'a3t', { id: agentId, org_id: 'org-default' });
-    if (res.ok) {
-      // Remove the agent's endpoint (webhook trigger), if any
-      try {
-        // The endpoint is in the agent's project (or `a3t`, for older agents).
-        const tr = await mcpCall('list_triggers', {});
-        const list = Array.isArray(tr.data) ? tr.data : (tr.data?.triggers ?? []);
-        const trig = list.find((t: any) => t?.config?.path === `/agent/${agentId}/chat`);
-        if (trig?.id) await mcpCall('delete_trigger', { id: trig.id });
-      } catch {}
-      selected = ''; deleteTarget = null; await loadAgents();
-    }
-    else { error = res.error ?? 'Delete failed'; deleteTarget = null; }
+    const a = allAgents.find((x) => x.id === deleteTarget!.id);
+    const err = a ? await removeAgent(a) : 'It is no longer listed.';
+    deleteTarget = null;
+    if (err) error = err; else if (selected === a?.id) selected = '';
+  }
+
+  /// Settings → Delete: on success the Details pane closes.
+  async function deleteCurrent(): Promise<string | null> {
+    if (!agent || creatingNew) return null;
+    const err = await removeAgent(agent);
+    if (err && !err.startsWith('Deleted')) return err;
+    selected = '';
+    navigateTo('agents', 'Agents');
+    if (err) error = err;
+    return null;
+  }
+
+  // ── Clone / fork: the two ways an agent is made from another ──
+  let makeKind = $state<'clone' | 'fork' | null>(null);
+  let branchForm = $state(false);
+  function lifecycle(kind: 'clone' | 'fork' | 'branch') {
+    if (kind === 'branch') { branchForm = true; propNode = 'branches'; return; }
+    makeKind = kind;
+  }
+  async function makeFrom(name: string, project: string): Promise<string | null> {
+    if (!agent || !makeKind) return null;
+    if (allAgents.some((a) => a.name === name && a.namespace === project)) return `There is already an agent called ${name} in ${project}.`;
+    const id = `agt-${crypto.randomUUID().slice(0, 8)}`;
+    const vars = parseJson(agent.variables ?? '') || {};
+    // Its own endpoint and no deployment; where it came from.
+    delete vars.canvasRef; delete vars.clonedFrom; delete vars.forkedFrom;
+    vars.ep_path = `/agent/${id}/chat`;
+    vars[makeKind === 'fork' ? 'forkedFrom' : 'clonedFrom'] = agent.id;
+    vars.fromName = agent.name;
+    const r = await createAgentRec({
+      id, name, namespace: project, template_id: agent.template_id, template_version: agent.template_version,
+      mode: agent.mode, resource_bindings: typeof agent.resource_bindings === 'string' ? agent.resource_bindings : JSON.stringify(agent.resource_bindings ?? {}),
+      variables: JSON.stringify(vars),
+    }, vars.target || 'a3t/a3t-chat-agent', vars.ep_path);
+    if (!r.ok && !String(r.error ?? '').startsWith('Agent created')) return r.error ?? 'It was not made.';
+    makeKind = null;
+    await Promise.all([loadAgents(), loadTriggerOptions()]);
+    selectAgent(id);
+    if (!r.ok) error = r.error ?? '';
+    return null;
+  }
+
+  /// Settings → move to a newer release of its template.
+  async function upgradeTemplate(templateId: string, version: string): Promise<string | null> {
+    if (!agent) return null;
+    const r = await updateAgent(agent, { template_id: templateId, template_version: version });
+    if (!r.ok) return r.error ?? 'It was not moved.';
+    await loadAgents();
+    return null;
   }
 
   function parseJson(s: string): any {
@@ -317,19 +383,12 @@
     return {};
   }
 
-  let bindings = $state<any>({ llm: '', target: '', ep_path: '', mcp_servers: [], system_prompt: '', max_iterations: 10, temperature: 0.7 });
-
-  // Seed the read-only Designer form with THIS agent's resolved config, since the
-  // agent-engine template's `with.config` is a runtime expression (no literal values).
-  // The template's LLM dropdown keys on the bare resource name, so strip the namespace.
-  let agentConfigSeed = $derived({
-    llm_resource: bindings.llm ? String(bindings.llm).split('/').pop() : '',
-    system_prompt: bindings.system_prompt ?? '',
-    mcp_servers: bindings.mcp_servers ?? [],
-    enabled_tools: bindings.enabled_tools ?? undefined,
-    max_iterations: bindings.max_iterations,
-    temperature: bindings.temperature,
-  });
+  /// What Configure and Settings edit: its model, instructions, tools, memory,
+  /// name and description (and, kept as they are, the settings the Studio owns).
+  let bindings = $state<any>({ name: '', description: '', mode: 'session', llm: '', target: '', ep_path: '', mcp_servers: [], system_prompt: '', max_iterations: 10, temperature: 0.7 });
+  /// The saved bindings, to tell edits apart.
+  let savedBindings = $state('');
+  const bindDirty = $derived(!!savedBindings && JSON.stringify($state.snapshot(bindings)) !== savedBindings);
   let savingBind = $state(false);
   let saveBindMsg = $state('');
   let _lastBindId = '';
@@ -345,6 +404,9 @@
     const mcp = (Array.isArray(mcpRaw) ? mcpRaw : String(mcpRaw).split(',').map(s => s.trim()).filter(Boolean))
       .map((s: string) => serverRef(s, agent?.namespace || 'a3t'));   // older agents saved bare names
     bindings = {
+      name: agent.name ?? '',
+      description: vars.description ?? '',
+      mode: agent.mode ?? 'session',
       llm,
       system_prompt: vars.system_prompt ?? String(tpl.system_prompt ?? '').trim(),
       max_iterations: vars.max_iterations ?? tpl.max_iterations ?? 10,
@@ -357,6 +419,7 @@
       // empty one, = only those tools — the runtime denies the rest.
       enabled_tools: Array.isArray(vars.enabled_tools) ? [...vars.enabled_tools] : null,
     };
+    savedBindings = JSON.stringify(bindings);
     bindRev++;   // these are the saved bindings, for telling edits apart
   }
   let bindRev = $state(0);
@@ -378,43 +441,6 @@
       else bindings = { ...bindings, ...o };
     },
   } : null);
-
-  // The tools of the agent's MCP servers, discovered with list_mcp_tools whenever the
-  // selection changes (FlowR's own tools in-process, other servers via tools/list).
-  // enabled_tools null = unrestricted; a list (even empty) = the only tools the agent may use.
-  let serverTools = $state<ServerTools[]>([]);
-  let toolsLoading = $state(false);
-  let _toolsKey = '';
-  $effect(() => {
-    const servers: string[] = (bindings.mcp_servers ?? []).map(String);
-    const key = servers.join('|');
-    if (key === _toolsKey) return;
-    _toolsKey = key;
-    if (servers.length === 0) { serverTools = []; toolsLoading = false; return; }
-    toolsLoading = true;
-    discoverServerTools(servers, agent?.namespace || 'a3t').then(found => {
-      if (_toolsKey !== key) return;   // the selection changed meanwhile
-      serverTools = found;
-      toolsLoading = false;
-    });
-  });
-  let restrictTools = $derived(Array.isArray(bindings.enabled_tools));
-  const toolAllowed = (t: string) => !restrictTools || (bindings.enabled_tools ?? []).includes(t);
-  // Every tool allowed again → null (unrestricted) rather than the full list.
-  function setAllowed(s: Set<string>) {
-    bindings.enabled_tools = allToolNames(serverTools).every(t => s.has(t)) ? null : [...s];
-  }
-  function toggleTool(name: string) {
-    // Unrestricted → materialise "everything" before removing one tool.
-    const s = new Set<string>(restrictTools ? bindings.enabled_tools : allToolNames(serverTools));
-    s.has(name) ? s.delete(name) : s.add(name);
-    setAllowed(s);
-  }
-  function setGroup(tools: string[], on: boolean) {
-    const s = new Set<string>(restrictTools ? bindings.enabled_tools : allToolNames(serverTools));
-    for (const t of tools) { on ? s.add(t) : s.delete(t); }
-    setAllowed(s);
-  }
 
   // Re-init the form once per agent selection (after templates have loaded)
   $effect(() => {
@@ -450,33 +476,20 @@
     vars.target = bindings.target;
     vars.ep_path = bindings.ep_path;
     vars.enabled_tools = bindings.enabled_tools ?? null;
+    const description = String(bindings.description ?? '').trim();
+    if (description) vars.description = description; else delete vars.description;
+    const name = String(bindings.name ?? '').trim() || agent.name;
     const res = await execFlow('a3t-agents-update', 'a3t', {
       id: agent.id, org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString(),
       data: {
-        name: agent.name, template_id: agent.template_id, template_version: agent.template_version,
-        mode: agent.mode, namespace: agent.namespace, status: agent.status,
+        name, template_id: agent.template_id, template_version: agent.template_version,
+        mode: bindings.mode || agent.mode, namespace: agent.namespace, status: agent.status,
         resource_bindings: JSON.stringify(rb), variables: JSON.stringify(vars),
       },
     });
     savingBind = false;
     if (res.ok) { saveBindMsg = 'Saved'; await loadAgents(); setTimeout(() => saveBindMsg = '', 2000); }
     else { saveBindMsg = res.error ?? 'Save failed'; }
-  }
-
-  // Inline "+ New endpoint" — create a webhook trigger for this agent → its target flow.
-  async function createEndpointForAgent() {
-    if (!agent) return;
-    const path = `/agent/${agent.id}/chat`;
-    const target = bindings.target || 'a3t/chat-agent';
-    const [tns, tname] = target.includes('/') ? [target.split('/')[0], target.split('/').slice(1).join('/')] : ['a3t', target];
-    await mcpCall('create_trigger', {
-      name: `agent-${agent.id}-chat`, namespace: 'a3t',
-      config: { type: 'webhook', path },
-      targets: [{ type: 'workflow', namespace: tns, name: tname }],
-      enabled: true,
-    });
-    await loadTriggerOptions();
-    bindings.ep_path = path;
   }
 
   // ── Agent → Canvas (deploy): pick a profile preset, clone it bound to this
@@ -505,7 +518,7 @@
 
   function openAgentCanvas(id: string) {
     selectAgent(id);
-    propNode = 'canvas';
+    propNode = 'deploy';
     pickedPreset = ''; canvasMsg = '';
     loadCanvases();
   }
@@ -530,7 +543,6 @@
     await setAgentCanvasRef(`a3t/${cname}`);
     await loadCanvases();
     canvasBusy = '';
-    canvasMsg = 'Canvas created & bound to this agent.';
   }
 
   async function setAgentCanvasRef(ref: string) {
@@ -549,14 +561,21 @@
     await loadAgents();
   }
 
-  async function deployBoundCanvas() {
-    if (!boundCanvas) { canvasMsg = 'Pick a profile and create the canvas first.'; return; }
-    canvasBusy = 'deploying'; canvasMsg = '';
+  /// Deploy in one click: with its own canvas, made from the chosen profile the
+  /// first time. Placement and scaling are refined in the Canvas designer.
+  let deployRev = $state(0);
+  async function deployAgent() {
+    canvasMsg = '';
+    if (!boundCanvas) {
+      if (!pickedPreset) { canvasMsg = 'Choose how it should run.'; return; }
+      await cloneCanvasForAgent(pickedPreset);
+      if (!boundCanvas) { canvasMsg ||= 'Its canvas was not made.'; return; }
+    }
+    canvasBusy = 'deploying';
     const res = await canvasApi.deployResource('a3t', boundCanvas.name);
     canvasBusy = '';
-    canvasMsg = res.ok && res.data?.deployed
-      ? `Deployed → sandbox for ${boundCanvas.config.flowRef}`
-      : (res.data?.error || res.error || 'deploy failed');
+    if (res.ok && res.data?.deployed) deployRev++;
+    else canvasMsg = res.data?.error || res.error || 'It was not deployed.';
   }
 
   onMount(async () => {
@@ -577,7 +596,9 @@
     } else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
       // "Open its memory", "Review its controls"… land on that tab.
-      if (panel.props.tab && (treeNodes.some((n) => n.id === panel.props.tab))) propNode = panel.props.tab;
+      const tab = TAB_ALIAS[panel.props.tab] ?? panel.props.tab;
+      if (tab && treeNodes.some((n) => n.id === tab)) propNode = tab;
+      activityStart = panel.props.tab === 'memory' ? 'memory' : undefined;
     }
   });
 
@@ -589,13 +610,13 @@
     untrack(() => {
       if (id === shownSel) return;
       shownSel = id;
-      if (id) selected = id;
+      if (id) { selected = id; makeKind = null; branchForm = false; }
     });
   });
 </script>
 
 <!-- Slide Panel -->
-<SlidePanel open={!!agent} onclose={closePanel} onsave={() => creatingNew ? createAgent() : saveBindings()} onopenineditor={() => agent && !creatingNew ? openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id) : navigateTo('flow-editor', 'Studio')}>
+<SlidePanel open={!!agent} onclose={closePanel} onsave={creatingNew ? createAgent : undefined} onopenineditor={() => agent && !creatingNew ? openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id) : navigateTo('flow-editor', 'Studio')}>
   {#if agent}
     <div class="panel-layout">
       <PropertiesTree
@@ -610,241 +631,113 @@
         onselect={(id) => propNode = id}
       />
       <div class="panel-col">
-      <div class="panel-content" class:panel-content-flush={propNode === 'designer'}>
+      <div class="panel-content">
         {#if agent.isNew}
           <div class="pf">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
             <div class="pf-form">
               {#if propNode === 'identity'}
+              <label class="cf-field"><span>Template</span>
+                <select bind:value={newAgent.template_id} onchange={onTemplateChange}>
+                  <option value="">— choose a template —</option>
+                  {#each templateChoices as t (t.id)}<option value={t.id}>{t.name} v{t.version}{t.ns ? ` · ${t.ns}` : ''}</option>{/each}
+                </select>
+              </label>
+              {#if newTplFacts.summary || newTplFacts.description}<p class="cf-about">{newTplFacts.summary || newTplFacts.description}</p>{/if}
               <label class="cf-field"><span>Name</span><input type="text" bind:value={newAgent.name} placeholder="my-agent" /></label>
-              <label class="cf-field"><span>Namespace</span>
+              <label class="cf-field"><span>Project</span>
                 <select bind:value={newAgent.namespace}>
                   {#each namespaceChoices(newAgent.namespace) as ns (ns)}<option value={ns}>{ns}</option>{/each}
                 </select>
               </label>
-              <label class="cf-field"><span>Template</span>
-                <select bind:value={newAgent.template_id} onchange={onTemplateChange}>
-                  <option value="">-- select template --</option>
-                  {#each templateChoices as t (t.id)}<option value={t.id}>{t.name} v{t.version}{t.ns ? ` · ${t.ns}` : ''}</option>{/each}
-                </select>
-              </label>
+              <p class="pf-hint">To start from an agent you already have, open it and clone or fork it.</p>
               {:else if propNode === 'behaviour'}
-              <label class="cf-field"><span>Mode</span>
-                <select bind:value={newAgent.mode}>
-                  <option value="ephemeral">Ephemeral</option>
-                  <option value="session">Session</option>
-                  <option value="persistent">Persistent</option>
-                  <option value="reactive">Reactive</option>
-                </select>
-              </label>
-              <label class="cf-field"><span>LLM</span>
-                <ResourceSelect value={newAgent.llm} options={llmResources} placeholder="— select LLM —" onchange={(v) => newAgent.llm = v} />
+              <label class="cf-field"><span>Model</span>
+                <ResourceSelect value={newAgent.llm} options={llmResources} placeholder="— choose a model —" onchange={(v) => newAgent.llm = v} />
               </label>
               <!-- Checkboxes, not a multi-select: a grey highlight read as "listed", not "selected". -->
-              <div class="cf-field full"><span>MCP servers</span>
+              <div class="cf-field full"><span>Tools it may call</span>
                 <div class="cf-checks">
                   {#each mcpResources as m}
                     <label class="cf-check"><input type="checkbox" value={m.value} bind:group={newAgent.mcp_servers} /> {m.label}</label>
                   {:else}
-                    <span class="cf-none">No MCP server resources</span>
+                    <span class="cf-none">No tool servers in this project yet</span>
                   {/each}
                 </div>
               </div>
-              {:else}
-              <label class="cf-field"><span>Target flow</span>
-                <ResourceSelect value={newAgent.target} options={flowOptions} placeholder="— select flow —" onchange={(v) => newAgent.target = v} />
-              </label>
+              <label class="cf-check cf-mem"><input type="checkbox" checked={newAgent.mode === 'persistent'} onchange={(e) => (newAgent.mode = (e.currentTarget as HTMLInputElement).checked ? 'persistent' : 'session')} />
+                <span><b>Remembers across conversations</b><small>Off: it starts fresh each conversation.</small></span></label>
+              {:else if propNode === 'serving'}
               <label class="cf-field"><span>Endpoint</span>
-                <ResourceSelect value={newAgent.ep_path} options={triggerOptions} placeholder="+ New endpoint (auto-created)" allowNew={false} onchange={(v) => newAgent.ep_path = v} />
+                <ResourceSelect value={newAgent.ep_path} options={triggerOptions} placeholder="A new one, made for it" allowNew={false} onchange={(v) => newAgent.ep_path = v} />
               </label>
-
+              <p class="pf-hint">Callers send messages here. Leave it as is and it gets its own: <span class="mono">POST /webhook/agent/&lt;its id&gt;/chat</span>.</p>
+              <label class="cf-field"><span>Served by</span>
+                <ResourceSelect value={newAgent.target} options={flowOptions} placeholder="— choose a flow —" onchange={(v) => newAgent.target = v} />
+              </label>
+              <p class="pf-hint">The flow that runs each conversation — filled in from the template. Change it only if you know why.</p>
+              {:else}
+              <dl class="cf-review">
+                <dt>Template</dt><dd>{templateChoices.find((t) => t.id === newAgent.template_id)?.name ?? '—'} v{newAgent.template_version}</dd>
+                <dt>Name</dt><dd class="mono">{newAgent.name || '—'}</dd>
+                <dt>Project</dt><dd class="mono">{newAgent.namespace}</dd>
+                <dt>Model</dt><dd class="mono">{newAgent.llm || '—'}</dd>
+                <dt>Tools</dt><dd>{newAgent.mcp_servers.length ? newAgent.mcp_servers.map((m) => m.split('/').pop()).join(', ') : 'none'}</dd>
+                <dt>Memory</dt><dd>{newAgent.mode === 'persistent' ? 'remembers across conversations' : 'starts fresh each conversation'}</dd>
+                <dt>Endpoint</dt><dd class="mono">{newAgent.ep_path || 'a new one, made for it'}</dd>
+              </dl>
+              <p class="pf-hint">It is created as a draft: it answers on its endpoint through the shared runtime. Deploy it from its Deploy tab.</p>
               {/if}
             </div>
           </div>
         {:else if HUB[propNode]}
           <div class="pf wide">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
-            <AgentHub {agent} {templates} section={HUB[propNode]} ongo={(t) => (propNode = t)} onstudio={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)} />
+            <AgentHub {agent} {templates} {allAgents} section={HUB[propNode]} rev={deployRev} startFilter={activityStart}
+              ongo={(t) => (propNode = t)} onlifecycle={lifecycle}
+              onstudio={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}>
+              {#snippet notDeployed()}
+                {#if boundCanvas}
+                  <div class="dep-row">
+                    <span>Runs as <b class="mono">{boundCanvas.name}</b> says{boundCanvas.config.placement?.mode ? ` — ${boundCanvas.config.placement.mode}` : ''}.</span>
+                    <button class="btn spec sm" disabled={!!canvasBusy} onclick={deployAgent}>{canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>
+                    <button class="lnk" onclick={() => navigateTo('canvas', 'Canvas', { editCanvas: boundCanvas.name })}>Change how it runs →</button>
+                  </div>
+                {:else if presets.length}
+                  <div class="dep-row">
+                    <label class="dep-pick">How should it run?
+                      <select bind:value={pickedPreset}>
+                        <option value="">— choose —</option>
+                        {#each presets as pr (pr.name)}<option value={pr.name}>{pr.name.replace('preset-', '')}{pr.config.description ? ` — ${pr.config.description}` : ''}</option>{/each}
+                      </select>
+                    </label>
+                    <button class="btn spec sm" disabled={!pickedPreset || !!canvasBusy} onclick={deployAgent}>{canvasBusy === 'cloning' ? 'Preparing…' : canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>
+                  </div>
+                {:else}
+                  <p class="pf-hint">There are no deployment profiles yet. An admin adds them on the Canvas page.</p>
+                {/if}
+                {#if canvasMsg}<p class="dep-err">{canvasMsg}</p>{/if}
+              {/snippet}
+            </AgentHub>
           </div>
 
-        {:else if propNode === 'config'}
-          <div class="pf">
-            <div class="pf-head">
-              <h3>Configuration</h3>
-              <button class="btn spec sm" disabled={savingBind} onclick={saveBindings}>{savingBind ? 'Saving…' : (saveBindMsg || 'Save')}</button>
-            </div>
-            <p class="pf-hint">Editable overrides for this agent (LLM, prompt, routing). The full structure is locked in the <strong>Designer</strong> tab, prefilled from the template.</p>
-            <div class="pf-form">
-              <label class="cf-field"><span>LLM</span>
-                <ResourceSelect value={bindings.llm} options={llmResources} placeholder="— select LLM —" onchange={(v) => bindings.llm = v} />
-              </label>
-              <label class="cf-field"><span>Target flow</span>
-                <ResourceSelect value={bindings.target} options={flowOptions} placeholder="— select flow —" onchange={(v) => bindings.target = v} />
-              </label>
-              <label class="cf-field"><span>Endpoint (trigger)</span>
-                <ResourceSelect value={bindings.ep_path} options={triggerOptions} placeholder="— select endpoint —" allowNew={true} newLabel="+ New endpoint" onchange={(v) => bindings.ep_path = v} onnew={createEndpointForAgent} />
-              </label>
-              <!-- Checkboxes, not a multi-select: a grey highlight read as "listed", not "selected". -->
-              <div class="cf-field"><span>MCP servers</span>
-                <div class="cf-checks">
-                  {#each mcpResources as m}
-                    <label class="cf-check"><input type="checkbox" value={m.value} bind:group={bindings.mcp_servers} /> {m.label}</label>
-                  {:else}
-                    <span class="cf-none">No MCP server resources</span>
-                  {/each}
-                </div>
-              </div>
-              <label class="cf-field"><span>Max iterations</span><input type="number" bind:value={bindings.max_iterations} /></label>
-              <label class="cf-field"><span>Temperature</span><input type="number" step="0.1" bind:value={bindings.temperature} /></label>
-              <label class="cf-field full"><span>System prompt (override)</span><textarea rows="6" bind:value={bindings.system_prompt}></textarea></label>
-            </div>
-          </div>
-
-        {:else if propNode === 'designer'}
-          <div class="code-bar">
-            <span>Read-only here. Change, run and debug it in the Studio.</span>
-            <button class="btn spec sm" onclick={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}>Open in Studio</button>
-          </div>
-          {#if agentTemplate?.spec_yaml}
-            <div class="agt-designer">
-              <FlowEditorPane initialYaml={agentTemplate.spec_yaml} readOnly configSeed={agentConfigSeed} />
-            </div>
-          {:else}
-            <div class="pf"><p class="pf-hint">No template spec available for this agent.</p></div>
-          {/if}
-
-        {:else if propNode === 'template'}
-          <div class="pf">
-            <h3>Template</h3>
-            <div class="pf-kv">
-              <div class="pf-row"><span class="pf-k">Template ID</span><span class="pf-v mono">{agent.template_id}</span></div>
-              <div class="pf-row"><span class="pf-k">Version</span><span class="pf-v">{agent.template_version}</span></div>
-            </div>
-            <button class="btn ghost sm" style="margin-top: 12px;" onclick={() => navigateTo('templates', 'Templates')}>View Template</button>
-          </div>
-
-        {:else if propNode === 'canvas'}
+        {:else if GUIDE[propNode]}
           <div class="pf wide">
-            <WizardHead step={agentSteps.find((x) => x.id === 'canvas')} />
-            <AgentHub {agent} {templates} section="deploy" ongo={(t) => (propNode = t)} />
-          </div>
-          <div class="pf">
-            <div class="pf-head">
-              <h3>Canvas — deploy this agent</h3>
-              {#if boundCanvas}<button class="btn spec sm" disabled={canvasBusy === 'deploying'} onclick={deployBoundCanvas}>{canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>{/if}
-            </div>
-            {#if boundCanvas}
-              <p class="pf-hint">This agent has its own canvas, cloned from a profile and bound with an <span class="mono">agentRef</span>. Review below, edit in the designer, or deploy.</p>
-              <div class="pf-kv">
-                <div class="pf-row"><span class="pf-k">Canvas</span><span class="pf-v mono">a3t/{boundCanvas.name}</span></div>
-                <div class="pf-row"><span class="pf-k">Flow</span><span class="pf-v mono">{boundCanvas.config.flowRef}</span></div>
-                <div class="pf-row"><span class="pf-k">Placement</span><span class="pf-v">{boundCanvas.config.placement?.mode} · {boundCanvas.config.lifecycle?.session}</span></div>
-                <div class="pf-row"><span class="pf-k">Agent ref</span><span class="pf-v mono">{boundCanvas.config.agentRef}</span></div>
-              </div>
-              <div class="perm-actions">
-                <button class="btn ghost sm" onclick={() => navigateTo('canvas', 'Canvas', { editCanvas: boundCanvas.name })}>Edit in designer</button>
-                <button class="btn ghost sm" onclick={() => setAgentCanvasRef('')}>Change profile</button>
-                {#if canvasMsg}<span class="perm-msg">{canvasMsg}</span>{/if}
-              </div>
-            {:else}
-              <p class="pf-hint">Pick a <strong>deployment profile</strong> (a reusable canvas preset). <strong>Edit</strong> clones it into a canvas bound to this agent, which you then refine and deploy.</p>
-              <div class="preset-grid">
-                {#each presets as p}
-                  <button class="preset-card" class:sel={pickedPreset === p.name} onclick={() => (pickedPreset = p.name)}>
-                    <strong>{p.name.replace('preset-', '')}</strong>
-                    <span class="preset-pills"><span class="ec-tag">{p.config.placement?.mode}</span><span class="ec-tag">{p.config.lifecycle?.session}</span></span>
-                    <span class="preset-desc">{p.config.description}</span>
-                  </button>
-                {/each}
-                {#if presets.length === 0}<p class="pf-hint">No canvas profiles found. Create presets on the Canvas page.</p>{/if}
-              </div>
-              <div class="perm-actions">
-                <button class="btn spec sm" disabled={!pickedPreset || canvasBusy === 'cloning'} onclick={() => cloneCanvasForAgent(pickedPreset)}>{canvasBusy === 'cloning' ? 'Creating…' : 'Edit → clone for this agent'}</button>
-                {#if canvasMsg}<span class="perm-msg">{canvasMsg}</span>{/if}
-              </div>
-            {/if}
-          </div>
-
-        {:else if propNode === 'policy'}
-          <div class="pf wide">
-            <WizardHead step={agentSteps.find((x) => x.id === 'policy')} />
-            <AgentHub {agent} {templates} section="controls" ongo={(t) => (propNode = t)} />
-          </div>
-          <div class="pf">
-            <h3>Permissions</h3>
-            <p class="pf-hint">Which tools this agent is allowed to use. The policy engine blocks any tool that isn't allowed — even if the model tries to call it.</p>
-
-            <label class="perm-toggle">
-              <input type="checkbox" checked={restrictTools}
-                onchange={(e) => { bindings.enabled_tools = (e.currentTarget as HTMLInputElement).checked ? allToolNames(serverTools).filter(t => !isDestructive(t)) : null; }} />
-              <span><strong>Restrict tools</strong> — {restrictTools ? `${(bindings.enabled_tools ?? []).length} of ${allToolNames(serverTools).length} allowed` : 'off · it may use every tool below'}{restrictTools && (bindings.enabled_tools ?? []).length === 0 ? ' — none yet: tick the tools it may use' : ''}</span>
-            </label>
-
-            {#if (bindings.mcp_servers ?? []).length === 0}
-              <p class="pf-hint">No MCP servers selected. Pick them in <strong>Configuration</strong>; their tools appear here.</p>
-            {:else if toolsLoading}
-              <!-- the header bar shows loading -->
-            {:else}
-              <div class="perm-groups">
-                {#each serverTools as srv (srv.server)}
-                  {#if srv.tools.length === 0}
-                    <div class="perm-group">
-                      <div class="perm-group-head"><span class="perm-group-name">{srv.name}</span></div>
-                      <p class="pf-hint perm-err">No tools listed: {srv.error}</p>
-                    </div>
-                  {/if}
-                  {#each toolSections(srv) as g (g.group)}
-                    {@const allOn = g.tools.every(t => toolAllowed(t))}
-                    <div class="perm-group">
-                      <div class="perm-group-head">
-                        <span class="perm-group-name" class:danger={g.group.endsWith('Destructive')}>{g.group} <span class="perm-count">{g.tools.length}</span></span>
-                        <button class="perm-all" onclick={() => setGroup(g.tools, !allOn)}>{allOn ? 'Clear' : 'All'}</button>
-                      </div>
-                      <div class="perm-tools">
-                        {#each g.tools as t (t)}
-                          <label class="perm-chk" class:on={toolAllowed(t)}>
-                            <input type="checkbox" checked={toolAllowed(t)} onchange={() => toggleTool(t)} />
-                            <span>{t}</span>
-                          </label>
-                        {/each}
-                      </div>
-                    </div>
-                  {/each}
-                {/each}
-              </div>
-              <p class="pf-hint" style="margin-top:10px">Unticking a tool turns on the restriction. Destructive tools are additionally blocked by the platform baseline for everyone — allowing one here still won't override that.</p>
-            {/if}
-
-            <div class="perm-actions">
-              <button class="btn runtime sm" onclick={saveBindings} disabled={savingBind}>{savingBind ? 'Saving…' : 'Save permissions'}</button>
-              {#if saveBindMsg}<span class="perm-msg">{saveBindMsg}</span>{/if}
-            </div>
-          </div>
-
-        {:else if propNode === 'ownership'}
-          <div class="pf">
-            <h3>Ownership & Access</h3>
-            <div class="pf-kv">
-              <!-- Ownership is stamped server-side from the authenticated caller.
-                   An agent created before that existed genuinely has no owner —
-                   say so, rather than substituting a plausible-looking identity.
-                   The owner bounds what the agent may be granted, so a wrong one
-                   is worse than an absent one. -->
-              <div class="pf-row">
-                <span class="pf-k">Created by</span>
-                <span class="pf-v" class:pf-unset={!agent.created_by}>
-                  {agent.created_by || (agent.isNew ? 'you, once saved' : 'unowned')}
-                </span>
-              </div>
-              <div class="pf-row"><span class="pf-k">Org</span><span class="pf-v">org-default</span></div>
-              {#if agent.created_at}<div class="pf-row"><span class="pf-k">Created</span><span class="pf-v">{new Date(agent.created_at).toLocaleString()}</span></div>{/if}
-              <div class="pf-row"><span class="pf-k">Namespace</span><span class="pf-v">{agent.namespace}</span></div>
-            </div>
+          <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
+          <AgentGuide section={GUIDE[propNode]} {agent} {allAgents} {templates} bind:bindings bind:branchForm
+            dirty={bindDirty} saveError={saveBindMsg && saveBindMsg !== 'Saved' ? saveBindMsg : ''} {llmResources} {mcpResources} me={$currentUser?.email ?? $currentUser?.id ?? ''}
+            ongo={(t) => (propNode = t)} onopen={selectAgent} ondiscard={() => { saveBindMsg = ''; initBindings(); }}
+            onstudio={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}
+            onupgrade={upgradeTemplate} ondelete={deleteCurrent} onsave={saveBindings} saving={savingBind} />
           </div>
         {/if}
       </div>
+      {#if makeKind && !creatingNew}
+        <AgentMakeFrom kind={makeKind} name={agent.name} projects={namespaceChoices(agent.namespace)} current={agent.namespace}
+          onmake={makeFrom} oncancel={() => (makeKind = null)} />
+      {/if}
       <WizardNav steps={agentSteps} active={propNode} wizard={creatingNew} onselect={(id) => (propNode = id)}
-        final={creatingNew ? createAgent : propNode === 'config' ? saveBindings : undefined}
+        final={creatingNew ? createAgent : undefined}
         finalLabel={creatingNew ? 'Create agent' : 'Save'} finalBusy={creatingNew ? creating : savingBind}
         busyLabel={creatingNew ? 'Creating…' : 'Saving…'} />
       </div>
@@ -931,78 +824,32 @@
   .screen-actions { display: flex; gap: 8px; }
   .screen-body { flex: 1; overflow-y: auto; padding: 20px 32px 40px; }
 
-  .status-msg { padding: 20px; text-align: center; color: var(--text-4); font-size: 14px; }
-  .status-msg.err { color: var(--err, #d44); font-family: var(--font-mono); font-size: 12px; }
-
   .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-
-
-  /* Create form */
-  .create-form { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); padding: 20px 24px; margin-bottom: 20px; }
-  .create-form h3 { font-family: var(--font-serif); font-size: 16px; font-weight: 500; margin-bottom: 14px; }
-  .cf-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-
   /* Panel layout */
   .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
-  .panel-col { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+  .panel-col { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; }
   .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
-  .panel-content-flush { overflow: hidden; }
-  .agt-designer { height: calc(100% - 47px); overflow: hidden; }
-  .pf-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .pf-head h3 { margin-bottom: 0; }
   .pf-form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
   .cf-checks { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); }
   .cf-check { display: flex; align-items: center; gap: 10px; padding: 3px 0; cursor: pointer; }
   .cf-none { font-size: 12px; color: var(--text-3, var(--text-2)); }
+  .cf-about { margin: -4px 0 0; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .cf-mem { align-items: flex-start; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .cf-mem span { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+  .cf-mem small { color: var(--text-3); font-size: 12px; }
+  .cf-review { display: grid; grid-template-columns: 110px 1fr; gap: 9px 14px; margin: 0; font-size: 13px; }
+  .cf-review dt { color: var(--text-3); }
+  .cf-review dd { margin: 0; color: var(--text-1); }
+  .dep-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; font-size: 13px; color: var(--text-2); }
+  .dep-pick { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; flex: 1 1 260px; }
+  .dep-err { margin: 0; font-size: 12.5px; color: var(--err, #b42318); }
+  .lnk { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font-size: 12.5px; }
+  .mono { font-family: var(--font-mono); }
 
   /* Panel forms */
   .pf { padding: 24px 32px; max-width: 704px; }
   .pf.wide { max-width: 980px; }
-  .pf.wide + .pf { padding-top: 0; }
-  .code-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; color: var(--text-3); }
-  .pf h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
-  .pf-kv { display: flex; flex-direction: column; }
-  .pf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }
-  .pf-row:last-child { border-bottom: 0; }
-  .pf-k { color: var(--text-3); flex-shrink: 0; }
-  .pf-v { color: var(--text-1); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* An absent value reads as absent, not as data. */
-  .pf-v.pf-unset { color: var(--text-4); font-style: italic; }
   .pf-hint { font-size: 12px; color: var(--text-4); margin-bottom: 12px; }
-  .pf-select { width: auto; }
 
-  /* Permissions tab */
-  .perm-count { font-weight: 400; opacity: 0.6; margin-left: 4px; }
-  .perm-err { color: var(--danger, #b42318); margin: 4px 0 0; }
-  .perm-toggle { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-2);
-    padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); cursor: pointer; }
-  .perm-toggle input { width: 15px; height: 15px; accent-color: var(--spec-ink, #5530a8); }
-  .perm-toggle strong { color: var(--text-1); }
-  .perm-groups { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
-  .perm-group-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-  .perm-group-name { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-4); }
-  .perm-group-name.danger { color: var(--err, #d44); }
-  .perm-all { font-size: 11px; border: none; background: none; color: var(--spec-ink, #5530a8); cursor: pointer; font-weight: 500; }
-  .perm-all:hover { text-decoration: underline; }
-  .perm-tools { display: flex; flex-wrap: wrap; gap: 6px; }
-  .perm-chk { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11.5px;
-    padding: 4px 9px; border: 1px solid var(--border); border-radius: 100px; background: var(--bg-surface);
-    color: var(--text-3); cursor: pointer; user-select: none; }
-  .perm-chk input { display: none; }
-  .perm-chk.on { background: var(--spec-bg, #efeafc); color: var(--spec-ink, #5530a8); border-color: var(--spec-ink, #5530a8); }
-  .perm-chk:hover { border-color: var(--border-strong); }
-  .perm-actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
-  .perm-msg { font-size: 12px; color: var(--ok, #1a7158); }
 
-  /* Canvas profile picker */
-  .preset-grid { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 8px 0 4px; }
-  .preset-card { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-sm, 8px); background: var(--bg-surface); cursor: pointer; transition: all 0.12s; }
-  .preset-card:hover { border-color: var(--border-strong); }
-  .preset-card.sel { border-color: var(--spec, #c47028); background: var(--spec-bg, #fbf0e0); }
-  .preset-card strong { font-size: 13px; }
-  .preset-pills { display: flex; gap: 4px; }
-  .preset-card .ec-tag { font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border-radius: 3px; background: var(--bg-subtle); color: var(--text-3); }
-  .preset-desc { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
-  .pf-section-label { font-size: 10px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
-  .pf-code { font-family: var(--font-mono); font-size: 12px; line-height: 1.6; padding: 12px 16px; margin: 0; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--r-sm); white-space: pre; overflow: auto; max-height: 200px; }
 </style>

@@ -1,32 +1,42 @@
 <script lang="ts">
-  /// One agent, seen from the questions people bring to it — the same screens
-  /// for everyone; they only start on different tabs:
-  ///   overview  what is it, is it working, where to look next
-  ///   activity  what it did: conversations, runs, what was blocked
-  ///   memory    what it keeps and how (live contents: UI-1)
-  ///   controls  who it acts as, what it may do, its hooks, what is logged
-  ///   health    how its deployment is doing: runs, errors, latency, host
-  ///   deploy    where it runs (the canvas editor follows in the page)
-  /// Data comes from the APIs that exist; every gap is named, not faked
-  /// (.ai/A3T_UI_LIMITATIONS.md).
-  import { untrack } from 'svelte';
+  /// The agent tabs that read it — the same screens for everyone:
+  ///   overview  what it is, is it working, where it came from; chat with it,
+  ///             or make another from it (clone, fork, branch to dev)
+  ///   activity  what it did: conversations, runs, what was blocked, memory
+  ///   deploy    where it runs, one-click deploy / pause / undeploy, its health
+  /// Configure, Branches and Settings are AgentGuide. Data comes from the APIs
+  /// that exist; every gap is named, not faked (.ai/A3T_UI_LIMITATIONS.md).
+  import { untrack, type Snippet } from 'svelte';
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { hasRole } from '$lib/stores/auth';
+  import { opsApi } from '$lib/services/api';
   import {
-    factsOf, servingRuns, decisionsFor, conversationsWith, placementOf, ago, dur, bytes, STATUS_WORDS,
+    factsOf, servingRuns, decisionsFor, conversationsWith, placementOf, lineageOf, forksOf, ago, dur,
     type AgentRec, type TemplateRec, type Run, type Decision, type Placement,
   } from './agentData';
   import type { ChatSessionSummary } from '$lib/services/api';
 
-  let { agent, templates, section, ongo, onstudio }: {
-    agent: AgentRec; templates: TemplateRec[];
-    section: 'overview' | 'activity' | 'memory' | 'controls' | 'health' | 'deploy';
+  let { agent, templates, allAgents = [], section, ongo, onstudio, onlifecycle, notDeployed, rev = 0, startFilter }: {
+    agent: AgentRec & { description?: string };
+    templates: TemplateRec[];
+    allAgents?: AgentRec[];
+    section: 'overview' | 'activity' | 'deploy';
     /// Show another tab of the agent.
     ongo: (tab: string) => void;
     onstudio?: () => void;
+    /// Make another agent from it, or branch it.
+    onlifecycle?: (kind: 'clone' | 'fork' | 'branch') => void;
+    /// What Deploy shows when it is not deployed (the page's deploy form).
+    notDeployed?: Snippet;
+    /// Bumped by the page after it changes the deployment: reload.
+    rev?: number;
+    /// Activity's view to open on (a deep link to its memory).
+    startFilter?: 'conv' | 'run' | 'deny' | 'memory';
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
+  const lineage = $derived(lineageOf(agent, allAgents));
+  const forks = $derived(forksOf(agent, allAgents));
+  const purpose = $derived(agent.description || f.purpose);
 
   // ── Loaded once per agent, shared by every section ──
   let runs = $state<Run[]>([]);
@@ -51,7 +61,7 @@
     loading = false;
   }
   $effect(() => {
-    const key = `${agent.id}|${templates.length}`;
+    const key = `${agent.id}|${templates.length}|${rev}`;
     if (key === loadedFor) return;
     loadedFor = key;
     untrack(() => void load());
@@ -59,100 +69,137 @@
 
   const failed = $derived(runs.filter((r) => ['failed', 'error', 'cancelled'].includes(r.status)));
   const denied = $derived(decisions.filter((d) => !d.allow));
+  /// Its serving flow's runs are shared with every agent on that flow (UI-2), so
+  /// they say something about this agent only once it is deployed on its own.
+  const ownRuns = $derived(!!placement);
   const lastSeen = $derived.by(() => {
-    const ts = [...runs.map((r) => Date.parse(r.started)), ...convs.map((c) => Date.parse(c.updated_at)), ...decisions.map((d) => d.ts)].filter((x) => x > 0);
+    const ts = [...(ownRuns ? runs.map((r) => Date.parse(r.started)) : []), ...convs.map((c) => Date.parse(c.updated_at)), ...decisions.map((d) => d.ts)].filter((x) => x > 0);
     return ts.length ? Math.max(...ts) : 0;
   });
   const health = $derived.by((): { tone: 'ok' | 'warn' | 'err' | 'idle'; word: string } => {
-    const er = placement?.stats?.errorRate;
-    if (placement?.deploymentState === 'paused') return { tone: 'warn', word: 'Paused' };
+    if (loading) return { tone: 'idle', word: 'Checking…' };
+    if (!placement) return convs.length || decisions.length ? { tone: 'ok', word: 'In use' } : { tone: 'idle', word: 'Not used yet' };
+    const er = placement.stats?.errorRate;
+    if (placement.deploymentState === 'paused') return { tone: 'warn', word: 'Paused' };
     if (er != null && er > 0.2) return { tone: 'err', word: 'Failing' };
-    if ((er != null && er > 0.02) || failed.length > 0) return { tone: 'warn', word: 'Some failures' };
-    if (!runs.length && !convs.length) return { tone: 'idle', word: 'No activity yet' };
+    if (er != null && er > 0.02) return { tone: 'warn', word: 'Some failures' };
     return { tone: 'ok', word: 'Working' };
   });
+  /// Where it runs, in words.
+  const where = $derived(loading ? '…' : placement
+    ? placement.deploymentState === 'paused' ? `Paused on ${placement.runtime || 'its runtime'}` : `Deployed on ${placement.runtime || 'a runtime being chosen'}`
+    : 'Not deployed — it answers through the shared runtime');
 
-  // ── Activity: one timeline ──
+  // ── Activity: one timeline; Memory is one of its views ──
   type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; tone?: string };
-  let filter = $state<'all' | 'conv' | 'run' | 'deny'>('all');
+  // svelte-ignore state_referenced_locally — where it opens; the chips take over
+  let filter = $state<'all' | 'conv' | 'run' | 'deny' | 'memory'>(startFilter ?? 'all');
   const timeline = $derived.by((): Item[] => {
     const items: Item[] = [
       ...convs.map((c) => ({ kind: 'conv' as const, ts: Date.parse(c.updated_at), title: c.title || 'Conversation', meta: `${c.message_count} messages` })),
       ...runs.map((r) => ({ kind: 'run' as const, ts: Date.parse(r.started), title: `Run ${r.status}`, meta: `${r.flow} · ${dur(r.ms)}${r.error ? ` · ${r.error.slice(0, 120)}` : ''}`, tone: failed.includes(r) ? 'err' : r.status === 'completed' ? 'ok' : '' })),
       ...decisions.map((d) => ({ kind: d.allow ? 'allow' as const : 'deny' as const, ts: d.ts, title: `${d.allow ? 'Allowed' : 'Blocked'}: ${d.action}`, meta: `${d.resource}${d.obo ? ` · on behalf of ${d.obo}` : ''}${d.reason ? ` · ${d.reason}` : ''}`, tone: d.allow ? '' : 'err' })),
     ];
-    return items.filter((i) => filter === 'all' || i.kind === filter || (filter === 'deny' && i.kind === 'deny')).sort((a, b) => b.ts - a.ts).slice(0, 200);
+    return items.filter((i) => filter === 'all' || i.kind === filter).sort((a, b) => b.ts - a.ts).slice(0, 200);
   });
+  const MEM = [
+    { k: 'working', t: 'Working', d: 'What it holds during one conversation — the task, recent turns.' },
+    { k: 'episodic', t: 'Episodic', d: 'What happened: past conversations and runs.' },
+    { k: 'semantic', t: 'Semantic', d: 'What it knows: facts and summaries, searched by meaning.' },
+    { k: 'procedural', t: 'Procedural', d: 'How to do things: steps it has learned.' },
+  ];
+  const remembers = $derived(agent.mode === 'persistent');
 
-  const isSecurity = hasRole('admin');
   function chat() {
     try { localStorage.setItem('a3t.chat.agent', JSON.stringify(agent.id)); } catch { /* private window */ }
     navigateTo('chat', 'AI Chat');
   }
-  const MEM = [
-    { k: 'working', t: 'Working', d: 'What it holds during one conversation or run — the current task, recent turns.' },
-    { k: 'episodic', t: 'Episodic', d: 'What happened: past conversations and runs, as events it can recall.' },
-    { k: 'semantic', t: 'Semantic', d: 'What it knows: facts and summaries, searched by meaning.' },
-    { k: 'procedural', t: 'Procedural', d: 'How to do things: steps and preferences it has learned.' },
-    { k: 'tools', t: 'Tools', d: 'What its tools returned, kept for reuse.' },
-  ];
-  const memoryMcp = $derived(f.mcp.find((m) => /memory/i.test(m)) ?? '');
+
+  // ── Deploy: one click each; details in Runtimes ──
+  let busy = $state('');
+  let opMsg = $state('');
+  let confirmUndeploy = $state(false);
+  async function op(action: 'pause' | 'resume' | 'undeploy') {
+    if (!placement?.id) return;
+    busy = action; opMsg = '';
+    const r = await opsApi.deployment(placement.id, action, action === 'pause' ? `Paused from the agent ${agent.name}` : undefined);
+    busy = ''; confirmUndeploy = false;
+    if (!r.ok) { opMsg = r.error ?? `Could not ${action} it`; return; }
+    await load();
+  }
 </script>
 
 {#if section === 'overview'}
   <section class="hub">
     <header class="hero">
-      <p class="purpose">{f.purpose || 'Its template has no description yet.'}</p>
+      <p class="purpose" class:none={!purpose}>{purpose || 'No description yet — add one in Settings.'}</p>
       <div class="status">
         <span class="dot {health.tone}"></span><b>{health.word}</b>
-        <span class="sep">·</span><span>{STATUS_WORDS[agent.status] ?? agent.status}</span>
+        <span class="sep">·</span><span>{where}</span>
         {#if lastSeen}<span class="sep">·</span><span>last active {ago(lastSeen)}</span>{/if}
+      </div>
+      <div class="lineage">
+        {#if lineage.kind === 'template'}
+          Built from {#if f.template}<b class="mono">{f.template.name} v{f.template.version}</b>{:else}<span class="mono">{agent.template_id ?? 'no template'}</span>{/if}
+        {:else}
+          {lineage.kind === 'fork' ? 'Forked from' : 'Cloned from'} <b>{lineage.from?.name}</b>{#if f.template} · template <span class="mono">{f.template.name} v{f.template.version}</span>{/if}
+        {/if}
+        {#if forks.length}<span class="sep">·</span><button class="lnk" onclick={() => ongo('branches')}>{forks.length} fork{forks.length === 1 ? '' : 's'}</button>{/if}
       </div>
       <div class="acts">
         <button class="btn spec sm" onclick={chat}>Chat with it</button>
-        {#if onstudio}<button class="btn ghost sm" onclick={onstudio}>Open in Studio</button>{/if}
+        {#if onstudio}<button class="btn ghost sm" onclick={onstudio}>Test in Studio</button>{/if}
       </div>
     </header>
 
     <div class="tiles">
       <button class="tile" onclick={() => { filter = 'conv'; ongo('activity'); }}><span class="v">{loading ? '…' : convs.length}</span><span class="k">Your conversations</span></button>
-      <button class="tile" onclick={() => { filter = 'run'; ongo('activity'); }}><span class="v">{loading ? '…' : runs.length}</span><span class="k">Recent runs</span></button>
-      <button class="tile" class:bad={failed.length > 0} onclick={() => ongo('health')}><span class="v">{loading ? '…' : failed.length}</span><span class="k">Failed</span></button>
+      <button class="tile" onclick={() => { filter = 'run'; ongo('activity'); }}><span class="v">{loading ? '…' : runs.length}</span><span class="k">{ownRuns ? 'Recent runs' : 'Runs of its flow'}</span></button>
+      <button class="tile" class:bad={failed.length > 0} onclick={() => ongo('deploy')}><span class="v">{loading ? '…' : failed.length}</span><span class="k">{ownRuns ? 'Failed' : 'Failed, its flow'}</span></button>
       <button class="tile" class:bad={denied.length > 0} onclick={() => { filter = 'deny'; ongo('activity'); }}><span class="v">{loading ? '…' : decErr ? '—' : denied.length}</span><span class="k">Blocked actions</span></button>
     </div>
 
-    <dl class="facts">
-      <dt>Project</dt><dd class="mono">{agent.namespace}</dd>
-      <dt>Template</dt><dd>{#if f.template}<button class="lnk" onclick={() => ongo('template')}>{f.template.name} v{f.template.version}</button>{:else}<span class="mono">{agent.template_id ?? '—'}</span>{/if}</dd>
-      <dt>Model</dt><dd class="mono">{f.llm || '—'}</dd>
-      <dt>Tools</dt><dd>{f.mcp.length ? f.mcp.join(', ') : 'no MCP servers'}{f.tools ? (f.tools.length ? ` · ${f.tools.length} pre-approved` : ' · each call needs approval') : ''}</dd>
-      <dt>Mode</dt><dd>{agent.mode}</dd>
-      <dt>Endpoint</dt><dd class="mono">{f.endpoint ? `POST /webhook${f.endpoint}` : '—'}</dd>
-      <dt>Served by</dt><dd class="mono">{f.target || '—'}</dd>
-    </dl>
-
-    <h4>Look closer</h4>
-    <div class="next">
-      <button onclick={() => ongo('activity')}><b>What it did</b><span>Conversations, runs and what was blocked</span></button>
-      <button onclick={() => ongo('memory')}><b>What it remembers</b><span>Its memory tiers and how they are kept</span></button>
-      <button onclick={() => ongo('controls')}><b>What it may do</b><span>Identity, tools, hooks, policies, logging</span></button>
-      <button onclick={() => ongo('health')}><b>How it is running</b><span>Errors, latency, its runtime</span></button>
-      <button onclick={() => ongo('designer')}><b>How it is built</b><span>Its flow and hooks — open in Studio</span></button>
-      <button onclick={() => ongo('canvas')}><b>Where it is deployed</b><span>Canvas, runtime and state</span></button>
+    <div class="glance">
+      <div class="glance-head"><h4>How it is set up</h4><button class="lnk" onclick={() => ongo('configure')}>Change →</button></div>
+      <dl class="facts">
+        <dt>Model</dt><dd class="mono">{f.llm || '—'}</dd>
+        <dt>Tools</dt><dd>{f.mcp.length ? f.mcp.map((m) => m.split('/').pop()).join(', ') : 'none'}</dd>
+        <dt>Memory</dt><dd>{remembers ? 'remembers across conversations' : agent.mode === 'session' ? 'starts fresh each conversation' : agent.mode}</dd>
+        <dt>Called at</dt><dd class="mono">{f.endpoint ? `POST /webhook${f.endpoint}` : '—'}</dd>
+        <dt>Project</dt><dd class="mono">{agent.namespace}</dd>
+      </dl>
     </div>
+
+    {#if onlifecycle}
+      <h4>Make another from it</h4>
+      <div class="make">
+        <button onclick={() => onlifecycle('clone')}><b>Clone</b><span>A new agent, the same to start with — on its own from then on.</span></button>
+        <button onclick={() => onlifecycle('fork')}><b>Fork</b><span>A new agent that keeps its link to this one.</span></button>
+        <button onclick={() => onlifecycle('branch')}><b>Branch to dev</b><span>Change and test this agent without touching prod; merge when ready.</span></button>
+      </div>
+    {/if}
   </section>
 
 {:else if section === 'activity'}
   <section class="hub">
     <div class="chips">
-      {#each [['all', 'All'], ['conv', `Conversations (${convs.length})`], ['run', `Runs (${runs.length})`], ['deny', `Blocked (${denied.length})`]] as [k, label] (k)}
+      {#each [['all', 'All'], ['conv', `Conversations (${convs.length})`], ['run', `Runs (${runs.length})`], ['deny', `Blocked (${denied.length})`], ['memory', 'Memory']] as [k, label] (k)}
         <button class:on={filter === k} onclick={() => (filter = k as any)}>{label}</button>
       {/each}
       <span class="grow"></span>
       <button class="lnk" onclick={() => navigateTo('logs', 'Decision log', { q: agent.id })}>Decision log →</button>
       <button class="lnk" onclick={() => navigateTo('executions', 'Executions')}>Executions →</button>
     </div>
-    {#if loading}
+    {#if filter === 'memory'}
+      <p class="line"><b>{remembers ? 'It remembers across conversations.' : 'It starts fresh each conversation.'}</b>
+        <button class="lnk" onclick={() => ongo('configure')}>Change →</button></p>
+      <div class="banner">What it has remembered can't be read here yet (UI-1). Below is what each kind of memory holds.</div>
+      <div class="mem">
+        {#each MEM as m (m.k)}
+          <div class="mcard" class:off={!remembers && m.k !== 'working'}><b>{m.t}</b><span>{m.d}</span><em>{!remembers && m.k !== 'working' ? 'not kept' : 'entries: — (UI-1)'}</em></div>
+        {/each}
+      </div>
+    {:else if loading}
       <!-- the header bar shows loading -->
     {:else}
       <ol class="tl">
@@ -163,121 +210,78 @@
             <time>{ago(it.ts)}</time>
           </li>
         {:else}
-          <li class="empty">Nothing yet{filter !== 'all' ? ' of this kind' : ''}. Chat with it to start.</li>
+          <li class="empty">Nothing yet{filter !== 'all' ? ' of this kind' : ''}. <button class="lnk" onclick={chat}>Chat with it</button> to start.</li>
         {/each}
       </ol>
+      <ul class="notes">
+        <li>Conversations are yours only; others' need an API (UI-4).</li>
+        <li>Runs are those of its serving flow <span class="mono">{f.target || '—'}</span>, which other agents may share (UI-2).</li>
+        <li>{decErr ? decErr : `Decisions are matched in the latest ${scanned} records of the log (UI-3).`}</li>
+      </ul>
     {/if}
-    <ul class="notes">
-      <li>Conversations are yours only; others' need an API (UI-4).</li>
-      <li>Runs are those of its serving flow <span class="mono">{f.target || '—'}</span>, which other agents may share (UI-2).</li>
-      <li>{decErr ? decErr : `Decisions are matched in the latest ${scanned} records of the log (UI-3).`}</li>
-    </ul>
-  </section>
-
-{:else if section === 'memory'}
-  <section class="hub">
-    <div class="banner">
-      <b>Live memory isn't readable here yet.</b> The console has no API to read one agent's memory — its entries, what it learned and when (UI-1, UI-5).
-      Below is how its memory is set up.
-    </div>
-    <div class="mem">
-      {#each MEM as m (m.k)}
-        <div class="mcard"><b>{m.t}</b><span>{m.d}</span><em>entries: — (UI-1)</em></div>
-      {/each}
-    </div>
-    <dl class="facts">
-      <dt>Memory service</dt><dd>{memoryMcp ? `${memoryMcp} (MCP) — ADB memory` : 'none bound — it keeps only working memory'}</dd>
-      <dt>Mode</dt><dd>{agent.mode === 'persistent' ? 'persistent — memory carries across sessions' : agent.mode === 'session' ? 'session — memory lasts for one conversation' : agent.mode}</dd>
-      <dt>Settings</dt><dd class="mono">{f.memory ? JSON.stringify(f.memory) : 'template defaults'}</dd>
-      <dt>Recall / store hooks</dt><dd>{f.hooks.filter((h) => /recall|store/.test(h.name)).map((h) => `${h.name}${h.flows.length ? ` → ${h.flows.join(', ')}` : ''}`).join(' · ') || '—'}</dd>
-    </dl>
-    {#if isSecurity}<p class="dim">Admins can query memory tables in Settings → ADB SQL in the meantime.</p>{/if}
-  </section>
-
-{:else if section === 'controls'}
-  <section class="hub">
-    <h4>Identity</h4>
-    <dl class="facts">
-      <dt>Acts as</dt><dd class="mono">agent:{agent.id}</dd>
-      <dt>On behalf of</dt><dd>the person or service that calls it — every tool call is decided for both (Cedar)</dd>
-      <dt>Called through</dt><dd class="mono">{f.endpoint ? `POST /webhook${f.endpoint}` : '—'}</dd>
-      <dt>Egress</dt><dd>through the platform's policy choke points; per-agent gateway tokens arrive with the gateway (UI-6)</dd>
-    </dl>
-    <h4>Tools</h4>
-    <p class="line">{!f.tools ? 'Not restricted — every tool of its MCP servers may run; policies still decide each call.' : f.tools.length === 0 ? 'No tool is pre-approved — every tool call needs approval before it runs; policies still decide each call.' : `${f.tools.length} tool${f.tools.length === 1 ? ' runs' : 's run'} without asking — any other tool needs approval first; policies still decide each call.`}
-      {#if f.mcp.length}<span class="dim"> Servers: {f.mcp.join(', ')}.</span>{/if}</p>
-    <h4>Hooks</h4>
-    <table class="tbl">
-      <thead><tr><th>Hook</th><th>Applies to</th><th>Runs</th></tr></thead>
-      <tbody>
-        {#each f.hooks as h (h.name)}
-          <tr><td class="mono">{h.name}</td><td>{h.extend}{h.when ? ` · when ${h.when}` : ''}</td><td>{h.flows.length ? h.flows.join(', ') : '— nothing attached'}</td></tr>
-        {:else}
-          <tr><td colspan="3" class="dim">Its template defines no hooks.</td></tr>
-        {/each}
-      </tbody>
-    </table>
-    <h4>Decisions about it</h4>
-    <p class="line">{decErr ? decErr : `${decisions.length - denied.length} allowed, ${denied.length} blocked in the latest ${scanned} log records.`}
-      <button class="lnk" onclick={() => navigateTo('logs', 'Decision log', { q: agent.id })}>Open in the decision log →</button>
-      {#if isSecurity}<button class="lnk" onclick={() => navigateTo('security', 'Security', { selectedId: 'policies' })}>Policies →</button>{/if}</p>
-    <h4>What is logged</h4>
-    <ul class="plain">
-      <li>Every allow and deny for its tool calls and data access — the decision log.</li>
-      <li>Its conversations — transcripts, kept with the caller.</li>
-      <li>Its runs — input, output and errors, in the run store.</li>
-      <li class="dim">Retention, redaction and per-agent audit level have no setting to show yet (UI-7).</li>
-    </ul>
-    <h4>Tool permissions</h4>
-  </section>
-
-{:else if section === 'health'}
-  <section class="hub">
-    {#if placement?.stats}
-      {@const s = placement.stats}
-      <div class="tiles six">
-        <div class="tile"><span class="v">{s.runs}</span><span class="k">Runs</span></div>
-        <div class="tile"><span class="v">{s.runsLastHour}</span><span class="k">Last hour</span></div>
-        <div class="tile" class:bad={s.errorRate > 0.02}><span class="v">{(s.errorRate * 100).toFixed(1)}%</span><span class="k">Error rate</span></div>
-        <div class="tile"><span class="v">{dur(s.p50Ms)}</span><span class="k">p50</span></div>
-        <div class="tile"><span class="v">{dur(s.p95Ms)}</span><span class="k">p95</span></div>
-        <div class="tile" class:bad={s.refused > 0}><span class="v">{s.refused}</span><span class="k">Refused</span></div>
-      </div>
-      {#if s.lastError}<div class="banner err"><b>Last error</b> {s.lastError}</div>{/if}
-    {:else}
-      <div class="banner">{placeErr || 'Not deployed through a canvas, so there are no deployment figures. Below: the runs of its serving flow.'}</div>
-    {/if}
-    <dl class="facts">
-      <dt>Deployment</dt><dd>{placement ? `${placement.serving}${placement.deploymentState === 'paused' ? ' (paused)' : ''} on ${placement.runtime || 'no runtime'}${placement.canvas ? ` · canvas ${placement.canvas}` : ''}` : 'not deployed'}</dd>
-      {#if placement?.host}
-        <dt>Host CPU</dt><dd>{placement.host.cpu != null ? `${placement.host.cpu.toFixed(2)} / ${placement.host.cpuLimit ?? '—'} cores` : '—'}</dd>
-        <dt>Host memory</dt><dd>{bytes(placement.host.memUsed)} / {bytes(placement.host.memLimit)}</dd>
-      {/if}
-      <dt>Serving flow runs</dt><dd>{runs.length} recent · {failed.length} failed{runs.length ? ` · median ${dur([...runs.map((r) => r.ms ?? 0)].sort((a, b) => a - b)[Math.floor(runs.length / 2)])}` : ''}</dd>
-      <dt>Restart policy</dt><dd><button class="lnk" onclick={() => ongo('canvas')}>in its canvas →</button></dd>
-    </dl>
-    <h4>Recent failures</h4>
-    <ol class="tl">
-      {#each failed.slice(0, 20) as r (r.id)}
-        <li class="ev run err"><span class="ic">▶</span><div class="body"><div class="t">{r.status} · {r.flow}</div><div class="m">{r.error || 'no error message'}</div></div><time>{ago(r.started)}</time></li>
-      {:else}
-        <li class="empty">No failed runs{runsErr ? ` (${runsErr})` : ''}.</li>
-      {/each}
-    </ol>
-    <ul class="notes">
-      <li>Token use, cost and latency over time per agent need a metrics API (UI-8).</li>
-      <li>Restarts, crashes and out-of-memory events need runtime events (UI-9); its application log needs a log API (UI-10).</li>
-    </ul>
   </section>
 
 {:else if section === 'deploy'}
   <section class="hub">
-    <dl class="facts">
-      <dt>Deployed</dt><dd>{placement ? `yes — ${placement.serving} on ${placement.runtime || 'no runtime yet'}` : loading ? '…' : 'no — it answers through the shared runtime'}</dd>
-      {#if placement}<dt>State</dt><dd>{placement.deploymentState}{placement.runtimeState ? ` · runtime ${placement.runtimeState}` : ''}</dd>
-      <dt>Canvas</dt><dd class="mono">{placement.canvas || '—'}</dd>{/if}
-      <dt>Operate</dt><dd><button class="lnk" onclick={() => navigateTo('runtime', 'Runtimes')}>Runtimes → pause, resume, restart</button></dd>
-    </dl>
+    <div class="dstate" class:live={!!placement && placement.deploymentState !== 'paused'} class:paused={placement?.deploymentState === 'paused'}>
+      <div class="dword">
+        <span class="dot {placement ? (placement.deploymentState === 'paused' ? 'warn' : 'ok') : 'idle'}"></span>
+        <b>{loading ? 'Checking…' : placement ? (placement.deploymentState === 'paused' ? 'Paused' : 'Deployed') : 'Not deployed'}</b>
+      </div>
+      {#if !loading}
+        <p>{#if placement}
+            {placement.deploymentState === 'paused' ? 'It is not taking new work.' : 'It answers on its own runtime.'}
+            Runtime <span class="mono">{placement.runtime || '—'}</span>{placement.canvas ? ` · canvas ${placement.canvas}` : ''}.
+          {:else}
+            It still answers on its endpoint, through the shared runtime. Deploy it to give it a runtime of its own.
+          {/if}</p>
+        {#if placement}
+          <div class="acts">
+            {#if placement.deploymentState === 'paused'}
+              <button class="hb-btn primary" disabled={!!busy} onclick={() => op('resume')}>{busy === 'resume' ? 'Resuming…' : 'Resume'}</button>
+            {:else}
+              <button class="hb-btn" disabled={!!busy} onclick={() => op('pause')}>{busy === 'pause' ? 'Pausing…' : 'Pause'}</button>
+            {/if}
+            <button class="hb-btn" disabled={!!busy} onclick={() => (confirmUndeploy = true)}>Undeploy</button>
+          </div>
+          {#if confirmUndeploy}
+            <div class="confirm">Undeploy it? Its runtime stops; it goes back to answering through the shared runtime.
+              <button class="hb-btn danger" disabled={!!busy} onclick={() => op('undeploy')}>{busy === 'undeploy' ? 'Undeploying…' : 'Undeploy'}</button>
+              <button class="lnk" onclick={() => (confirmUndeploy = false)}>Cancel</button></div>
+          {/if}
+          {#if opMsg}<p class="errline">{opMsg}</p>{/if}
+        {:else if notDeployed}
+          {@render notDeployed()}
+        {/if}
+      {/if}
+      {#if placeErr}<p class="dim">{placeErr}</p>{/if}
+    </div>
+
+    <h4>How it is running</h4>
+    {#if placement?.stats}
+      {@const s = placement.stats}
+      <div class="tiles">
+        <div class="tile"><span class="v">{s.runsLastHour}</span><span class="k">Runs, last hour</span></div>
+        <div class="tile" class:bad={s.errorRate > 0.02}><span class="v">{(s.errorRate * 100).toFixed(1)}%</span><span class="k">Errors</span></div>
+        <div class="tile"><span class="v">{dur(s.p95Ms)}</span><span class="k">Slowest 5% take</span></div>
+        <div class="tile" class:bad={s.refused > 0}><span class="v">{s.refused}</span><span class="k">Turned away</span></div>
+      </div>
+      {#if s.lastError}<div class="banner err"><b>Last error</b> {s.lastError}</div>{/if}
+    {:else if !loading}
+      <p class="line dim">{runs.length} recent runs of its serving flow · {failed.length} failed{runs.length ? ` · usually ${dur([...runs.map((r) => r.ms ?? 0)].sort((a, b) => a - b)[Math.floor(runs.length / 2)])}` : ''}.</p>
+    {/if}
+    {#if failed.length}
+      <ol class="tl">
+        {#each failed.slice(0, 5) as r (r.id)}
+          <li class="ev run err"><span class="ic">▶</span><div class="body"><div class="t">{r.status} · {r.flow}</div><div class="m">{r.error || 'no error message'}</div></div><time>{ago(r.started)}</time></li>
+        {/each}
+      </ol>
+    {:else if runsErr}<p class="dim">{runsErr}</p>{/if}
+    <div class="deeper">
+      <span>Placement, scaling, restarts and logs:</span>
+      <button class="lnk" onclick={() => navigateTo('runtime', 'Runtimes')}>Runtimes →</button>
+      {#if onstudio}<button class="lnk" onclick={onstudio}>Debug in Studio →</button>{/if}
+    </div>
   </section>
 {/if}
 
@@ -297,10 +301,37 @@
   .sep { color: var(--text-5, var(--text-4)); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-4); }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
-  .acts { display: flex; gap: 8px; margin-top: 2px; }
+  .acts { display: flex; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
+  .purpose.none { color: var(--text-4); font-size: 14px; }
+  .lineage { font-size: 12.5px; color: var(--text-3); display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+  .lineage b { color: var(--text-1); font-weight: 500; }
+  .dot.idle { background: var(--text-4); }
+  .glance { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); }
+  .glance-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .glance-head h4 { margin: 0; }
+  .glance .facts { grid-template-columns: 110px 1fr; }
+  .make { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .make button { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; }
+  .make button:hover { border-color: var(--spec); background: var(--spec-bg); }
+  .make b { font-size: 13.5px; color: var(--text-1); font-weight: 600; }
+  .make span { font-size: 12px; color: var(--text-3); line-height: 1.45; }
+  .dstate { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); }
+  .dstate.live { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+  .dstate.paused { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+  .dstate p { margin: 0; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .dword { display: flex; align-items: center; gap: 8px; }
+  .dword b { font: 400 19px var(--font-serif); color: var(--text-1); }
+  .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
+  .hb-btn { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12.5px var(--font-sans); color: var(--text-1); cursor: pointer; }
+  .hb-btn:hover:not(:disabled) { border-color: var(--spec); }
+  .hb-btn.primary { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
+  .hb-btn.danger { background: var(--err); border-color: var(--err); color: #fff; }
+  .hb-btn:disabled { opacity: 0.5; cursor: default; }
+  .errline { color: var(--err) !important; font-size: 12.5px !important; }
+  .deeper { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; font-size: 12.5px; color: var(--text-3); }
+  .mcard.off { opacity: 0.55; }
 
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-  .tiles.six { grid-template-columns: repeat(6, 1fr); }
   .tile { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); text-align: left; font: inherit; color: inherit; }
   button.tile { cursor: pointer; }
   button.tile:hover { border-color: var(--spec); }
@@ -312,11 +343,6 @@
   .facts dt { color: var(--text-4); }
   .facts dd { margin: 0; color: var(--text-1); overflow-wrap: anywhere; }
 
-  .next { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .next button { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; }
-  .next button:hover { border-color: var(--spec); background: var(--spec-bg); }
-  .next b { font-size: 13px; color: var(--text-1); font-weight: 600; }
-  .next span { font-size: 11.5px; color: var(--text-3); }
 
   .chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .chips > button:not(.lnk) { border: 1px solid var(--border); background: var(--bg-surface); border-radius: 999px; padding: 5px 12px; font-size: 12px; color: var(--text-2); cursor: pointer; }
@@ -334,7 +360,6 @@
   .empty { padding: 18px 14px; font-size: 12.5px; color: var(--text-4); }
 
   .notes { margin: 0; padding-left: 18px; font-size: 11.5px; color: var(--text-4); display: flex; flex-direction: column; gap: 3px; }
-  .plain { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 5px; }
   .line { margin: 0; font-size: 13px; color: var(--text-2); display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
 
   .banner { padding: 12px 14px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
@@ -345,7 +370,4 @@
   .mcard span { font-size: 12px; color: var(--text-3); line-height: 1.45; }
   .mcard em { font-style: normal; font-size: 11px; color: var(--text-4); font-family: var(--font-mono); }
 
-  .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  .tbl th { text-align: left; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-4); padding: 8px 12px; border-bottom: 1px solid var(--border); }
-  .tbl td { padding: 8px 12px; border-top: 1px solid var(--divider, var(--border)); color: var(--text-2); }
 </style>

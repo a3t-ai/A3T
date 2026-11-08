@@ -67,16 +67,29 @@ is marked **Sample** and its edits are not saved until these land. Design:
 | SRV-10 | A template can't be tried on its own. It has no endpoint; Templates → Try it runs through an agent built from it (`/agent/{id}/chat`), which accepts a model and tools per request but not a prompt or input-contract change. Test cases can't be saved. | Agent chat endpoint (`call_agent`); template store | Run a template directly with a given input, model and prompt (a dry-run of its workflow, no agent record); accept a `system_prompt` override per request; store test cases (input, expected output) with the template and run them as a suite | open |
 | SRV-8 | A project can't move between organisations: `move` takes only a personal project into an org. | `a3t_projects.yaml` (`move-allowed`) | Allow an org's project when the caller is admin in both orgs (or superadmin); the rest of `move` (namespace rewrite, references) already applies | open |
 
+### Agents as repos (the Agents → Branches tab is built on sample data)
+
+Agents are made in two ways only — **clone** (an independent copy) or **fork**
+(a copy that keeps its link to the parent) — and changed on a **dev branch**
+that is merged into prod. Spec: `.ai/A3T_AGENTS_AS_REPOS_SPEC.md`. Clone and
+fork work today with what exists; branches, merges and releases are **Sample**.
+
+| # | Missing | Where | Needed | Status |
+|---|---|---|---|---|
+| SRV-11 | Lineage and description have no columns. The UI keeps `clonedFrom` / `forkedFrom` / `fromName` and `description` inside the agent's `variables` JSON. A fork cannot take its parent's later changes; clone/fork cannot bring memory. | `a3t/backend/flows/a3t/agents_crud.yaml` (`create-insert`, `update`), `agent_configs` table | `description`, `parent_id`, `parent_kind` (`clone` \| `fork`) columns written by create/update and returned by list; "changes since fork" + "take parent's changes" (diff of behaviour fields); an option to copy memory (namespace copy in the org ADB shard). Then the UI reads the columns and stops writing them into `variables`. | open |
+| SRV-12 | No branches, merges or releases for an agent. | agents-as-repos spec phases 1–3 (row-level overlay branching in ADB, sri-dev-ea) | Branch = overlay of the agent's config and memory in the dev environment; merge = new release of prod (behaviour replaces, procedures merge into memory); releases tagged and rollback-able; endpoints per environment. UI: `components/agent/agentBranches.svelte.ts` is the sample to replace. | open |
+| SRV-13 | Deleting an agent removes only its row. The UI then deletes its endpoint trigger and its own canvas; its memory and decision history stay. | `agents_crud.yaml` (`delete`) | Server-side delete that refuses while deployed and removes the trigger, own canvas and memory namespace in one step (or reports what is left). | open |
+
 UI-14 (edits to the open document without a permission prompt) is also on the
 server side, and matters more now: the Studio's assistant is the Chat beside the
 Explorer, which uses `propose_edit` for every document edit (ce1461a).
 
 ## UI changes made with this (no backend change)
 
-- Agent pop-in (existing agent): tabs Overview · Activity · Memory · Controls · Health · Code · Deploy · Configuration · Template · Ownership. The hub (`components/agent/AgentHub.svelte`, data in `agentData.ts`) loads runs, decisions, conversations and placement once per agent.
+- Agent pop-in (existing agent): tabs Overview · Configure · Branches · Deploy · Activity · Settings (8 Nov, branch `a3t-dash-agents`; before: Overview · Activity · Memory · Controls · Health · Code · Deploy · Configuration · Template · Ownership). Testing, debugging, hooks and single-tool limits are the Studio's; Configure keeps model, instructions, tool servers and memory on/off. Clone / Fork from Overview; Delete in Settings (undeploy first). The hub (`components/agent/AgentHub.svelte`, data in `agentData.ts`) loads runs, decisions, conversations and placement once per agent.
 - Chat home: five ways in (What is A3T? · Create an agent · Explore an agent · Review security · Check health).
 - "Logs" → "Decision log", filterable to an agent (`navigateTo('logs', …, { q: agentId })`).
 - Memory page: the made-up sample agents are gone; it lists real agents and opens each one's Memory tab. Added to the menu.
 - Identity: an unreachable SSO provider reads as what it means for sign-in, with the technical error behind "Technical detail".
 - Chat: an agent artifact opens the agent's page ("Open agent"); the Studio stays one click away.
-- Deep links: `navigateToDetail('agents', 'Agents', id, { tab: 'memory' | 'activity' | 'policy' | 'health' | … })`.
+- Deep links: `navigateToDetail('agents', 'Agents', id, { tab: 'overview' | 'configure' | 'branches' | 'deploy' | 'activity' | 'settings' })`; the old names (memory, policy, health, canvas, config, ownership) still land on the matching tab.
