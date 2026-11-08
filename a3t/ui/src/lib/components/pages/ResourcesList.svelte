@@ -22,6 +22,7 @@
   import { navigateTo, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { can, currentUser } from '$lib/stores/auth';
   import { onMount, untrack } from 'svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import { namespacesFor, inContext, itemProject, getProject, isPlatform } from '$lib/stores/context.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import * as YAML from 'yaml';
@@ -119,8 +120,21 @@
     if (selected && selected.name === r.name && selected.namespace === r.namespace) {
       selected.config = cfg;
       llmCfg = { ...cfg };
+      cfgRev++;   // the saved config, for telling edits apart
     }
   }
+
+  // The chat's context: this resource (or flow), the tab on screen, and its
+  // config as edited — the field editor's fields while it is open, otherwise
+  // the config form. A secret's value is never sent.
+  let cfgRev = $state(0);
+  trackActiveItem(() => selected ? {
+    kind: selected.category === 'flows' ? 'flow' : 'resource',
+    namespace: selected.namespace, name: selected.name, section: panelTab,
+    text: selected.category === 'flows' || selected.category === 'credentials' ? undefined
+      : JSON.stringify(cfgEditing ? Object.fromEntries(cfgDraft.map((f) => [f.key, f.value])) : llmCfg, null, 2),
+    rev: `${cfgRev}:${cfgEditing}`,
+  } : null);
 
   // ── Generic config editing (every resource without its own form) ──
   type CfgField = { key: string; value: string; kind: 'string' | 'number' | 'boolean' | 'json' };
@@ -135,6 +149,7 @@
     }));
     cfgMsg = '';
     cfgEditing = true;
+    cfgRev++;
   }
 
   async function saveEdit() {
@@ -167,6 +182,8 @@
     if (res.ok) {
       cfgMsg = 'Saved';
       selected.config = cfg;
+      llmCfg = { ...cfg };
+      cfgRev++;
       allResources = allResources.map((r) => (r.namespace === selected!.namespace && r.name === selected!.name ? { ...r, config: cfg } : r));
     } else {
       cfgMsg = res.error || `Save failed (HTTP ${res.status})`;

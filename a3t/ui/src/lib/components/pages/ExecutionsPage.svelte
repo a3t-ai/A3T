@@ -10,6 +10,7 @@
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import RunView from '$lib/components/run/RunView.svelte';
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import { detailsPane } from '$lib/shell/detailsPane';
   import { getActivePanel, navigateTo, openInStudio } from '$lib/stores/panels.svelte.ts';
@@ -95,6 +96,12 @@
   }
 
   function closeDetail() { selected = null; detail = null; }
+
+  // The chat's context: the run on screen (read-only — nothing to edit).
+  trackActiveItem(() => detail ? {
+    kind: 'run', namespace: (detail as any).namespace || undefined,
+    name: `${(detail as any).name || 'run'} (${detail.instance_id})`, id: detail.instance_id,
+  } : null);
 
   function toggleAuto() {
     auto = !auto;

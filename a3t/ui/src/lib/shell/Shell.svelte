@@ -17,6 +17,7 @@
   import AppWelcome from './AppWelcome.svelte';
   import ChatArtifactHost from './ChatArtifactHost.svelte';
   import { getChatArtifact, setArtifactPinned } from '$lib/stores/chatArtifact.svelte.ts';
+  import { setActiveApp } from '$lib/stores/activeItem.svelte.ts';
   import { getDetailActions, getItemsRefresh, actionsHosted, paneFitted } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
@@ -58,6 +59,10 @@
     kind === 'own' || kind === 'page' ? 'pane'
     : d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
   /// A page app's pop-in is Chat only.
+  // What the user is working on, for the chat's context: the app and its
+  // selected item. Item views add what the item is and its config.
+  $effect(() => { setActiveApp(activeType, panel?.title ?? '', String(selectedId)); });
+
   // ── The chat's editing pane (a card's item, co-edited with the agent) ──
   // It shows in Details beside the conversation that opened it: AI Chat's open
   // conversation, or the Chat face's in any other app. Popped in over Details,

@@ -84,6 +84,7 @@
   import { can, canAny, currentUser } from '$lib/stores/auth';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { onMount, untrack } from 'svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
 
   const canCreate = can('create', 'template');
@@ -354,6 +355,15 @@ do:
   }
 
   let propNode = $state<'detail' | 'yaml' | 'policy' | 'ownership' | 'agents'>('detail');
+
+  // The chat's context: this template, the tab on screen, and its spec as
+  // edited. Picking another template is a new key, so its spec is the saved one.
+  let specRev = $state(0);
+  trackActiveItem(() => template ? {
+    kind: 'template', namespace: template.namespace, name: template.name || 'new template',
+    id: draftTemplate?.isNew ? '(new)' : template.id, section: propNode,
+    text: template.spec_yaml ?? '', rev: specRev,
+  } : null);
   let panelClosing = $state(false);
 
   function selectTemplate(name: string) {
@@ -443,6 +453,7 @@ do:
     saving = false;
     if (res.ok) {
       saveMsg = 'Saved';
+      specRev++;   // what is in the editor is now the saved spec
       setTimeout(() => saveMsg = '', 2000);
     } else {
       saveMsg = res.error ?? 'Save failed';

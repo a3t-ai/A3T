@@ -25,6 +25,7 @@
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
   interface TriggerTarget { type: string; namespace?: string; name?: string; agent_id?: string; url?: string }
   interface Trigger {
@@ -226,7 +227,7 @@
     formTargets = []; sidebarSearch = '';
   }
 
-  function openCreate() { editingTrigger = null; resetForm(); step = 'details'; view = 'editor'; }
+  function openCreate() { editingTrigger = null; resetForm(); step = 'details'; view = 'editor'; formRev++; }
 
   /// The editor's steps: what it is, what fires it, where it delivers, a test.
   /// A new trigger goes in order; an existing one opens on any step.
@@ -250,7 +251,25 @@
     formTargets = [...t.targets]; sidebarSearch = '';
     step = 'details';
     view = 'editor';
+    formRev++;   // the form now holds the saved trigger
   }
+  let formRev = $state(0);
+
+  /// The trigger the form describes, as the platform stores it.
+  function formTrigger() {
+    const c: any = { type: formType };
+    if (formType === 'webhook') { c.path = formPath; c.method = formMethod; if (formMsgTemplate) c.message_template = formMsgTemplate; }
+    else if (formType === 'cron') { c.expression = formCron; c.message = formCronMsg; if (formTimezone) c.timezone = formTimezone; }
+    else if (formType === 'event') { c.source = formEventSource; if (formEventFilter) c.filter = formEventFilter; }
+    return { name: formName, namespace: formNs, config: c, targets: formTargets, enabled: formEnabled, description: formDesc };
+  }
+
+  // The chat's context: the trigger in the editor, its step, and the form as edited.
+  trackActiveItem(() => view === 'editor' ? {
+    kind: 'trigger', namespace: formNs, name: formName || 'new trigger',
+    id: editingTrigger?.id ?? '(new)', section: step,
+    text: JSON.stringify(formTrigger(), null, 2), rev: formRev,
+  } : null);
 
   function closeEditor() { view = 'list'; saveError = ''; }
 
@@ -268,11 +287,7 @@
 
   let saveError = $state('');
   async function saveTrigger() {
-    const c: any = { type: formType };
-    if (formType === 'webhook') { c.path = formPath; c.method = formMethod; if (formMsgTemplate) c.message_template = formMsgTemplate; }
-    else if (formType === 'cron') { c.expression = formCron; c.message = formCronMsg; if (formTimezone) c.timezone = formTimezone; }
-    else if (formType === 'event') { c.source = formEventSource; if (formEventFilter) c.filter = formEventFilter; }
-    const triggerObj = { name: formName, namespace: formNs, config: c, targets: formTargets, enabled: formEnabled, description: formDesc };
+    const triggerObj = formTrigger();
     // The trigger's fields go at the top level, as the platform's Trigger reads them
     // (a wrapped { trigger } failed both calls, silently).
     saving = true;

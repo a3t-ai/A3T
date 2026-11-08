@@ -1,5 +1,6 @@
 <script lang="ts">
   import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
@@ -158,7 +159,21 @@
     say('');
     tab = 'overview';
     panel = 'detail';
+    formRev++;   // the form now holds the saved project
   }
+  let formRev = $state(0);
+
+  // The chat's context: the project open (or being created), its tab, and its
+  // settings as edited.
+  trackActiveItem(() => panel === 'detail' && selectedName ? {
+    kind: 'project', name: selectedName, section: tab,
+    text: JSON.stringify({ display_name: dName, description: dDesc, private: dPrivate, members: dMembers, policy: dPolicy }, null, 2),
+    rev: formRev,
+  } : panel === 'create' ? {
+    kind: 'project', name: newName || 'new project', id: '(new)', section: tab,
+    text: JSON.stringify({ owner, name: newName, display_name: newDisplay, description: newDesc, private: newPrivate, members: dMembers }, null, 2),
+    rev: 'new',
+  } : null);
 
   function openCreate() {
     owner = profile ? `user:${profile.handle}` : (orgs[0] ? `org:${orgs[0].handle}` : '');
@@ -235,6 +250,7 @@
     saving = false;
     if (!res.ok) { say(res.error ?? 'Save failed'); return; }
     await loadProjects(true);
+    formRev++;
     say('Saved.', true);
   }
 

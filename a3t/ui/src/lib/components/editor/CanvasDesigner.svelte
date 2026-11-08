@@ -9,6 +9,7 @@
   // see which runtime pool this canvas resolves to before saving.
   import SlideEditor from '$lib/components/shared/SlideEditor.svelte';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
   import CanvasDiagram from '$lib/components/editor/CanvasDiagram.svelte';
   import DesignerChat from '$lib/components/editor/DesignerChat.svelte';
@@ -128,6 +129,7 @@
       name = ''; namespace = 'default';
       applySpecToForm({});
     }
+    specRev++;   // the form now holds the saved canvas
   }
 
   function selectorToText(sel?: Record<string, string>): string {
@@ -150,6 +152,15 @@
 
   // The §3 CanvasSpec this form produces (stored as the canvas resource config).
   const spec = $derived(buildSpec());
+
+  // The chat's context: this canvas, the section on screen, and its spec as
+  // edited. Not when embedded in the chat's own editing pane, which reports
+  // for itself — only the app's item view describes the app's item.
+  let specRev = $state(0);
+  if (!embedded) trackActiveItem(() => open ? {
+    kind: 'canvas', namespace, name: name || 'new canvas', id: canvas ? undefined : '(new)',
+    section: activeSection, text: JSON.stringify(spec, null, 2), rev: specRev,
+  } : null);
   // The COMPLETE CanvasSpec — every field present (defaults materialized), with
   // `null`/`[]` where an optional field is not configured. This full skeleton is
   // what the code pane shows and what `save` persists, so each stored canvas is
@@ -291,7 +302,7 @@
     }
     const res = canvas ? await canvasApi.update(namespace, name.trim(), body) : await canvasApi.create(namespace, name.trim(), body);
     saving = false;
-    if (res.ok) { onsaved?.(); onclose(); } else msg = res.error || `Save failed (HTTP ${res.status})`;
+    if (res.ok) { specRev++; onsaved?.(); onclose(); } else msg = res.error || `Save failed (HTTP ${res.status})`;
   }
 </script>
 

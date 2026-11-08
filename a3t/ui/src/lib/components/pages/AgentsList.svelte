@@ -24,6 +24,7 @@
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import ResourceSelect from '$lib/components/editor/ResourceSelect.svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
   const canCreate = can('create', 'agent');
 
@@ -356,7 +357,18 @@
       // empty one, = only those tools — the runtime denies the rest.
       enabled_tools: Array.isArray(vars.enabled_tools) ? [...vars.enabled_tools] : null,
     };
+    bindRev++;   // these are the saved bindings, for telling edits apart
   }
+  let bindRev = $state(0);
+
+  // The chat's context: this agent, the tab on screen, and its bindings as edited
+  // (a new agent: what is filled in so far).
+  trackActiveItem(() => agent ? {
+    kind: 'agent', namespace: agent.namespace, name: agent.name || 'new agent',
+    id: creatingNew ? '(new)' : agent.id, section: propNode,
+    text: JSON.stringify(creatingNew ? newAgent : bindings, null, 2),
+    rev: creatingNew ? 'new' : bindRev,
+  } : null);
 
   // The tools of the agent's MCP servers, discovered with list_mcp_tools whenever the
   // selection changes (FlowR's own tools in-process, other servers via tools/list).

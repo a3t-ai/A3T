@@ -33,6 +33,7 @@
   import {
     artifactFor, openChatArtifact, setArtifactRevision, paneMessageFor, takePaneMessage, type ChatArtifact,
   } from '$lib/stores/chatArtifact.svelte.ts';
+  import { activeUiContext, redactSecrets } from '$lib/stores/activeItem.svelte.ts';
 
   /// Docked: the Chat face of the shell's middle stack, beside whatever Details
   /// shows. Its conversation is the shell's (layout store), not the URL's, so
@@ -255,12 +256,14 @@
               ...(openEdit?.dirty
                 ? {
                     dirty: true,
-                    draft_text: openEdit.text.slice(0, UI_DRAFT_MAX),
-                    draft_truncated: openEdit.text.length > UI_DRAFT_MAX,
+                    draft_text: redactSecrets(openEdit.text).slice(0, UI_DRAFT_MAX),
+                    draft_truncated: redactSecrets(openEdit.text).length > UI_DRAFT_MAX,
                   }
                 : {}),
             }
-          : undefined;
+          // Beside an app (the Chat face), the app's active item: its app,
+          // the item, and its config as edited, unsaved changes included.
+          : docked ? activeUiContext() : undefined;
         return {
           body: {
             message: text,
