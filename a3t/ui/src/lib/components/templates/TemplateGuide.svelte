@@ -190,7 +190,7 @@
             {@const about = describe(a)}
             <li><button onclick={() => navigateToDetail('agents', 'Agents', a.name ?? a.id)} title="Open {a.name ?? a.id}">
               <span class="tg-agent-head"><b class="mono">{a.name ?? a.id}</b><small>{a.namespace ?? ''}{a.mode ? ` · ${a.mode}` : ''}</small><span class="tg-st">{a.status ?? ''}</span></span>
-              {#if about.text}<span class="tg-agent-desc">{#if about.fromPrompt}<em>Prompt: </em>{/if}{about.text}</span>
+              {#if about.text}<span class="tg-agent-desc">{#if about.fromPrompt}<em>Prompt:</em>&nbsp;{/if}{about.text}</span>
               {:else}<span class="tg-agent-desc tg-dim">No description.</span>{/if}
             </button></li>
           {/each}
