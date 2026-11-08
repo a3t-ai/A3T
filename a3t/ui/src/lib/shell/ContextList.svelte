@@ -107,7 +107,7 @@
 
   /// Rows grouped under their namespace, or null for lists that have none
   /// (conversations, resource categories) — those stay flat.
-  const groups = $derived(groupByNamespace(shown));
+  const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections'));
 
   /// Pinned items first, as their own group; they stay in their namespace too.
   const pinnedShown = $derived.by<Item[]>(() => {
@@ -269,7 +269,7 @@
         <span class="ctx-icon-sq" style:background={color}>{initials(item.label)}</span>
       {/if}
       <span class="ctx-text">
-        <span class="ctx-label"><span class="ctx-name">{item.label}</span>{#if item.namespace}<span class="ctx-ns">{item.namespace}</span>{/if}</span>
+        <span class="ctx-label"><span class="ctx-name">{item.label}</span>{#if item.namespace && !groups}<span class="ctx-ns">{item.namespace}</span>{/if}</span>
         {#if item.sub}<span class="ctx-sub">{item.sub}</span>{/if}
       </span>
       {#if item.status}

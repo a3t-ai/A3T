@@ -1,5 +1,11 @@
 <script lang="ts">
   import OrgsSettings from '$lib/components/settings/OrgsSettings.svelte';
+  import { NAV, type Group, type Leaf } from '$lib/components/settings/nav';
+  import { getActivePanel } from '$lib/stores/panels.svelte.ts';
+  import { detailsPane } from '$lib/shell/detailsPane';
+  /// Opened from the shell's Items: Items is the menu, so the page's own menu
+  /// and the way back to it stay out of the way.
+  const fromItems = !!detailsPane() && !!getActivePanel()?.props?.selectedId;
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
   import { onMount } from 'svelte';
   import { execFlow, getPlatformDb, switchPlatformDb, getAdbEmbedding, setAdbEmbedding, getAdbCache, setAdbCache, type PlatformDbStatus, type AdbEmbeddingStatus, type AdbEmbeddingSettings, type AdbCacheStatus, type AdbCacheRule, type AdbCacheKeep } from '$lib/services/api';
@@ -86,53 +92,7 @@
   onMount(loadAll);
 
   // ── Navigation taxonomy ──
-  interface Leaf { key: string; label: string; icon: string; ee?: boolean }
-  interface Group { label: string; icon: string; ee?: boolean; items: Leaf[] }
-  const NAV: Group[] = [
-    { label: 'General', icon: 'general', items: [
-      { key: 'general.platform', label: 'Platform', icon: 'box' },
-      { key: 'general.runtime', label: 'Runtime', icon: 'swap' },
-      { key: 'general.appearance', label: 'Appearance', icon: 'palette' },
-      { key: 'general.orgs', label: 'Organisations', icon: 'users' },
-    ]},
-    { label: 'Security', icon: 'shield', ee: true, items: [
-      { key: 'security.authn', label: 'Authentication', icon: 'key', ee: true },
-      { key: 'security.authz', label: 'Authorization', icon: 'lockcheck', ee: true },
-      { key: 'security.policy', label: 'Policy Engine', icon: 'scale', ee: true },
-      { key: 'security.audit', label: 'Audit Log', icon: 'audit', ee: true },
-      { key: 'security.monitoring', label: 'Monitoring', icon: 'pulse', ee: true },
-      { key: 'security.compliance', label: 'Compliance', icon: 'badge', ee: true },
-    ]},
-    { label: 'Identity & Access', icon: 'users', ee: true, items: [
-      { key: 'iam.users', label: 'Users', icon: 'user', ee: true },
-      { key: 'iam.roles', label: 'Roles', icon: 'usercog', ee: true },
-      { key: 'iam.idp', label: 'Identity Providers', icon: 'plug', ee: true },
-    ]},
-    { label: 'Infrastructure', icon: 'server', items: [
-      { key: 'infra.clusters', label: 'Clusters', icon: 'nodes' },
-      { key: 'infra.storage', label: 'Storage & Data', icon: 'database' },
-      { key: 'infra.backend', label: 'Storage Backend', icon: 'database', ee: true },
-      { key: 'infra.platformdb', label: 'Platform Database', icon: 'database', ee: true },
-      { key: 'infra.adbembedding', label: 'ADB Embeddings', icon: 'database', ee: true },
-      { key: 'infra.adbcache', label: 'ADB Memory Cache', icon: 'database', ee: true },
-      { key: 'infra.logs', label: 'Logs & Retention', icon: 'audit' },
-      { key: 'infra.registry', label: 'Image Registry', icon: 'box' },
-    ]},
-    { label: 'Integrations', icon: 'plug', items: [
-      { key: 'integrations.notifications', label: 'Notifications', icon: 'bell' },
-      { key: 'integrations.webhooks', label: 'Webhooks', icon: 'webhook' },
-    ]},
-    { label: 'Billing', icon: 'billing', ee: true, items: [
-      { key: 'billing.plan', label: 'Plan & Usage', icon: 'chart', ee: true },
-      { key: 'billing.payment', label: 'Payment Methods', icon: 'card', ee: true },
-      { key: 'billing.invoices', label: 'Invoices', icon: 'receipt', ee: true },
-    ]},
-    { label: 'Advanced', icon: 'sliders', items: [
-      { key: 'advanced.apikeys', label: 'API Keys', icon: 'key' },
-      { key: 'advanced.flags', label: 'Feature Flags', icon: 'flag' },
-      { key: 'advanced.telemetry', label: 'Telemetry', icon: 'pulse' },
-    ]},
-  ];
+  // The pages, grouped: shared with the shell's Items (components/settings/nav.ts).
   // The menu is pulled from settingsCRUD (`_menu`) on load and on runtime
   // change; NAV is the built-in fallback if the runtime hasn't seeded one.
   let navData = $state<Group[]>(NAV);
@@ -374,6 +334,12 @@
   let leaf = $state('');
   const GROUP = $derived(navData.find(g => g.label === active));
   function selectGroup(label: string) { active = label; leaf = ''; }
+  // A setting picked in the shell's Items list opens straight on its page.
+  {
+    const want = getActivePanel()?.props?.selectedId as string | undefined;
+    const g = want ? NAV.find((x) => x.items.some((it) => it.key === want)) : undefined;
+    if (g && want) { active = g.label; leaf = want; }
+  }
   function openLeaf(key: string) { leaf = key; }
   function back() { leaf = ''; }
 
@@ -415,8 +381,9 @@
   </div>
 </div>
 
-<div class="settings-layout">
+<div class="settings-layout" class:from-items={fromItems}>
   <!-- Flat category menu -->
+  {#if !fromItems}
   <nav class="set-menu">
     <button class="set-item" class:active={active === 'all'} onclick={() => selectGroup('all')}>
       <svg class="s-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">{@html svg('all')}</svg>
@@ -430,10 +397,11 @@
       </button>
     {/each}
   </nav>
+  {/if}
 
   <!-- Content -->
   <div class="settings-body">
-    {#if leaf}
+    {#if leaf && !fromItems}
       <button class="back-link" onclick={back}>
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 4l-4 4 4 4"/></svg>
         {active}

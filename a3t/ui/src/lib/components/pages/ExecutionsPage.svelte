@@ -10,6 +10,11 @@
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import RunView from '$lib/components/run/RunView.svelte';
   import { onMount, onDestroy } from 'svelte';
+  import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
+  import { detailsPane } from '$lib/shell/detailsPane';
+  import { getActivePanel, navigateTo } from '$lib/stores/panels.svelte.ts';
+  /// Inside the shell a run picked in Items opens in the Details pane.
+  const pane = detailsPane();
 
   interface Exec {
     instance_id: string; namespace: string; name: string; version?: string;
@@ -96,7 +101,17 @@
     if (auto) { timer = setInterval(() => void inBackground(() => load()), 4000); } else { clearInterval(timer); timer = null; }
   }
 
-  onMount(() => load());
+  onMount(() => {
+    load();
+    // A run picked in the shell's Items list.
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    if (id) void openDetail({ instance_id: id, name: '', namespace: '', status: '' } as unknown as Exec);
+  });
+  /// Closing a run opened from Items goes back to the list's empty Details.
+  function closeRun() {
+    closeDetail();
+    if (pane && getActivePanel()?.props?.selectedId) navigateTo('executions', 'Executions');
+  }
   // Another project (or "show platform") is another list.
   let loadedRev = contextRev_();
   $effect(() => {
@@ -152,6 +167,41 @@
   const STATUSES = ['all', 'running', 'paused', 'waiting', 'completed', 'failed', 'queued'];
 </script>
 
+{#snippet runDetail()}
+{#if detail}
+        <div class="dr-head">
+          <span class="pill {cls(detail.status)}">{detail.status}</span>
+          {#if !pane}<button class="x" onclick={closeDetail} aria-label="Close">✕</button>{/if}
+        </div>
+        <h2>{detail.namespace}/{detail.name}</h2>
+        <div class="kv"><span>Instance</span><code>{detail.instance_id}</code></div>
+        <div class="kv"><span>Started</span><span>{when(detail.started_at)}</span></div>
+        <div class="kv"><span>Completed</span><span>{when(detail.completed_at)}</span></div>
+        <div class="kv"><span>Duration</span><span>{dur(detail)}</span></div>
+        {#if detail.current_step}<div class="kv"><span>Current step</span><span>{detail.current_step}</span></div>{/if}
+        {#if runsMode}
+          <RunView runId={detail.instance_id} onrerun={(id) => { void load(); openDetail({ ...detail!, instance_id: id }); }} />
+        {:else}
+
+
+        {#if detail.error}
+          <h3 class="err-h">Error</h3>
+          <pre class="code err-box">{detail.error}</pre>
+        {/if}
+        <h3>Input</h3>
+        <pre class="code">{pretty(detail.input) || '—'}</pre>
+        <h3>Output</h3>
+        <pre class="code">{pretty(detail.output) || '—'}</pre>
+        {/if}
+{/if}
+{/snippet}
+
+{#if pane}
+  <SlidePanel open={!!(selected && detail)} onclose={closeRun}>
+    <div class="drawer in-pane">{#if detail}{@render runDetail()}{/if}</div>
+  </SlidePanel>
+{/if}
+
 <div class="execs">
   <header class="head">
     <div class="head-title">
@@ -206,33 +256,8 @@
       {/if}
     </div>
 
-    {#if selected && detail}
-      <aside class="drawer">
-        <div class="dr-head">
-          <span class="pill {cls(detail.status)}">{detail.status}</span>
-          <button class="x" onclick={closeDetail} aria-label="Close">✕</button>
-        </div>
-        <h2>{detail.namespace}/{detail.name}</h2>
-        <div class="kv"><span>Instance</span><code>{detail.instance_id}</code></div>
-        <div class="kv"><span>Started</span><span>{when(detail.started_at)}</span></div>
-        <div class="kv"><span>Completed</span><span>{when(detail.completed_at)}</span></div>
-        <div class="kv"><span>Duration</span><span>{dur(detail)}</span></div>
-        {#if detail.current_step}<div class="kv"><span>Current step</span><span>{detail.current_step}</span></div>{/if}
-        {#if runsMode}
-          <RunView runId={detail.instance_id} onrerun={(id) => { void load(); openDetail({ ...detail!, instance_id: id }); }} />
-        {:else}
-
-
-        {#if detail.error}
-          <h3 class="err-h">Error</h3>
-          <pre class="code err-box">{detail.error}</pre>
-        {/if}
-        <h3>Input</h3>
-        <pre class="code">{pretty(detail.input) || '—'}</pre>
-        <h3>Output</h3>
-        <pre class="code">{pretty(detail.output) || '—'}</pre>
-        {/if}
-      </aside>
+    {#if selected && detail && !pane}
+      <aside class="drawer">{@render runDetail()}</aside>
     {/if}
   </div>
 </div>
@@ -274,6 +299,7 @@
   .pill.err { background: rgba(210,90,90,0.14); border-color: rgba(210,90,90,0.4); color: #d25a5a; }
   .pill.run { background: rgba(90,140,230,0.14); border-color: rgba(90,140,230,0.4); color: #5a8ce6; }
   .pill.idle { color: var(--text-3); }
+  .drawer.in-pane { border-left: 0; height: 100%; box-sizing: border-box; padding: 18px 22px; }
   .drawer { border-left: 1px solid var(--border); overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-surface); }
   .dr-head { display: flex; justify-content: space-between; align-items: center; }
   .x { background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 14px; }

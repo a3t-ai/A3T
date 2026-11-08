@@ -33,14 +33,43 @@
 
   /// How each stack is laid out right now.
   const menuMode = $derived(menuDocked() ? 'dock' : overlay === 'menu' ? 'pop' : 'off');
-  /// Apps with their own explorer and their own AI (Studio, Memory, Knowledge)
-  /// need neither Items nor Chat: their page takes the width.
-  const OWN_EXPLORER = new Set(['flow-editor', 'memory', 'knowledge']);
-  const ownExplorer = $derived(OWN_EXPLORER.has(activeType));
-  const midMode = $derived(ownExplorer ? 'off'
+  /// Four kinds of app, one layout rule each:
+  ///  - list: things you pick (Agents, Projects, Executions, Settings…): Items
+  ///    lists them, Details shows the one picked.
+  ///  - own: an explorer and AI of their own (Studio, Memory, Knowledge, the
+  ///    consoles): the page takes the width, no Items, no Chat.
+  ///  - page: one table or log with nothing to open (Decision log, Errors, Early
+  ///    access): the page takes the width; Chat waits on the edge.
+  ///  - chat: AI Chat itself. Conversations in Items, the conversation in the
+  ///    Chat face across the width; nothing in Details.
+  const OWN_EXPLORER = new Set(['flow-editor', 'memory', 'knowledge', 'db-console', 'aql-console', 'console-editor']);
+  const kind = $derived<'list' | 'own' | 'page' | 'chat'>(
+    activeType === 'chat' ? 'chat' : OWN_EXPLORER.has(activeType) ? 'own' : hasContext(activeType) ? 'list' : 'page');
+  const ownExplorer = $derived(kind === 'own');
+  const midMode = $derived(
+    kind === 'own' ? 'off'
+    : kind === 'page' ? (overlay === 'mid' ? 'pop' : 'off')
+    : kind === 'chat' ? 'wide'
     : d.mid ? (d.details ? 'col' : 'wide') : overlay === 'mid' ? 'pop' : 'off');
-  const detMode = $derived(ownExplorer ? 'pane' : d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
-  const shownFace = $derived(face);
+  const detMode = $derived(
+    kind === 'own' || kind === 'page' ? 'pane'
+    : kind === 'chat' ? 'off'
+    : d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
+  /// A page app's pop-in is Chat only.
+  const shownFace = $derived(kind === 'page' ? 'chat' : face);
+
+  // AI Chat: a conversation picked in Items (or a /chat/<id> link) opens in the
+  // Chat face; arriving in the app shows Chat.
+  let lastChatSel = '';
+  $effect(() => {
+    const k = kind, sel = selectedId;
+    untrack(() => {
+      if (k !== 'chat') { lastChatSel = ''; return; }
+      if (sel && sel !== lastChatSel) { setChatSession(sel); setFace('chat'); }
+      else if (!lastChatSel && !sel) setFace('chat');
+      lastChatSel = sel || '·';
+    });
+  });
 
   /// Items is the list and Details is one item. For an app with a list that
   /// can open an item, Details stays empty until something is picked; its main
@@ -85,6 +114,7 @@
       lastSel = sel; lastType = type;
       // Coming into an app starts from its list, not a previously opened overview.
       if (typeChanged && Object.keys(overviewFor).length) overviewFor = {};
+      if (type === 'chat') return;
       if (selChanged || (typeChanged && type && !(hasContext(type) && APP_CONTEXT[type]?.focuses))) revealDetails();
     });
   });
@@ -112,7 +142,11 @@
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
     if (mod && k === 'k') { e.preventDefault(); togglePalette(); }
-    else if (mod && k === 'j') { e.preventDefault(); if (!ownExplorer) toggleFace(); }
+    else if (mod && k === 'j') {
+      e.preventDefault();
+      if (kind === 'page') { overlay === 'mid' ? closeOverlay() : openOverlay('mid'); }
+      else if (kind !== 'own') toggleFace();
+    }
     else if (mod && e.key === '.') { e.preventDefault(); togglePin('details'); }
     else if (mod && e.key === '\\') { e.preventDefault(); togglePin('menu'); }
     else if (e.key === 'Escape' && !e.defaultPrevented) { if (escape()) e.preventDefault(); }
@@ -160,10 +194,14 @@
           {/if}
         {/snippet}
         {#snippet left()}
-          <div class="seg" role="group" aria-label="Show">
-            <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
-            <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
-          </div>
+          {#if kind === 'page'}
+            <span class="sbname">Chat</span>
+          {:else}
+            <div class="seg" role="group" aria-label="Show">
+              <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
+              <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
+            </div>
+          {/if}
           {#if shownFace === 'chat' && getChatSession()}
             <button class="sb-btn" onclick={newConversation} title="New conversation" aria-label="New conversation">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10" /></svg>
@@ -229,15 +267,15 @@
             </div>
           </div>
         {:else}
-          <DetailsHost host={() => pageEl}><PanelStack /></DetailsHost>
+          {#if kind !== 'chat'}<DetailsHost host={() => pageEl}><PanelStack /></DetailsHost>{/if}
         {/if}
       </div>
     </section>
 
-    {#if midMode === 'off' && !ownExplorer}
-      <button class="edge" onclick={() => openOverlay('mid')} title="Open Items | Chat (Ctrl J)">Items · Chat</button>
+    {#if midMode === 'off' && kind !== 'own'}
+      <button class="edge" onclick={() => openOverlay('mid')} title={kind === 'page' ? 'Open Chat (Ctrl J)' : 'Open Items | Chat (Ctrl J)'}>{kind === 'page' ? 'Chat' : 'Items · Chat'}</button>
     {/if}
-    {#if detMode === 'off' && hasDetails}
+    {#if detMode === 'off' && hasDetails && kind !== 'chat'}
       <button class="edge" style:top={midMode === 'off' ? '210px' : '90px'} onclick={() => openOverlay('details')} title="Open Details">Details</button>
     {/if}
   </div>

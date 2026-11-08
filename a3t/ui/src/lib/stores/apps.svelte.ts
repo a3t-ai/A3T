@@ -55,11 +55,13 @@ export const APP_CONTEXT: Record<string, { label: string; source: string; focuse
   // per-category browser, so the pane offers exactly the categories it filters to.
   resources: { label: 'Resource Types', source: 'resource-categories', focuses: true },
   triggers: { label: 'Triggers', source: 'triggers', focuses: true },
-  executions: { label: 'Executions', source: 'executions', focuses: false },
+  executions: { label: 'Executions', source: 'executions', focuses: true },
   runtime: { label: 'Hosts & Runtimes', source: 'runtimes', focuses: true },
   canvas: { label: 'Canvases', source: 'canvases', focuses: true },
   // Fixed sections, like Resources' categories.
   security: { label: 'Security', source: 'security-sections', focuses: true },
+  // Every Settings page is an item; the form opens in Details.
+  settings: { label: 'Settings', source: 'settings-sections', focuses: true },
 };
 
 export function hasContext(type: string | undefined | null): boolean {

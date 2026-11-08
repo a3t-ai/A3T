@@ -94,7 +94,9 @@ function specNamespace(yaml: unknown): string | undefined {
 /// namespace collect under `''`, rendered last. Returns `null` when nothing in
 /// the list has a namespace — grouping a flat list would only add a heading.
 const PREFERRED = ['a3t', 'default', 'system'];
-export function groupByNamespace(items: AppItem[]): { ns: string; items: AppItem[] }[] | null {
+/// `keepOrder`: groups in the order their items come (Settings' own order),
+/// not projects-first and alphabetical.
+export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: string; items: AppItem[] }[] | null {
   if (!items.some((i) => i.namespace)) return null;
   const map = new Map<string, AppItem[]>();
   for (const it of items) {
@@ -106,6 +108,7 @@ export function groupByNamespace(items: AppItem[]): { ns: string; items: AppItem
     const i = PREFERRED.indexOf(ns);
     return i >= 0 ? [0, String(i)] : [1, ns];
   };
+  if (keepOrder) return [...map.entries()].map(([ns, list]) => ({ ns, items: list }));
   return [...map.entries()]
     .sort(([a], [b]) => {
       const [ra, ka] = rank(a), [rb, kb] = rank(b);
@@ -221,6 +224,13 @@ async function loadAll(source: string): Promise<AppItem[]> {
       sub: [r.version ? `v${r.version}` : '', r.source === 'system' ? 'built-in' : r.source === 'my' ? 'yours' : r.source ?? '']
         .filter(Boolean).join(' · '),
     }));
+  }
+  if (source === 'settings-sections') {
+    // Every Settings page, under its group's heading.
+    const { NAV } = await import('$lib/components/settings/nav');
+    return NAV.flatMap((g) => g.items.map((it) => ({
+      id: it.key, label: it.label, namespace: g.label, sub: it.ee ? 'Enterprise' : '',
+    })));
   }
   if (source === 'security-sections') {
     // Fixed sections, like Resources' categories.

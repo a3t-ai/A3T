@@ -1208,7 +1208,7 @@
   .chat-layout.docked .chat-main.landing { justify-content: flex-start; }
   .chat-layout.docked .landing-head { order: 0; padding: 28px 16px 8px; }
   .chat-layout.docked .landing-title { font-size: 22px; }
-  .chat-layout.docked .intents { order: 1; margin: auto 0 0; padding: 0 16px 8px; display: flex; flex-wrap: wrap; gap: 6px; max-width: none; }
+  .chat-layout.docked .intents { order: 1; margin: auto auto 0; padding: 0 16px 8px; display: flex; flex-wrap: wrap; gap: 6px; max-width: 860px; width: 100%; box-sizing: border-box; }
   .chat-layout.docked .intent { flex-direction: row; padding: 5px 10px; border-radius: 999px; }
   .chat-layout.docked .intent b { font-size: 12px; font-weight: 500; }
   .chat-layout.docked .intent span { display: none; }
