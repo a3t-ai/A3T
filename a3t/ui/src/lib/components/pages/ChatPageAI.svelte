@@ -382,9 +382,43 @@
     persistNow();
   });
 
+  // ── Keeping the conversation in view ──
+  // Follow the bottom while the user is there: a reply streams into the last
+  // message and permission questions are added under it, neither of which adds
+  // a message, so following the message count left them below the fold. Read
+  // further up and it stays put. A new, unanswered permission question is
+  // always brought into view: the run waits on it.
+  let atBottom = true;
+  function onMessagesScroll() {
+    const el = messagesEl;
+    if (el) atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }
   $effect(() => {
     chat.messages.length; chat.status;
+    // A new message (sent or arriving) goes to the bottom, and follows it.
+    atBottom = true;
     if (messagesEl) requestAnimationFrame(() => { messagesEl!.scrollTop = messagesEl!.scrollHeight; });
+  });
+  $effect(() => {
+    const el = messagesEl;
+    if (!el) return;
+    const shown = new WeakSet<Element>();
+    for (const c of el.querySelectorAll('.ac:not(.settled)')) shown.add(c);   // already on screen at load
+    let raf = 0;
+    const settle = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const fresh = [...el.querySelectorAll('.ac:not(.settled)')].filter((c) => !shown.has(c));
+        fresh.forEach((c) => shown.add(c));
+        if (fresh.length) { fresh[fresh.length - 1].scrollIntoView({ block: 'nearest' }); onMessagesScroll(); }
+        else if (atBottom) el.scrollTop = el.scrollHeight;
+      });
+    };
+    const mo = new MutationObserver(settle);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    const ro = new ResizeObserver(settle);
+    ro.observe(el);
+    return () => { mo.disconnect(); ro.disconnect(); cancelAnimationFrame(raf); };
   });
 
   async function loadAgents() {
@@ -879,7 +913,7 @@
         <p class="landing-sub">Ask about templates, agents, flows, resources — or start building one.</p>
       </div>
     {/if}
-    <div class="chat-messages" class:hidden={landing} bind:this={messagesEl}>
+    <div class="chat-messages" class:hidden={landing} bind:this={messagesEl} onscroll={onMessagesScroll}>
       {#each chat.messages as msg (msg.id)}
         <div class="message" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'}>
           <div class="msg-avatar">
