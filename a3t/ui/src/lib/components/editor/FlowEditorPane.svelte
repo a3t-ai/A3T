@@ -36,10 +36,7 @@
     readOnly = false,
     configSeed = null,
     singleColumn = false,
-    showAi = true,
     onsection,
-    aiKind = 'flow',
-    aiName = '',
     part = null,
     debug = null,
     onrun,
@@ -62,18 +59,14 @@
     /// One unified tab bar (Graph | Code | Form), one view at a time, no split.
     /// For narrow hosts such as the in-chat artifact pane.
     singleColumn?: boolean;
-    /// The AI tab is redundant where the host *is* a chat.
-    showAi?: boolean;
     /// Reports the visible section (`graph` | `code` | form sub-tab) so a chat
     /// host can tell the agent what the user is looking at.
     onsection?: (section: string) => void;
-    /// What the AI tab tells the agent it is editing, e.g. "template" and its name.
-    aiKind?: string;
-    aiName?: string;
     /// Render one piece only, for hosts that lay the pieces out themselves (the
-    /// studio puts Form and AI in its own panels): `main` = Graph | Code,
-    /// `form`, or `ai`. Instances stay in step through `initialYaml`/`onchange`.
-    part?: 'main' | 'form' | 'ai' | null;
+    /// studio puts Form in its own panel): `main` = Graph | Code, or `form`.
+    /// Instances stay in step through `initialYaml`/`onchange`. The assistant is
+    /// the app's Chat (the UI Agent), not a tab here.
+    part?: 'main' | 'form' | null;
     /// The flow's breakpoints and shown run (studio): marked on the graph and
     /// driven from its context menu.
     debug?: FlowDebug | null;
@@ -110,12 +103,10 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   type Path = (string | number)[];
   export type InsertAt = { list: Path; index: number; label: string };
-  import DesignerChat from '$lib/components/editor/DesignerChat.svelte';
 
   // ── Internal state ──
   let leftMode = $state<'graph' | 'code'>(untrack(() => (showCode ? 'code' : 'graph')));
   $effect(() => { if (showCode) leftMode = 'code'; });
-  let rightMode = $state<'form' | 'ai'>('form');
   // Single-column hosts drive one selection across all three views.
   let soloMode = $state<'graph' | 'code' | 'form'>('graph');
   // Graph/Code report themselves; the form delegates to its own sub-tabs.
@@ -123,8 +114,6 @@
   // main part (the Studio) and the two-column layout switch leftMode.
   const shownMode = $derived(singleColumn && part !== 'main' ? soloMode : leftMode);
   $effect(() => { if (shownMode !== 'form') onsection?.(shownMode); });
-  // With the AI tab hidden, never leave the right pane on a tab that is gone.
-  $effect(() => { if (!showAi && rightMode === 'ai') rightMode = 'form'; });
   let yamlSource = $state(untrack(() => initialYaml));
   // Follow the text when it changes outside (a step dropped on the flow, the
   // other pane of the same document); our own edits come back unchanged.
@@ -163,7 +152,6 @@
     agentScrollTarget = '';
     // Tick then set to trigger the effect
     requestAnimationFrame(() => { agentScrollTarget = section; });
-    rightMode = 'form';
   }
 
   // Listen for "+ Add" clicks from agent node panels
@@ -180,7 +168,6 @@
     };
     agentScrollTarget = '';
     requestAnimationFrame(() => { agentScrollTarget = sectionMap[section] ?? section; });
-    rightMode = 'form';
   }
 
   onMount(() => {
@@ -489,7 +476,6 @@
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('agent-scroll', { detail: node.data._portSection }));
       }
-      rightMode = 'form';
       return;
     }
 
@@ -500,7 +486,6 @@
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('agent-scroll', { detail: 'configuration' }));
       }
-      rightMode = 'form';
     }
   }
 </script>
@@ -638,10 +623,6 @@
     </div>
   {:else if part === 'form'}
     <div class="fep-part">{@render formView()}</div>
-  {:else if part === 'ai'}
-    <div class="fep-part">
-      <DesignerChat kind={aiKind} name={aiName} readonly={readOnly} gettext={() => yamlSource} onapply={(t) => onCodeChange(t)} />
-    </div>
   {:else if singleColumn}
     <!-- Narrow host: one tab bar, one view at a time, full width. -->
     <div class="fep-solo">
@@ -700,32 +681,18 @@
     <!-- Drag handle -->
     <div class="fep-divider" onmousedown={onDragStart} role="separator"></div>
 
-    <!-- RIGHT: Form or AI -->
+    <!-- RIGHT: the form -->
     <div class="fep-right">
       <div class="fep-toolbar">
         <div class="fep-tabs">
-          <button class="fep-tab" class:active={rightMode === 'form'} onclick={() => rightMode = 'form'}>
+          <span class="fep-tab active">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>
             Form
-          </button>
-          {#if showAi}
-          <button class="fep-tab" class:active={rightMode === 'ai'} onclick={() => rightMode = 'ai'}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2v-2H2a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>
-            AI
-          </button>
-          {/if}
+          </span>
         </div>
       </div>
       <div class="fep-pane-body">
-        {#if rightMode === 'form'}
-          {@render formView()}
-        {:else}
-          <!-- The real AI tab: a chat agent working on this document, applying
-               changes to the editor (unsaved) for the user to Save. -->
-          <DesignerChat kind={aiKind} name={aiName} readonly={readOnly}
-            gettext={() => yamlSource}
-            onapply={(t) => onCodeChange(t)} />
-        {/if}
+        {@render formView()}
       </div>
     </div>
   </div>

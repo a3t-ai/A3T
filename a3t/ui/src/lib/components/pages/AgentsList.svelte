@@ -368,6 +368,15 @@
     id: creatingNew ? '(new)' : agent.id, section: propNode,
     text: JSON.stringify(creatingNew ? newAgent : bindings, null, 2),
     rev: creatingNew ? 'new' : bindRev,
+    // The app's Chat edits what is shown (propose_edit): the bindings, or the
+    // new agent's fields.
+    applyEdit: (t: string) => {
+      let o: any;
+      try { o = JSON.parse(t); } catch { return; }
+      if (!o || typeof o !== 'object') return;
+      if (creatingNew) newAgent = { ...newAgent, ...o };
+      else bindings = { ...bindings, ...o };
+    },
   } : null);
 
   // The tools of the agent's MCP servers, discovered with list_mcp_tools whenever the
@@ -698,7 +707,7 @@
           </div>
           {#if agentTemplate?.spec_yaml}
             <div class="agt-designer">
-              <FlowEditorPane aiKind="agent" aiName={agent?.name ?? ''} initialYaml={agentTemplate.spec_yaml} readOnly configSeed={agentConfigSeed} />
+              <FlowEditorPane initialYaml={agentTemplate.spec_yaml} readOnly configSeed={agentConfigSeed} />
             </div>
           {:else}
             <div class="pf"><p class="pf-hint">No template spec available for this agent.</p></div>

@@ -306,7 +306,6 @@
           initialYaml={text}
           onchange={(v) => (text = v)}
           singleColumn
-          showAi={false}
           onsection={(sec) => { section = sec; onsection?.(sec); }}
         />
         </div>
@@ -329,7 +328,7 @@
               <!-- The template's definition, read-only: editing the agent means
                    editing its bindings (Form), not the template it is built from. -->
               <div class="pane-fill">
-                <FlowEditorPane initialYaml={agentSpec} singleColumn showAi={false} readOnly />
+                <FlowEditorPane initialYaml={agentSpec} singleColumn readOnly />
               </div>
             {:else}
               <div class="pane-hint">

@@ -15,7 +15,7 @@
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { hasRole } from '$lib/stores/auth';
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
-  import { bumpContext } from '$lib/stores/apps.svelte.ts';
+  import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
 
   interface Stats {
@@ -100,7 +100,7 @@
     terminating = null;
     if (res.ok) flash('ok', res.data?.note || `Runtime ${name} terminated`);
     else flash('err', res.status === 403 ? (res.error || 'You may not control this runtime.') : res.error || 'Failed');
-    bumpContext();
+    bumpItems();
     if (res.ok && !res.data?.recreated) { navigateTo('runtime', 'Runtimes'); return; }
     await load();
   }
@@ -124,7 +124,7 @@
     if (!res.ok) { newRtErr = res.error || 'Could not create the runtime'; return; }
     newRt = null;
     flash('ok', `Runtime ${name} created`);
-    bumpContext();
+    bumpItems();
     await load();
   }
 
@@ -193,7 +193,7 @@
     busy = '';
     if (res.ok) flash('ok', res.data?.note || `${action} done`);
     else flash('err', res.status === 403 ? `Not allowed: ${res.error}` : res.error || 'Failed');
-    bumpContext(); // the side tree's status dots
+    bumpItems(); // the side tree's status dots
     if (res.ok && (action === 'undeploy' || action === 'terminate') && view === 'deployment') { open(`rt:${row.deployment.runtime}`); return; }
     await load();
   }
@@ -213,7 +213,7 @@
     busy = '';
     if (res.ok) flash('ok', res.data?.note || 'Done');
     else flash('err', res.status === 403 ? 'Only an admin can change a runtime’s state.' : res.error || 'Failed');
-    bumpContext();
+    bumpItems();
     await load();
   }
 

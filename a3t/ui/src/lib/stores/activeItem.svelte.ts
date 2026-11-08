@@ -76,12 +76,14 @@ export function trackActiveItem(get: () => ActiveItemView | null) {
 /// Secret values never leave the browser in the context: they would land in the
 /// agent's prompt and in its episodic memory. Any field whose name says it holds
 /// a secret is blanked, at any depth; a `*_ref` names a secret, so it stays.
+/// What a secret's value is replaced with.
+const HIDDEN = '••• (hidden)';
 const SECRET_KEY = /(^|_)(api_?key|secret|token|password|passwd|private_?key|credential)s?$/i;
 function redact(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(redact);
   if (v && typeof v === 'object') {
     return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) =>
-      [k, SECRET_KEY.test(k) && !/_ref$/i.test(k) && x !== '' && x != null ? '••• (hidden)' : redact(x)]));
+      [k, SECRET_KEY.test(k) && !/_ref$/i.test(k) && x !== '' && x != null ? HIDDEN : redact(x)]));
   }
   return v;
 }
@@ -90,7 +92,27 @@ function redact(v: unknown): unknown {
 export function redactSecrets(text: string): string {
   try { return JSON.stringify(redact(JSON.parse(text)), null, 2); } catch { /* not JSON */ }
   return text.replace(/^(\s*-?\s*["']?([\w.-]+)["']?\s*:\s*)(.+)$/gm, (line, head, key, val) =>
-    SECRET_KEY.test(key) && !/_ref$/i.test(key) && val.trim() ? `${head}"••• (hidden)"` : line);
+    SECRET_KEY.test(key) && !/_ref$/i.test(key) && val.trim() ? `${head}"${HIDDEN}"` : line);
+}
+
+function restore(next: unknown, cur: unknown): unknown {
+  if (next === HIDDEN) return cur;
+  if (Array.isArray(next)) return next.map((x, i) => restore(x, Array.isArray(cur) ? cur[i] : undefined));
+  if (next && typeof next === 'object') {
+    const c = (cur && typeof cur === 'object' ? cur : {}) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(next as Record<string, unknown>).map(([k, x]) => [k, restore(x, c[k])]));
+  }
+  return next;
+}
+/// The agent saw secrets blanked, so a whole document it hands back carries the
+/// blank where a secret was. Put the current value back before it is applied —
+/// otherwise accepting an edit would overwrite a real key with the placeholder.
+export function restoreSecrets(next: string, current: string): string {
+  if (!next.includes(HIDDEN)) return next;
+  try { return JSON.stringify(restore(JSON.parse(next), JSON.parse(current)), null, 2); } catch { /* not JSON */ }
+  const was = new Map<string, string>();
+  for (const m of current.matchAll(/^(\s*-?\s*["']?([\w.-]+)["']?\s*:\s*)(.+)$/gm)) was.set(m[2], m[3]);
+  return next.replace(/^(\s*-?\s*["']?([\w.-]+)["']?\s*:\s*)"?••• \(hidden\)"?\s*$/gm, (line, head, key) => (was.has(key) ? head + was.get(key) : line));
 }
 
 /// Cap on the unsaved text sent with a turn, so a large config cannot crowd

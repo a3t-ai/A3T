@@ -121,7 +121,7 @@
   {#if dropping}<div class="drop-hint">Drop to add a step</div>{/if}
   <div class="fd-body">
     {#if doc.loaded || doc.isNew}
-      <FlowEditorPane part="main" aiKind="flow" aiName={`${doc.ref.project}/${doc.ref.name}`} initialYaml={doc.text ?? ''} onchange={(v: string) => (doc.text = v)} onsection={(s: string) => (doc.ui.section = s)} showCode={doc.ui.codeAsked}
+      <FlowEditorPane part="main" initialYaml={doc.text ?? ''} onchange={(v: string) => (doc.text = v)} onsection={(s: string) => (doc.ui.section = s)} showCode={doc.ui.codeAsked}
         {debug} onrun={blocked ? undefined : onrun} {onshowrun} palette gotoLine={doc.ui.gotoLine ?? null} {ondropat}
         onaddstep={(id: string) => { const s = paletteStep(id); if (s) addStep(s.base, s.task()); }}>
         {#snippet toolbar()}

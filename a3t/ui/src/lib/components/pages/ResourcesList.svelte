@@ -21,7 +21,7 @@
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import { navigateTo, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { can, currentUser } from '$lib/stores/auth';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import { namespacesFor, inContext, itemProject, getProject, isPlatform } from '$lib/stores/context.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
@@ -131,9 +131,26 @@
   trackActiveItem(() => selected ? {
     kind: selected.category === 'flows' ? 'flow' : 'resource',
     namespace: selected.namespace, name: selected.name, section: panelTab,
-    text: selected.category === 'flows' || selected.category === 'credentials' ? undefined
+    text: selected.category === 'credentials' ? undefined
+      : selected.category === 'flows' ? flowYaml
       : JSON.stringify(cfgEditing ? Object.fromEntries(cfgDraft.map((f) => [f.key, f.value])) : llmCfg, null, 2),
     rev: `${cfgRev}:${cfgEditing}`,
+    ...(selected.category === 'flows' ? { dirty: flowDirty } : {}),
+    // The app's Chat edits it (propose_edit): a flow's YAML, or the config in
+    // whichever editor is open. A secret's value is never sent, so never edited.
+    applyEdit: selected.category === 'credentials' ? undefined
+      : selected.category === 'flows' ? (t: string) => { flowYaml = t; flowDirty = true; }
+      : async (t: string) => {
+          let o: Record<string, any>;
+          try { o = JSON.parse(t); } catch { return; }
+          // An LLM edits in its own form, always open.
+          if (selected?.category === 'llm') { llmCfg = o; return; }
+          // Others edit in the field editor: open it first (its saved fields
+          // are what the change is compared with), then put the change in, so
+          // it is on screen and Save is there.
+          if (!cfgEditing) { startEdit(); await tick(); }
+          cfgDraft = fieldsOf(o);
+        },
   } : null);
 
   // ── Generic config editing (every resource without its own form) ──
@@ -141,12 +158,17 @@
   let cfgEditing = $state(false);
   let cfgDraft = $state<CfgField[]>([]);
 
-  function startEdit() {
-    cfgDraft = Object.entries(selected?.config ?? {}).map(([key, v]) => ({
+  /// A config as the field editor's rows.
+  function fieldsOf(cfg: Record<string, any>): CfgField[] {
+    return Object.entries(cfg ?? {}).map(([key, v]) => ({
       key,
       kind: typeof v === 'number' ? 'number' : typeof v === 'boolean' ? 'boolean' : v !== null && typeof v === 'object' ? 'json' : 'string',
       value: v !== null && typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? ''),
     }));
+  }
+
+  function startEdit() {
+    cfgDraft = fieldsOf(selected?.config ?? {});
     cfgMsg = '';
     cfgEditing = true;
     cfgRev++;
@@ -777,7 +799,7 @@ do:
 
           {:else if flowYaml}
             <div class="flow-def-pane">
-              <FlowEditorPane aiKind="flow" aiName={selected?.name ?? ''} initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} />
+              <FlowEditorPane initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} />
             </div>
           {:else}
             <div class="pf"><div class="pf-empty-state">No definition available for this flow.</div></div>

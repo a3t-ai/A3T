@@ -49,7 +49,7 @@
   {:else}
     <div class="graph">
       {#key JSON.stringify(seed)}
-        <FlowEditorPane part="main" aiKind="agent" aiName={value.name ?? doc.ref.name} initialYaml={template.spec_yaml} readOnly configSeed={seed} />
+        <FlowEditorPane part="main" initialYaml={template.spec_yaml} readOnly configSeed={seed} />
       {/key}
     </div>
   {/if}

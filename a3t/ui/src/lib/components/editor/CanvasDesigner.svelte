@@ -12,7 +12,6 @@
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
   import CanvasDiagram from '$lib/components/editor/CanvasDiagram.svelte';
-  import DesignerChat from '$lib/components/editor/DesignerChat.svelte';
   import { canvasApi, mcpCall } from '$lib/services/api';
   import * as YAML from 'yaml';
 
@@ -37,9 +36,8 @@
   ];
   const ON_DEP_DOWN = ['queue', 'cordon', 'circuit-break', 'fail'];
 
-  // ── Split-pane designer state (left: config/code · right: form/AI) ──
+  // ── Split-pane designer state (left: config/code · right: form) ──
   let leftMode = $state<'code' | 'preview'>('code');
-  let rightMode = $state<'form' | 'ai'>('form');
   let splitPercent = $state(50);
   let dragging = $state(false);
   let splitContainer: HTMLDivElement;
@@ -107,7 +105,7 @@
   $effect(() => { void canvas; if (open || embedded) void init(); });
 
   async function init() {
-    msg = ''; activeSection = 'flow'; depInput = ''; leftMode = 'code'; rightMode = 'form';
+    msg = ''; activeSection = 'flow'; depInput = ''; leftMode = 'code';
     const [rt, sch] = await Promise.all([canvasApi.runtimes(), canvasApi.schema()]);
     runtimes = rt.ok ? (rt.data?.runtimes ?? []) : [];
     schema = sch.ok ? sch.data : null;
@@ -160,6 +158,9 @@
   if (!embedded) trackActiveItem(() => open ? {
     kind: 'canvas', namespace, name: name || 'new canvas', id: canvas ? undefined : '(new)',
     section: activeSection, text: JSON.stringify(spec, null, 2), rev: specRev,
+    // The agent's edits (propose_edit) arrive as a whole spec; the Config pane's
+    // own path turns text into the form (JSON is YAML).
+    applyEdit: readonly ? undefined : (t: string) => onCodeChange(t),
   } : null);
   // The COMPLETE CanvasSpec — every field present (defaults materialized), with
   // `null`/`[]` where an optional field is not configured. This full skeleton is
@@ -342,24 +343,17 @@
     <!-- Drag handle -->
     <div class="cd-divider" onmousedown={onDragStart} role="separator" aria-orientation="vertical"></div>
 
-    <!-- RIGHT: config form or AI chat -->
+    <!-- RIGHT: the config form. The assistant is the app's Chat. -->
     <div class="cd-pane">
       <div class="cd-toolbar">
         <div class="cd-tabs">
-          <button class="cd-tab" class:active={rightMode === 'form'} onclick={() => (rightMode = 'form')}>
+          <span class="cd-tab active">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>
             Form
-          </button>
-          {#if !embedded}
-          <button class="cd-tab" class:active={rightMode === 'ai'} onclick={() => (rightMode = 'ai')}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2v-2H2a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>
-            AI
-          </button>
-          {/if}
+          </span>
         </div>
       </div>
       <div class="cd-pane-body">
-        {#if rightMode === 'form'}
           <fieldset class="cd-fieldset" disabled={readonly}>
           <div class="cd-formcol">
             {#if showStep('flow')}
@@ -440,13 +434,6 @@
             {/if}
           </div>
           </fieldset>
-        {:else}
-          <!-- A chat agent working on this canvas: changes land in the editor
-               (Config and Form update together) and are saved with Save. -->
-          <DesignerChat kind="canvas" name={name ? `${namespace}/${name}` : ''} {readonly}
-            gettext={() => yamlSource}
-            onapply={(t) => onCodeChange(t)} />
-        {/if}
       </div>
     </div>
   </div>

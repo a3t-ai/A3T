@@ -4,7 +4,7 @@
   /// above it owns pinning, and selecting an item opens it in Details.
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import {
-    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, getPins, isPinned, setPins,
+    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, itemsRev_, getPins, isPinned, setPins,
   } from '$lib/stores/apps.svelte.ts';
   import { deleteChatSession, setPin } from '$lib/services/api';
   import { getProject } from '$lib/stores/context.svelte.ts';
@@ -175,10 +175,10 @@
   // Reload when the app changes, or when the app signals it changed the data —
   // a first chat turn creates the session row, and without the revision the new
   // conversation stayed missing from this list until a manual refresh.
-  let loadedRev = -1;
+  let loadedRev = '';
   $effect(() => {
     const t = appType;
-    const rev = contextRev_();
+    const rev = `${contextRev_()}:${itemsRev_()}`;
     const src = APP_CONTEXT[t]?.source;
     if (!src) { items = []; loadedFor = ''; return; }
     if (loadedFor === t && loadedRev === rev) return;

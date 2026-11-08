@@ -210,9 +210,22 @@ export function contextRev_(): number {
   return contextRev;
 }
 
-/// Tell the context list its data changed and it should reload.
+/// The context changed (project, platform, something published or exposed):
+/// every page and list reloads.
 export function bumpContext() {
   contextRev += 1;
+}
+
+// An Items list changed under it (a chat turn wrote a conversation, a runtime
+// changed state): only the Items list re-reads. Pages must not reload on this —
+// a reload replaced what they hold, unsaved edits included (a Template's spec
+// was lost after every chat turn).
+let itemsRev = $state(0);
+export function itemsRev_(): number {
+  return itemsRev;
+}
+export function bumpItems() {
+  itemsRev += 1;
 }
 
 // ── First message of a brand-new conversation ──

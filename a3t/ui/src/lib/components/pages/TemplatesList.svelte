@@ -363,6 +363,8 @@ do:
     kind: 'template', namespace: template.namespace, name: template.name || 'new template',
     id: draftTemplate?.isNew ? '(new)' : template.id, section: propNode,
     text: template.spec_yaml ?? '', rev: specRev,
+    // The app's Chat edits the spec (propose_edit); the editor follows the text.
+    applyEdit: readOnly ? undefined : (t: string) => { if (template) template.spec_yaml = t; },
   } : null);
   let panelClosing = $state(false);
 
@@ -608,7 +610,7 @@ do:
 
               {:else if propNode === 'yaml'}
                 {#if template.spec_yaml}
-                  <FlowEditorPane aiKind="template" aiName={template.name} initialYaml={template.spec_yaml} {readOnly} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
+                  <FlowEditorPane initialYaml={template.spec_yaml} {readOnly} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
                 {:else}
                   <div class="sp-empty">No spec defined for this template.</div>
                 {/if}

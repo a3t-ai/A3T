@@ -28,12 +28,12 @@
   import { listPendingApprovals, type PendingApproval } from '$lib/services/api';
   import ListWidget from '$lib/components/chat/ListWidget.svelte';
   import { ARTIFACTS, LIST_KIND_TO_ITEM, toEditorText, type ArtifactKind } from '$lib/components/chat/artifacts';
-  import { bumpContext, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
+  import { bumpItems, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
   import { getChatSession, setChatSession } from '$lib/stores/layout.svelte.ts';
   import {
     artifactFor, openChatArtifact, setArtifactRevision, paneMessageFor, takePaneMessage, type ChatArtifact,
   } from '$lib/stores/chatArtifact.svelte.ts';
-  import { activeUiContext, redactSecrets, getActiveItem } from '$lib/stores/activeItem.svelte.ts';
+  import { activeUiContext, redactSecrets, restoreSecrets, getActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
   /// Docked: the Chat face of the shell's middle stack, beside whatever Details
   /// shows. Its conversation is the shell's (layout store), not the URL's, so
@@ -178,7 +178,7 @@
       if (!it?.applyEdit) return;
       const apply = it.applyEdit;
       agentEdit = { name: it.name, before: it.text ?? '', summary: l.summary, apply };
-      apply(l.raw);
+      apply(restoreSecrets(l.raw, it.text ?? ''));
     });
   });
 
@@ -330,7 +330,7 @@
       syncServerSessions();
       // The turn just wrote the session row (and its title) — the shell's list
       // has to re-read or a brand-new conversation never shows up in it.
-      bumpContext();
+      bumpItems();
     });
   });
 
