@@ -59,3 +59,12 @@ export function mergeBranch(agentId: string, name: string): string {
   s.branches = s.branches.filter((x) => x.name !== name);
   return tag;
 }
+
+/// Rolling back makes a new release with an older one's content.
+export function rollBack(agentId: string, to: string): string {
+  const s = edit(agentId);
+  const n = s.releases.reduce((m, r) => Math.max(m, Number(r.tag.slice(1)) || 0), 0) + 1;
+  const tag = `v${n}`;
+  s.releases.unshift({ tag, at: Date.now(), note: `Rolled back to ${to}` });
+  return tag;
+}

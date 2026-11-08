@@ -2,8 +2,14 @@
   import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
-  import AgentHub from '$lib/components/agent/AgentHub.svelte';
-  import AgentGuide from '$lib/components/agent/AgentGuide.svelte';
+  import AgentOverview from '$lib/components/agent/AgentOverview.svelte';
+  import AgentApi from '$lib/components/agent/AgentApi.svelte';
+  import AgentConfig from '$lib/components/agent/AgentConfig.svelte';
+  import AgentReleases from '$lib/components/agent/AgentReleases.svelte';
+  import AgentObserve from '$lib/components/agent/AgentObserve.svelte';
+  import AgentSettings from '$lib/components/agent/AgentSettings.svelte';
+  import { liveFor } from '$lib/components/agent/agentLive.svelte';
+  import '$lib/components/agent/agent.css';
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
   import { createAgent as createAgentRec, updateAgent } from '$lib/studio-core/adapters/agents';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
@@ -149,29 +155,30 @@
     { id: 'review', label: 'Review', hint: 'Check it, then create it. It is not deployed until you deploy it.' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    overview: 'What it is, whether it is working, where it came from',
-    configure: 'The few settings most people change — the rest is in the Studio',
-    branches: 'Prod, dev branches, releases and forks',
-    deploy: 'Where it runs — deploy, pause or undeploy in one click',
-    activity: 'What it did: conversations, runs, what was blocked, its memory',
-    settings: 'Its name, where it came from, and deleting it',
+    overview: 'What it does, whether it is serving, its code, its endpoint',
+    api: 'How an app calls it: endpoint, request, code to copy',
+    config: 'Its values, as YAML, over its template\'s code',
+    releases: 'Where it runs and which version: prod, dev branches, releases',
+    observe: 'Calls, errors, latency, test chats, blocked actions, memory',
+    settings: 'Name, description, where it came from, delete',
   };
 
-  /// An existing agent's tabs: read it, change it, run it, look back, admin.
-  /// Testing and debugging are the Studio's.
+  /// An existing agent's tabs, for the coder who ships it: what it is, how to
+  /// call it, its values, its releases, how it is doing, admin. Building and
+  /// debugging its code is the Studio's.
   const treeNodes = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
-    { id: 'configure', label: 'Configure', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
-    { id: 'branches', label: 'Branches', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
-    { id: 'deploy', label: 'Deploy', icon: '<path d="M8 1v9M4.5 6.5L8 10l3.5-3.5M2 13h12"/>' },
-    { id: 'activity', label: 'Activity', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
+    { id: 'api', label: 'API', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>' },
+    { id: 'config', label: 'Config', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
+    { id: 'releases', label: 'Releases', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
+    { id: 'observe', label: 'Observe', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
     { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
-  /// The tabs the hub draws (one instance, so its data loads once per agent).
-  const HUB: Record<string, 'overview' | 'activity' | 'deploy'> = { overview: 'overview', activity: 'activity', deploy: 'deploy' };
-  const GUIDE: Record<string, 'configure' | 'branches' | 'settings'> = { configure: 'configure', branches: 'branches', settings: 'settings' };
-  /// Tab names other pages still link with.
-  const TAB_ALIAS: Record<string, string> = { detail: 'overview', config: 'configure', policy: 'configure', canvas: 'deploy', health: 'deploy', memory: 'activity', ownership: 'settings' };
+  /// Tab names other pages (and earlier versions) link with.
+  const TAB_ALIAS: Record<string, string> = {
+    detail: 'overview', configure: 'config', policy: 'config', canvas: 'releases', deploy: 'releases', branches: 'releases',
+    health: 'observe', activity: 'observe', memory: 'observe', ownership: 'settings',
+  };
   let activityStart = $state<'memory' | undefined>(undefined);
 
   async function loadAgents() {
@@ -328,7 +335,7 @@
   let makeKind = $state<'clone' | 'fork' | null>(null);
   let branchForm = $state(false);
   function lifecycle(kind: 'clone' | 'fork' | 'branch') {
-    if (kind === 'branch') { branchForm = true; propNode = 'branches'; return; }
+    if (kind === 'branch') { branchForm = true; propNode = 'releases'; return; }
     makeKind = kind;
   }
   async function makeFrom(name: string, project: string): Promise<string | null> {
@@ -352,6 +359,14 @@
     selectAgent(id);
     if (!r.ok) error = r.error ?? '';
     return null;
+  }
+
+  function discardBindings() { saveBindMsg = ''; initBindings(); }
+  /// Its template's code, in the Studio.
+  function openCode() {
+    const t = agentTemplate;
+    if (!t) return;
+    openInStudio('template', readTemplate(t.spec_yaml).namespace ?? 'a3t', t.name, t.id);
   }
 
   /// Settings → move to a newer release of its template.
@@ -391,6 +406,7 @@
   const bindDirty = $derived(!!savedBindings && JSON.stringify($state.snapshot(bindings)) !== savedBindings);
   let savingBind = $state(false);
   let saveBindMsg = $state('');
+  const saveErr = $derived(saveBindMsg && saveBindMsg !== 'Saved' ? saveBindMsg : '');
   let _lastBindId = '';
 
   function initBindings() {
@@ -564,6 +580,8 @@
   /// Deploy in one click: with its own canvas, made from the chosen profile the
   /// first time. Placement and scaling are refined in the Canvas designer.
   let deployRev = $state(0);
+  /// What every tab reads about it, loaded once per agent (and after a deploy change).
+  const live = $derived(agent && !creatingNew ? liveFor(agent, templates, deployRev) : null);
   async function deployAgent() {
     canvasMsg = '';
     if (!boundCanvas) {
@@ -623,7 +641,7 @@
         icon={agent.name.slice(0, 2).toUpperCase() || 'NEW'}
         color="#2980b9"
         name={agent.name || 'New Agent'}
-        meta="{agent.mode} · {agent.status}"
+        meta={creatingNew ? 'new agent' : `${agent.created_by && agent.created_by === $currentUser?.id ? 'yours' : agent.created_by ? `owner ${agent.created_by}` : 'unowned'} · ${agent.status}`}
         nodes={treeNodes}
         steps={agentSteps}
         wizard={creatingNew}
@@ -690,45 +708,49 @@
               {/if}
             </div>
           </div>
-        {:else if HUB[propNode]}
+        {:else}
+          {@const studio = () => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}
           <div class="pf wide">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
-            <AgentHub {agent} {templates} {allAgents} section={HUB[propNode]} rev={deployRev} startFilter={activityStart}
-              ongo={(t) => (propNode = t)} onlifecycle={lifecycle}
-              onstudio={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}>
-              {#snippet notDeployed()}
-                {#if boundCanvas}
-                  <div class="dep-row">
-                    <span>Runs as <b class="mono">{boundCanvas.name}</b> says{boundCanvas.config.placement?.mode ? ` — ${boundCanvas.config.placement.mode}` : ''}.</span>
-                    <button class="btn spec sm" disabled={!!canvasBusy} onclick={deployAgent}>{canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>
-                    <button class="lnk" onclick={() => navigateTo('canvas', 'Canvas', { editCanvas: boundCanvas.name })}>Change how it runs →</button>
-                  </div>
-                {:else if presets.length}
-                  <div class="dep-row">
-                    <label class="dep-pick">How should it run?
-                      <select bind:value={pickedPreset}>
-                        <option value="">— choose —</option>
+            {#if propNode === 'overview'}
+              <AgentOverview {agent} {templates} {allAgents} live={live!} me={$currentUser?.id ?? ''}
+                ongo={(t) => (propNode = t)} onstudio={studio} oncode={openCode} onlifecycle={lifecycle} />
+            {:else if propNode === 'api'}
+              <AgentApi {agent} {templates} ongo={(t) => (propNode = t)} />
+            {:else if propNode === 'config'}
+              <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
+                onsave={saveBindings} ondiscard={discardBindings} oncode={openCode} {llmResources} {mcpResources} {flowOptions} />
+            {:else if propNode === 'releases'}
+              <AgentReleases {agent} {templates} {allAgents} live={live!} me={$currentUser?.email ?? $currentUser?.id ?? ''} bind:branchForm
+                onstudio={studio} onopen={selectAgent} onchanged={() => deployRev++}>
+                {#snippet notDeployed()}
+                  {#if boundCanvas}
+                    <div class="dep-row">
+                      <button class="btn2 primary" disabled={!!canvasBusy} onclick={deployAgent}>{canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>
+                      <span class="dim">with <span class="mono">{boundCanvas.name}</span></span>
+                      <button class="link" onclick={() => navigateTo('canvas', 'Canvas', { editCanvas: boundCanvas.name })}>Change how it runs →</button>
+                    </div>
+                  {:else if presets.length}
+                    <div class="dep-row">
+                      <select class="dep-pick" bind:value={pickedPreset} aria-label="How it should run">
+                        <option value="">— how should it run? —</option>
                         {#each presets as pr (pr.name)}<option value={pr.name}>{pr.name.replace('preset-', '')}{pr.config.description ? ` — ${pr.config.description}` : ''}</option>{/each}
                       </select>
-                    </label>
-                    <button class="btn spec sm" disabled={!pickedPreset || !!canvasBusy} onclick={deployAgent}>{canvasBusy === 'cloning' ? 'Preparing…' : canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>
-                  </div>
-                {:else}
-                  <p class="pf-hint">There are no deployment profiles yet. An admin adds them on the Canvas page.</p>
-                {/if}
-                {#if canvasMsg}<p class="dep-err">{canvasMsg}</p>{/if}
-              {/snippet}
-            </AgentHub>
-          </div>
-
-        {:else if GUIDE[propNode]}
-          <div class="pf wide">
-          <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
-          <AgentGuide section={GUIDE[propNode]} {agent} {allAgents} {templates} bind:bindings bind:branchForm
-            dirty={bindDirty} saveError={saveBindMsg && saveBindMsg !== 'Saved' ? saveBindMsg : ''} {llmResources} {mcpResources} me={$currentUser?.email ?? $currentUser?.id ?? ''}
-            ongo={(t) => (propNode = t)} onopen={selectAgent} ondiscard={() => { saveBindMsg = ''; initBindings(); }}
-            onstudio={() => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}
-            onupgrade={upgradeTemplate} ondelete={deleteCurrent} onsave={saveBindings} saving={savingBind} />
+                      <button class="btn2 primary" disabled={!pickedPreset || !!canvasBusy} onclick={deployAgent}>{canvasBusy === 'cloning' ? 'Preparing…' : canvasBusy === 'deploying' ? 'Deploying…' : 'Deploy'}</button>
+                    </div>
+                  {:else}
+                    <p class="dim">No deployment profiles yet — an admin adds them on the Canvas page.</p>
+                  {/if}
+                  {#if canvasMsg}<p class="err">{canvasMsg}</p>{/if}
+                {/snippet}
+              </AgentReleases>
+            {:else if propNode === 'observe'}
+              <AgentObserve {agent} {templates} live={live!} start={activityStart} onstudio={studio} ongo={(t) => (propNode = t)} />
+            {:else if propNode === 'settings'}
+              <AgentSettings {agent} {templates} {allAgents} live={live!} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
+                onsave={saveBindings} ondiscard={discardBindings} ongo={(t) => (propNode = t)} onopen={selectAgent}
+                onupgrade={upgradeTemplate} ondelete={deleteCurrent} />
+            {/if}
           </div>
         {/if}
       </div>
@@ -841,9 +863,7 @@
   .cf-review dt { color: var(--text-3); }
   .cf-review dd { margin: 0; color: var(--text-1); }
   .dep-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; font-size: 13px; color: var(--text-2); }
-  .dep-pick { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; flex: 1 1 260px; }
-  .dep-err { margin: 0; font-size: 12.5px; color: var(--err, #b42318); }
-  .lnk { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font-size: 12.5px; }
+  .dep-pick { flex: 1 1 260px; width: auto; }
   .mono { font-family: var(--font-mono); }
 
   /* Panel forms */

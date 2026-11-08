@@ -1,0 +1,97 @@
+<script lang="ts">
+  /// Observe — how it is doing and what it did: calls (runs), errors, your test
+  /// chats, blocked actions, its memory. Deep debugging is the Studio's.
+  import { navigateTo } from '$lib/stores/panels.svelte.ts';
+  import { factsOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
+  import type { AgentLive } from './agentLive.svelte';
+
+  let { agent, templates, live, start, onstudio, ongo }: {
+    agent: AgentRec;
+    templates: TemplateRec[];
+    live: AgentLive;
+    /// The view to open on (a deep link to its memory).
+    start?: 'memory';
+    onstudio: () => void;
+    ongo: (tab: string) => void;
+  } = $props();
+
+  const f = $derived(factsOf(agent, templates));
+  type View = 'all' | 'run' | 'err' | 'conv' | 'deny' | 'memory';
+  // svelte-ignore state_referenced_locally — where it opens; the chips take over
+  let view = $state<View>(start ?? 'all');
+  type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; err?: boolean; ic: string };
+  const items = $derived.by((): Item[] => {
+    const all: Item[] = [
+      ...live.runs.map((r) => ({ kind: 'run' as const, ic: 'RUN', ts: Date.parse(r.started), title: `${r.status} · ${dur(r.ms)}`, meta: `${r.flow} · ${r.id}${r.error ? ` · ${r.error.slice(0, 160)}` : ''}`, err: live.failed.includes(r) })),
+      ...live.convs.map((c) => ({ kind: 'conv' as const, ic: 'TEST', ts: Date.parse(c.updated_at), title: c.title || 'Test chat', meta: `${c.message_count} messages · ${c.session_id}` })),
+      ...live.decisions.map((d) => ({ kind: d.allow ? 'allow' as const : 'deny' as const, ic: d.allow ? 'OK' : 'DENY', ts: d.ts, title: `${d.allow ? 'allowed' : 'blocked'}: ${d.action}`, meta: `${d.resource}${d.obo ? ` · on behalf of ${d.obo}` : ''}${d.reason ? ` · ${d.reason}` : ''}`, err: !d.allow })),
+    ];
+    const keep = (i: Item) => view === 'all' || (view === 'err' ? i.kind === 'run' && i.err : i.kind === view);
+    return all.filter(keep).sort((a, b) => b.ts - a.ts).slice(0, 200);
+  });
+  const MEM = [
+    { k: 'working', t: 'Working', d: 'The current conversation: task, recent turns.' },
+    { k: 'episodic', t: 'Episodic', d: 'Past conversations and runs, as events.' },
+    { k: 'semantic', t: 'Semantic', d: 'Facts and summaries, searched by meaning.' },
+    { k: 'procedural', t: 'Procedural', d: 'Steps and preferences it has learned.' },
+  ];
+  const keeps = $derived(agent.mode === 'persistent');
+</script>
+
+<section class="agt">
+  {#if live.placement?.stats}
+    {@const s = live.placement.stats}
+    <div class="tiles six">
+      <div class="tile"><span class="v">{s.runsLastHour}</span><span class="k">Calls, last hour</span></div>
+      <div class="tile"><span class="v">{s.runs}</span><span class="k">Calls, total</span></div>
+      <div class="tile" class:bad={s.errorRate > 0.02}><span class="v">{(s.errorRate * 100).toFixed(1)}%</span><span class="k">Errors</span></div>
+      <div class="tile"><span class="v">{dur(s.p50Ms)}</span><span class="k">p50</span></div>
+      <div class="tile"><span class="v">{dur(s.p95Ms)}</span><span class="k">p95</span></div>
+      <div class="tile" class:bad={s.refused > 0}><span class="v">{s.refused}</span><span class="k">Refused</span></div>
+    </div>
+    {#if s.lastError}<div class="note bad"><b>Last error</b> {s.lastError}</div>{/if}
+  {:else if !live.loading}
+    <div class="note">Not deployed, so it has no figures of its own. Below are the runs of its serving flow <span class="mono">{f.target || '—'}</span>, which other agents share (UI-2). <button class="link" onclick={() => ongo('releases')}>Deploy it →</button></div>
+  {/if}
+
+  <div class="chips">
+    {#each [['all', 'All'], ['run', `Calls (${live.runs.length})`], ['err', `Errors (${live.failed.length})`], ['conv', `Test chats (${live.convs.length})`], ['deny', `Blocked (${live.denied.length})`], ['memory', 'Memory']] as [k, label] (k)}
+      <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
+    {/each}
+    <span class="grow"></span>
+    <button class="link" onclick={onstudio}>Debug in Studio →</button>
+    <button class="link" onclick={() => navigateTo('executions', 'Executions')}>Executions →</button>
+    <button class="link" onclick={() => navigateTo('logs', 'Decision log', { q: agent.id })}>Decision log →</button>
+  </div>
+
+  {#if view === 'memory'}
+    <p class="dim"><b>memory: {agent.mode}</b> — {keeps ? 'it keeps what happened and what it learned across conversations.' : 'it keeps only the conversation it is in.'} <button class="link" onclick={() => ongo('config')}>Change in Config →</button></p>
+    <div class="note">Its stored memories can't be read here yet (UI-1). This is what each kind holds.</div>
+    <div class="mem">
+      {#each MEM as m (m.k)}
+        <div class="card" class:off={!keeps && m.k !== 'working'}><b>{m.t}</b><span class="dim">{m.d}</span><em class="mono">{!keeps && m.k !== 'working' ? 'not kept' : 'entries: — (UI-1)'}</em></div>
+      {/each}
+    </div>
+  {:else if !live.loading}
+    <ol class="tl">
+      {#each items as it}
+        <li class="ev" class:err={it.err}><span class="ic">{it.ic}</span><div><div class="t">{it.title}</div><div class="m mono">{it.meta}</div></div><time>{ago(it.ts)}</time></li>
+      {:else}
+        <li class="empty">Nothing{view !== 'all' ? ' of this kind' : ''} yet.</li>
+      {/each}
+    </ol>
+    <ul class="notes">
+      <li>Which app made each call needs app keys (SRV-15). Test chats are yours only (UI-4).</li>
+      <li>{live.decErr ? live.decErr : `Decisions are matched in the latest ${live.scanned} records of the log (UI-3).`}</li>
+    </ul>
+  {/if}
+</section>
+
+<style>
+  .tiles.six { grid-template-columns: repeat(6, 1fr); }
+  .mem { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+  .mem .card { gap: 6px; padding: 12px 14px; }
+  .mem .card.off { opacity: 0.55; }
+  .mem em { font-style: normal; font-size: 11px; color: var(--text-4); }
+  .ic { font-size: 9.5px !important; }
+</style>
