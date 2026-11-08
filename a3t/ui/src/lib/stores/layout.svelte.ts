@@ -155,7 +155,7 @@ export function togglePin(s: Stack) {
   }
   pins = next;
   persist();
-  say(next[s] ? `${STACK_NAME[s]} pinned in` : `${STACK_NAME[s]} unpinned: ${s === 'menu' ? 'it pops in from the left' : s === 'mid' ? 'open it from the button beside Details' : 'it pops in from the right'}`);
+  say(next[s] ? `${STACK_NAME[s]} pinned in` : `${STACK_NAME[s]} unpinned: ${s === 'menu' ? 'it pops in from the left' : s === 'mid' ? 'its arrow is beside the Details heading' : 'its arrow is at the end of the Items bar'}`);
 }
 
 export function toggleExpand(s: 'mid' | 'details') {
