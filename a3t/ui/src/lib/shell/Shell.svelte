@@ -207,11 +207,6 @@
                   <span>Save</span>
                 </button>
               {/if}
-              {#if a.onclose}
-                <button class="da" onclick={a.onclose} title="Close" aria-label="Close">
-                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L4 12M4 4l8 8" /></svg>
-                </button>
-              {/if}
               <span class="dsep" aria-hidden="true"></span>
             </span>
           {/if}

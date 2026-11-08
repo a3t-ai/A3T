@@ -1,7 +1,7 @@
 <script lang="ts">
   /// The open item's actions, on the right of its header row: the Details
   /// counterpart of the "New …" button in the Items header. Every item gets
-  /// Open in Studio and Save; then what is particular to it; then Close.
+  /// Open in Studio and Save, after what is particular to it.
   /// Renders nothing outside the shell's Details pane.
   import { untrack } from 'svelte';
   import { detailsPane } from './detailsPane';
@@ -30,11 +30,6 @@
         <span>Save</span>
       </button>
     {/if}
-    {#if a.onclose}
-      <button class="x" onclick={a.onclose} title="Close" aria-label="Close">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L4 12M4 4l8 8" /></svg>
-      </button>
-    {/if}
   </div>
 {/if}
 
@@ -45,8 +40,6 @@
   .btn.g { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
   .btn.g:hover { filter: brightness(1.06); }
   .btn svg { flex: none; }
-  .x { width: 30px; height: 30px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text-3); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-  .x:hover { background: var(--bg-subtle); border-color: var(--border); color: var(--text-1); }
   /* A narrow pane keeps the icons and drops the words, except on Save. */
   @container (max-width: 560px) { .btn:not(.g) span { display: none; } .btn:not(.g) { padding: 0 9px; } }
 </style>
