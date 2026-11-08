@@ -2,7 +2,6 @@
   import { navigateTo, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { menuGroups as filteredMenuGroups } from '$lib/stores/auth';
   import { appIcon } from './appIcons';
-  import StackBar from './StackBar.svelte';
   import { closeOverlay, getOverlay } from '$lib/stores/layout.svelte.ts';
 
   /// Wide enough for labels (the menu's width is the user's, by dragging).
@@ -46,7 +45,6 @@
 </script>
 
 <nav class="sidebar" class:wide aria-label="Menu">
-  <StackBar stack="menu" compact />
   <div class="sidebar-top">
     {#each menuGroups as group}
       <div class="nav-group">

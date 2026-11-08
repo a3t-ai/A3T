@@ -13,13 +13,14 @@
   import StackBar from './StackBar.svelte';
   import Resizer from './Resizer.svelte';
   import CommandPalette from './CommandPalette.svelte';
+  import DetailsHost from './DetailsHost.svelte';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
   import {
     menuDocked, docked, getOverlay, openOverlay, closeOverlay, getFace, setFace, width,
     togglePin, toggleFace, togglePalette, escape, revealDetails, getToast, getChatSession,
-    setChatSession, MENU_LABELS_AT, isVisible, showMid,
+    setChatSession, MENU_LABELS_AT, isVisible, showMid, isNarrow,
   } from '$lib/stores/layout.svelte.ts';
 
   const panel = $derived(getActivePanel());
@@ -72,6 +73,7 @@
   let menuEl = $state<HTMLElement>();
   let midEl = $state<HTMLElement>();
   let detEl = $state<HTMLElement>();
+  let pageEl = $state<HTMLElement>();
   $effect(() => {
     const o = overlay;
     if (!o) return;
@@ -106,9 +108,22 @@
   <div class="body">
     <div class="menu {menuMode}" bind:this={menuEl} style:width="{width('menu')}px">
       <Sidebar wide={width('menu') >= MENU_LABELS_AT} />
+      <!-- The menu's shoulder: hide it (docked) or keep it (popped in). -->
+      <button class="shoulder" onclick={() => togglePin('menu')}
+        title={menuMode === 'dock' ? 'Hide the menu (Ctrl \\)' : 'Keep the menu open (Ctrl \\)'}
+        aria-label={menuMode === 'dock' ? 'Hide the menu' : 'Keep the menu open'}>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          {#if menuMode === 'dock'}<path d="M10 3L5 8l5 5" />{:else}<path d="M6 3l5 5-5 5" />{/if}
+        </svg>
+      </button>
       {#if menuMode === 'pop'}<Resizer k="menu" label="menu" overlay />{/if}
     </div>
     {#if menuMode === 'dock'}<Resizer k="menu" label="menu" />{/if}
+    {#if menuMode === 'off' && !isNarrow()}
+      <button class="shoulder out" onclick={() => togglePin('menu')} title="Show the menu (Ctrl \)" aria-label="Show the menu">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5" /></svg>
+      </button>
+    {/if}
 
     <section class="mid {midMode}" bind:this={midEl} aria-label="Items and Chat"
       style:flex-basis={midMode === 'col' ? `${width('mid')}px` : undefined}
@@ -152,7 +167,7 @@
       <StackBar stack="details">
         {#snippet left()}<span class="sbname">Details</span>{/snippet}
       </StackBar>
-      <div class="page">
+      <div class="page" bind:this={pageEl}>
         {#if nothingSelected}
           <div class="empty">
             <b>Nothing selected</b>
@@ -163,7 +178,7 @@
             </div>
           </div>
         {:else}
-          <PanelStack />
+          <DetailsHost host={() => pageEl}><PanelStack /></DetailsHost>
         {/if}
       </div>
     </section>
@@ -215,6 +230,11 @@
   .empty b { font: 400 22px var(--font-serif); color: var(--text-1); }
   .empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
   .link { margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); padding: 5px 12px; font: 500 12px var(--font-sans); color: var(--spec); cursor: pointer; }
+
+  /* The menu's shoulder arrow: on its right edge near the top, half outside. */
+  .shoulder { position: absolute; top: 14px; right: -11px; z-index: 31; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-3); display: grid; place-items: center; padding: 0; cursor: pointer; box-shadow: 0 1px 3px rgba(30, 25, 15, 0.08); transition: color 0.12s, border-color 0.12s; }
+  .shoulder:hover { color: var(--spec); border-color: var(--spec); }
+  .shoulder.out { right: auto; left: -1px; border-radius: 0 11px 11px 0; border-left: 0; width: 18px; }
 
   /* Edge tab: where an unpinned stack waits. */
   .edge { position: absolute; right: 0; top: 90px; z-index: 20; writing-mode: vertical-rl; transform: rotate(180deg); background: var(--spec); color: #fff; border: 0; border-radius: 0 8px 8px 0; padding: 12px 6px; font: 600 11px var(--font-mono); letter-spacing: 0.05em; cursor: pointer; }

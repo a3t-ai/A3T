@@ -191,7 +191,7 @@
 {#snippet row(item: Item)}
   {@const idx = listed.indexOf(item)}
   <div class="ctx-row" class:active={item.id === activeId} class:pending={item.pending}
-       style={item.depth != null ? `padding-left:${item.depth * 14}px` : ''}>
+       style={item.depth != null ? `margin-left:${item.depth * 14}px` : ''}>
     {#if isTree}
       {#if hasChildren(idx)}
         <button class="ctx-twist" onclick={() => toggleGroup(item.id)} aria-expanded={isOpen(item.id)} aria-label="Expand">
@@ -355,7 +355,7 @@
     flex: 1;
     min-height: 0;      /* required for overflow scrolling inside a flex column */
     overflow-y: auto;
-    padding: 6px 6px 10px;
+    padding: 10px 12px 14px;
   }
   .ctx-note { padding: 14px 10px; font-size: 11.5px; color: var(--text-4); }
   .ctx-note.err { color: #dc2626; }
@@ -382,7 +382,7 @@
     font-size: 10px; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
     border-radius: 8px; background: var(--bg-subtle); color: var(--text-4);
   }
-  .ctx-gitems { display: flex; flex-direction: column; gap: 1px; }
+  .ctx-gitems { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 6px; }
 
   /* ── Rows ── */
   .ctx-twist {
@@ -395,8 +395,12 @@
     border-radius: 7px;
     transition: background 0.1s ease;
   }
-  .ctx-row:hover { background: var(--bg-subtle); }
-  .ctx-row.active { background: var(--bg-subtle); }
+  /* Each item is a card. */
+  .ctx-body > .ctx-row + .ctx-row { margin-top: 6px; }
+  .ctx-row { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); transition: border-color 0.12s, background 0.12s, box-shadow 0.12s; }
+  .ctx-row:hover { border-color: var(--border-strong, #d9d4c6); box-shadow: 0 1px 3px rgba(30, 25, 15, 0.06); }
+  .ctx-row.active { border-color: var(--spec, #5530a8); background: var(--spec-bg, #ede7ff); }
+  .ctx-row.active::before { display: none; }
   /* A bar, not just a tint, so the open item is findable in a long list. */
   .ctx-row.active::before {
     content: ''; position: absolute; left: 0; top: 7px; bottom: 7px;
@@ -404,15 +408,15 @@
   }
   .ctx-pick {
     flex: 1; min-width: 0;
-    display: flex; align-items: center; gap: 9px;
-    padding: 6px 8px 6px 10px;
+    display: flex; align-items: center; gap: 11px;
+    padding: 10px 12px;
     border: none; background: transparent; cursor: pointer; text-align: left;
   }
   .ctx-avatar {
     flex: 0 0 auto;
-    width: 24px; height: 24px; border-radius: 6px;
+    width: 30px; height: 30px; border-radius: 8px;
     display: grid; place-items: center;
-    font-size: 11px; font-weight: 600;
+    font-size: 12px; font-weight: 600;
     color: var(--text-3); background: var(--bg-page);
     border: 1px solid var(--border);
   }
@@ -427,12 +431,12 @@
     font-size: 10px; font-weight: 600;
   }
   .ctx-label {
-    font-size: 12.5px; line-height: 1.3; color: var(--text-1);
+    font-size: 13.5px; font-weight: 500; line-height: 1.3; color: var(--text-1);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .ctx-row.active .ctx-label { font-weight: 600; }
   .ctx-sub {
-    font-size: 10.5px; line-height: 1.3; color: var(--text-4);
+    font-size: 11.5px; line-height: 1.3; color: var(--text-4);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .ctx-row.pending .ctx-label { font-style: italic; color: var(--text-3); }

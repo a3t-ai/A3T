@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
+  /// Inside the shell the selected template fills the Details pane.
+  const pane = detailsPane();
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
@@ -483,8 +486,8 @@ do:
   <div class="screen-body">
     <!-- Slide panel -->
     {#if template}
-      <div class="slide-overlay" class:closing={panelClosing} onclick={closePanel}></div>
-      <div class="slide-panel" class:closing={panelClosing}>
+      {#if !pane}<div class="slide-overlay" class:closing={panelClosing} onclick={closePanel}></div>{/if}
+      <div class="slide-panel" class:closing={panelClosing} class:in-pane={!!pane} use:fitToPane={pane}>
         <div class="sp-layout">
           <!-- LEFT: Tree menu -->
           <div class="sp-tree-panel">
@@ -901,6 +904,9 @@ do:
       -4px 0 20px rgba(0,0,0,0.04);
     animation: panelIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
+  /* In the shell's Details pane: flush with the pane, below the shell's pop-ins. */
+  .slide-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: none; }
+  .slide-panel.in-pane.closing { animation: none; opacity: 0; }
   .slide-panel.closing {
     animation: panelOut 0.2s ease-in forwards;
   }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
 
   let {
     open = false,
@@ -16,6 +17,8 @@
   } = $props();
 
   let closing = $state(false);
+  /// Inside the shell the item fills the Details pane instead of the window.
+  const pane = detailsPane();
 
   function handleClose() {
     closing = true;
@@ -27,8 +30,8 @@
 </script>
 
 {#if open}
-  <div class="sp-overlay" class:closing onclick={handleClose}></div>
-  <div class="sp-panel" class:closing>
+  {#if !pane}<div class="sp-overlay" class:closing onclick={handleClose}></div>{/if}
+  <div class="sp-panel" class:closing class:in-pane={!!pane} use:fitToPane={pane}>
     <div class="sp-close-bar">
       {#if onopenineditor}
         <div class="sp-btn-wrap">
@@ -77,6 +80,11 @@
     display: flex; flex-direction: column;
   }
   .sp-panel.closing { animation: panelOut 0.2s ease-in forwards; }
+  /* In the Details pane: flush with the pane, below the shell's pop-ins. */
+  .sp-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: paneIn 0.15s ease-out; }
+  .sp-panel.in-pane.closing { animation: paneOut 0.15s ease-in forwards; }
+  @keyframes paneIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes paneOut { from { opacity: 1; } to { opacity: 0; } }
   @keyframes panelIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
   @keyframes panelOut { from { transform: translateX(0); } to { transform: translateX(100%); } }
 

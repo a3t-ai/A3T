@@ -107,7 +107,9 @@
   let agent = $derived(
     creatingNew
       ? { ...newAgent, id: '(new)', isNew: true, status: 'draft', created_by: '' }
-      : (selected ? allAgents.find(a => a.id === selected) : null)
+      // The shell's Items list addresses an agent by name; links from elsewhere
+      // use its id. Accept either.
+      : (selected ? (allAgents.find(a => a.id === selected) ?? allAgents.find(a => a.name === selected) ?? null) : null)
   );
 
   // Delete state
