@@ -11,7 +11,7 @@
   const expanded = $derived(stack !== 'menu' && getFocus() === stack);
   // A popped-in stack shows the unpinned icon: pinning it docks it where it is.
   const pinned = $derived(isPinned(stack) && getOverlay() !== stack && !(stack !== 'menu' && getFocus() && getFocus() !== stack));
-  const name = STACK_NAME[stack];
+  const name = $derived(STACK_NAME[stack]);
 </script>
 
 <div class="sbar" class:compact>
