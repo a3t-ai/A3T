@@ -2,6 +2,7 @@
   import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
   /// Inside the shell the selected template fills the Details pane.
   const pane = detailsPane();
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
@@ -455,6 +456,18 @@ do:
     }
   }
 
+  // In the shell's Details pane the stack bar carries this panel's actions.
+  $effect(() => {
+    if (!pane || !template) return;
+    const t = template;
+    return setDetailActions({
+      onopenineditor: () => (t && !draftTemplate ? openInStudio('template', t.namespace ?? 'a3t', t.name, t.id) : navigateTo('flow-editor', 'Studio')),
+      onsave: $canEditTpl && !readOnly ? saveTemplate : undefined,
+      onclose: closePanel,
+      extra: [{ label: 'Duplicate', run: duplicateTemplate }],
+    });
+  });
+
   function closePanel() {
     panelClosing = true;
     setTimeout(() => {
@@ -503,6 +516,7 @@ do:
 
           <!-- CENTER: Content + close -->
           <div class="sp-main">
+            {#if !pane}
             <div class="sp-close-bar">
               <div class="sp-btn-wrap">
                 <button class="sp-action-btn" onclick={() => template && !draftTemplate ? openInStudio('template', template.namespace ?? 'a3t', template.name, template.id) : navigateTo('flow-editor', 'Studio')}>
@@ -531,6 +545,7 @@ do:
                 <span class="sp-tooltip">Close</span>
               </div>
             </div>
+            {/if}
             <div class="sp-content">
               {#if propNode === 'detail'}
                 <div class="sp-form">
@@ -907,6 +922,12 @@ do:
   /* In the shell's Details pane: flush with the pane, below the shell's pop-ins. */
   .slide-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: none; }
   .slide-panel.in-pane.closing { animation: none; opacity: 0; }
+  /* In the pane: header and section tabs across the top, content below. */
+  .slide-panel.in-pane .sp-layout { display: flex; flex-direction: column; }
+  .slide-panel.in-pane .sp-tree-panel { flex: 0 0 auto; border-right: 0; overflow: visible; }
+  .slide-panel.in-pane .sp-tree-head { min-height: 0; padding: 12px 18px; border-bottom: 1px solid var(--border-light, #f0ece3); }
+  .slide-panel.in-pane .sp-tree-name { font-size: 18px; font-weight: 400; }
+  .slide-panel.in-pane .sp-main { flex: 1 1 auto; min-height: 0; padding-top: 0; }
   .slide-panel.closing {
     animation: panelOut 0.2s ease-in forwards;
   }

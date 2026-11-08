@@ -14,6 +14,7 @@
   import Resizer from './Resizer.svelte';
   import CommandPalette from './CommandPalette.svelte';
   import DetailsHost from './DetailsHost.svelte';
+  import { getDetailActions } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
@@ -166,6 +167,33 @@
       {#if detMode === 'pop'}<Resizer k="detailsPop" edge="left" label="Details" overlay />{/if}
       <StackBar stack="details">
         {#snippet left()}<span class="sbname">Details</span>{/snippet}
+        {#snippet right()}
+          {#if getDetailActions()}
+            {@const a = getDetailActions()!}
+            <span class="dacts">
+              {#if a.onopenineditor}
+                <button class="da" onclick={a.onopenineditor} title="Open in Studio" aria-label="Open in Studio">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 1h6v6M9 7L15 1M7 3H2a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V9" /></svg>
+                </button>
+              {/if}
+              {#each a.extra ?? [] as x (x.label)}
+                <button class="da" onclick={x.run}>{x.label}</button>
+              {/each}
+              {#if a.onsave}
+                <button class="da save" onclick={a.onsave} title="Save" aria-label="Save">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 15H3a1 1 0 01-1-1V2a1 1 0 011-1h8l3 3v10a1 1 0 01-1 1z" /><path d="M11 15V9H5v6M5 1v4h5" /></svg>
+                  <span>Save</span>
+                </button>
+              {/if}
+              {#if a.onclose}
+                <button class="da" onclick={a.onclose} title="Close" aria-label="Close">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L4 12M4 4l8 8" /></svg>
+                </button>
+              {/if}
+              <span class="dsep" aria-hidden="true"></span>
+            </span>
+          {/if}
+        {/snippet}
       </StackBar>
       <div class="page" bind:this={pageEl}>
         {#if nothingSelected}
@@ -217,6 +245,14 @@
   .details { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-page); position: relative; }
   .page { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
   .sbname { font: 500 11px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* The open item's actions, in the Details bar before Expand and Pin. */
+  .dacts { display: inline-flex; align-items: center; gap: 4px; }
+  .da { height: 28px; min-width: 28px; padding: 0 7px; border-radius: 7px; border: 1px solid transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--text-3); cursor: pointer; font: 500 12.5px var(--font-sans); }
+  .da:hover { background: var(--bg-subtle); border-color: var(--border); color: var(--text-1); }
+  .da.save { border-color: var(--border); color: var(--text-1); background: var(--bg-surface); }
+  .da.save:hover { border-color: var(--green, #1a7158); color: var(--green, #1a7158); }
+  .dsep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
 
   .seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 9px; }
   .seg button { border: 0; border-radius: 7px; background: transparent; padding: 3px 10px; font: 500 12px var(--font-sans); color: var(--text-3); cursor: pointer; }

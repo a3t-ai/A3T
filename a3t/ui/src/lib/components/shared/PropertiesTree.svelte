@@ -1,5 +1,9 @@
 <script lang="ts">
   import WizardSteps, { type WizardStep } from './WizardSteps.svelte';
+  import { detailsPane } from '$lib/shell/detailsPane';
+  /// In the shell's Details pane: the item's header, then its sections as
+  /// horizontal tabs (icon only when the pane is narrow). Elsewhere, a tree.
+  const tabs = !!detailsPane();
   let {
     icon = '?',
     color = '#999',
@@ -24,7 +28,7 @@
   } = $props();
 </script>
 
-<div class="pt-panel">
+<div class="pt-panel" class:tabs>
   <div class="pt-header">
     <div class="pt-icon" style="background: {color}">{icon}</div>
     <div class="pt-info">
@@ -35,11 +39,12 @@
   {#if steps}
     <WizardSteps {steps} active={activeNode} {wizard} {onselect} />
   {:else}
-  <nav class="pt-tree">
+  <nav class="pt-tree" role={tabs ? 'tablist' : undefined}>
     {#each nodes as node}
-      <button class="pt-node" class:active={activeNode === node.id} onclick={() => onselect(node.id)}>
+      <button class="pt-node" class:active={activeNode === node.id} onclick={() => onselect(node.id)}
+        role={tabs ? 'tab' : undefined} aria-selected={tabs ? activeNode === node.id : undefined} title={node.label}>
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">{@html node.icon}</svg>
-        {node.label}
+        <span>{node.label}</span>
       </button>
     {/each}
   </nav>
@@ -72,4 +77,17 @@
   }
   .pt-node svg { color: var(--text-4); flex-shrink: 0; }
   .pt-node.active svg { color: var(--spec, #c47028); }
+
+  /* Tabs: header row, then one horizontal row of sections. */
+  .pt-panel.tabs { height: auto; flex: 0 0 auto; border-right: 0; overflow: visible; container-type: inline-size; }
+  .pt-panel.tabs .pt-header { min-height: 0; padding: 12px 18px; border-bottom: 1px solid var(--border-light, #f0ece3); }
+  .pt-panel.tabs .pt-name { font-size: 18px; font-weight: 400; }
+  .pt-panel.tabs .pt-tree { flex-direction: row; gap: 2px; padding: 0 12px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border); }
+  .pt-panel.tabs .pt-node { padding: 10px 10px 9px; font-size: 13px; white-space: nowrap; border-bottom: 2px solid transparent; background: none; }
+  .pt-panel.tabs .pt-node:hover { background: none; }
+  .pt-panel.tabs .pt-node.active { box-shadow: none; background: none; font-weight: 600; border-bottom-color: var(--spec, #5530a8); }
+  @container (max-width: 560px) {
+    .pt-panel.tabs .pt-node span { display: none; }
+    .pt-panel.tabs .pt-node.active span { display: inline; }
+  }
 </style>

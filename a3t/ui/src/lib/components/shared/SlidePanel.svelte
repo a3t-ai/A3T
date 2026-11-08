@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
 
   let {
     open = false,
@@ -20,6 +21,12 @@
   /// Inside the shell the item fills the Details pane instead of the window.
   const pane = detailsPane();
 
+  // In the pane the Details stack bar carries these actions: one bar, not two.
+  $effect(() => {
+    if (!pane || !open) return;
+    return setDetailActions({ onsave, onopenineditor, onclose: handleClose });
+  });
+
   function handleClose() {
     closing = true;
     setTimeout(() => {
@@ -32,6 +39,7 @@
 {#if open}
   {#if !pane}<div class="sp-overlay" class:closing onclick={handleClose}></div>{/if}
   <div class="sp-panel" class:closing class:in-pane={!!pane} use:fitToPane={pane}>
+    {#if !pane}
     <div class="sp-close-bar">
       {#if onopenineditor}
         <div class="sp-btn-wrap">
@@ -56,6 +64,7 @@
         <span class="sp-tooltip">Close</span>
       </div>
     </div>
+    {/if}
     <div class="sp-body">
       {@render children()}
     </div>
@@ -85,6 +94,10 @@
   .sp-panel.in-pane.closing { animation: paneOut 0.15s ease-in forwards; }
   @keyframes paneIn { from { opacity: 0; } to { opacity: 1; } }
   @keyframes paneOut { from { opacity: 1; } to { opacity: 0; } }
+  /* In the pane an item's sections run as tabs across the top, not a tree on
+     the left (PropertiesTree switches to tabs there too). */
+  .sp-panel.in-pane :global(.panel-layout) { display: flex; flex-direction: column; height: 100%; }
+  .sp-panel.in-pane :global(.panel-layout > :last-child) { flex: 1 1 auto; min-height: 0; }
   @keyframes panelIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
   @keyframes panelOut { from { transform: translateX(0); } to { transform: translateX(100%); } }
 

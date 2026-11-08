@@ -4,9 +4,10 @@
   /// above it owns pinning, and selecting an item opens it in Details.
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import {
-    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, getPins,
+    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, getPins, isPinned, setPins,
   } from '$lib/stores/apps.svelte.ts';
-  import { deleteChatSession } from '$lib/services/api';
+  import { deleteChatSession, setPin } from '$lib/services/api';
+  import { getProject } from '$lib/stores/context.svelte.ts';
   import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
 
   let { appType }: { appType: string } = $props();
@@ -17,6 +18,41 @@
   let loading = $state(false);
   let error = $state('');
   let filter = $state('');
+
+  // Sort and rows-or-cards, remembered per app in this browser.
+  let sortBy = $state<'recent' | 'name'>('recent');
+  let layout = $state<'rows' | 'cards'>('rows');
+  let viewLoadedFor = '';
+  $effect(() => {
+    const key = `a3t.items.view.${appType}`;
+    if (viewLoadedFor === key) return;
+    viewLoadedFor = key;
+    try {
+      const v = JSON.parse(localStorage.getItem(key) ?? '{}');
+      sortBy = v.sort === 'name' ? 'name' : 'recent';
+      layout = v.layout === 'cards' ? 'cards' : 'rows';
+    } catch { sortBy = 'recent'; layout = 'rows'; }
+  });
+  function saveView() {
+    try { localStorage.setItem(`a3t.items.view.${appType}`, JSON.stringify({ sort: sortBy, layout })); } catch {}
+  }
+  const sorted = (list: AppItem[]) => sortBy === 'name' ? list.slice().sort((a, b) => a.label.localeCompare(b.label)) : list;
+
+  /// Row icon colour per app, matching the accent each app's own cards use.
+  const COLOR: Record<string, string> = {
+    agents: '#1a7158', templates: '#5530a8', canvas: '#b45309', triggers: '#c97c2e',
+    resources: '#3a5a85', projects: '#5530a8', chat: '#3a5a85', executions: '#55514a',
+    runtime: '#326ce5', security: '#6b5a3a',
+  };
+  const color = $derived(COLOR[appType] ?? '#8a8478');
+  const initials = (label: string) => label.replace(/[^a-z0-9]+/gi, ' ').trim().split(' ')
+    .filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '·';
+  const crumb = $derived([getProject() || 'All projects', getActivePanel()?.title ?? contextLabel(appType)].join(' / '));
+
+  async function togglePin(e: MouseEvent, item: AppItem) {
+    e.stopPropagation();
+    try { setPins(await setPin(appType, item.id, !isPinned(appType, item.id))); } catch {}
+  }
   /// Plain `let`, not `$state`: the effect below both reads and writes it, and as
   /// reactive state that self-retriggers — the shape that trips Svelte's
   /// update-depth guard and froze reactivity elsewhere in this app.
@@ -114,8 +150,6 @@
     return null;
   }
 
-  /// Avatar letter: first alphanumeric of the label, so "a3t-users" reads as "A".
-  const initial = (label: string) => (label.match(/[a-z0-9]/i)?.[0] ?? '·').toUpperCase();
 
   async function load(source: string) {
     loading = true;
@@ -190,7 +224,8 @@
 
 {#snippet row(item: Item)}
   {@const idx = listed.indexOf(item)}
-  <div class="ctx-row" class:active={item.id === activeId} class:pending={item.pending}
+  {@const tone = statusTone(item.status)}
+  <div class="ctx-row" class:active={item.id === activeId} class:pending={item.pending} class:card={layout === 'cards' && !isTree}
        style={item.depth != null ? `margin-left:${item.depth * 14}px` : ''}>
     {#if isTree}
       {#if hasChildren(idx)}
@@ -201,49 +236,60 @@
         <span class="ctx-twist"></span>
       {/if}
     {/if}
-    <button class="ctx-pick" onclick={() => select(item)} title={item.namespace ? `${item.namespace}/${item.label}` : item.label}>
+    <button class="ctx-pick" onclick={() => select(item)} title={item.namespace ? `${item.namespace}/${item.label}` : item.label}
+      aria-current={item.id === activeId}>
       {#if item.badge}
         <span class="ctx-badge" style={item.badgeStyle}>{item.badge}</span>
-      {:else if spec?.source !== 'sessions'}
-        <span class="ctx-avatar">{initial(item.label)}</span>
+      {:else}
+        <span class="ctx-icon-sq" style:background={color}>{initials(item.label)}</span>
       {/if}
       <span class="ctx-text">
-        <span class="ctx-label">{item.label}</span>
+        <span class="ctx-label"><span class="ctx-name">{item.label}</span>{#if item.namespace}<span class="ctx-ns">{item.namespace}</span>{/if}</span>
         {#if item.sub}<span class="ctx-sub">{item.sub}</span>{/if}
       </span>
-      {#if statusTone(item.status)}
-        <span class="ctx-dot {statusTone(item.status)}" title={item.status}></span>
+      {#if item.status}
+        <span class="ctx-st {tone ?? ''}">{item.status}</span>
       {/if}
     </button>
-    {#if spec?.source === 'sessions' && !item.pending}
-      <button class="ctx-del" onclick={(e) => removeItem(e, item)} title="Delete — this cannot be undone" aria-label="Delete">
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4L4 12M4 4l8 8" /></svg>
-      </button>
+    {#if !item.pending && spec?.focuses}
+      <span class="ctx-acts">
+        {#if spec?.source === 'sessions'}
+          <button class="ctx-rb" onclick={(e) => removeItem(e, item)} title="Delete — this cannot be undone" aria-label="Delete">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4L4 12M4 4l8 8" /></svg>
+          </button>
+        {/if}
+        <button class="ctx-rb" class:on={isPinned(appType, item.id)} onclick={(e) => togglePin(e, item)}
+          title={isPinned(appType, item.id) ? 'Unpin' : 'Pin to top'} aria-label={isPinned(appType, item.id) ? 'Unpin' : 'Pin to top'} aria-pressed={isPinned(appType, item.id)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned(appType, item.id) ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 4l2.4 5 5.6.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.6-.8z" /></svg>
+        </button>
+      </span>
     {/if}
+  </div>
+{/snippet}
+
+{#snippet list(rows: Item[])}
+  <div class="ctx-gitems" class:cards={layout === 'cards' && !isTree}>
+    {#each rows as item (item.id)}{@render row(item)}{/each}
   </div>
 {/snippet}
 
 <aside class="ctx" bind:this={asideEl}>
   <div class="ctx-head">
-    <span class="ctx-title">{contextLabel(appType)}</span>
+    <div class="ctx-ht">
+      <div class="ctx-crumb">{crumb}</div>
+      <h1 class="ctx-title">{getActivePanel()?.title ?? contextLabel(appType)}</h1>
+    </div>
     <div class="ctx-actions">
       {#if spec?.source === 'sessions'}
-        <button class="ctx-icon" onclick={newChat} title="New conversation" aria-label="New conversation">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10" /></svg>
+        <button class="ctx-primary" onclick={newChat}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> New conversation
         </button>
       {:else if spec?.source === 'flows'}
-        <!-- The editor's own "New flow" lived in the panel this pane replaced. -->
-        <button class="ctx-icon" onclick={newFlow} title="New flow" aria-label="New flow">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10" /></svg>
+        <button class="ctx-primary" onclick={newFlow}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> New flow
         </button>
       {/if}
-      <button
-        class="ctx-icon"
-        onclick={() => load(spec!.source)}
-        title="Refresh"
-        aria-label="Refresh"
-        disabled={loading}
-      >
+      <button class="ctx-icon" onclick={() => load(spec!.source)} title="Refresh" aria-label="Refresh" disabled={loading}>
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M14 8A6 6 0 112.6 5.5" /><path d="M2 2v4h4" />
         </svg>
@@ -251,11 +297,23 @@
     </div>
   </div>
 
-  {#if items.length > 8 || (groups?.length ?? 0) > 1}
-    <div class="ctx-filter">
-      <input type="text" placeholder="Filter by name or namespace…" bind:value={filter} />
-    </div>
-  {/if}
+  <div class="ctx-tools">
+    <input class="ctx-search" type="text" placeholder={`Filter ${contextLabel(appType).toLowerCase()}`} bind:value={filter} aria-label="Filter" />
+    {#if !isTree}
+      <select class="ctx-sel" bind:value={sortBy} onchange={saveView} aria-label="Sort">
+        <option value="recent">Recent</option>
+        <option value="name">Name</option>
+      </select>
+      <div class="ctx-seg" role="group" aria-label="Layout">
+        <button aria-pressed={layout === 'rows'} onclick={() => { layout = 'rows'; saveView(); }} title="Rows" aria-label="Rows">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg>
+        </button>
+        <button aria-pressed={layout === 'cards'} onclick={() => { layout = 'cards'; saveView(); }} title="Cards" aria-label="Cards">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6" height="6" rx="1.5" /><rect x="14" y="4" width="6" height="6" rx="1.5" /><rect x="4" y="14" width="6" height="6" rx="1.5" /><rect x="14" y="14" width="6" height="6" rx="1.5" /></svg>
+        </button>
+      </div>
+    {/if}
+  </div>
 
   <div class="ctx-body">
     {#if pinnedShown.length > 0 && !error}
@@ -265,11 +323,7 @@
           <span class="ctx-gname">Pinned</span>
           <span class="ctx-gcount">{pinnedShown.length}</span>
         </button>
-        {#if isOpen('__pinned')}
-          <div class="ctx-gitems">
-            {#each pinnedShown as item (item.id)}{@render row(item)}{/each}
-          </div>
-        {/if}
+        {#if isOpen('__pinned')}{@render list(sorted(pinnedShown))}{/if}
       </section>
     {/if}
     {#if loading && items.length === 0}
@@ -285,18 +339,14 @@
         <section class="ctx-group">
           <button class="ctx-ghead" onclick={() => toggleGroup(g.ns)} aria-expanded={isOpen(g.ns)}>
             <svg class="ctx-chev" class:open={isOpen(g.ns)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
-            <span class="ctx-gname">{g.ns || 'no namespace'}</span>
+            <span class="ctx-gname">{g.ns || 'No project'}</span>
             <span class="ctx-gcount">{g.items.length}</span>
           </button>
-          {#if isOpen(g.ns)}
-            <div class="ctx-gitems">
-              {#each g.items as item}{@render row(item)}{/each}
-            </div>
-          {/if}
+          {#if isOpen(g.ns)}{@render list(sorted(g.items))}{/if}
         </section>
       {/each}
     {:else}
-      {#each shown as item}{@render row(item)}{/each}
+      {@render list(sorted(shown))}
     {/if}
   </div>
 
@@ -306,160 +356,79 @@
 </aside>
 
 <style>
-  .ctx {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    /* Grid/flex items default to min-height:auto, which lets a long list grow past
-       the row instead of scrolling — the bug that hid older conversations. */
-    min-height: 0;
-    overflow: hidden;
-    background: var(--bg-surface);
-  }
+  /* Items, as in the shell design: header strip, toolbar, groups of rows or cards. */
+  .ctx { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--bg-page); }
 
-  .ctx-head {
-    flex: 0 0 auto;
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 6px; padding: 10px 8px 10px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-  .ctx-title {
-    font-family: var(--font-serif); font-size: 13px; font-weight: 500;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-actions { display: flex; align-items: center; gap: 2px; }
-  .ctx-icon {
-    width: 24px; height: 24px;
-    display: grid; place-items: center;
-    border: 1px solid transparent; border-radius: 5px;
-    background: transparent; color: var(--text-4); cursor: pointer;
-  }
-  .ctx-icon:hover:not(:disabled) { color: var(--text-1); border-color: var(--border); }
+  .ctx-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+  .ctx-ht { flex: 1 1 auto; min-width: 0; }
+  .ctx-crumb { font: 400 12px var(--font-mono); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctx-title { margin: 2px 0 0; font: 400 22px var(--font-serif); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctx-actions { display: flex; align-items: center; gap: 6px; }
+  .ctx-primary { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 0; background: var(--green, #1a7158); color: #fff; font: 500 13px var(--font-sans); cursor: pointer; white-space: nowrap; }
+  .ctx-icon { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-3); display: grid; place-items: center; cursor: pointer; }
+  .ctx-icon:hover:not(:disabled) { color: var(--spec); border-color: var(--spec); }
   .ctx-icon:disabled { opacity: 0.4; cursor: default; }
-  .ctx-icon.on { color: var(--text-1); background: var(--bg-subtle); border-color: var(--border); }
 
-  .ctx-filter { flex: 0 0 auto; padding: 8px 10px; border-bottom: 1px solid var(--divider, var(--border)); }
-  .ctx-filter input {
-    width: 100%; box-sizing: border-box;
-    padding: 6px 9px; font-size: 11.5px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg-page); color: var(--text-1);
-    outline: none; transition: border-color 0.1s ease, box-shadow 0.1s ease;
-  }
-  .ctx-filter input:focus {
-    border-color: var(--spec, #5530a8);
-    box-shadow: 0 0 0 3px var(--spec-bg, #ede7ff);
-  }
+  .ctx-tools { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+  .ctx-search { flex: 1 1 120px; width: auto; min-width: 100px; height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 10px; background: var(--bg-surface); font: 400 13px var(--font-sans); color: var(--text-1); outline: none; }
+  .ctx-search:focus { border-color: var(--spec); }
+  .ctx-sel { flex: 0 0 auto; width: auto; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 400 12.5px var(--font-sans); padding: 0 6px; color: var(--text-2); }
+  .ctx-seg { flex: 0 0 auto; display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 9px; }
+  .ctx-seg button { display: inline-flex; border: 0; border-radius: 7px; background: transparent; padding: 3px 8px; color: var(--text-3); cursor: pointer; }
+  .ctx-seg button[aria-pressed='true'] { background: var(--bg-surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
 
-  .ctx-body {
-    flex: 1;
-    min-height: 0;      /* required for overflow scrolling inside a flex column */
-    overflow-y: auto;
-    padding: 10px 12px 14px;
-  }
-  .ctx-note { padding: 14px 10px; font-size: 11.5px; color: var(--text-4); }
-  .ctx-note.err { color: #dc2626; }
+  .ctx-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+  .ctx-note { padding: 22px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 12px; text-align: center; font-size: 13px; color: var(--text-3); }
+  .ctx-note.err { color: var(--err, #d15858); }
 
-  /* ── Namespace groups ── */
-  .ctx-group + .ctx-group { margin-top: 6px; }
-  .ctx-ghead {
-    position: sticky; top: -6px; z-index: 1;
-    width: 100%; display: flex; align-items: center; gap: 6px;
-    padding: 7px 8px 5px;
-    border: none; background: var(--bg-surface); cursor: pointer;
-    color: var(--text-4); text-align: left;
-  }
-  .ctx-ghead:hover { color: var(--text-2); }
-  .ctx-chev { flex: 0 0 auto; transition: transform 0.12s ease; }
+  /* Groups: serif title and a count. */
+  .ctx-group + .ctx-group { margin-top: 10px; }
+  .ctx-ghead { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0 0 6px; padding: 0; border: 0; background: none; cursor: pointer; text-align: left; }
+  .ctx-chev { flex: 0 0 auto; color: var(--text-4); transition: transform 0.12s ease; }
   .ctx-chev.open { transform: rotate(90deg); }
-  .ctx-gname {
-    flex: 1; min-width: 0;
-    font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-gcount {
-    flex: 0 0 auto; min-width: 18px; padding: 0 5px;
-    font-size: 10px; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
-    border-radius: 8px; background: var(--bg-subtle); color: var(--text-4);
-  }
-  .ctx-gitems { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 6px; }
+  .ctx-gname { font: 400 15px var(--font-serif); color: var(--text-1); }
+  .ctx-gcount { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
+  .ctx-gitems { display: flex; flex-direction: column; gap: 6px; }
+  .ctx-gitems.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  .ctx-body > .ctx-gitems + .ctx-group, .ctx-pinned + * { margin-top: 10px; }
 
-  /* ── Rows ── */
-  .ctx-twist {
-    flex: none; width: 16px; height: 22px; display: grid; place-items: center;
-    background: none; border: 0; padding: 0; color: var(--text-4); cursor: pointer;
-  }
-  .ctx-row {
-    position: relative;
-    display: flex; align-items: center;
-    border-radius: 7px;
-    transition: background 0.1s ease;
-  }
-  /* Each item is a card. */
-  .ctx-body > .ctx-row + .ctx-row { margin-top: 6px; }
-  .ctx-row { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); transition: border-color 0.12s, background 0.12s, box-shadow 0.12s; }
-  .ctx-row:hover { border-color: var(--border-strong, #d9d4c6); box-shadow: 0 1px 3px rgba(30, 25, 15, 0.06); }
-  .ctx-row.active { border-color: var(--spec, #5530a8); background: var(--spec-bg, #ede7ff); }
-  .ctx-row.active::before { display: none; }
-  /* A bar, not just a tint, so the open item is findable in a long list. */
-  .ctx-row.active::before {
-    content: ''; position: absolute; left: 0; top: 7px; bottom: 7px;
-    width: 3px; border-radius: 0 3px 3px 0; background: var(--spec, #5530a8);
-  }
-  .ctx-pick {
-    flex: 1; min-width: 0;
-    display: flex; align-items: center; gap: 11px;
-    padding: 10px 12px;
-    border: none; background: transparent; cursor: pointer; text-align: left;
-  }
-  .ctx-avatar {
-    flex: 0 0 auto;
-    width: 30px; height: 30px; border-radius: 8px;
-    display: grid; place-items: center;
-    font-size: 12px; font-weight: 600;
-    color: var(--text-3); background: var(--bg-page);
-    border: 1px solid var(--border);
-  }
-  .ctx-row.active .ctx-avatar { color: var(--spec, #5530a8); border-color: var(--spec-bg, #ede7ff); background: var(--spec-bg, #ede7ff); }
-  .ctx-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-  /* Matches the category chips on the Resources page, so the same category reads
-     the same in the pane and in the app. */
-  .ctx-badge {
-    flex: 0 0 auto;
-    width: 24px; height: 24px; border-radius: 6px;
-    display: grid; place-items: center;
-    font-size: 10px; font-weight: 600;
-  }
-  .ctx-label {
-    font-size: 13.5px; font-weight: 500; line-height: 1.3; color: var(--text-1);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-row.active .ctx-label { font-weight: 600; }
-  .ctx-sub {
-    font-size: 11.5px; line-height: 1.3; color: var(--text-4);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-row.pending .ctx-label { font-style: italic; color: var(--text-3); }
+  /* A row: icon · name and project · subline · status. */
+  .ctx-row { position: relative; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); transition: border-color 0.12s; }
+  .ctx-row:hover { border-color: var(--border-strong, #d9d4c6); }
+  .ctx-row.active { border-color: var(--spec); box-shadow: 0 0 0 1px var(--spec); }
+  .ctx-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 0; background: transparent; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+  .ctx-icon-sq { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; font: 600 11.5px var(--font-sans); color: #fff; }
+  .ctx-badge { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-size: 10px; font-weight: 600; }
+  .ctx-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .ctx-label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .ctx-name { font-weight: 600; font-size: 13.5px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .ctx-ns { font: 400 11px var(--font-mono); color: var(--spec); border: 1px solid #b8a6ea; border-radius: 999px; padding: 0 7px; }
+  .ctx-sub { font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ctx-row.pending .ctx-name { font-style: italic; color: var(--text-3); font-weight: 500; }
+  .ctx-st { flex: 0 0 auto; font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+  .ctx-st.ok { color: var(--green, #1a7158); }
+  .ctx-st.run { color: #1f4fb8; }
+  .ctx-st.bad { color: var(--err, #d15858); }
+  .ctx-st.idle { color: #8a5112; }
 
-  .ctx-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; }
-  .ctx-dot.ok   { background: #16a34a; }
-  .ctx-dot.run  { background: #2563eb; }
-  .ctx-dot.bad  { background: #dc2626; }
-  .ctx-dot.idle { background: transparent; border: 1.5px solid var(--text-5, #b8b8b8); }
+  /* Hover actions, on the right over the status. */
+  .ctx-acts { display: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); gap: 2px; background: var(--bg-surface); padding-left: 8px; }
+  .ctx-row:hover .ctx-acts, .ctx-row:focus-within .ctx-acts { display: flex; }
+  .ctx-row:hover .ctx-st, .ctx-row:focus-within .ctx-st { visibility: hidden; }
+  .ctx-rb { width: 28px; height: 28px; border-radius: 7px; border: 1px solid transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; color: var(--text-3); padding: 0; cursor: pointer; }
+  .ctx-rb:hover { background: var(--bg-subtle); border-color: var(--border); }
+  .ctx-rb.on { color: #c97c2e; }
+  .ctx-row.active .ctx-acts { background: var(--bg-surface); }
 
-  .ctx-del {
-    width: 22px; height: 22px; margin-right: 4px;
-    display: grid; place-items: center;
-    border: none; border-radius: 5px;
-    background: transparent; color: var(--text-4); cursor: pointer;
-    opacity: 0;
-  }
-  .ctx-row:hover .ctx-del { opacity: 1; }
-  .ctx-del:hover { color: #dc2626; background: var(--bg-surface); }
+  /* Cards: icon and name, then project and status, then the subline. */
+  .ctx-row.card { align-items: stretch; border-radius: 12px; }
+  .ctx-row.card .ctx-pick { flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px; }
+  .ctx-row.card .ctx-text { flex-basis: calc(100% - 42px); }
+  .ctx-row.card .ctx-st { order: 3; }
+  .ctx-row.card .ctx-acts { top: 10px; transform: none; }
 
-  .ctx-foot {
-    flex: 0 0 auto;
-    padding: 8px 12px; border-top: 1px solid var(--border);
-    font-size: 10px; line-height: 1.35; color: var(--text-4);
-  }
+  /* Trees (Runtimes): compact rows with a twisty. */
+  .ctx-twist { flex: none; width: 16px; height: 22px; display: grid; place-items: center; background: none; border: 0; padding: 0 0 0 6px; color: var(--text-4); cursor: pointer; }
+
+  .ctx-foot { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.35; color: var(--text-4); }
 </style>

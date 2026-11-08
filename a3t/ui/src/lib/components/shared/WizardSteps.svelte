@@ -22,19 +22,23 @@
   /// joined by a line that turns from grey to colour as the steps are done.
   /// Later steps of a new item stay locked until the ones before are filled in.
   /// `horizontal` is a compact strip for narrow places.
-  let { steps, active, onselect, wizard = false, orientation = 'vertical' }: {
+  import { detailsPane } from '$lib/shell/detailsPane';
+  let { steps, active, onselect, wizard = false, orientation: given }: {
     steps: WizardStep[]; active: string; onselect: (id: string) => void;
     /// A new item: go in order. An existing one: any step, any time.
     wizard?: boolean;
     orientation?: 'vertical' | 'horizontal';
   } = $props();
 
+  /// In the shell's Details pane sections run across the top; elsewhere down the side.
+  const inPane = !!detailsPane();  // context: read once, at init
+  const orientation = $derived(given ?? (inPane ? 'horizontal' : 'vertical'));
   const idx = $derived(steps.findIndex((s) => s.id === active));
 </script>
 
-{#if !wizard && orientation === 'vertical'}
-  <!-- An existing item: plain vertical tabs, any one at a time. -->
-  <nav class="tabs" aria-label="Sections">
+{#if !wizard}
+  <!-- An existing item: plain tabs, any one at a time. -->
+  <nav class="tabs" class:row={orientation === 'horizontal'} aria-label="Sections">
     {#each steps as s (s.id)}
       <button class="tab" class:on={s.id === active} onclick={() => onselect(s.id)} aria-current={s.id === active ? 'page' : undefined} title={s.hint ?? s.label}>
         {#if s.icon}<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">{@html s.icon}</svg>{/if}
@@ -73,6 +77,11 @@
   .tab:hover { color: var(--text-1); background: var(--bg-subtle); }
   .tab.on { color: var(--text-1); font-weight: 600; background: var(--bg-subtle); box-shadow: inset 3px 0 0 var(--spec, #5530a8); }
   .tab.on svg { color: var(--spec, #5530a8); }
+  /* Across the top, as in the shell's Details pane. */
+  .tabs.row { flex-direction: row; padding: 0 12px; gap: 2px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border); container-type: inline-size; }
+  .tabs.row .tab { height: auto; padding: 10px 10px 9px; white-space: nowrap; border-bottom: 2px solid transparent; gap: 7px; }
+  .tabs.row .tab:hover { background: none; }
+  .tabs.row .tab.on { background: none; box-shadow: none; border-bottom-color: var(--spec, #5530a8); }
 
   .ws { display: flex; --c-done: var(--ok, #2fa88d); --c-on: var(--spec, #5530a8); --c-off: var(--border, #e4e0d8); }
 

@@ -5,7 +5,8 @@
   import type { Snippet } from 'svelte';
   import { type Stack, STACK_NAME, isPinned, getFocus, getOverlay, togglePin, toggleExpand } from '$lib/stores/layout.svelte.ts';
 
-  let { stack, left, compact = false }: { stack: Stack; left?: Snippet; compact?: boolean } = $props();
+  /// `right`: the stack's own actions, just before Expand and Pin.
+  let { stack, left, right, compact = false }: { stack: Stack; left?: Snippet; right?: Snippet; compact?: boolean } = $props();
 
   const expanded = $derived(stack !== 'menu' && getFocus() === stack);
   // A popped-in stack shows the unpinned icon: pinning it docks it where it is.
@@ -16,6 +17,7 @@
 <div class="sbar" class:compact>
   {#if left}{@render left()}{/if}
   <span class="sp"></span>
+  {#if right}{@render right()}{/if}
   {#if stack !== 'menu'}
     <button class="sb" class:on={expanded} onclick={() => toggleExpand(stack as 'mid' | 'details')}
       title={(expanded ? 'Restore ' : 'Expand ') + name} aria-label={(expanded ? 'Restore ' : 'Expand ') + name} aria-pressed={expanded}>
