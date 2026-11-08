@@ -174,7 +174,7 @@
     const el = o === 'menu' ? menuEl : o === 'mid' ? midEl : detEl;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Element | null;
-      if (!t || el?.contains(t) || t.closest('.mid-toggle, .det-toggle, .scrim, [role="dialog"], .smt')) return;
+      if (!t || el?.contains(t) || t.closest('.peek, .scrim, [role="dialog"], .smt')) return;
       closeOverlay();
     };
     const id = setTimeout(() => window.addEventListener('pointerdown', onDown, true));
@@ -217,7 +217,7 @@
           <button class="menu-pin" onclick={() => togglePin('menu')}
             title={menuMode === 'dock' ? 'Hide the menu (Ctrl \\)' : 'Keep the menu open (Ctrl \\)'}
             aria-label={menuMode === 'dock' ? 'Hide the menu' : 'Keep the menu open'}>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               {#if menuMode === 'dock'}<path d="M10 3L5 8l5 5" />{:else}<path d="M6 3l5 5-5 5" />{/if}
             </svg>
           </button>
@@ -227,8 +227,10 @@
     </div>
     {#if menuMode === 'dock'}<Resizer k="menu" label="menu" />{/if}
     {#if menuMode === 'off' && !isNarrow()}
-      <button class="shoulder out" onclick={() => togglePin('menu')} title="Show the menu (Ctrl \)" aria-label="Show the menu">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5" /></svg>
+      <!-- An unpinned stack leaves one raised arrow on the edge it comes out of,
+           pointing the way it opens; pinned (or popped in), the arrow goes. -->
+      <button class="peek menu-peek" onclick={() => togglePin('menu')} title="Show the menu (Ctrl \)" aria-label="Show the menu">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3l5 5-5 5" /></svg>
       </button>
     {/if}
 
@@ -237,16 +239,12 @@
       style:width={midMode === 'pop' ? `${width('chatPop')}px` : undefined}
       style:left={midMode === 'pop' && !isNarrow() ? `${menuMode === 'dock' ? width('menu') : 0}px` : undefined}>
       {#if midMode === 'pop'}<Resizer k="chatPop" edge="right" label="Items and Chat" overlay />{/if}
+      {#if detMode === 'off' && hasDetails}
+        <button class="peek at-right" onclick={() => openOverlay('details')} title="Show Details" aria-label="Show Details">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3L5 8l5 5" /></svg>
+        </button>
+      {/if}
       <StackBar stack="mid" onclose={midMode === 'pop' ? closeOverlay : undefined}>
-        {#snippet end()}
-          <!-- Unpinned Details waits here, at the end nearest where it was, and
-               pops back in from the right. -->
-          {#if detMode === 'off' && hasDetails}
-            <button class="det-toggle" onclick={() => openOverlay('details')} title="Show Details" aria-label="Show Details">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3L5 8l5 5" /></svg>
-            </button>
-          {/if}
-        {/snippet}
         {#snippet right()}
           {#if shownFace === 'items' && getItemsRefresh()}
             {@const r = getItemsRefresh()!}
@@ -298,22 +296,17 @@
 
     <section class="details {detMode}" bind:this={detEl} aria-label="Details"
       style:width={detMode === 'pop' ? `${width('detailsPop')}px` : undefined}>
+      {#if midMode === 'off' && kind !== 'own'}
+        {@const what = kind === 'page' ? 'Chat' : kind === 'chat' || face === 'items' ? 'Items' : 'Chat'}
+        <button class="peek at-left" onclick={() => openOverlay('mid')} title="Show {what} (Ctrl J)" aria-label="Show {what}">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3l5 5-5 5" /></svg>
+        </button>
+      {/if}
       {#if detMode === 'pop'}<Resizer k="detailsPop" edge="left" label="Details" overlay />{/if}
       <StackBar stack="details"
         pin={artMode === 'fill' ? { on: artPinned, toggle: () => setArtifactPinned(!artPinned), what: artPinned ? 'it from beside the conversation' : 'this beside the conversation' } : undefined}
-        onclose={artMode === 'fill' && !artPinned ? () => artHost?.close() : undefined}>
+        onclose={detMode === 'pop' ? closeOverlay : undefined}>
         {#snippet left()}
-          <!-- An unpinned middle stack waits here, just beside where it was,
-               and pops back in over Details from the left. -->
-          {#if midMode === 'off' || midMode === 'pop'}
-            {@const what = kind === 'page' ? 'Chat' : kind === 'chat' || face === 'items' ? 'Items' : 'Chat'}
-            <button class="mid-toggle" class:on={midMode === 'pop'} onclick={() => (midMode === 'pop' ? closeOverlay() : openOverlay('mid'))}
-              title="{midMode === 'pop' ? 'Hide' : 'Show'} {what} (Ctrl J)" aria-label="{midMode === 'pop' ? 'Hide' : 'Show'} {what}" aria-expanded={midMode === 'pop'}>
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                {#if midMode === 'pop'}<path d="M10 3L5 8l5 5" />{:else}<path d="M6 3l5 5-5 5" />{/if}
-              </svg>
-            </button>
-          {/if}
           <span class="sbname">Details</span>
         {/snippet}
         {#snippet right()}
@@ -374,11 +367,6 @@
   /* The unpinned middle stack pops in where it lives: from the left, after the menu. */
   .mid.pop { position: absolute; top: 0; left: 0; bottom: 0; z-index: 25; border-right: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
   /* Same size and look as the stack bar's other controls (Expand, Pin). */
-  .mid-toggle, .det-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; margin: 0 6px 0 -4px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-3); cursor: pointer; flex: 0 0 auto; }
-  .det-toggle { margin: 0 -2px 0 2px; }
-  .mid-toggle:hover, .det-toggle:hover { background: var(--bg-subtle); border-color: var(--border); color: var(--text-1); }
-  .mid-toggle.on, .det-toggle.on { color: var(--spec); }
-  .mid-toggle:focus-visible, .det-toggle:focus-visible { outline: 2px solid var(--spec); outline-offset: 1px; }
   .mid.off, .details.off { display: none; }
   .face { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .face.hidden { display: none; }
@@ -412,12 +400,22 @@
   .link { margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); padding: 5px 12px; font: 500 12px var(--font-sans); color: var(--spec); cursor: pointer; }
 
   /* The menu's own arrow is in its foot (Sidebar's `foot`). */
-  .menu-pin { width: 26px; height: 26px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-3); display: grid; place-items: center; padding: 0; cursor: pointer; }
-  .menu-pin:hover { background: var(--bg-subtle); border-color: var(--border); color: var(--text-1); }
-  .menu-pin:focus-visible { outline: 2px solid var(--spec); outline-offset: 1px; }
+  /* The menu's own arrow (hide it), in its foot: the same raised arrow as .peek. */
+  .menu-pin { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); background: linear-gradient(var(--bg-surface), var(--bg-subtle)); color: var(--text-2); display: grid; place-items: center; padding: 0; cursor: pointer;
+              box-shadow: 0 1px 2px rgba(30, 25, 15, 0.14), 0 3px 8px rgba(30, 25, 15, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8); transition: color 0.12s, border-color 0.12s; }
+  .menu-pin:hover { color: var(--spec); border-color: var(--spec); }
+  .menu-pin:focus-visible { outline: 2px solid var(--spec); outline-offset: 2px; }
   /* With the menu hidden, a tab on the left edge at the same height brings it back. */
-  .shoulder.out { position: absolute; left: -1px; bottom: 34px; z-index: 31; width: 18px; height: 26px; border-radius: 0 11px 11px 0; border: 1px solid var(--border); border-left: 0; background: var(--bg-surface); color: var(--text-3); display: grid; place-items: center; padding: 0; cursor: pointer; box-shadow: 0 1px 3px rgba(30, 25, 15, 0.08); }
-  .shoulder.out:hover { color: var(--spec); border-color: var(--spec); }
+  /* The raised arrow an unpinned stack leaves on the edge it comes out of —
+     one look for the menu, Items | Chat and Details, only the direction differs.
+     Centred on the edge: where that is the window's edge, half of it shows. */
+  .peek { position: absolute; z-index: 31; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); background: linear-gradient(var(--bg-surface), var(--bg-subtle)); color: var(--text-2); display: grid; place-items: center; padding: 0; cursor: pointer;
+          box-shadow: 0 1px 2px rgba(30, 25, 15, 0.14), 0 3px 8px rgba(30, 25, 15, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8); transition: color 0.12s, border-color 0.12s, box-shadow 0.12s; }
+  .peek:hover { color: var(--spec); border-color: var(--spec); box-shadow: 0 2px 4px rgba(30, 25, 15, 0.16), 0 6px 14px rgba(30, 25, 15, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.8); }
+  .peek:focus-visible { outline: 2px solid var(--spec); outline-offset: 2px; }
+  .peek.menu-peek { left: -11px; bottom: 34px; }
+  .peek.at-left { left: -11px; top: 50%; transform: translateY(-50%); }
+  .peek.at-right { right: -11px; top: 50%; transform: translateY(-50%); }
 
   /* Edge tab: where an unpinned stack waits. */
 

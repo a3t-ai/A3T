@@ -23,8 +23,6 @@
     docsPath?: string;
   } = $props();
 
-  let dismissed = $state(false);
-
   const parts = $derived.by(() => {
     if (!highlightWord) return { before: headline, highlight: '', after: '' };
     const i = headline.toLowerCase().indexOf(highlightWord.toLowerCase());
@@ -49,16 +47,11 @@
   );
 </script>
 
-{#if !dismissed}
+  <!-- Banners sit in panes, which have no close; only pop-ins do. -->
   <div
     class="page-banner"
     style="background: linear-gradient(135deg, {tone.bg} 0%, var(--bg-subtle) 100%); border-color: {tone.bg};"
   >
-    <button class="banner-close" title="Dismiss" aria-label="Dismiss" onclick={() => (dismissed = true)}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-        <path d="M4 4l8 8M12 4l-8 8" />
-      </svg>
-    </button>
 
     <h2 class="banner-headline">
       {parts.before}<em class="banner-highlight" style="color: {tone.color};">{parts.highlight}</em>{parts.after}
@@ -74,7 +67,6 @@
       </svg>
     </a>
   </div>
-{/if}
 
 <style>
   .page-banner {
@@ -84,24 +76,12 @@
     padding: 28px 32px 24px;
     margin-bottom: 24px;
   }
-  .banner-close {
-    position: absolute; top: 12px; right: 12px;
-    width: 28px; height: 28px;
-    display: flex; align-items: center; justify-content: center;
-    border: 1px solid var(--border); border-radius: 50%;
-    background: var(--bg-surface); color: var(--text-4);
-    cursor: pointer; transition: all 0.12s;
-  }
-  .banner-close:hover {
-    background: var(--bg-subtle); color: var(--text-1); border-color: var(--border-strong);
-  }
   .banner-headline {
     font-family: var(--font-serif);
     font-size: 26px; font-weight: 500; line-height: 1.35;
     letter-spacing: -0.02em;
     color: var(--text-1);
     margin-bottom: 12px;
-    padding-right: 32px;   /* clear of the dismiss button */
   }
   .banner-highlight { font-style: italic; }
   .banner-subtitle {
