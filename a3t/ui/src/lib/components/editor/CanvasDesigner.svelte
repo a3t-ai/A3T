@@ -8,6 +8,7 @@
   // placement/deploy. Live placement preview replicates select_runtime() so you
   // see which runtime pool this canvas resolves to before saving.
   import SlideEditor from '$lib/components/shared/SlideEditor.svelte';
+  import { openInStudio } from '$lib/stores/panels.svelte.ts';
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
   import CanvasDiagram from '$lib/components/editor/CanvasDiagram.svelte';
   import DesignerChat from '$lib/components/editor/DesignerChat.svelte';
@@ -466,6 +467,7 @@
   onsave={readonly ? undefined : save}
   {saving}
   saveLabel={canvas ? 'Save canvas' : 'Create canvas'}
+  onopen={canvas ? () => openInStudio('canvas', canvas.namespace ?? namespace, canvas.name) : undefined}
   {onclose}
 >
   {@render body()}

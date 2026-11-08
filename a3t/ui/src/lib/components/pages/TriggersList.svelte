@@ -6,7 +6,7 @@
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
-  import { getActivePanel } from '$lib/stores/panels.svelte.ts';
+  import { getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { API_BASE } from '$lib/config';
@@ -454,7 +454,9 @@
 {/if}
 
 <!-- ═══════════ EDITOR (SlidePanel pop-in) ═══════════ -->
-<SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={saveTrigger}>
+<!-- Open in Studio once it is saved: the Studio opens a trigger by its id. -->
+<SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={saveTrigger}
+  onopenineditor={editingTrigger ? () => openInStudio('trigger', editingTrigger!.namespace || 'default', editingTrigger!.name, editingTrigger!.id) : undefined}>
   <div class="te-wiz">
   <aside class="te-rail">
     <div class="te-rail-head">
