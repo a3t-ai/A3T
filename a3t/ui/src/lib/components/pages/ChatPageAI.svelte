@@ -1,6 +1,5 @@
 <script lang="ts">
   import { inBackground, openConnection } from '$lib/core/status/activity';
-  import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import { setActiveSelection, getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { splitContextPath } from '$lib/stores/context.svelte.ts';
   // Same layout as the original chat (conversation sidebar + main pane); the
@@ -29,7 +28,6 @@
   import PermissionsPanel from '$lib/components/chat/PermissionsPanel.svelte';
   import { listPendingApprovals, type PendingApproval } from '$lib/services/api';
   import ListWidget from '$lib/components/chat/ListWidget.svelte';
-  import AppHome from '$lib/shell/AppHome.svelte';
   import { ARTIFACTS, LIST_KIND_TO_ITEM, toEditorText, type ArtifactKind } from '$lib/components/chat/artifacts';
   import { bumpContext, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
   import { getChatSession, setChatSession } from '$lib/stores/layout.svelte.ts';
@@ -856,13 +854,12 @@
   }
 </script>
 
-<div class="chat-layout" class:docked bind:this={chatLayoutEl} bind:clientWidth={layoutW}
+<div class="chat-layout" bind:this={chatLayoutEl} bind:clientWidth={layoutW}
      style="grid-template-columns: 1fr{openArtifact ? ` 6px ${paneShown}px` : ''};">
   <!-- Left: conversation history -->
   <!-- Chat body. The conversation list is the shell's context pane now, so this
        owns only the agent selection and the transcript. -->
   <div class="chat-main" class:landing={landing}>
-    {#if !docked}<SubmenuToggle appType="chat" floating />{/if}
     {#if landing}
       <!-- Chat's title bar: the section pages lead with a PageBanner, this leads
            with its own line of text. No session yet — the composer sits in the
@@ -1066,16 +1063,9 @@
     {#if landing}
       <div class="intents">
         {#each INTENTS as it (it.title)}
-          <button class="intent" onclick={it.go}><b>{it.title}</b><span>{it.sub}</span></button>
+          <button class="intent" onclick={it.go} title={it.sub}><b>{it.title}</b></button>
         {/each}
       </div>
-      <!-- Same Pinned / Latest lists as every other app home, below the composer.
-           Docked, the Items face is one click away and the column is narrow. -->
-      {#if !docked}
-        <div class="landing-lists">
-          <AppHome appType="chat" embedded />
-        </div>
-      {/if}
     {/if}
   </div>
 
@@ -1183,37 +1173,25 @@
     overflow: hidden;
   }
 
-  /* Landing: centre the composer instead of pinning it to the bottom. */
-  .chat-main.landing { justify-content: center; }
+  /* Always shown in a pane (Details, or an app's Chat face), whose width is not
+     the window's: the layout follows the pane, not the viewport. */
+  .chat-layout { container-type: inline-size; }
+  /* Landing: the message box sits at the bottom, as in a running thread — the
+     greeting at the top, suggestions as chips just above the box. */
+  .chat-main.landing { justify-content: flex-start; }
   .chat-messages.hidden { display: none; }
-  .chat-main.landing .chat-input-area { border-top: none; background: transparent; }
-  .landing-head { flex: none; padding: 0 32px 18px; text-align: center; }
+  .chat-main.landing .chat-input-area { border-top: none; background: transparent; order: 2; padding: 8px 16px 14px; }
+  .landing-head { flex: none; order: 0; padding: 28px 16px 8px; text-align: center; }
   .landing-title {
-    font-family: var(--font-serif); font-size: 26px; font-weight: 500;
+    font-family: var(--font-serif); font-size: 22px; font-weight: 500;
     color: var(--text-1); margin: 0 0 6px;
   }
   .landing-sub { font-size: 12.5px; color: var(--text-4); margin: 0; }
 
-  .intents { max-width: 860px; width: 100%; margin: 4px auto 22px; padding: 0 32px; box-sizing: border-box; display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  .intent { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
+  .intents { order: 1; max-width: 860px; width: 100%; margin: auto auto 0; padding: 0 16px 8px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 6px; }
+  .intent { display: flex; flex-direction: row; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
   .intent:hover { border-color: var(--spec); background: var(--spec-bg); }
-  .intent b { font-size: 13px; font-weight: 600; color: var(--text-1); }
-  .intent span { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
-  @media (max-width: 900px) { .intents { grid-template-columns: repeat(2, 1fr); } }
-  /* Docked in the shell's middle stack the column is narrow whatever the window
-     is, so the layout follows the column, not the viewport. */
-  .chat-layout.docked { container-type: inline-size; }
-  /* Docked, the message box always sits at the bottom, as in a running thread:
-     the greeting at the top, suggestions as chips just above the box. */
-  .chat-layout.docked .chat-main.landing { justify-content: flex-start; }
-  .chat-layout.docked .landing-head { order: 0; padding: 28px 16px 8px; }
-  .chat-layout.docked .landing-title { font-size: 22px; }
-  .chat-layout.docked .intents { order: 1; margin: auto auto 0; padding: 0 16px 8px; display: flex; flex-wrap: wrap; gap: 6px; max-width: 860px; width: 100%; box-sizing: border-box; }
-  .chat-layout.docked .intent { flex-direction: row; padding: 5px 10px; border-radius: 999px; }
-  .chat-layout.docked .intent b { font-size: 12px; font-weight: 500; }
-  .chat-layout.docked .intent span { display: none; }
-  .chat-layout.docked .chat-input-area { order: 2; padding: 8px 16px 14px; }
-  .landing-lists { max-width: 860px; margin: 0 auto; width: 100%; padding: 0 32px 24px; box-sizing: border-box; }
+  .intent b { font-size: 12px; font-weight: 500; color: var(--text-1); }
 
 
   .chat-messages {
