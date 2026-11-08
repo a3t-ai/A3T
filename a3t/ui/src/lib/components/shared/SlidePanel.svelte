@@ -96,8 +96,14 @@
   @keyframes paneOut { from { opacity: 1; } to { opacity: 0; } }
   /* In the pane an item's sections run as tabs across the top, not a tree on
      the left (PropertiesTree switches to tabs there too). */
-  .sp-panel.in-pane :global(.panel-layout) { display: flex; flex-direction: column; height: 100%; }
-  .sp-panel.in-pane :global(.panel-layout > :last-child) { flex: 1 1 auto; min-height: 0; }
+  /* Every page lays an item out as a rail (header and sections) beside its
+     content, in its own grid. In the pane that becomes header and tabs across
+     the top, content below. */
+  .sp-panel.in-pane .sp-body > :global(:first-child) { display: flex !important; flex-direction: column; height: 100%; min-height: 0; }
+  .sp-panel.in-pane .sp-body > :global(:first-child > :first-child:not(:last-child)) {
+    flex: 0 0 auto; width: auto; max-width: none; height: auto; min-height: 0; overflow: visible; border-right: 0;
+  }
+  .sp-panel.in-pane .sp-body > :global(:first-child > :last-child) { flex: 1 1 auto; min-height: 0; }
   @keyframes panelIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
   @keyframes panelOut { from { transform: translateX(0); } to { transform: translateX(100%); } }
 
