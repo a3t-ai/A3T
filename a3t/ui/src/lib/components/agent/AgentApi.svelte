@@ -33,7 +33,8 @@
       <div class="ep"><span class="verb">POST</span><span class="path">{url}</span>
         <button class="btn2" onclick={() => cp('url', url)}>{copied === 'url' ? 'Copied' : 'Copy'}</button></div>
       <dl class="kv">
-        <dt>Auth</dt><dd><span class="mono">Authorization: Bearer &lt;token&gt;</span> — a signed-in user's token. Calls run as that user: every tool call is checked for the agent <em>and</em> the user.</dd>
+        <dt>Auth</dt><dd><span class="mono">Authorization: Bearer &lt;token&gt;</span> — a signed-in user's token; the call then runs as that user, and every tool call is checked for the agent <em>and</em> the user.
+          <span class="warnline">Webhook paths are public: a call without a token is accepted too and runs without a user (SRV-16).</span></dd>
         <dt>Conversation</dt><dd><span class="mono">session_id: "{agent.id}:&lt;your id&gt;"</span> — send the same id to continue a conversation; a new id starts one.</dd>
         <dt>Answer</dt><dd>Not in the response: it starts a run. Poll it until <span class="mono">completed</span>; <span class="mono">output.content</span> is the answer.</dd>
       </dl>
@@ -79,7 +80,7 @@
       <div class="card-head"><h3>Coming</h3><span class="tag sample">Sample</span></div>
       <ul class="plain">
         <li><b>One call, one answer</b> — <span class="mono">POST …/agents/{agent.name}/messages</span> returns the answer, or streams it (SSE, AI SDK compatible).</li>
-        <li><b>App keys</b> — a key per calling app, its own rate limit, revocable, instead of a user's token.</li>
+        <li><b>App keys</b> — a key per calling app, its own rate limit, revocable, instead of a user's token; calls without one refused.</li>
         <li><b>Allowed origins</b> — which web apps may call it from the browser (CORS).</li>
         <li><b>Pin a release</b> — <span class="mono">?release=v3</span>, or dev/prod endpoints per environment.</li>
       </ul>
@@ -91,6 +92,7 @@
 <style>
   .kv { grid-template-columns: 100px 1fr; font-size: 12.5px; }
   .kv em { font-style: normal; font-weight: 600; }
+  .warnline { display: block; margin-top: 4px; color: var(--warn, #b45309); }
   tr.today td { background: color-mix(in srgb, var(--warn-bg, #fbf0e0) 60%, transparent); }
   .plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
   pre.code { max-height: 420px; padding-right: 80px; }
