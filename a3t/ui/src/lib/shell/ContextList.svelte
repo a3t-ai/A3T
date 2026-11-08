@@ -19,9 +19,8 @@
   let error = $state('');
   let filter = $state('');
 
-  // Sort and rows-or-cards, remembered per app in this browser.
+  // Sort, remembered per app in this browser.
   let sortBy = $state<'recent' | 'name'>('recent');
-  let layout = $state<'rows' | 'cards'>('rows');
   let viewLoadedFor = '';
   $effect(() => {
     const key = `a3t.items.view.${appType}`;
@@ -30,11 +29,10 @@
     try {
       const v = JSON.parse(localStorage.getItem(key) ?? '{}');
       sortBy = v.sort === 'name' ? 'name' : 'recent';
-      layout = v.layout === 'cards' ? 'cards' : 'rows';
-    } catch { sortBy = 'recent'; layout = 'rows'; }
+    } catch { sortBy = 'recent'; }
   });
   function saveView() {
-    try { localStorage.setItem(`a3t.items.view.${appType}`, JSON.stringify({ sort: sortBy, layout })); } catch {}
+    try { localStorage.setItem(`a3t.items.view.${appType}`, JSON.stringify({ sort: sortBy })); } catch {}
   }
   const sorted = (list: AppItem[]) => sortBy === 'name' ? list.slice().sort((a, b) => a.label.localeCompare(b.label)) : list;
 
@@ -225,7 +223,7 @@
 {#snippet row(item: Item)}
   {@const idx = listed.indexOf(item)}
   {@const tone = statusTone(item.status)}
-  <div class="ctx-row" class:active={item.id === activeId} class:pending={item.pending} class:card={layout === 'cards' && !isTree}
+  <div class="ctx-row" class:active={item.id === activeId} class:pending={item.pending}
        style={item.depth != null ? `margin-left:${item.depth * 14}px` : ''}>
     {#if isTree}
       {#if hasChildren(idx)}
@@ -268,7 +266,7 @@
 {/snippet}
 
 {#snippet list(rows: Item[])}
-  <div class="ctx-gitems" class:cards={layout === 'cards' && !isTree}>
+  <div class="ctx-gitems">
     {#each rows as item (item.id)}{@render row(item)}{/each}
   </div>
 {/snippet}
@@ -304,14 +302,6 @@
         <option value="recent">Recent</option>
         <option value="name">Name</option>
       </select>
-      <div class="ctx-seg" role="group" aria-label="Layout">
-        <button aria-pressed={layout === 'rows'} onclick={() => { layout = 'rows'; saveView(); }} title="Rows" aria-label="Rows">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg>
-        </button>
-        <button aria-pressed={layout === 'cards'} onclick={() => { layout = 'cards'; saveView(); }} title="Cards" aria-label="Cards">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6" height="6" rx="1.5" /><rect x="14" y="4" width="6" height="6" rx="1.5" /><rect x="4" y="14" width="6" height="6" rx="1.5" /><rect x="14" y="14" width="6" height="6" rx="1.5" /></svg>
-        </button>
-      </div>
     {/if}
   </div>
 
@@ -356,7 +346,7 @@
 </aside>
 
 <style>
-  /* Items, as in the shell design: header strip, toolbar, groups of rows or cards. */
+  /* Items, as in the shell design: header strip, toolbar, groups of rows. */
   .ctx { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--bg-page); }
 
   .ctx-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
@@ -373,9 +363,6 @@
   .ctx-search { flex: 1 1 120px; width: auto; min-width: 100px; height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 10px; background: var(--bg-surface); font: 400 13px var(--font-sans); color: var(--text-1); outline: none; }
   .ctx-search:focus { border-color: var(--spec); }
   .ctx-sel { flex: 0 0 auto; width: auto; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 400 12.5px var(--font-sans); padding: 0 6px; color: var(--text-2); }
-  .ctx-seg { flex: 0 0 auto; display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 9px; }
-  .ctx-seg button { display: inline-flex; border: 0; border-radius: 7px; background: transparent; padding: 3px 8px; color: var(--text-3); cursor: pointer; }
-  .ctx-seg button[aria-pressed='true'] { background: var(--bg-surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
 
   .ctx-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
   .ctx-note { padding: 22px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 12px; text-align: center; font-size: 13px; color: var(--text-3); }
@@ -389,7 +376,6 @@
   .ctx-gname { font: 400 15px var(--font-serif); color: var(--text-1); }
   .ctx-gcount { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
   .ctx-gitems { display: flex; flex-direction: column; gap: 6px; }
-  .ctx-gitems.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
   .ctx-body > .ctx-gitems + .ctx-group, .ctx-pinned + * { margin-top: 10px; }
 
   /* A row: icon · name and project · subline · status. */
@@ -419,13 +405,6 @@
   .ctx-rb:hover { background: var(--bg-subtle); border-color: var(--border); }
   .ctx-rb.on { color: #c97c2e; }
   .ctx-row.active .ctx-acts { background: var(--bg-surface); }
-
-  /* Cards: icon and name, then project and status, then the subline. */
-  .ctx-row.card { align-items: stretch; border-radius: 12px; }
-  .ctx-row.card .ctx-pick { flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px; }
-  .ctx-row.card .ctx-text { flex-basis: calc(100% - 42px); }
-  .ctx-row.card .ctx-st { order: 3; }
-  .ctx-row.card .ctx-acts { top: 10px; transform: none; }
 
   /* Trees (Runtimes): compact rows with a twisty. */
   .ctx-twist { flex: none; width: 16px; height: 22px; display: grid; place-items: center; background: none; border: 0; padding: 0 0 0 6px; color: var(--text-4); cursor: pointer; }
