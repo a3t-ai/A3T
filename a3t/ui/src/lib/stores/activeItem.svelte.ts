@@ -27,6 +27,12 @@ export interface ActiveItemView {
   /// Bump whenever the view (re)loads or saves the config: the text at that
   /// moment is the saved copy that later edits are compared with.
   rev?: number | string;
+  /// When the view knows exactly whether its text differs from the stored copy
+  /// (the Studio does), it says so and `rev` is not needed.
+  dirty?: boolean;
+  /// The view accepts the agent's edits: `propose_edit` hands back a complete
+  /// new text, which this puts in the editor, unsaved. The chat offers Undo.
+  applyEdit?: (text: string) => void;
 }
 
 interface Published extends ActiveItemView {
@@ -60,7 +66,7 @@ export function trackActiveItem(get: () => ActiveItemView | null) {
     // By id where there is one: a new item's name changes as it is typed.
     const key = `${v.kind}:${v.id ?? `${v.namespace ?? ''}/${v.name}`}:${v.rev ?? ''}`;
     if (key !== baseKey) { baseKey = key; base = v.text ?? ''; }
-    item = { owner, view: { ...v, dirty: v.text != null && v.text !== base } };
+    item = { owner, view: { ...v, dirty: v.dirty ?? (v.text != null && v.text !== base) } };
   });
   $effect(() => () => {
     if (item?.owner === owner) item = null;

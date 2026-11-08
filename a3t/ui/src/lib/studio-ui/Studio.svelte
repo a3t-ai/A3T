@@ -7,10 +7,10 @@
   import HomeView from './views/HomeView.svelte';
   import { Studio as Layout } from './layout.svelte.ts';
   import { useWorkspace } from './workspace.svelte.ts';
-  import { resolveItem, type Item, type StudioHost } from '$lib/studio-core';
+  import { resolveItem, type Item, type StudioHost, type Workspace } from '$lib/studio-core';
   import type { StudioConfig } from './studios';
 
-  let { host, config, initial = [], request = null, lead }: {
+  let { host, config, initial = [], request = null, lead, chat, onworkspace }: {
     host: StudioHost;
     config: StudioConfig;
     /// Items to open on arrival (e.g. named in the address).
@@ -19,6 +19,11 @@
     /// `at` opens it again (it is shown even when its tab is already open).
     request?: { item: Item; at: string | number } | null;
     lead?: Snippet;
+    /// The host's chat, shown as a tab beside the Explorer (the Console passes
+    /// its UI Agent conversation). None: no Chat tab.
+    chat?: Snippet;
+    /// Hands the host the workspace, so it can tell its chat what is open.
+    onworkspace?: (ws: Workspace) => void;
   } = $props();
 
   // A Studio is created for one config and host; a different one is a new Studio.
@@ -27,6 +32,7 @@
     for (const it of initial) ws.open(it);
     return { studio: new Layout(config.app, config.layout), workspace: ws };
   });
+  untrack(() => onworkspace?.(workspace));
 
   /// Open an item (hosts call this, e.g. from their own navigation). Templates
   /// and agents named without their id are looked up first.
@@ -43,7 +49,7 @@
   });
 </script>
 
-<Workbench {studio} {workspace} homeKind={config.homeKind} pin={config.pin} {lead}>
+<Workbench {studio} {workspace} homeKind={config.homeKind} pin={config.pin} {lead} {chat}>
   {#snippet home()}
     <HomeView {config} {workspace} />
   {/snippet}

@@ -13,7 +13,8 @@ import type { ItemKind, PanelDef } from './types';
 
 /// The right region for config documents: the Form (studio-ui `config`) and
 /// the AI assistant (`ai`), which works on the document's text.
-export const FORM: PanelDef[] = [{ id: 'form', title: 'Form', component: 'config' }, { id: 'ai', title: 'AI', component: 'ai' }];
+// The assistant is the Chat beside the Explorer (the UI Agent), not a panel per item.
+export const FORM: PanelDef[] = [{ id: 'form', title: 'Form', component: 'config' }];
 /// No action of its own yet: the config as code in the center, as a form beside it.
 const configViews = { center: 'code', code: 'code', right: FORM };
 

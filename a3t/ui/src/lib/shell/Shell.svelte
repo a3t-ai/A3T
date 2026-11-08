@@ -271,10 +271,11 @@
         {/if}
       </div>
       <div class="face" class:hidden={shownFace !== 'chat'}>
-        <!-- In AI Chat the conversation is in Details, and comes here only while
-             an item is pinned beside it: never both, or two copies of the one
-             conversation would each answer the pane and the agent. -->
-        {#if chatMounted && (kind !== 'chat' || chatBeside)}
+        <!-- One copy of a conversation at a time, or two would each answer the
+             pane and the agent: in AI Chat the conversation is in Details (it
+             comes here only while an item is pinned beside it), and the Studio
+             has the chat beside its Explorer. -->
+        {#if chatMounted && kind !== 'own' && (kind !== 'chat' || chatBeside)}
           {#key getChatSession()}<ChatPageAI docked />{/key}
         {/if}
       </div>

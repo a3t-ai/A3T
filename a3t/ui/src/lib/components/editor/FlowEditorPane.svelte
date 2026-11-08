@@ -119,7 +119,10 @@
   // Single-column hosts drive one selection across all three views.
   let soloMode = $state<'graph' | 'code' | 'form'>('graph');
   // Graph/Code report themselves; the form delegates to its own sub-tabs.
-  $effect(() => { if (soloMode !== 'form') onsection?.(soloMode); });
+  // Report what is on screen: the single-column layout switches soloMode; the
+  // main part (the Studio) and the two-column layout switch leftMode.
+  const shownMode = $derived(singleColumn && part !== 'main' ? soloMode : leftMode);
+  $effect(() => { if (shownMode !== 'form') onsection?.(shownMode); });
   // With the AI tab hidden, never leave the right pane on a tab that is gone.
   $effect(() => { if (!showAi && rightMode === 'ai') rightMode = 'form'; });
   let yamlSource = $state(untrack(() => initialYaml));

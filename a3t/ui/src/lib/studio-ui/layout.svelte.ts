@@ -4,7 +4,9 @@
 /// fill the studio. Kept per browser under `a3t.studio.<app>`.
 
 export type RegionId = 'left' | 'right' | 'bottom';
-export type Panel = { id: string; title: string };
+/// `keepAlive`: once shown, stays mounted (hidden) while another tab is on top —
+/// the Chat keeps streaming a reply while the Explorer is shown.
+export type Panel = { id: string; title: string; keepAlive?: boolean };
 export type Tab = { id: string; title: string; icon?: string; dirty?: boolean; hint?: string };
 export type RegionState = { size: number; minimized: boolean; active: string };
 export type StudioLayout = {

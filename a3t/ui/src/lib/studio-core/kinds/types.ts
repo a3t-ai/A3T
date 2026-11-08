@@ -12,6 +12,8 @@ export type PanelDef = {
   id: string; title: string; component?: string;
   /// Shown only while the kind's `badge` for it is above zero (e.g. Problems).
   onlyWithBadge?: boolean;
+  /// Stays mounted once shown (see the Studio's Panel).
+  keepAlive?: boolean;
 };
 
 /// Everything the Studio knows about one sort of item. Adding a sort of item

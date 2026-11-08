@@ -33,7 +33,7 @@
   import {
     artifactFor, openChatArtifact, setArtifactRevision, paneMessageFor, takePaneMessage, type ChatArtifact,
   } from '$lib/stores/chatArtifact.svelte.ts';
-  import { activeUiContext, redactSecrets } from '$lib/stores/activeItem.svelte.ts';
+  import { activeUiContext, redactSecrets, getActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
   /// Docked: the Chat face of the shell's middle stack, beside whatever Details
   /// shows. Its conversation is the shell's (layout store), not the URL's, so
@@ -146,6 +146,13 @@
   /// transcript are marked seen on the first pass so reopening a document
   /// never replays an old edit over it.
   const seenEdits = new Set<string>();
+  /// The last edit the agent made to the item beside this chat, for Undo.
+  let agentEdit = $state<{ name: string; before: string; summary: string; apply: (t: string) => void } | null>(null);
+  function undoAgentEdit() {
+    if (!agentEdit) return;
+    agentEdit.apply(agentEdit.before);
+    agentEdit = null;
+  }
   let editsPrimed = false;
   $effect(() => {
     const msgs = chat.messages as any[];
@@ -164,6 +171,15 @@
     if (!editsPrimed) { editsPrimed = true; return; }
     const l = latest as { key: string; raw: string; summary: string } | null;
     if (l && open) untrack(() => { setArtifactRevision({ text: l.raw, seq: ++revisionSeq, edit: l.summary }); });
+    // Beside an editor that takes edits (the Studio's open document): put it
+    // there, unsaved, and offer Undo here.
+    else if (l && docked) untrack(() => {
+      const it = getActiveItem();
+      if (!it?.applyEdit) return;
+      const apply = it.applyEdit;
+      agentEdit = { name: it.name, before: it.text ?? '', summary: l.summary, apply };
+      apply(l.raw);
+    });
   });
 
   let messagesEl = $state<HTMLDivElement>();
@@ -281,7 +297,7 @@
             // propose_edit stores nothing (the pane applies it, unsaved), so it
             // widens nothing. Only added to an explicit list: absent stays absent.
             ...(Array.isArray(a?.enabled_tools)
-              ? { enabled_tools: openArtifact && !a.enabled_tools.includes('propose_edit') ? [...a.enabled_tools, 'propose_edit'] : a.enabled_tools }
+              ? { enabled_tools: (openArtifact || (docked && getActiveItem()?.applyEdit)) && !a.enabled_tools.includes('propose_edit') ? [...a.enabled_tools, 'propose_edit'] : a.enabled_tools }
               : {}),
             // The agent's MCP servers (Configuration tab), so the engine discovers and
             // can call their tools; without them the chat wrapper falls back to FlowR's.
@@ -930,6 +946,13 @@
     </div>
 
     <div class="chat-input-area">
+      {#if agentEdit}
+        <div class="agent-edit" role="status">
+          <span>Changed <b>{agentEdit.name}</b>{agentEdit.summary ? `: ${agentEdit.summary}` : ''}. Not saved.</span>
+          <button onclick={undoAgentEdit}>Undo</button>
+          <button onclick={() => (agentEdit = null)}>Keep</button>
+        </div>
+      {/if}
       <div class="chat-input-wrap">
         {#if attachments.length > 0 || attachError}
           <div class="attach-row">
@@ -1283,6 +1306,11 @@
   }
 
   /* Input */
+  .agent-edit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 auto 8px; max-width: 860px; width: 100%; box-sizing: border-box;
+                padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
+  .agent-edit span { flex: 1 1 200px; min-width: 0; }
+  .agent-edit button { height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12px var(--font-sans); color: var(--text-1); cursor: pointer; }
+  .agent-edit button:hover { border-color: var(--spec); }
   .chat-input-area {
     /* Capped so the box does not stretch the full width of a wide monitor; the
        transcript above it still uses the full width. */
