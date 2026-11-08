@@ -178,6 +178,39 @@ async function loadAll(source: string): Promise<AppItem[]> {
     return out;
   }
 
+  if (source === 'resources') {
+    // Every resource and flow, grouped by kind in the categories' own order.
+    // Id `<category>:<namespace>/<name>`: the Resources page opens that one.
+    const byCat: Record<string, AppItem[]> = {};
+    for (const ns of namespacesFor('picker')) {
+      const res = await mcpCall('list_resources', { namespace: ns });
+      if (!res.ok) continue;
+      for (const r of rows(res.data, 'resources')) {
+        if (r.type === 'project') continue; // the Projects app's records
+        const project = itemProject('resource', r.namespace ?? ns, r);
+        if (!inContext(project, 'shared')) continue;
+        const c = categorize(r.type ?? '');
+        (byCat[c] ??= []).push({ id: `${c}:${r.namespace ?? ns}/${r.name}`, label: r.name, sub: [project, r.type].filter(Boolean).join(' · ') });
+      }
+    }
+    for (const ns of namespacesFor('picker')) {
+      const fl = await mcpCall('list_flows', { namespace: ns });
+      if (!fl.ok) continue;
+      for (const f of rows(fl.data, 'workflows', 'flows')) {
+        const project = itemProject('flow', f.namespace ?? ns, f);
+        if (!inContext(project, 'owned')) continue;
+        (byCat.flows ??= []).push({ id: `flows:${f.namespace ?? ns}/${f.name}`, label: f.name,
+          sub: [project, f.version ? `v${f.version}` : ''].filter(Boolean).join(' · '), status: f.enabled === false ? 'disabled' : undefined });
+      }
+    }
+    const known = new Set<string>(RESOURCE_CATEGORIES.map((c) => c.key));
+    return [
+      ...RESOURCE_CATEGORIES.filter((c) => c.key !== 'all' && byCat[c.key]?.length)
+        .flatMap((c) => byCat[c.key].map((it) => ({ ...it, namespace: c.label }))),
+      // Kinds the categories don't name yet, so nothing goes missing.
+      ...Object.entries(byCat).filter(([k]) => !known.has(k)).flatMap(([, l]) => l.map((it) => ({ ...it, namespace: 'Other' }))),
+    ];
+  }
   if (source === 'resource-categories') {
     // Fixed categories, always all shown — a zero is information. Counts come from
     // the same two sources the Resources page merges.

@@ -454,6 +454,13 @@ do:
     finally { loading = false; }
     // The shell's "New resource": the form asks for the kind first.
     if (getActivePanel()?.props?.create) openCreate('');
+    // A resource picked in the shell's Items: `<category>:<namespace>/<name>`.
+    const sel = getActivePanel()?.props?.selectedId as string | undefined;
+    const m = sel?.match(/^([^:]+):([^/]+)\/(.+)$/);
+    if (m) {
+      const r = allResources.find((x) => x.category === m[1] && x.namespace === m[2] && x.name === m[3]);
+      if (r) selectResource(r);
+    }
   });
 
   // A different project (or "show platform") is a different list.

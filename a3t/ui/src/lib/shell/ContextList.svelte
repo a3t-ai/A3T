@@ -107,7 +107,7 @@
 
   /// Rows grouped under their namespace, or null for lists that have none
   /// (conversations, resource categories) — those stay flat.
-  const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections'));
+  const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections' || spec?.source === 'resources'));
 
   /// Pinned items first, as their own group; they stay in their namespace too.
   const pinnedShown = $derived.by<Item[]>(() => {
@@ -150,16 +150,21 @@
   }
 
 
+  /// Only the latest load may write: when the project list arrives mid-load a
+  /// second load starts, and the first (made with the old project list) must
+  /// not land after it and overwrite it.
+  let loadSeq = 0;
   async function load(source: string) {
+    const seq = ++loadSeq;
     loading = true;
     error = '';
     try {
-      items = await loadAppItems(source);
+      const got = await loadAppItems(source);
+      if (seq === loadSeq) items = got;
     } catch (e: any) {
-      error = e?.message ?? 'Failed to load';
-      items = [];
+      if (seq === loadSeq) { error = e?.message ?? 'Failed to load'; items = []; }
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 

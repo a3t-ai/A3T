@@ -53,7 +53,8 @@ export const APP_CONTEXT: Record<string, { label: string; source: string; focuse
   // Flow Studio has its own explorer (projects → flows, resources, triggers…).
   // Resources lists its FIXED subtype categories, not instances: the page is a
   // per-category browser, so the pane offers exactly the categories it filters to.
-  resources: { label: 'Resource Types', source: 'resource-categories', focuses: true },
+  // Every resource and flow, grouped by kind; the one picked opens in Details.
+  resources: { label: 'Resources', source: 'resources', focuses: true },
   triggers: { label: 'Triggers', source: 'triggers', focuses: true },
   executions: { label: 'Executions', source: 'executions', focuses: true },
   runtime: { label: 'Hosts & Runtimes', source: 'runtimes', focuses: true },
