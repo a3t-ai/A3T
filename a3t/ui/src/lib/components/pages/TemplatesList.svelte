@@ -356,12 +356,13 @@ do:
 
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.
-  /// A template as people meet it — About, Design (read-only on a base
+  /// A template as people meet it — About, Agents, Code (read-only on a base
   /// template), Versions — and, for your own copies, Settings. A new one: its details, then its
   /// design.
   const GUIDE_ICON = {
     about: '<circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 5h.01"/>',
     versions: '<path d="M8 2v6l4 2"/><circle cx="8" cy="8" r="6.5"/>',
+    agents: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>',
   };
   const tplSteps = $derived.by((): WizardStep[] => draftTemplate?.isNew ? [
     { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
@@ -369,7 +370,8 @@ do:
     { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
   ] : [
     { id: 'about', icon: GUIDE_ICON.about, label: 'About', hint: 'What it is — and clone it, or use an agent built from it' },
-    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: readOnly ? 'How it is built: its graph, code and form — read-only' : 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'agents', icon: GUIDE_ICON.agents, label: 'Agents', hint: 'The agents built from it, and what each does' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Code', hint: readOnly ? 'How it is built: its graph, code and form — read-only' : 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
     { id: 'versions', icon: GUIDE_ICON.versions, label: 'Versions', hint: 'Its releases, its copies and the agents built from it' },
     ...(readOnly ? [] : [
       { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
@@ -385,7 +387,7 @@ do:
     propNode = 'about';
   }
 
-  let propNode = $state<'about' | 'versions' | 'yaml' | 'detail'>('about');
+  let propNode = $state<'about' | 'agents' | 'versions' | 'yaml' | 'detail'>('about');
 
   // The chat's context: this template, the tab on screen, and its spec as
   // edited. Picking another template is a new key, so its spec is the saved one.
@@ -672,7 +674,7 @@ do:
                   <div class="sp-empty">No spec defined for this template.</div>
                 {/if}
 
-              {:else if propNode === 'about' || propNode === 'versions'}
+              {:else if propNode === 'about' || propNode === 'agents' || propNode === 'versions'}
                 <TemplateGuide view={propNode} {template} {readOnly} agents={templateAgents} {agentsLoading} {allTemplates}
                   projects={copyProjects} {copyRequest} oncopy={copyTemplate} onview={(id) => (propNode = id as any)}
                   onopentemplate={(t) => navigateToDetail('templates', 'Templates', t.name)} />

@@ -11,7 +11,7 @@
   import { readTemplate } from './templateSpec';
 
   let { view, template, readOnly, agents = [], agentsLoading = false, allTemplates = [], projects = [], copyRequest = 0, oncopy, onview, onopentemplate }: {
-    view: 'about' | 'versions';
+    view: 'about' | 'agents' | 'versions';
     template: any;
     /// A base template (not yours): read-only, copied rather than edited.
     readOnly: boolean;
@@ -42,6 +42,16 @@
     const current = t ? String(t.activeVersion ?? t.version) : '';
     return { path, version, template: t, newer: t && version && current !== version ? current : null };
   });
+
+  /// An agent's description, or — agent records often have none — the start of
+  /// its prompt, said to be that.
+  function describe(a: any): { text: string; fromPrompt: boolean } {
+    if (a?.description) return { text: String(a.description), fromPrompt: false };
+    let v: any = a?.variables;
+    if (typeof v === 'string') { try { v = JSON.parse(v); } catch { v = null; } }
+    const p = String(v?.system_prompt ?? '').trim();
+    return p ? { text: p.length > 180 ? `${p.slice(0, 180).trimEnd()}…` : p, fromPrompt: true } : { text: '', fromPrompt: false };
+  }
 
   // ── Clone and edit ──
   let copying = $state(false);
@@ -94,7 +104,7 @@
         {#each facts.description.trim().split(/\n\s*\n/) as para}<p class="tg-desc">{para.replace(/\s*\n\s*/g, ' ')}</p>{/each}
       {/if}
       {#if !facts.summary && !facts.description}
-        <p class="tg-dim">{readOnly ? 'It has no summary or description.' : 'No summary or description yet — add document.summary in Design so people know what it is for.'}</p>
+        <p class="tg-dim">{readOnly ? 'It has no summary or description.' : 'No summary or description yet — add document.summary in Code so people know what it is for.'}</p>
       {/if}
       {#if base}<p class="tg-lineage">Your copy of <button class="link" onclick={() => base?.template && onopentemplate?.(base.template)}>{base.path}</button> v{base.version}{#if base.newer} — <b>v{base.newer} is out</b>{/if}</p>{/if}
     </section>
@@ -126,13 +136,13 @@
           {:else if agents.length}
             <p class="tg-dim">{agents.length} ready to use — open one to chat with it or deploy it.</p>
             {@render agentRows(agents.slice(0, 4))}
-            {#if agents.length > 4}<button class="link" onclick={() => onview?.('versions')}>All {agents.length}</button>{/if}
+            {#if agents.length > 4}<button class="link tg-more" onclick={() => onview?.('agents')}>All {agents.length} →</button>{/if}
           {:else}<p class="tg-dim">None yet.</p>{/if}
           <button class="link tg-more" onclick={createAgent}>Or create a new agent from it</button>
         </section>
       </div>
     {:else}
-      <div class="tg-next"><button class="tg-btn primary" onclick={createAgent}>Create an agent from it</button><button class="tg-btn" onclick={() => onview?.('yaml')}>Edit its design</button></div>
+      <div class="tg-next"><button class="tg-btn primary" onclick={createAgent}>Create an agent from it</button><button class="tg-btn" onclick={() => onview?.('yaml')}>Edit its code</button></div>
     {/if}
 
     <section class="tg-card">
@@ -143,7 +153,7 @@
         <span class="tg-chip"><b>Memory</b>{facts.agent.memory ? 'yes' : 'none'}</span>
         <span class="tg-chip"><b>Hooks</b>{facts.hooks.length ? facts.hooks.join(', ') : 'none'}</span>
       </div>
-      <button class="link tg-more" onclick={() => onview?.('yaml')}>See its design →</button>
+      <button class="link tg-more" onclick={() => onview?.('yaml')}>See its code →</button>
     </section>
 
     <div class="tg-two">
@@ -165,15 +175,35 @@
       <div><dt>Version</dt><dd>{template.activeVersion ?? template.version ?? facts.version ?? '—'}</dd></div>
       <div><dt>From</dt><dd>{template.namespace ?? facts.namespace ?? '—'}</dd></div>
       <div><dt>By</dt><dd>{template.created_by || '—'}</dd></div>
-      <div><dt>Used by</dt><dd><button class="link" onclick={() => onview?.('versions')}>{agentsLoading ? '…' : `${agents.length} agent${agents.length === 1 ? '' : 's'} · ${copies.length} cop${copies.length === 1 ? 'y' : 'ies'}`}</button></dd></div>
+      <div><dt>Used by</dt><dd><button class="link" onclick={() => onview?.('agents')}>{agentsLoading ? '…' : `${agents.length} agent${agents.length === 1 ? '' : 's'} · ${copies.length} cop${copies.length === 1 ? 'y' : 'ies'}`}</button></dd></div>
     </dl>
+
+  {:else if view === 'agents'}
+    <section class="tg-card">
+      <header class="tg-row"><h3>Agents built from it <span class="tg-count">{agents.length}</span></h3><button class="tg-btn" onclick={createAgent}>Create an agent from it</button></header>
+      {#if agentsLoading}
+        <!-- the header bar shows loading -->
+      {:else if agents.length === 0}<p class="tg-dim">None yet. An agent is a working copy of this template with its own model, tools and way of being started.</p>
+      {:else}
+        <ul class="tg-agentlist">
+          {#each agents as a (a.id)}
+            {@const about = describe(a)}
+            <li><button onclick={() => navigateToDetail('agents', 'Agents', a.name ?? a.id)} title="Open {a.name ?? a.id}">
+              <span class="tg-agent-head"><b class="mono">{a.name ?? a.id}</b><small>{a.namespace ?? ''}{a.mode ? ` · ${a.mode}` : ''}</small><span class="tg-st">{a.status ?? ''}</span></span>
+              {#if about.text}<span class="tg-agent-desc">{#if about.fromPrompt}<em>Prompt: </em>{/if}{about.text}</span>
+              {:else}<span class="tg-agent-desc tg-dim">No description.</span>{/if}
+            </button></li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
 
   {:else if view === 'versions'}
     {#if base}
       <section class="tg-card">
         <h3>Copied from</h3>
         <p class="tg-dim"><button class="link" onclick={() => base?.template && onopentemplate?.(base.template)}>{base.path}</button>, version {base.version}.
-          {#if base.newer}<b>Version {base.newer} is out</b> — compare it, and bring changes into your copy in Design.{:else if base.template}It is still the latest.{:else}It is no longer listed.{/if}</p>
+          {#if base.newer}<b>Version {base.newer} is out</b> — compare it, and bring changes into your copy in Code.{:else if base.template}It is still the latest.{:else}It is no longer listed.{/if}</p>
       </section>
     {/if}
     <section class="tg-card">
@@ -183,12 +213,6 @@
           <li><b class="mono">v{v}</b><span>{v === (template.activeVersion ?? template.version) ? 'Current — what new agents and copies get.' : 'Earlier release.'}</span></li>
         {/each}
       </ul>
-    </section>
-    <section class="tg-card">
-      <h3>Agents built from it <span class="tg-count">{agents.length}</span></h3>
-      {#if agentsLoading}
-        <!-- the header bar shows loading -->
-      {:else if agents.length}{@render agentRows(agents)}{:else}<p class="tg-dim">None yet.</p>{/if}
     </section>
     <section class="tg-card">
       <h3>Copies of it <span class="tg-count">{copies.length}</span></h3>
@@ -241,6 +265,15 @@
   .tg-form { display: flex; flex-direction: column; gap: 10px; }
   .tg-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
   .tg-count { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
+  .tg-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .tg-agentlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .tg-agentlist button { width: 100%; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); cursor: pointer; font: inherit; text-align: left; }
+  .tg-agentlist button:hover { border-color: var(--spec); }
+  .tg-agent-head { display: flex; align-items: baseline; gap: 10px; }
+  .tg-agent-head b { flex: 1 1 auto; font-size: 13.5px; color: var(--text-1); }
+  .tg-agent-head small { font-size: 12px; color: var(--text-4); }
+  .tg-agent-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+  .tg-agent-desc em { font-style: normal; color: var(--text-4); }
   .tg-agents { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .tg-agents button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); cursor: pointer; font: inherit; font-size: 13px; text-align: left; }
   .tg-agents button:hover { border-color: var(--spec); }
