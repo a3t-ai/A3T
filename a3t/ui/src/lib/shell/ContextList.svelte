@@ -160,7 +160,10 @@
     error = '';
     try {
       const got = await loadAppItems(source);
-      if (seq === loadSeq) items = got;
+      // A server can list one record twice (seen: a3t/flowr-system-db); the rows
+      // are keyed by id, and a repeated key stops the whole list drawing.
+      const seen = new Set<string>();
+      if (seq === loadSeq) items = got.filter((i) => !seen.has(i.id) && !!seen.add(i.id));
     } catch (e: any) {
       if (seq === loadSeq) { error = e?.message ?? 'Failed to load'; items = []; }
     } finally {

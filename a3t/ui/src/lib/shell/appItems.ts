@@ -219,7 +219,9 @@ async function loadAll(source: string): Promise<AppItem[]> {
     ];
     const out: AppItem[] = [];
     for (const k of kinds) {
-      const list = (byCat[k.key] ?? []).sort((a, b) => a.label.localeCompare(b.label));
+      const ids = new Set<string>();
+      const list = (byCat[k.key] ?? []).filter((i) => !ids.has(i.id) && !!ids.add(i.id))
+        .sort((a, b) => a.label.localeCompare(b.label));
       if (!list.length) continue;
       out.push({ id: `kind:${k.key}`, label: k.label, badge: k.icon, badgeStyle: k.style, depth: 0, group: true,
         sub: `${list.length} ${list.length === 1 ? 'item' : 'items'}` });
