@@ -356,12 +356,11 @@ do:
 
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.
-  /// A template as people meet it — About, How it works, Versions — and, for
-  /// your own copies only, Design and Settings. A new one: its details, then its
+  /// A template as people meet it — About, Design (read-only on a base
+  /// template), Versions — and, for your own copies, Settings. A new one: its details, then its
   /// design.
   const GUIDE_ICON = {
     about: '<circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 5h.01"/>',
-    works: '<rect x="1.5" y="2.5" width="5" height="4" rx="1"/><rect x="9.5" y="9.5" width="5" height="4" rx="1"/><path d="M4 6.5v3a2 2 0 002 2h3.5"/>',
     versions: '<path d="M8 2v6l4 2"/><circle cx="8" cy="8" r="6.5"/>',
   };
   const tplSteps = $derived.by((): WizardStep[] => draftTemplate?.isNew ? [
@@ -370,10 +369,9 @@ do:
     { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
   ] : [
     { id: 'about', icon: GUIDE_ICON.about, label: 'About', hint: 'What it is — and clone it, or use an agent built from it' },
-    { id: 'works', icon: GUIDE_ICON.works, label: 'How it works', hint: 'What is inside: its prompt, model, tools, memory, hooks and workflow' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: readOnly ? 'How it is built: its graph, code and form — read-only' : 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
     { id: 'versions', icon: GUIDE_ICON.versions, label: 'Versions', hint: 'Its releases, its copies and the agents built from it' },
     ...(readOnly ? [] : [
-      { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
       { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
         need: 'Name the template: lowercase letters, digits and dashes.' },
     ]),
@@ -387,7 +385,7 @@ do:
     propNode = 'about';
   }
 
-  let propNode = $state<'about' | 'works' | 'versions' | 'yaml' | 'detail'>('about');
+  let propNode = $state<'about' | 'versions' | 'yaml' | 'detail'>('about');
 
   // The chat's context: this template, the tab on screen, and its spec as
   // edited. Picking another template is a new key, so its spec is the saved one.
@@ -663,13 +661,18 @@ do:
                 </div>
 
               {:else if propNode === 'yaml'}
+                <!-- One Design for every template: editable on your copy, read-only
+                     on a base template, which you clone to change. -->
+                {#if readOnly && template.spec_yaml}
+                  <div class="tpl-ro">Read-only — this is a base template. <button class="link" onclick={requestCopy}>Clone and edit</button> to change your own copy.</div>
+                {/if}
                 {#if template.spec_yaml}
                   <FlowEditorPane initialYaml={template.spec_yaml} {readOnly} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
                 {:else}
                   <div class="sp-empty">No spec defined for this template.</div>
                 {/if}
 
-              {:else if propNode === 'about' || propNode === 'works' || propNode === 'versions'}
+              {:else if propNode === 'about' || propNode === 'versions'}
                 <TemplateGuide view={propNode} {template} {readOnly} agents={templateAgents} {agentsLoading} {allTemplates}
                   projects={copyProjects} {copyRequest} oncopy={copyTemplate} onview={(id) => (propNode = id as any)}
                   onopentemplate={(t) => navigateToDetail('templates', 'Templates', t.name)} />
@@ -1118,4 +1121,6 @@ do:
   .btn.danger:hover { opacity: 0.9; }
   .btn.danger:disabled { opacity: 0.4; cursor: default; }
   .del-users { margin: 0 0 12px; padding-left: 18px; font-size: 13px; color: var(--text-2); max-height: 160px; overflow: auto; }
+  .tpl-ro { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
+  .tpl-ro .link { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font: inherit; font-weight: 500; }
 </style>

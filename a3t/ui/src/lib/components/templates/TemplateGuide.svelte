@@ -1,19 +1,17 @@
 <script lang="ts">
   /// A template as people meet it: a blueprint to understand, then copy or use.
   /// About (what it is, and the choice: clone and edit, or use an agent already
-  /// built from it), How it works (a read-only tour of what is inside), and
-  /// Versions (its releases, its copies, its agents — and, for a copy, its base).
-  /// Base templates are never edited in place; only your copies are, in the
-  /// page's Design and Settings.
+  /// built from it) and Versions (its releases, its copies, its agents — and,
+  /// for a copy, its base). The page's Design shows how it is built — read-only
+  /// on a base template, which is never edited in place.
   ///
   /// Facts come from the spec (templateSpec.ts) and the registry; nothing is
   /// made up.
   import { navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
-  import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import { readTemplate } from './templateSpec';
 
   let { view, template, readOnly, agents = [], agentsLoading = false, allTemplates = [], projects = [], copyRequest = 0, oncopy, onview, onopentemplate }: {
-    view: 'about' | 'works' | 'versions';
+    view: 'about' | 'versions';
     template: any;
     /// A base template (not yours): read-only, copied rather than edited.
     readOnly: boolean;
@@ -145,7 +143,7 @@
         <span class="tg-chip"><b>Memory</b>{facts.agent.memory ? 'yes' : 'none'}</span>
         <span class="tg-chip"><b>Hooks</b>{facts.hooks.length ? facts.hooks.join(', ') : 'none'}</span>
       </div>
-      <button class="link tg-more" onclick={() => onview?.('works')}>How it works →</button>
+      <button class="link tg-more" onclick={() => onview?.('yaml')}>See its design →</button>
     </section>
 
     <div class="tg-two">
@@ -169,30 +167,6 @@
       <div><dt>By</dt><dd>{template.created_by || '—'}</dd></div>
       <div><dt>Used by</dt><dd><button class="link" onclick={() => onview?.('versions')}>{agentsLoading ? '…' : `${agents.length} agent${agents.length === 1 ? '' : 's'} · ${copies.length} cop${copies.length === 1 ? 'y' : 'ies'}`}</button></dd></div>
     </dl>
-
-  {:else if view === 'works'}
-    {#if readOnly}<p class="tg-note">Read-only. To change any of this, <button class="link" onclick={() => { onview?.('about'); openCopy(); }}>clone it</button> and edit your copy.</p>{/if}
-    <section class="tg-card">
-      <h3>Its prompt</h3>
-      {#if facts.agent.systemPrompt}<pre class="tg-out">{facts.agent.systemPrompt}</pre>{:else}<p class="tg-dim">It sets none; each agent brings its own.</p>{/if}
-    </section>
-    <section class="tg-card">
-      <h3>What it uses</h3>
-      <ul class="tg-facts">
-        <li><b>Model</b><span>{facts.agent.model ?? 'None set — each agent built from it chooses one.'}</span></li>
-        <li><b>Tools</b><span>{[...facts.agent.mcpServers, ...facts.agent.tools].join(', ') || 'None.'}</span></li>
-        <li><b>Memory</b><span>{facts.agent.memory ? `Kept under ${facts.agent.memory}.` : 'None — each run starts fresh.'}</span></li>
-        <li><b>Hooks</b><span>{facts.hooks.length ? `${facts.hooks.join(', ')} — run around its steps (guardrails, redaction, checks).` : 'None.'}</span></li>
-        {#if facts.agent.maxIterations != null}<li><b>Step limit</b><span>{facts.agent.maxIterations} steps per turn.</span></li>{/if}
-        {#if facts.agent.temperature != null}<li><b>Temperature</b><span>{facts.agent.temperature}</span></li>{/if}
-      </ul>
-    </section>
-    <section class="tg-card tg-flow">
-      <h3>Its workflow</h3>
-      {#if template.spec_yaml}
-        <div class="tg-graph"><FlowEditorPane part="main" initialYaml={template.spec_yaml} readOnly /></div>
-      {:else}<p class="tg-dim">No workflow in its spec.</p>{/if}
-    </section>
 
   {:else if view === 'versions'}
     {#if base}
@@ -232,7 +206,6 @@
 <style>
   .tg { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 28px; max-width: 760px; }
   .tg-warn { padding: 9px 12px; border: 1px solid var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
-  .tg-note { margin: 0; padding: 9px 12px; border-radius: 8px; background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
   .tg-hero h2 { margin: 0; font: 400 26px/1.25 var(--font-serif); color: var(--text-1); }
   .tg-summary { margin: 8px 0 0; font-size: 16px; color: var(--text-1); line-height: 1.45; }
   .tg-desc { margin: 8px 0 0; font-size: 13.5px; color: var(--text-2); line-height: 1.6; max-width: 68ch; }
@@ -267,9 +240,6 @@
   .tg-btn:disabled { opacity: 0.55; cursor: default; }
   .tg-form { display: flex; flex-direction: column; gap: 10px; }
   .tg-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
-  .tg-out { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font: 12px/1.5 var(--font-mono); color: var(--text-1); white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
-  .tg-flow { padding-bottom: 12px; }
-  .tg-graph { height: 360px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .tg-count { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
   .tg-agents { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .tg-agents button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); cursor: pointer; font: inherit; font-size: 13px; text-align: left; }
