@@ -3,8 +3,9 @@
 //   Menu · Items|Chat · Details
 //
 // Each stack pins in or out as a whole. A pinned stack takes its place in the
-// row; an unpinned one waits behind an edge tab (or the Apps button, for the
-// menu) and pops in over the page. One of Items|Chat and Details always stays
+// row; an unpinned one waits where it was and pops in over the page from there:
+// the menu behind its shoulder arrow, Items|Chat behind a button beside the
+// Details heading, Details behind an edge tab on the right. One of Items|Chat and Details always stays
 // pinned, so the page is never empty. Expand gives one stack the page and turns
 // the other into a pop-in without changing the pins.
 //
@@ -154,7 +155,7 @@ export function togglePin(s: Stack) {
   }
   pins = next;
   persist();
-  say(next[s] ? `${STACK_NAME[s]} pinned in` : `${STACK_NAME[s]} unpinned: it pops in from the ${s === 'menu' ? 'left' : 'right'}`);
+  say(next[s] ? `${STACK_NAME[s]} pinned in` : `${STACK_NAME[s]} unpinned: ${s === 'menu' ? 'it pops in from the left' : s === 'mid' ? 'open it from the button beside Details' : 'it pops in from the right'}`);
 }
 
 export function toggleExpand(s: 'mid' | 'details') {

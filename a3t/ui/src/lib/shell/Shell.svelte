@@ -43,7 +43,7 @@
   ///  - own: an explorer and AI of their own (Studio, Memory, Knowledge, the
   ///    consoles): the page takes the width, no Items, no Chat.
   ///  - page: one table or log with nothing to open (Decision log, Errors, Early
-  ///    access): the page takes the width; Chat waits on the edge.
+  ///    access): the page takes the width; Chat waits beside the Details heading.
   ///  - chat: AI Chat itself, laid out like a list app: conversations in Items,
   ///    the open conversation in Details. No Items | Chat toggle — the app is
   ///    the chat, so the list and the conversation sit side by side.
@@ -174,7 +174,7 @@
     const el = o === 'menu' ? menuEl : o === 'mid' ? midEl : detEl;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Element | null;
-      if (!t || el?.contains(t) || t.closest('.edge, .scrim, [role="dialog"], .smt')) return;
+      if (!t || el?.contains(t) || t.closest('.edge, .mid-toggle, .scrim, [role="dialog"], .smt')) return;
       closeOverlay();
     };
     const id = setTimeout(() => window.addEventListener('pointerdown', onDown, true));
@@ -230,9 +230,10 @@
 
     <section class="mid {midMode}" bind:this={midEl} aria-label="Items and Chat"
       style:flex-basis={midMode === 'col' ? `${width('mid')}px` : undefined}
-      style:width={midMode === 'pop' ? `${width('chatPop')}px` : undefined}>
-      {#if midMode === 'pop'}<Resizer k="chatPop" edge="left" label="Items and Chat" overlay />{/if}
-      <StackBar stack="mid">
+      style:width={midMode === 'pop' ? `${width('chatPop')}px` : undefined}
+      style:left={midMode === 'pop' && !isNarrow() ? `${menuMode === 'dock' ? width('menu') : 0}px` : undefined}>
+      {#if midMode === 'pop'}<Resizer k="chatPop" edge="right" label="Items and Chat" overlay />{/if}
+      <StackBar stack="mid" onclose={midMode === 'pop' ? closeOverlay : undefined}>
         {#snippet right()}
           {#if shownFace === 'items' && getItemsRefresh()}
             {@const r = getItemsRefresh()!}
@@ -288,7 +289,19 @@
       <StackBar stack="details"
         pin={artMode === 'fill' ? { on: artPinned, toggle: () => setArtifactPinned(!artPinned), what: artPinned ? 'it from beside the conversation' : 'this beside the conversation' } : undefined}
         onclose={artMode === 'fill' && !artPinned ? () => artHost?.close() : undefined}>
-        {#snippet left()}<span class="sbname">Details</span>{/snippet}
+        {#snippet left()}
+          <!-- An unpinned middle stack waits here, just beside where it was,
+               and pops back in over Details from the left. -->
+          {#if midMode === 'off' || midMode === 'pop'}
+            {@const what = kind === 'page' ? 'Chat' : kind === 'chat' || face === 'items' ? 'Items' : 'Chat'}
+            <button class="mid-toggle" class:on={midMode === 'pop'} onclick={() => (midMode === 'pop' ? closeOverlay() : openOverlay('mid'))}
+              title="{midMode === 'pop' ? 'Hide' : 'Show'} {what} (Ctrl J)" aria-expanded={midMode === 'pop'}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 2.5v11" /></svg>
+              <span>{what}</span>
+            </button>
+          {/if}
+          <span class="sbname">Details</span>
+        {/snippet}
         {#snippet right()}
           {#if getDetailActions() && !actionsHosted()}
             {@const a = getDetailActions()!}
@@ -324,11 +337,8 @@
       <ChatArtifactHost bind:this={artHost} mode={artMode} onopenapp={openArtInApp} />
     </section>
 
-    {#if midMode === 'off' && kind !== 'own'}
-      <button class="edge" onclick={() => openOverlay('mid')} title={kind === 'page' ? 'Open Chat (Ctrl J)' : kind === 'chat' ? 'Open Items (Ctrl J)' : 'Open Items | Chat (Ctrl J)'}>{kind === 'page' ? 'Chat' : kind === 'chat' ? 'Items' : 'Items · Chat'}</button>
-    {/if}
     {#if detMode === 'off' && hasDetails}
-      <button class="edge" style:top={midMode === 'off' ? '210px' : '90px'} onclick={() => openOverlay('details')} title="Open Details">Details</button>
+      <button class="edge" onclick={() => openOverlay('details')} title="Open Details">Details</button>
     {/if}
   </div>
 </div>
@@ -349,7 +359,12 @@
   .mid { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-page); position: relative; }
   .mid.col { flex: 0 0 auto; border-right: 1px solid var(--border); }
   .mid.wide { flex: 1 1 auto; }
-  .mid.pop, .details.pop { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; border-left: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
+  .details.pop { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; border-left: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
+  /* The unpinned middle stack pops in where it lives: from the left, after the menu. */
+  .mid.pop { position: absolute; top: 0; left: 0; bottom: 0; z-index: 25; border-right: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
+  .mid-toggle { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 8px; margin-right: 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12.5px var(--font-sans); color: var(--text-2); cursor: pointer; }
+  .mid-toggle:hover { color: var(--text-1); border-color: var(--border-strong, #d9d4c6); }
+  .mid-toggle.on { color: var(--spec); border-color: var(--spec); background: var(--spec-bg); }
   .mid.off, .details.off { display: none; }
   .face { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .face.hidden { display: none; }
