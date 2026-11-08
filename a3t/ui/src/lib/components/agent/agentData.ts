@@ -153,6 +153,15 @@ export function forksOf(agent: AgentRec, all: AgentRec[]): AgentRec[] {
   return all.filter((a) => json(a.variables).forkedFrom === agent.id);
 }
 
+/// Where its owner put it: dev, test or prod. An agent setting, not a platform
+/// mode (kept in its variables until the record has a column — SRV-11).
+export type Env = 'dev' | 'test' | 'prod';
+export const ENVS: Env[] = ['dev', 'test', 'prod'];
+export function envOf(agent: AgentRec): Env | '' {
+  const e = json(agent.variables).environment;
+  return ENVS.includes(e) ? e : '';
+}
+
 // ── Formatting ──
 export function ago(t: string | number): string {
   const ms = typeof t === 'number' ? t : Date.parse(t);

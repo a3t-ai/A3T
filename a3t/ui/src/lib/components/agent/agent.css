@@ -34,8 +34,8 @@
 .agt .tag.dev { background: var(--spec-bg); color: var(--spec-ink, var(--spec)); }
 .agt .tag.sample { background: var(--warn-bg, #fbf0e0); color: var(--warn, #b45309); }
 
-.agt .sample { display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border: 1px dashed var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
-.agt .sample > b:first-child { color: var(--warn, #b45309); }
+.agt div.sample { display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border: 1px dashed var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
+.agt div.sample > b:first-child { color: var(--warn, #b45309); }
 .agt .note { padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
 .agt .note.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: var(--warn-bg, #fbf0e0); }
 .agt .note.bad { border-color: color-mix(in srgb, var(--err) 35%, var(--border)); background: var(--err-bg, #fdecea); }

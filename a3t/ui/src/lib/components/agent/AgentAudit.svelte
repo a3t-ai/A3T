@@ -1,12 +1,13 @@
 <script lang="ts">
-  /// Observe — how it is doing and what it did: calls (runs), errors, your test
-  /// chats, blocked actions, its memory. Deep debugging is the Studio's.
+  /// Audit — what it did and what changed: every decision about it (allowed
+  /// and blocked), its calls and errors, test chats, memory, and the history of
+  /// changes to it. Deep debugging is the Studio's.
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
   import { factsOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
 
   let { agent, templates, live, start, onstudio, ongo }: {
-    agent: AgentRec;
+    agent: AgentRec & { created_by?: string; created_at?: string };
     templates: TemplateRec[];
     live: AgentLive;
     /// The view to open on (a deep link to its memory).
@@ -16,7 +17,7 @@
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
-  type View = 'all' | 'run' | 'err' | 'conv' | 'deny' | 'memory';
+  type View = 'all' | 'deny' | 'allow' | 'run' | 'err' | 'conv' | 'memory';
   // svelte-ignore state_referenced_locally — where it opens; the chips take over
   let view = $state<View>(start ?? 'all');
   type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; err?: boolean; ic: string };
@@ -55,7 +56,7 @@
   {/if}
 
   <div class="chips">
-    {#each [['all', 'All'], ['run', `Calls (${live.runs.length})`], ['err', `Errors (${live.failed.length})`], ['conv', `Test chats (${live.convs.length})`], ['deny', `Blocked (${live.denied.length})`], ['memory', 'Memory']] as [k, label] (k)}
+    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${live.runs.length})`], ['err', `Errors (${live.failed.length})`], ['conv', `Test chats (${live.convs.length})`], ['memory', 'Memory']] as [k, label] (k)}
       <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
     {/each}
     <span class="grow"></span>
@@ -81,10 +82,23 @@
       {/each}
     </ol>
     <ul class="notes">
-      <li>Which app made each call needs app keys (SRV-15). Test chats are yours only (UI-4).</li>
+      <li>Which app or MCP client made each call needs app keys (SRV-15). Test chats are yours only (UI-4).</li>
       <li>{live.decErr ? live.decErr : `Decisions are matched in the latest ${live.scanned} records of the log (UI-3).`}</li>
     </ul>
   {/if}
+
+  <div class="card">
+    <div class="card-head"><h3>Changes</h3><span class="tag sample">sample</span><span>who changed it, what, and who approved</span></div>
+    <table class="tbl">
+      <thead><tr><th>When</th><th>Who</th><th>What</th><th>Approved by</th></tr></thead>
+      <tbody>
+        <tr><td class="k">2 d ago</td><td class="mono">{agent.created_by || '—'}</td><td>tools: + acme/jira</td><td class="dim">— (no rule then)</td></tr>
+        <tr><td class="k">5 d ago</td><td class="mono">{agent.created_by || '—'}</td><td>instructions edited (3 lines)</td><td class="dim">—</td></tr>
+        <tr><td class="k">{agent.created_at ? ago(agent.created_at) : '—'}</td><td class="mono">{agent.created_by || '—'}</td><td>created{f.template ? ` from ${f.template.name}@${f.template.version}` : ''}</td><td class="dim">—</td></tr>
+      </tbody>
+    </table>
+    <p class="dim">Only its creation is recorded today; edits are not (SRV-20). The rows above it show how changes will read.</p>
+  </div>
 </section>
 
 <style>

@@ -6,7 +6,11 @@ import {
   factsOf, servingRuns, decisionsFor, conversationsWith, placementOf,
   type AgentRec, type TemplateRec, type Run, type Decision, type Placement,
 } from './agentData';
-import type { ChatSessionSummary } from '$lib/services/api';
+import { mcpCall, type ChatSessionSummary } from '$lib/services/api';
+import { discoverServerTools, isDestructive, type ServerTools } from '$lib/services/mcpTools';
+
+/// Its endpoint's trigger: what serves its webhook path, and whether it is on.
+export type Trigger = { id: string; name: string; path: string; enabled: boolean };
 
 const DAY = 86_400_000;
 
@@ -20,6 +24,10 @@ export class AgentLive {
   placement = $state<Placement | null>(null);
   placeErr = $state('');
   loading = $state(true);
+  /// Its tool servers' tools (discovered), and its endpoint's trigger.
+  tools = $state<ServerTools[]>([]);
+  toolsLoading = $state(true);
+  trigger = $state<Trigger | null>(null);
 
   /// Its serving flow's runs are shared by every agent on that flow (UI-2), so
   /// they describe this agent only once it is deployed on its own.
@@ -42,6 +50,15 @@ export class AgentLive {
     return { tone: 'ok', word: 'Serving' };
   });
 
+  /// Tools it may call: every tool of its servers, or its allow-list.
+  allowedTools = $derived.by(() => {
+    const all = this.tools.flatMap((t) => t.tools);
+    const allow = this.allow;
+    return allow ? all.filter((t) => allow.includes(t)) : all;
+  });
+  destructive = $derived(this.allowedTools.filter(isDestructive));
+  private allow = $state<string[] | null>(null);
+
   constructor(private agent: AgentRec, private templates: TemplateRec[]) {
     // After the caller's reaction: it is made inside a derived value, where
     // writing state is not allowed.
@@ -51,6 +68,9 @@ export class AgentLive {
   async load() {
     this.loading = true;
     const f = factsOf(this.agent, this.templates);
+    this.allow = f.tools;
+    void this.loadTools(f.mcp);
+    void this.loadTrigger(f.endpoint);
     const [r, d, c, p] = await Promise.all([
       servingRuns(f), decisionsFor(this.agent), conversationsWith(this.agent).catch(() => []), placementOf(this.agent, f),
     ]);
@@ -60,12 +80,28 @@ export class AgentLive {
     this.placement = p.placement; this.placeErr = p.error;
     this.loading = false;
   }
+
+  async loadTools(servers: string[]) {
+    this.toolsLoading = true;
+    this.tools = servers.length ? await discoverServerTools(servers, this.agent.namespace || 'a3t').catch(() => []) : [];
+    this.toolsLoading = false;
+  }
+
+  async loadTrigger(ep: string) {
+    const r = await mcpCall('list_triggers', {});
+    let d: any = r.data; if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = []; } }
+    const list: any[] = Array.isArray(d) ? d : d?.triggers ?? [];
+    const t = list.find((x) => x?.name === `agent-${this.agent.id}-chat`) ?? (ep ? list.find((x) => x?.config?.path === ep) : null);
+    this.trigger = t ? { id: t.id, name: t.name, path: t.config?.path ?? '', enabled: t.enabled !== false && t.status !== 'paused' } : null;
+  }
 }
 
 /// One loader per agent and deployment revision; asking again returns the same.
 const cache = new Map<string, AgentLive>();
 export function liveFor(agent: AgentRec, templates: TemplateRec[], rev: number): AgentLive {
-  const key = `${agent.id}|${templates.length}|${rev}`;
+  // The record's values are in the key: a saved change (tools revoked, the
+  // endpoint moved) reloads.
+  const key = `${agent.id}|${templates.length}|${rev}|${agent.variables ?? ''}|${agent.resource_bindings ?? ''}|${agent.mode}`;
   let l = cache.get(key);
   if (!l) {
     for (const k of cache.keys()) if (k.startsWith(`${agent.id}|`)) cache.delete(k);

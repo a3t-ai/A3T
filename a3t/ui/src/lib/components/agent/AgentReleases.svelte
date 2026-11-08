@@ -1,14 +1,13 @@
 <script lang="ts">
-  /// Releases — where the agent runs and what version: prod (its real
-  /// deployment, one click to pause or undeploy), dev branches, merges,
-  /// releases, the values each environment gives what its code uses, and its
-  /// forks. Branches, releases and environment values are Sample (SRV-12, SRV-5/6).
+  /// Releases — where it runs and which version. Its environment (dev, test,
+  /// prod) is its owner's setting, not a platform mode. Its deployment is real
+  /// (deploy / undeploy; pausing is in Controls); branches, the review before a
+  /// merge, and releases are Sample (SRV-12, SRV-20). Forks are real.
   import { untrack, type Snippet } from 'svelte';
   import { opsApi } from '$lib/services/api';
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { factsOf, forksOf, ago, type AgentRec, type TemplateRec } from './agentData';
+  import { factsOf, forksOf, envOf, ago, type AgentRec, type TemplateRec } from './agentData';
   import { branchesOf, addBranch, dropBranch, mergeBranch, rollBack } from './agentBranches.svelte';
-  import { usesOf } from './agentValues';
   import type { AgentLive } from './agentLive.svelte';
 
   let { agent, templates, allAgents, live, me, onstudio, onopen, onchanged, notDeployed, branchForm = $bindable(false) }: {
@@ -31,16 +30,16 @@
   const repo = $derived(branchesOf(agent.id, agent.created_at));
   const prodTag = $derived(repo.releases[0]?.tag ?? 'v1');
   const p = $derived(live.placement);
-  const uses = $derived(usesOf(f.spec));
+  const env = $derived(envOf(agent));
 
   // ── prod: one click each; details in Runtimes ──
   let busy = $state('');
   let opMsg = $state('');
   let confirmUndeploy = $state(false);
-  async function op(action: 'pause' | 'resume' | 'undeploy') {
+  async function op(action: 'undeploy') {
     if (!p?.id) return;
     busy = action; opMsg = '';
-    const r = await opsApi.deployment(p.id, action, action === 'pause' ? `Paused from the agent ${agent.name}` : undefined);
+    const r = await opsApi.deployment(p.id, action);
     busy = ''; confirmUndeploy = false;
     if (!r.ok) { opMsg = r.error ?? `Could not ${action} it`; return; }
     onchanged();
@@ -59,55 +58,41 @@
     addBranch(agent.id, n.startsWith('dev/') ? n : `dev/${n}`, me || 'you', brIntent.trim());
     branchForm = false;
   }
-  /// A dev value for a name the code uses: the prod one with a dev suffix — how
-  /// it will read once projects keep values per environment.
-  const devOf = (v: string) => v.includes('/') ? v.replace(/^([^/]+)\//, '$1-dev/') : `${v}-dev`;
+  let approver = $state('');
 </script>
 
 <section class="agt">
   <div class="card">
-    <div class="card-head"><h3>Environments</h3><span class="grow"></span>
-      {#if !branchForm}<button class="btn2" onclick={() => (branchForm = true)}>Branch to dev</button>{/if}</div>
-    <table class="tbl env">
-      <thead><tr><th></th><th><span class="tag prod">prod</span></th><th><span class="tag dev">dev</span> <span class="tag sample">sample</span></th></tr></thead>
-      <tbody>
-        <tr><td class="k">Runs</td><td><b class="mono">{prodTag}</b> <span class="tag sample">sample</span></td>
-          <td>{#if repo.branches[0]}<b class="mono">{repo.branches[0].name}</b>{:else}<span class="dim">nothing — branch to dev</span>{/if}</td></tr>
-        <tr><td class="k">State</td>
-          <td>{#if live.loading}…{:else if p}<span class="row"><span class="dot {p.deploymentState === 'paused' ? 'warn' : 'ok'}"></span>{p.deploymentState === 'paused' ? 'paused' : 'deployed'} on <span class="mono">{p.runtime || '—'}</span>{p.canvas ? ` · ${p.canvas}` : ''}</span>
-            {:else}<span class="row"><span class="dot"></span>not deployed — it answers on the shared runtime</span>{/if}</td>
-          <td>{repo.branches[0] ? 'deployed with the dev canvas' : '—'}</td></tr>
-        <tr><td class="k">Endpoint</td><td class="mono">{f.endpoint ? `/webhook${f.endpoint}` : '—'}</td>
-          <td class="mono">{repo.branches[0] && f.endpoint ? `/webhook${f.endpoint.replace(/\/chat$/, '')}/dev/chat` : '—'}</td></tr>
-        <tr><td class="k"></td>
-          <td>
-            {#if !live.loading && p}
-              <div class="acts">
-                {#if p.deploymentState === 'paused'}<button class="btn2 primary" disabled={!!busy} onclick={() => op('resume')}>{busy === 'resume' ? 'Resuming…' : 'Resume'}</button>
-                {:else}<button class="btn2" disabled={!!busy} onclick={() => op('pause')}>{busy === 'pause' ? 'Pausing…' : 'Pause'}</button>{/if}
-                <button class="btn2" disabled={!!busy} onclick={() => (confirmUndeploy = true)}>Undeploy</button>
-                <button class="link" onclick={() => navigateTo('runtime', 'Runtimes')}>Runtimes →</button>
-              </div>
-              {#if confirmUndeploy}
-                <div class="note">Undeploy it? Its runtime stops; it goes back to the shared runtime.
-                  <span class="acts"><button class="btn2 danger" disabled={!!busy} onclick={() => op('undeploy')}>{busy === 'undeploy' ? 'Undeploying…' : 'Undeploy'}</button>
-                  <button class="link" onclick={() => (confirmUndeploy = false)}>Cancel</button></span></div>
-              {/if}
-              {#if opMsg}<p class="err">{opMsg}</p>{/if}
-            {:else if !live.loading}
-              {@render notDeployed()}
-            {/if}
-          </td>
-          <td>{#if repo.branches[0]}<button class="btn2" onclick={onstudio}>Test in Studio</button>{/if}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="card-head"><h3>Deployment</h3><span class="grow"></span>
+      {#if !branchForm}<button class="btn2" onclick={() => (branchForm = true)}>Branch</button>{/if}</div>
+    <dl class="kv">
+      <dt>Environment</dt><dd>{#if env}<span class="tag" class:prod={env === 'prod'} class:dev={env !== 'prod'}>{env}</span>{:else}<span class="dim">not set</span>{/if} <span class="dim">— its owner's setting, in Settings</span></dd>
+      <dt>Release</dt><dd><b class="mono">{prodTag}</b> <span class="tag sample">sample</span></dd>
+      <dt>Runs on</dt><dd>{#if live.loading}…{:else if p}<span class="row"><span class="dot {p.deploymentState === 'paused' ? 'warn' : 'ok'}"></span>{p.deploymentState === 'paused' ? 'paused' : 'deployed'} on <span class="mono">{p.runtime || '—'}</span>{p.canvas ? ` · ${p.canvas}` : ''}</span>
+        {:else}<span class="row"><span class="dot"></span>not deployed — the shared runtime</span>{/if}</dd>
+      <dt>Endpoint</dt><dd class="mono">{f.endpoint ? `/webhook${f.endpoint}` : '—'}</dd>
+    </dl>
+    {#if !live.loading && p}
+      <div class="acts">
+        <button class="btn2" disabled={!!busy} onclick={() => (confirmUndeploy = true)}>Undeploy</button>
+        <button class="link" onclick={() => navigateTo('runtime', 'Runtimes')}>Runtimes →</button>
+        <span class="dim">Pause is in Controls.</span>
+      </div>
+      {#if confirmUndeploy}
+        <div class="note">Undeploy it? Its runtime stops; it goes back to the shared runtime.
+          <span class="acts"><button class="btn2 danger" disabled={!!busy} onclick={() => op('undeploy')}>{busy === 'undeploy' ? 'Undeploying…' : 'Undeploy'}</button>
+          <button class="link" onclick={() => (confirmUndeploy = false)}>Cancel</button></span></div>
+      {/if}
+      {#if opMsg}<p class="err">{opMsg}</p>{/if}
+    {:else if !live.loading}
+      {@render notDeployed()}
+    {/if}
     {#if live.placeErr}<p class="dim">{live.placeErr}</p>{/if}
   </div>
 
   {#if branchForm}
     <div class="card">
-      <div class="card-head"><h3>Branch to dev</h3><span>this agent in dev — change and test it there; prod is not touched until you merge</span></div>
+      <div class="card-head"><h3>Branch</h3><span>a copy of this agent's code and values to change and test; this agent is not touched until the branch is merged</span></div>
       <div class="form">
         <label>Branch<input type="text" class="mono" bind:value={brName} /></label>
         <label>What will you change? <small>(optional)</small><input type="text" bind:value={brIntent} placeholder="e.g. a smaller model for low-priority alerts" /></label>
@@ -116,26 +101,28 @@
     </div>
   {/if}
 
-  <div class="sample"><b>Sample</b> Branches, merges, releases and per-environment values are not stored yet — this shows how they will work; nothing here is saved. Prod's deployment and the forks are real.</div>
+  <div class="sample"><b>Sample</b> Branches, reviews, merges and releases are not stored yet — this shows how they will work; nothing here is saved. The deployment and the forks are real.</div>
 
-  <h4>Dev branches <span class="count">{repo.branches.length}</span></h4>
+  <h4>Branches <span class="count">{repo.branches.length}</span></h4>
   {#if mergedMsg}<p class="ok">{mergedMsg}</p>{/if}
   <ul class="list">
     {#each repo.branches as b (b.name)}
       <li class="card">
         <div class="row between">
-          <div class="row"><span class="tag dev">dev</span><b class="mono">{b.name}</b><span class="dim">{b.by}, {ago(b.created)}</span></div>
+          <div class="row"><span class="tag dev">branch</span><b class="mono">{b.name}</b><span class="dim">{b.by}, {ago(b.created)}</span></div>
           <div class="acts">
             <button class="btn2" onclick={onstudio}>Test in Studio</button>
-            <button class="btn2 primary" onclick={() => { merging = b.name; dropping = ''; }}>Merge to prod</button>
+            <button class="btn2 primary" onclick={() => { merging = b.name; dropping = ''; approver = ''; }}>Merge</button>
             <button class="btn2 quiet" onclick={() => { dropping = b.name; merging = ''; }}>Drop</button>
           </div>
         </div>
         <ul class="changes">{#each b.changes as c}<li>{c}</li>{:else}<li class="dim">No changes yet — open it in the Studio.</li>{/each}</ul>
         {#if merging === b.name}
-          <div class="note">Merging makes <b>v{(Number(prodTag.slice(1)) || 0) + 1}</b> of prod; callers get it on their next message.
-            Its values and code replace prod's; what it learned on the branch (procedures) is added to prod's memory.
-            <span class="acts"><button class="btn2 primary" onclick={() => { const t = mergeBranch(agent.id, b.name); merging = ''; mergedMsg = `Merged ${b.name} — prod is now ${t}.`; }}>Merge</button>
+          <div class="note">Merging makes <b>v{(Number(prodTag.slice(1)) || 0) + 1}</b> of {agent.name}; callers get it on their next message.
+            Its values and code replace the agent's; what it learned on the branch (procedures) is added to the agent's memory.
+            {#if env === 'prod'}<label class="appr">It is a <b>prod</b> agent: a Security approver signs off first
+              <select bind:value={approver}><option value="">— approver —</option><option>security@acme.com</option><option>ciso@acme.com</option></select></label>{/if}
+            <span class="acts"><button class="btn2 primary" disabled={env === 'prod' && !approver} onclick={() => { const t = mergeBranch(agent.id, b.name); merging = ''; mergedMsg = `Merged ${b.name} — ${agent.name} is now ${t}${approver ? `, approved by ${approver}` : ''}.`; }}>{env === 'prod' ? 'Request and merge' : 'Merge'}</button>
             <button class="link" onclick={() => (merging = '')}>Cancel</button></span></div>
         {:else if dropping === b.name}
           <div class="note">Drop <b class="mono">{b.name}</b>? Its changes and what it learned are thrown away; prod is not touched.
@@ -144,7 +131,7 @@
         {/if}
       </li>
     {:else}
-      <li class="empty">No dev branches.</li>
+      <li class="empty">No branches.</li>
     {/each}
   </ul>
 
@@ -158,21 +145,6 @@
     </tbody>
   </table>
 
-  <h4>Values per environment</h4>
-  {#if uses.length}
-    <table class="tbl">
-      <thead><tr><th>Its code uses</th><th>Kind</th><th>prod</th><th>dev</th></tr></thead>
-      <tbody>
-        {#each uses as u (u.name)}
-          <tr><td class="mono">{u.name}</td><td class="k">{u.kind}</td><td class="mono">{u.name}</td><td class="mono">{devOf(u.name)}</td></tr>
-        {/each}
-      </tbody>
-    </table>
-    <p class="dim">The code names them; each environment of the project says which one it means (Projects → Environments). Today every environment uses the names as written.</p>
-  {:else}
-    <p class="dim">Its code names no resources or flows directly.</p>
-  {/if}
-
   <h4>Forks <span class="count">{forks.length}</span></h4>
   <ul class="list">
     {#each forks as k (k.id)}
@@ -184,9 +156,10 @@
 </section>
 
 <style>
-  .env td:first-child { width: 90px; }
-  .env td { width: 45%; }
-  .env .note { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .kv { grid-template-columns: 100px 1fr; }
+  .card > .note { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .appr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .appr select { width: auto; }
   .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .list .card { gap: 8px; padding: 12px 14px; }
   .list .note { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

@@ -4,8 +4,7 @@
  * Access rules:
  *   superadmin — sees all menu items (platform-level access)
  *   admin      — sees all menu items
- *   operator   — Build (read-only templates/canvas), Augment (read), Operate (full), Studio
- *   viewer     — Build (read-only), Augment (read), Operate (logs only), no Studio
+ *   (per-item roles below; Security is admin-plus)
  */
 
 import type { UserRole, MenuGroup } from './types';
@@ -14,55 +13,56 @@ const ALL_ROLES: UserRole[] = ['superadmin', 'securityadmin', 'admin', 'operator
 const ADMIN_PLUS: UserRole[] = ['superadmin', 'securityadmin', 'admin'];
 const OPERATOR_PLUS: UserRole[] = ['superadmin', 'admin', 'operator'];
 
+// Agents are the product, so they come first; then what an agent is built
+// from; then governing and running them (the console's main users are
+// security and governance teams — developers build in VS Code with Claude,
+// over MCP); then the workspace.
 export const MENU_CONFIG: MenuGroup[] = [
   {
-    label: 'Home',
+    label: 'Agents',
     roles: ALL_ROLES,
     items: [
-      // Dashboard is hidden for now. The `dashboard` panel type and its
-      // /dashboard route still resolve, so a bookmark keeps working.
-      { type: 'chat',       label: 'AI Chat',    tag: null, icon: 'chat',      roles: ALL_ROLES },
-      { type: 'projects',   label: 'Projects',   tag: null, icon: 'project',   roles: ALL_ROLES },
+      { type: 'agents',     label: 'Agents',     tag: 'pods',  icon: 'agent',    roles: ALL_ROLES },
     ],
   },
   {
-    label: 'Build',
+    label: 'Built from',
     roles: ALL_ROLES,
     items: [
       { type: 'templates',  label: 'Templates',  tag: 'sw/v1', icon: 'grid',     roles: ALL_ROLES },
-      { type: 'agents',     label: 'Agents',     tag: 'pods',  icon: 'agent',    roles: ALL_ROLES },
-      { type: 'canvas',     label: 'Canvas',     tag: 'crd',   icon: 'canvas',   roles: ALL_ROLES },
-      { type: 'triggers',   label: 'Triggers',   tag: null,    icon: 'trigger',  roles: ALL_ROLES },
       { type: 'resources',  label: 'Resources',  tag: null,    icon: 'cabinet',  roles: ALL_ROLES },
-      { type: 'security',   label: 'Security',   tag: 'ee',    icon: 'shield',   roles: ADMIN_PLUS },
+      { type: 'triggers',   label: 'Triggers',   tag: null,    icon: 'trigger',  roles: ALL_ROLES },
+      { type: 'canvas',     label: 'Canvas',     tag: 'crd',   icon: 'canvas',   roles: ALL_ROLES },
+      { type: 'knowledge',  label: 'Knowledge',  tag: null,    icon: 'kg',       roles: ALL_ROLES },
+      { type: 'memory',     label: 'Memory',     tag: null,    icon: 'memory',   roles: ALL_ROLES },
     ],
   },
   {
-    label: 'Studio',
+    label: 'Govern & run',
     roles: ALL_ROLES,
     items: [
-      // One editor for every kind of item (flows, databases, LLMs, MCP servers,
-      // triggers, canvases). The Query Console is the Studio pinned to
-      // databases; /db-console still opens it for old links.
-      { type: 'flow-editor',      label: 'Studio',           tag: null, icon: 'studio',   roles: ALL_ROLES },
-      { type: 'knowledge',        label: 'Knowledge',        tag: null, icon: 'kg', roles: ALL_ROLES },
-      { type: 'memory',           label: 'Memory',           tag: null, icon: 'memory', roles: ALL_ROLES },
-    ],
-  },
-  {
-    label: 'System',
-    roles: ALL_ROLES,
-    items: [
-      { type: 'runtime',     label: 'Runtimes',    tag: null, icon: 'runtime', roles: ALL_ROLES },
-      { type: 'executions',  label: 'Executions',  tag: null, icon: 'runs', roles: ALL_ROLES },
-      { type: 'logs',        label: 'Decision log',         tag: null, icon: 'logs', roles: ALL_ROLES },
+      { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield',  roles: ADMIN_PLUS },
+      { type: 'logs',       label: 'Decision log', tag: null, icon: 'logs',    roles: ALL_ROLES },
+      { type: 'executions', label: 'Executions',   tag: null, icon: 'runs',    roles: ALL_ROLES },
+      { type: 'runtime',    label: 'Runtimes',     tag: null, icon: 'runtime', roles: ALL_ROLES },
       // The A3T error log (UX ST-1): the flow lets Admin and SuperAdmin read it.
-      { type: 'errors',      label: 'Errors',       tag: null, icon: 'logs', roles: ['superadmin', 'admin'] },
+      { type: 'errors',     label: 'Errors',       tag: null, icon: 'logs',    roles: ['superadmin', 'admin'] },
     ],
   },
   {
-    // Own group so a divider renders between Logs and Settings (each group
-    // draws a top divider; see Sidebar.svelte).
+    label: 'Workspace',
+    roles: ALL_ROLES,
+    items: [
+      { type: 'projects',    label: 'Projects', tag: null, icon: 'project', roles: ALL_ROLES },
+      { type: 'chat',        label: 'AI Chat',  tag: null, icon: 'chat',    roles: ALL_ROLES },
+      // For when VS Code is not at hand: one editor for every kind of item.
+      // /db-console still opens it pinned to databases, for old links.
+      { type: 'flow-editor', label: 'Studio',   tag: null, icon: 'studio',  roles: ALL_ROLES },
+    ],
+  },
+  {
+    // Own group so a divider renders above Settings (each group draws a top
+    // divider; see Sidebar.svelte).
     label: 'Settings',
     roles: ALL_ROLES,
     items: [

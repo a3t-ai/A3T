@@ -5,14 +5,17 @@
 import * as YAML from 'yaml';
 
 export type Bindings = {
-  name: string; description: string; mode: string; llm: string; target: string; ep_path: string;
+  name: string; description: string; environment: string; mode: string; llm: string; target: string; ep_path: string;
   mcp_servers: string[]; enabled_tools: string[] | null; system_prompt: string; max_iterations: number; temperature: number;
 };
 
 export const MODES = ['session', 'persistent', 'ephemeral', 'reactive'] as const;
 
 /// key in the YAML ↔ field of the bindings, with what it means.
+export const ENV_VALUES = ['dev', 'test', 'prod'] as const;
+
 export const KEYS: { key: string; field: keyof Bindings; info: string }[] = [
+  { key: 'environment', field: 'environment', info: 'dev | test | prod — where its owner put it' },
   { key: 'model', field: 'llm', info: 'LLM resource it thinks with (<project>/<name>)' },
   { key: 'instructions', field: 'system_prompt', info: 'System prompt, sent at the start of every conversation' },
   { key: 'tools', field: 'mcp_servers', info: 'MCP servers it may call (<project>/<name>)' },
@@ -26,6 +29,7 @@ export const KEYS: { key: string; field: keyof Bindings; info: string }[] = [
 
 export function toYaml(b: Bindings, header: string): string {
   const doc = new YAML.Document({
+    environment: b.environment || null,
     model: b.llm || null,
     instructions: b.system_prompt ?? '',
     tools: b.mcp_servers ?? [],
@@ -60,6 +64,10 @@ export function fromYaml(text: string, b: Bindings): { values: Bindings | null; 
   for (const k of Object.keys(o)) if (!KEYS.some((x) => x.key === k)) issues.push({ line: at(k), level: 'warning', message: `Unknown key "${k}" — ignored` });
   const v: Bindings = { ...b };
   const str = (k: string) => (o[k] == null ? '' : String(o[k]));
+  if ('environment' in o) {
+    if (o.environment != null && !(ENV_VALUES as readonly string[]).includes(str('environment'))) issues.push({ line: at('environment'), level: 'error', message: `environment: one of ${ENV_VALUES.join(', ')}` });
+    else v.environment = o.environment == null ? '' : str('environment');
+  }
   if ('model' in o) v.llm = str('model');
   if ('instructions' in o) v.system_prompt = str('instructions');
   if ('tools' in o) {
@@ -95,7 +103,7 @@ export function completer(choices: { model: string[]; tools: string[]; flows: st
     const line = text.slice(lineStart, pos);
     const m = line.match(/^(\w+):\s*(\S*)$/);
     if (m) {
-      const list = m[1] === 'model' ? choices.model : m[1] === 'served_by' ? choices.flows : m[1] === 'memory' ? [...MODES] : [];
+      const list = m[1] === 'model' ? choices.model : m[1] === 'served_by' ? choices.flows : m[1] === 'memory' ? [...MODES] : m[1] === 'environment' ? [...ENV_VALUES] : [];
       if (!list.length) return null;
       return { from: pos - m[2].length, options: list.map((x) => ({ label: x, apply: x })) };
     }

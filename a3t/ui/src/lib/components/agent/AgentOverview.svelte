@@ -1,94 +1,125 @@
 <script lang="ts">
-  /// Overview — the agent as a product: what it does, whether it is serving,
-  /// where its code is, how to call it, and the ways to make another from it.
-  import { factsOf, lineageOf, forksOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
+  /// Overview — for whoever answers for the agent: what it is, where it runs,
+  /// who owns it, what needs attention (each flag links to its evidence), and
+  /// the figures that matter. Developer actions are secondary.
+  import { factsOf, lineageOf, envOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
-  import { endpointUrl, copy } from './agentApi';
+  import { flagsOf } from './agentRisk';
 
-  let { agent, templates, allAgents, live, me, ongo, onstudio, oncode, onlifecycle }: {
+  let { agent, templates, allAgents, live, me, llmLabel, ongo, onstudio, oncode, onlifecycle }: {
     agent: AgentRec & { description?: string; created_by?: string };
     templates: TemplateRec[];
     allAgents: AgentRec[];
     live: AgentLive;
     me: string;
+    /// Its model resource's label, "<name> (<provider>)".
+    llmLabel?: string;
     ongo: (tab: string) => void;
     onstudio: () => void;
-    /// Open its template's code.
     oncode: () => void;
     onlifecycle: (kind: 'clone' | 'fork' | 'branch') => void;
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
   const lineage = $derived(lineageOf(agent, allAgents));
-  const forks = $derived(forksOf(agent, allAgents));
+  const env = $derived(envOf(agent));
   const purpose = $derived(agent.description || f.purpose);
-  const mine = $derived(!!me && agent.created_by === me);
+  const flags = $derived(live.loading || live.toolsLoading ? [] : flagsOf(agent, templates, live, llmLabel));
+  const serious = $derived(flags.filter((x) => x.level !== 'info'));
+  const notes = $derived(flags.filter((x) => x.level === 'info'));
+  let showNotes = $state(false);
   const p = $derived(live.placement);
-  const url = $derived(f.endpoint ? endpointUrl(f.endpoint) : '');
-  let copied = $state(false);
 </script>
 
 <section class="agt">
   <div class="card hero">
-    <p class="purpose" class:none={!purpose}>{purpose || 'No description yet — add one in Settings.'}</p>
+    <p class="purpose" class:none={!purpose}>{purpose || 'No description — its owner should add one in Settings.'}</p>
     <div class="row status">
+      {#if env}<span class="tag" class:prod={env === 'prod'} class:dev={env !== 'prod'}>{env}</span>{:else}<span class="tag">no environment</span>{/if}
       <span class="dot {live.health.tone}"></span><b>{live.health.word}</b>
-      <span class="sep">·</span>
-      <span>{live.loading ? '…' : p ? `${p.runtime || 'runtime being chosen'}${p.canvas ? ` · ${p.canvas}` : ''}` : 'answers on the shared runtime'}</span>
-      {#if live.lastSeen}<span class="sep">·</span><span>last call {ago(live.lastSeen)}</span>{/if}
+      {#if p}<span class="sep">·</span><span class="mono">{p.runtime || '—'}</span>{/if}
+      {#if live.lastSeen}<span class="sep">·</span><span>last activity {ago(live.lastSeen)}</span>{/if}
       <span class="grow"></span>
-      <span class="tag" class:dev={mine}>{mine ? 'yours' : agent.created_by ? `owner ${agent.created_by}` : 'unowned'}</span>
+      <span class="owner">{agent.created_by ? (agent.created_by === me ? 'owned by you' : `owner ${agent.created_by}`) : 'no owner'}</span>
     </div>
-    <dl class="kv src">
-      <dt>Code</dt>
-      <dd>{#if f.template}<button class="link mono" onclick={oncode}>{f.template.name}@{f.template.version}</button>{:else}<span class="mono">{agent.template_id ?? '—'}</span>{/if}
-        {#if lineage.kind !== 'template'}<span class="dim"> · {lineage.kind === 'fork' ? 'forked from' : 'cloned from'} {lineage.from?.name}</span>{/if}
-        {#if forks.length}<span class="dim"> · </span><button class="link" onclick={() => ongo('releases')}>{forks.length} fork{forks.length === 1 ? '' : 's'}</button>{/if}</dd>
-      <dt>Built with</dt>
-      <dd><span class="mono">{f.llm || 'no model'}</span><span class="dim"> · {f.mcp.length ? f.mcp.map((m) => m.split('/').pop()).join(', ') : 'no tools'} · memory {agent.mode}</span>
-        <button class="link" onclick={() => ongo('config')}>Config →</button></dd>
-    </dl>
-    {#if url}
-      <div class="ep">
-        <span class="verb">POST</span><span class="path">{url}</span>
-        <button class="btn2" onclick={async () => { copied = await copy(url); setTimeout(() => (copied = false), 1500); }}>{copied ? 'Copied' : 'Copy'}</button>
-        <button class="btn2" onclick={() => ongo('api')}>API →</button>
-      </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Needs attention</h3>
+      {#if live.loading || live.toolsLoading}<span>checking…</span>{:else}<span>{serious.length ? `${serious.length} finding${serious.length === 1 ? '' : 's'}` : 'nothing serious found'}</span>{/if}</div>
+    {#if serious.length}
+      <ul class="flags">
+        {#each serious as fl (fl.title)}
+          <li class={fl.level}><span class="lv">{fl.level}</span><div><b>{fl.title}</b><span class="dim">{fl.why}</span></div><button class="link" onclick={() => ongo(fl.tab)}>Look →</button></li>
+        {/each}
+      </ul>
     {/if}
-    <div class="acts">
-      <button class="btn2 primary" onclick={onstudio}>Test in Studio</button>
-      <span class="sep-v"></span>
-      <button class="btn2" onclick={() => onlifecycle('branch')} title="Change and test it without touching prod">Branch to dev</button>
-      <button class="btn2" onclick={() => onlifecycle('fork')} title="A new agent that keeps its link to this one">Fork</button>
-      <button class="btn2" onclick={() => onlifecycle('clone')} title="A new, independent agent, the same to start with">Clone</button>
-    </div>
+    {#if notes.length}
+      <button class="link" onclick={() => (showNotes = !showNotes)}>{showNotes ? 'Hide' : 'Show'} {notes.length} note{notes.length === 1 ? '' : 's'}</button>
+      {#if showNotes}
+        <ul class="flags">
+          {#each notes as fl (fl.title)}
+            <li class="info"><span class="lv">note</span><div><b>{fl.title}</b><span class="dim">{fl.why}</span></div><button class="link" onclick={() => ongo(fl.tab)}>Look →</button></li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
   </div>
 
   <div class="tiles">
     {#if p?.stats}
-      <button class="tile" onclick={() => ongo('observe')}><span class="v">{p.stats.runsLastHour}</span><span class="k">Calls, last hour</span></button>
-      <button class="tile" class:bad={p.stats.errorRate > 0.02} onclick={() => ongo('observe')}><span class="v">{(p.stats.errorRate * 100).toFixed(1)}%</span><span class="k">Errors</span></button>
-      <button class="tile" onclick={() => ongo('observe')}><span class="v">{dur(p.stats.p95Ms)}</span><span class="k">p95 latency</span></button>
+      <button class="tile" onclick={() => ongo('audit')}><span class="v">{p.stats.runsLastHour}</span><span class="k">Calls, last hour</span></button>
+      <button class="tile" class:bad={p.stats.errorRate > 0.02} onclick={() => ongo('audit')}><span class="v">{(p.stats.errorRate * 100).toFixed(1)}%</span><span class="k">Errors</span></button>
+      <button class="tile" onclick={() => ongo('releases')}><span class="v">{dur(p.stats.p95Ms)}</span><span class="k">p95 latency</span></button>
     {:else}
-      <button class="tile" onclick={() => ongo('observe')}><span class="v">{live.loading ? '…' : live.runsDay.length}</span><span class="k">Runs of its flow, 24 h</span></button>
-      <button class="tile" class:bad={live.failed.length > 0} onclick={() => ongo('observe')}><span class="v">{live.loading ? '…' : live.failed.length}</span><span class="k">Failed, its flow</span></button>
-      <button class="tile" onclick={() => ongo('observe')}><span class="v">{live.loading ? '…' : live.convs.length}</span><span class="k">Your test chats</span></button>
+      <button class="tile" onclick={() => ongo('audit')}><span class="v">{live.loading ? '…' : live.runsDay.length}</span><span class="k">Runs of its flow, 24 h</span></button>
+      <button class="tile" class:bad={live.failed.length > 0} onclick={() => ongo('audit')}><span class="v">{live.loading ? '…' : live.failed.length}</span><span class="k">Failed, its flow</span></button>
+      <button class="tile" onclick={() => ongo('access')}><span class="v">{live.toolsLoading ? '…' : live.allowedTools.length}</span><span class="k">Tools it may call</span></button>
     {/if}
-    <button class="tile" class:bad={live.denied.length > 0} onclick={() => ongo('observe')}><span class="v">{live.loading ? '…' : live.decErr ? '—' : live.denied.length}</span><span class="k">Blocked actions</span></button>
+    <button class="tile" class:bad={live.denied.length > 0} onclick={() => ongo('audit')}><span class="v">{live.loading ? '…' : live.decErr ? '—' : live.denied.length}</span><span class="k">Blocked actions</span></button>
   </div>
-  {#if !p && !live.loading}<p class="dim">Not deployed: the figures are of its serving flow, which other agents share. Deploy it in Releases for its own.</p>{/if}
+
+  <div class="card">
+    <div class="card-head"><h3>At a glance</h3></div>
+    <dl class="kv">
+      <dt>Project</dt><dd class="mono">{agent.namespace}</dd>
+      <dt>Code</dt><dd>{#if f.template}<button class="link mono" onclick={oncode}>{f.template.name}@{f.template.version}</button>{:else}<span class="mono">{agent.template_id ?? '—'}</span>{/if}
+        {#if lineage.kind !== 'template'}<span class="dim"> · {lineage.kind === 'fork' ? 'forked from' : 'cloned from'} {lineage.from?.name}</span>{/if}</dd>
+      <dt>Model</dt><dd><span class="mono">{f.llm || '—'}</span>{#if llmLabel}<span class="dim"> · {llmLabel.replace(/^.*\(|\)$/g, '')}</span>{/if}</dd>
+      <dt>Tools</dt><dd>{f.mcp.length ? f.mcp.map((m) => m.split('/').pop()).join(', ') : 'none'}<span class="dim"> · {f.tools ? `limited to ${f.tools.length}` : 'not restricted'}</span> <button class="link" onclick={() => ongo('access')}>Access →</button></dd>
+      <dt>Called at</dt><dd>{#if f.endpoint}<span class="mono">/webhook{f.endpoint}</span><span class="dim"> · {live.trigger?.enabled === false ? 'blocked' : 'open'}</span> <button class="link" onclick={() => ongo('exposure')}>Exposure →</button>{:else}—{/if}</dd>
+      <dt>Memory</dt><dd>{agent.mode === 'persistent' ? 'kept across conversations' : agent.mode === 'session' ? 'per conversation' : agent.mode}</dd>
+    </dl>
+  </div>
+
+  <div class="row devacts">
+    <span class="dim">For its developers:</span>
+    <button class="link" onclick={onstudio}>Test in Studio</button>
+    <button class="link" onclick={() => onlifecycle('branch')}>Branch</button>
+    <button class="link" onclick={() => onlifecycle('fork')}>Fork</button>
+    <button class="link" onclick={() => onlifecycle('clone')}>Clone</button>
+  </div>
 </section>
 
 <style>
-  .hero { gap: 12px; padding: 16px 18px; }
+  .hero { gap: 10px; }
   .purpose { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text-1); }
   .purpose.none { color: var(--text-4); font-size: 14px; }
   .status { gap: 6px; font-size: 12.5px; color: var(--text-3); }
   .status b { color: var(--text-1); font-weight: 600; }
   .sep { color: var(--text-4); }
-  .src { grid-template-columns: 80px 1fr; font-size: 12.5px; }
-  .src .link { margin-left: 4px; }
-  .src .link.mono { margin-left: 0; }
-  .sep-v { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
-  .tiles { grid-template-columns: repeat(4, 1fr); }
+  .owner { font-size: 12.5px; color: var(--text-2); }
+  .flags { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .flags li { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: baseline; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); }
+  .flags li > div { display: flex; flex-direction: column; gap: 2px; }
+  .flags b { font-size: 13px; color: var(--text-1); font-weight: 600; }
+  .lv { font: 600 10px var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-4); }
+  .flags li.high { background: color-mix(in srgb, var(--err) 9%, var(--bg-surface)); }
+  .flags li.high .lv { color: var(--err); }
+  .flags li.medium { background: color-mix(in srgb, var(--warn) 10%, var(--bg-surface)); }
+  .flags li.medium .lv { color: var(--warn); }
+  .kv { grid-template-columns: 90px 1fr; }
+  .kv .link { margin-left: 4px; }
+  .kv .link.mono { margin-left: 0; }
+  .devacts { gap: 14px; font-size: 12.5px; }
 </style>

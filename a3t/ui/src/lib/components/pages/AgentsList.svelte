@@ -3,10 +3,12 @@
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import AgentOverview from '$lib/components/agent/AgentOverview.svelte';
-  import AgentApi from '$lib/components/agent/AgentApi.svelte';
+  import AgentAccess from '$lib/components/agent/AgentAccess.svelte';
+  import AgentExposure from '$lib/components/agent/AgentExposure.svelte';
+  import AgentControls from '$lib/components/agent/AgentControls.svelte';
   import AgentConfig from '$lib/components/agent/AgentConfig.svelte';
   import AgentReleases from '$lib/components/agent/AgentReleases.svelte';
-  import AgentObserve from '$lib/components/agent/AgentObserve.svelte';
+  import AgentAudit from '$lib/components/agent/AgentAudit.svelte';
   import AgentSettings from '$lib/components/agent/AgentSettings.svelte';
   import { liveFor } from '$lib/components/agent/agentLive.svelte';
   import '$lib/components/agent/agent.css';
@@ -36,6 +38,7 @@
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
   const canCreate = can('create', 'agent');
+  const canEditAgent = can('update', 'agent');
 
   let loading = $state(true);
   let error = $state('');
@@ -155,29 +158,32 @@
     { id: 'review', label: 'Review', hint: 'Check it, then create it. It is not deployed until you deploy it.' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    overview: 'What it does, whether it is serving, its code, its endpoint',
-    api: 'How an app calls it: endpoint, request, code to copy',
-    config: 'Its values, as YAML, over its template\'s code',
-    releases: 'Where it runs and which version: prod, dev branches, releases',
-    observe: 'Calls, errors, latency, test chats, blocked actions, memory',
-    settings: 'Name, description, where it came from, delete',
+    overview: 'What it is, who owns it, what needs attention',
+    access: 'Everything it can reach: identity, model, tools, data, memory',
+    exposure: 'How it exposes itself (REST, MCP, A2A) and who has called it',
+    controls: 'Stop it, and what governs it: hooks, policies, approvals',
+    audit: 'What it did and what changed',
+    releases: 'Where it runs and which version; branches and forks',
+    settings: 'Name, environment, owner, where it came from, delete',
   };
 
-  /// An existing agent's tabs, for the coder who ships it: what it is, how to
-  /// call it, its values, its releases, how it is doing, admin. Building and
-  /// debugging its code is the Studio's.
+  /// An existing agent's tabs. The console's readers are mostly security and
+  /// governance teams (developers build in VS Code with Claude, over MCP), so
+  /// the tabs follow a review: what it is, what it can reach, who can reach it,
+  /// how to stop it, what it did, where it runs.
   const treeNodes = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
-    { id: 'api', label: 'API', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>' },
-    { id: 'config', label: 'Config', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
+    { id: 'access', label: 'Access', icon: '<circle cx="5.5" cy="8" r="3"/><path d="M8.5 8H15M12.5 8v3M14.5 8v2"/>' },
+    { id: 'exposure', label: 'Exposure', icon: '<circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13"/>' },
+    { id: 'controls', label: 'Controls', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
+    { id: 'audit', label: 'Audit', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
     { id: 'releases', label: 'Releases', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
-    { id: 'observe', label: 'Observe', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
     { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
   /// Tab names other pages (and earlier versions) link with.
   const TAB_ALIAS: Record<string, string> = {
-    detail: 'overview', configure: 'config', policy: 'config', canvas: 'releases', deploy: 'releases', branches: 'releases',
-    health: 'observe', activity: 'observe', memory: 'observe', ownership: 'settings',
+    detail: 'overview', api: 'exposure', config: 'access', configure: 'access', policy: 'controls', canvas: 'releases', deploy: 'releases',
+    branches: 'releases', health: 'audit', activity: 'audit', observe: 'audit', memory: 'audit', ownership: 'settings',
   };
   let activityStart = $state<'memory' | undefined>(undefined);
 
@@ -369,6 +375,25 @@
     openInStudio('template', readTemplate(t.spec_yaml).namespace ?? 'a3t', t.name, t.id);
   }
 
+  /// Controls → revoke every tool (keeping what it had), or give it back.
+  async function revokeTools(revoke: boolean): Promise<string | null> {
+    if (!agent) return null;
+    const vars = parseJson(agent.variables ?? '') || {};
+    if (revoke) {
+      vars.toolsBeforeRevoke = { enabled_tools: vars.enabled_tools ?? null };
+      vars.enabled_tools = [];
+    } else {
+      vars.enabled_tools = vars.toolsBeforeRevoke?.enabled_tools ?? null;
+      delete vars.toolsBeforeRevoke;
+    }
+    const r = await updateAgent(agent, { variables: JSON.stringify(vars) });
+    if (!r.ok) return r.error ?? 'Not changed';
+    await loadAgents();
+    return null;
+  }
+  /// Its model's label, "<name> (<provider>)", for what leaves the platform.
+  const llmLabel = $derived(llmResources.find((o) => o.value === bindings.llm)?.label);
+
   /// Settings → move to a newer release of its template.
   async function upgradeTemplate(templateId: string, version: string): Promise<string | null> {
     if (!agent) return null;
@@ -400,7 +425,7 @@
 
   /// What Configure and Settings edit: its model, instructions, tools, memory,
   /// name and description (and, kept as they are, the settings the Studio owns).
-  let bindings = $state<any>({ name: '', description: '', mode: 'session', llm: '', target: '', ep_path: '', mcp_servers: [], system_prompt: '', max_iterations: 10, temperature: 0.7 });
+  let bindings = $state<any>({ name: '', description: '', environment: '', mode: 'session', llm: '', target: '', ep_path: '', mcp_servers: [], system_prompt: '', max_iterations: 10, temperature: 0.7 });
   /// The saved bindings, to tell edits apart.
   let savedBindings = $state('');
   const bindDirty = $derived(!!savedBindings && JSON.stringify($state.snapshot(bindings)) !== savedBindings);
@@ -422,6 +447,7 @@
     bindings = {
       name: agent.name ?? '',
       description: vars.description ?? '',
+      environment: vars.environment ?? '',
       mode: agent.mode ?? 'session',
       llm,
       system_prompt: vars.system_prompt ?? String(tpl.system_prompt ?? '').trim(),
@@ -494,6 +520,7 @@
     vars.enabled_tools = bindings.enabled_tools ?? null;
     const description = String(bindings.description ?? '').trim();
     if (description) vars.description = description; else delete vars.description;
+    if (bindings.environment) vars.environment = bindings.environment; else delete vars.environment;
     const name = String(bindings.name ?? '').trim() || agent.name;
     const res = await execFlow('a3t-agents-update', 'a3t', {
       id: agent.id, org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString(),
@@ -713,13 +740,19 @@
           <div class="pf wide">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
             {#if propNode === 'overview'}
-              <AgentOverview {agent} {templates} {allAgents} live={live!} me={$currentUser?.id ?? ''}
+              <AgentOverview {agent} {templates} {allAgents} live={live!} me={$currentUser?.id ?? ''} {llmLabel}
                 ongo={(t) => (propNode = t)} onstudio={studio} oncode={openCode} onlifecycle={lifecycle} />
-            {:else if propNode === 'api'}
-              <AgentApi {agent} {templates} ongo={(t) => (propNode = t)} />
-            {:else if propNode === 'config'}
-              <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
-                onsave={saveBindings} ondiscard={discardBindings} oncode={openCode} {llmResources} {mcpResources} {flowOptions} />
+            {:else if propNode === 'access'}
+              <AgentAccess {agent} {templates} live={live!} {bindings} {llmLabel} canEdit={$canEditAgent} ongo={(t) => (propNode = t)}>
+                {#snippet editor()}
+                  <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
+                    onsave={saveBindings} ondiscard={discardBindings} oncode={openCode} {llmResources} {mcpResources} {flowOptions} />
+                {/snippet}
+              </AgentAccess>
+            {:else if propNode === 'exposure'}
+              <AgentExposure {agent} {templates} live={live!} ongo={(t) => (propNode = t)} />
+            {:else if propNode === 'controls'}
+              <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} />
             {:else if propNode === 'releases'}
               <AgentReleases {agent} {templates} {allAgents} live={live!} me={$currentUser?.email ?? $currentUser?.id ?? ''} bind:branchForm
                 onstudio={studio} onopen={selectAgent} onchanged={() => deployRev++}>
@@ -744,8 +777,8 @@
                   {#if canvasMsg}<p class="err">{canvasMsg}</p>{/if}
                 {/snippet}
               </AgentReleases>
-            {:else if propNode === 'observe'}
-              <AgentObserve {agent} {templates} live={live!} start={activityStart} onstudio={studio} ongo={(t) => (propNode = t)} />
+            {:else if propNode === 'audit'}
+              <AgentAudit {agent} {templates} live={live!} start={activityStart} onstudio={studio} ongo={(t) => (propNode = t)} />
             {:else if propNode === 'settings'}
               <AgentSettings {agent} {templates} {allAgents} live={live!} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings} ongo={(t) => (propNode = t)} onopen={selectAgent}

@@ -49,13 +49,12 @@
     }
 
     if (hasSession) {
-      // Restore from URL, else land on Chat — Dashboard is hidden from the menu,
-      // so defaulting there would open a page the rail cannot get back to.
+      // Restore from URL, else land on Agents — the product, first in the menu.
       // The project comes first: the panels read the rest of the same URL.
       initContext();
       const restored = initFromUrl();
       if (!restored) {
-        navigateTo('chat', 'AI Chat');
+        navigateTo('agents', 'Agents');
       }
       setupPopState();
       // Initialize editor context (registry + ajv) in background
