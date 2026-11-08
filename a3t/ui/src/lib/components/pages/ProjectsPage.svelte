@@ -242,6 +242,27 @@
     return Number(m[2]) > 0 ? `${m[1]}.${Number(m[2]) - 1}.0` : Number(m[1]) > 1 ? `${Number(m[1]) - 1}.0.0` : v;
   }
 
+  // Access & policy
+  let showRoles = $state(false);
+  const initialsOf = (s: string) => s.replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+  const runChoices = $derived(view?.owner_kind === 'org' ? [
+    { value: '', label: "The organisation's setting", hint: `Whatever ${view?.owner ?? 'the organisation'} chooses for its projects.` },
+    { value: 'shared', label: 'Shared runtimes', hint: 'Any runtime the platform offers.' },
+    { value: 'isolated', label: 'Only its own runtimes', hint: `Runtimes labelled a3t.io/org=${view?.owner ?? '…'} — never another organisation's.` },
+  ] : [
+    { value: '', label: 'Shared runtimes', hint: 'Any runtime the platform offers. The default.' },
+    { value: 'isolated', label: 'Only its own runtime', hint: `A runtime labelled a3t.io/project=${view?.namespace ?? '…'}.` },
+  ]);
+  const shareChoices = $derived([
+    { value: 'none', label: 'Nobody else', hint: view?.owner_kind === 'org' ? 'Only its members and the organisation.' : 'Only you and its members.' },
+    { value: 'orgs', label: isSystem ? 'Organisation a3t' : 'Selected organisations', hint: isSystem ? 'The system org passes things on to a3t only.' : 'Organisations you name.' },
+    ...(isSystem ? [] : [{ value: 'public', label: 'All organisations', hint: 'Anyone on the platform, under Community.' }]),
+  ]);
+  function setAudience(a: string) {
+    dPolicy = { ...dPolicy, exposure: a === 'none' ? { audience: 'none' }
+      : { ...ex, audience: a, orgs: isSystem ? ['a3t'] : (ex.orgs ?? []), kind: ex.kind ?? (isPlatformOrg ? 'shared' : 'community') } };
+  }
+
   function say(text: string, ok = false) { message = text; messageOk = ok; }
 
   /// The pop-in's steps. A new project goes in order: it needs an owner and a
@@ -536,85 +557,98 @@
     {#if stepped}<WizardHead step={pjSteps.find((x) => x.id === tab)} />{/if}
     {#if message}<div class="pj-msg" class:ok={messageOk}>{message}</div>{/if}
 
+    <!-- Access & policy, as four plain questions: who is in it, where it runs,
+         who else may use it, and its rules. Used by the tab and the wizard. -->
     {#snippet membersBlock()}
-      <div class="pj-form">
-        <table class="pj-table">
-          <thead><tr><th>Member</th><th>Role</th><th></th></tr></thead>
-          <tbody>
-            {#each dMembers as m (m.id)}
-              <tr>
-                <td>{m.name || m.email || m.id}<div class="dim mono">{m.email || m.id}</div></td>
-                <td><select bind:value={m.role} disabled={!canEdit}>{#each ROLES as r}<option value={r}>{r}</option>{/each}</select></td>
-                <td>{#if canEdit}<button class="pj-x" onclick={() => removeMember(m)} title="Remove">×</button>{/if}</td>
-              </tr>
-            {:else}
-              <tr><td colspan="3" class="dim">{view.owner_kind === 'org' ? "No named members — the org's admins (and, unless private, all its members) see it." : 'Only you so far.'}</td></tr>
-            {/each}
-          </tbody>
-        </table>
-        {#if canEdit}
-          <div class="pj-add">
-            <input bind:value={addWho} list="pj-users" placeholder="name or email" onkeydown={(e) => { if (e.key === 'Enter') addMember(); }} />
-            <datalist id="pj-users">{#each directory as u}<option value={u.email || u.id}>{u.name}{u.source === 'sso' ? ' (SSO)' : ''}</option>{/each}</datalist>
-            <select bind:value={addRole} title={ROLE_HINT[addRole]}>{#each ROLES as r}<option value={r}>{r}</option>{/each}</select>
-            <button class="pj-btn" onclick={addMember}>Add</button>
-          </div>
-          <ul class="pj-roles">{#each ROLES as r}<li><b>{r}</b> — {ROLE_HINT[r]}</li>{/each}</ul>
+      <section class="ap-card">
+        <header class="ap-head">
+          <div><h3>People</h3><p>Who can see and work in this project.</p></div>
+          <button class="link" onclick={() => (showRoles = !showRoles)}>{showRoles ? 'Hide roles' : 'What can each role do?'}</button>
+        </header>
+        {#if showRoles}
+          <div class="ap-roles">{#each ROLES as r}<div><b>{r}</b><span>{ROLE_HINT[r]}</span></div>{/each}</div>
         {/if}
-        <p class="pj-note">Members decide who sees the project now. What each role may do inside it takes effect once project-scoped Cedar is on (next step); until then the org-wide roles decide. Save to keep changes.</p>
-      </div>
+        <ul class="ap-people">
+          {#each dMembers as m (m.id)}
+            <li>
+              <span class="ap-av" aria-hidden="true">{initialsOf(m.name || m.email || m.id)}</span>
+              <span class="ap-who"><b>{m.name || m.email || m.id}</b>{#if m.email && m.name}<small>{m.email}</small>{/if}</span>
+              <select class="ap-role" bind:value={m.role} disabled={!canEdit} title={ROLE_HINT[m.role]} aria-label="Role of {m.name || m.email}">
+                {#each ROLES as r}<option value={r}>{r}</option>{/each}
+              </select>
+              {#if canEdit}<button class="ap-rm" onclick={() => removeMember(m)} aria-label="Remove {m.name || m.email}">Remove</button>{/if}
+            </li>
+          {:else}
+            <li class="ap-none">{view.owner_kind === 'org' ? "No one named yet — the organisation's admins, and unless it is private all its members, can see it." : 'Only you so far.'}</li>
+          {/each}
+        </ul>
+        {#if canEdit}
+          <div class="ap-add">
+            <input type="text" bind:value={addWho} list="pj-users" placeholder="Add someone — name or email" onkeydown={(e) => { if (e.key === 'Enter') addMember(); }} />
+            <datalist id="pj-users">{#each directory as u}<option value={u.email || u.id}>{u.name}{u.source === 'sso' ? ' (SSO)' : ''}</option>{/each}</datalist>
+            <select bind:value={addRole} title={ROLE_HINT[addRole]} aria-label="Their role">{#each ROLES as r}<option value={r}>{r}</option>{/each}</select>
+            <button class="pj-btn" onclick={addMember} disabled={!addWho.trim()}>Add</button>
+          </div>
+        {/if}
+      </section>
     {/snippet}
     {#snippet policyBlock()}
-      <div class="pj-form">
-        <h4>Runtime</h4>
-        <label><span>Where this project's flows run</span>
-          <select value={dPolicy.runtime ?? ''} disabled={!canEdit}
-                  onchange={(e) => { const v = e.currentTarget.value; dPolicy = { ...dPolicy }; if (v) dPolicy.runtime = v; else delete dPolicy.runtime; }}>
-            <option value="">{view.owner_kind === 'org' ? "The organisation's setting" : 'Shared (default)'}</option>
-            <option value="isolated">Isolated — only on {view.owner_kind === 'org' ? `${view.owner}'s own runtimes` : 'its own runtime'}</option>
-            <option value="shared">Shared runtimes</option>
-          </select>
-          <em>{view.owner_kind === 'org'
-            ? `Isolated runs only on runtimes labelled a3t.io/org=${view.owner}; never on another org's.`
-            : `Isolated runs only on a runtime labelled a3t.io/project=${view.namespace}.`} Enforced by FlowR when a flow is deployed.</em>
-        </label>
-        <h4>Exposure</h4>
-        <label><span>Who else may use this project — read, clone and run its flows, resources, triggers and templates; never change them</span>
-          <select value={ex.audience ?? 'none'} disabled={!canEdit}
-                  onchange={(e) => { const a = e.currentTarget.value; dPolicy = { ...dPolicy, exposure: a === 'none' ? { audience: 'none' }
-                    : { ...ex, audience: a, orgs: isSystem ? ['a3t'] : (ex.orgs ?? []), kind: ex.kind ?? (isPlatformOrg ? 'shared' : 'community') } }; }}>
-            <option value="none">Not exposed</option>
-            <option value="orgs">{isSystem ? 'Org a3t' : 'Selected orgs'}</option>
-            {#if !isSystem}<option value="public">All orgs</option>{/if}
-          </select>
-          {#if isSystem}<em>The system org exposes to a3t only; a3t decides what it passes on.</em>{/if}
-        </label>
+      <section class="ap-card">
+        <header class="ap-head"><div><h3>Where it runs</h3><p>Which runtimes may run this project's flows.</p></div></header>
+        <div class="ap-choices">
+          {#each runChoices as c (c.value)}
+            <label class="ap-choice" class:on={(dPolicy.runtime ?? '') === c.value} class:off={!canEdit}>
+              <input type="radio" name="pj-runtime" checked={(dPolicy.runtime ?? '') === c.value} disabled={!canEdit}
+                onchange={() => { const d = { ...dPolicy }; if (c.value) d.runtime = c.value; else delete d.runtime; dPolicy = d; }} />
+              <b>{c.label}</b><span>{c.hint}</span>
+            </label>
+          {/each}
+        </div>
+      </section>
+
+      <section class="ap-card">
+        <header class="ap-head"><div><h3>Who else can use it</h3><p>Others may read, clone and run what is in it — never change it.</p></div></header>
+        <div class="ap-choices">
+          {#each shareChoices as c (c.value)}
+            <label class="ap-choice" class:on={(ex.audience ?? 'none') === c.value} class:off={!canEdit}>
+              <input type="radio" name="pj-share" checked={(ex.audience ?? 'none') === c.value} disabled={!canEdit} onchange={() => setAudience(c.value)} />
+              <b>{c.label}</b><span>{c.hint}</span>
+            </label>
+          {/each}
+        </div>
         {#if ex.audience === 'orgs' && !isSystem}
-          <label><span>Org handles</span>
-            <input class="mono" value={(ex.orgs ?? []).join(', ')} disabled={!canEdit} placeholder="acme, globex"
-                   onchange={(e) => { dPolicy = { ...dPolicy, exposure: { ...ex, orgs: e.currentTarget.value.split(',').map((x) => x.trim()).filter(Boolean) } }; }} />
+          <label class="ap-field"><span>Which organisations</span>
+            <input type="text" class="mono" value={(ex.orgs ?? []).join(', ')} disabled={!canEdit} placeholder="acme, globex"
+              onchange={(e) => { dPolicy = { ...dPolicy, exposure: { ...ex, orgs: e.currentTarget.value.split(',').map((x) => x.trim()).filter(Boolean) } }; }} />
           </label>
         {/if}
         {#if ex.audience !== 'none' && isPlatformOrg}
-          <label><span>Shown to them as</span>
-            <select value={ex.kind ?? 'shared'} disabled={!canEdit}
-                    onchange={(e) => { dPolicy = { ...dPolicy, exposure: { ...ex, kind: e.currentTarget.value } }; }}>
-              <option value="shared">Shared — to use or wire</option>
+          <label class="ap-field"><span>They see it as</span>
+            <select value={ex.kind ?? 'shared'} disabled={!canEdit} onchange={(e) => { dPolicy = { ...dPolicy, exposure: { ...ex, kind: e.currentTarget.value } }; }}>
+              <option value="shared">Shared — to use or wire in</option>
               <option value="training">Training — examples to learn from and clone</option>
             </select>
           </label>
         {/if}
-        <p class="pj-note">{ex.audience === 'none' ? 'Only this project\'s members and its org see it.' : 'Publish items into this project from their cards (Publish); others see them under Community, or From A3T / Training for the platform. Save to apply.'}</p>
-        <h4>Project rules</h4>
-        {#each POLICY_PRESETS as rule}
-          <label class="pj-check">
-            <input type="checkbox" disabled={!canEdit} checked={!!dPolicy[rule.key]}
-                   onchange={(e) => { dPolicy = { ...dPolicy, [rule.key]: e.currentTarget.checked }; }} />
-            <span><b>{rule.label}</b><em>{rule.hint}</em></span>
-          </label>
-        {/each}
-        <p class="pj-note">Saved with the project, enforced once project-scoped Cedar is on (next step). Always in force, from the org baseline: deny by default, agents act only on behalf of a user, destructive tools need an admin, prod deploys need an admin, and InfoSec owns Cedar policy resources — see Security → Policies.</p>
-      </div>
+      </section>
+
+      <section class="ap-card">
+        <header class="ap-head"><div><h3>Rules</h3><p>On top of the organisation's baseline.</p></div></header>
+        <div class="ap-rules">
+          {#each POLICY_PRESETS as rule (rule.key)}
+            <label class="ap-rule" class:off={!canEdit}>
+              <span><b>{rule.label}</b><small>{rule.hint}</small></span>
+              <input type="checkbox" role="switch" class="ap-switch" disabled={!canEdit} checked={!!dPolicy[rule.key]}
+                onchange={(e) => { dPolicy = { ...dPolicy, [rule.key]: e.currentTarget.checked }; }} />
+            </label>
+          {/each}
+        </div>
+        <details class="ap-more">
+          <summary>Always in force</summary>
+          <p>Deny by default; agents act only on behalf of a user; destructive tools and prod deploys need an admin; InfoSec owns the Cedar policies (Security → Policies).</p>
+        </details>
+      </section>
+      <p class="ap-foot">Roles and rules take effect once project-scoped policy is on; until then the organisation's roles decide.</p>
     {/snippet}
 
     {#if panel === 'create' && tab === 'settings'}
@@ -648,10 +682,7 @@
       </div>
 
     {:else if panel === 'create' && tab === 'access'}
-      <h3 class="pj-sec">Members</h3>
-      {@render membersBlock()}
-      <h3 class="pj-sec">Policy</h3>
-      {@render policyBlock()}
+      <div class="ap">{@render membersBlock()}{@render policyBlock()}</div>
 
     {:else if panel === 'create' && tab === 'review'}
       <div class="pj-form">
@@ -843,13 +874,11 @@
       </div>
 
     {:else if tab === 'access' && info}
-      <h3 class="pj-sec">Members</h3>
-      {@render membersBlock()}
-      <h3 class="pj-sec">Policy</h3>
-      {@render policyBlock()}
-      <div class="pj-form"><div class="pj-row">
-        <button class="pj-btn" onclick={() => navigateTo('logs', 'Decision log', { q: info.namespace })}>Decisions in this project (allowed and blocked)</button>
-      </div></div>
+      <div class="ap">
+        {@render membersBlock()}
+        {@render policyBlock()}
+        <button class="ap-link" onclick={() => navigateTo('logs', 'Decision log', { q: info.namespace })}>See what was allowed and blocked in this project →</button>
+      </div>
 
     {:else if tab === 'settings' && info}
       <div class="pj-form">
@@ -1044,6 +1073,56 @@
   .pj-li-row { display: flex; align-items: center; gap: 8px; }
   .pj-li-row .pj-li { flex: 1 1 auto; min-width: 0; }
   .pj-ver-pick { flex: 0 0 auto; font: 12px var(--font-mono); }
+  /* Access & policy: four plain cards */
+  .ap { display: flex; flex-direction: column; gap: 14px; }
+  .ap-card { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
+  .ap-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .ap-head h3 { margin: 0; font: 400 17px var(--font-serif); color: var(--text-1); }
+  .ap-head p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-3); }
+  .ap-roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); }
+  .ap-roles div { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-3); }
+  .ap-roles b { font-size: 12.5px; color: var(--text-1); text-transform: capitalize; }
+  .ap-people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .ap-people li { display: flex; align-items: center; gap: 12px; padding: 8px 4px; border-bottom: 1px solid var(--divider, var(--border)); }
+  .ap-people li:last-child { border-bottom: 0; }
+  .ap-av { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--spec-bg); color: var(--spec); font: 600 11.5px var(--font-sans); }
+  .ap-who { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .ap-who b { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
+  .ap-who small { font-size: 12px; color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ap-role { flex: 0 0 auto; height: 28px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12.5px; color: var(--text-1); text-transform: capitalize; width: auto !important; }
+  .ap-rm { flex: 0 0 auto; border: 0; background: none; color: var(--text-4); font-size: 12px; cursor: pointer; opacity: 0; }
+  .ap-people li:hover .ap-rm, .ap-rm:focus-visible { opacity: 1; }
+  .ap-rm:hover { color: var(--err, #b42318); }
+  .ap-none { color: var(--text-3); font-size: 13px; }
+  .ap-add { display: flex; gap: 8px; align-items: center; }
+  .ap-add input { flex: 1 1 auto; }
+  .ap-add select { width: auto !important; flex: 0 0 auto; }
+  .ap-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+  /* Options, not field captions: sentence case (the app's convention for
+     radio and checkbox rows, as label.cf-check). */
+  .ap-choice, .ap-rule { font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-1); }
+  .ap-choice { position: relative; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px 10px 34px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; background: var(--bg-surface); }
+  .ap-choice input { position: absolute; left: 12px; top: 12px; margin: 0; accent-color: var(--spec); }
+  .ap-choice b { font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .ap-choice span { font-size: 12px; color: var(--text-3); line-height: 1.4; }
+  .ap-choice.on { border-color: var(--spec); background: var(--spec-bg); }
+  .ap-choice.off { cursor: default; }
+  .ap-field { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); }
+  .ap-rules { display: flex; flex-direction: column; }
+  .ap-rule { display: flex; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--divider, var(--border)); cursor: pointer; }
+  .ap-rule:last-child { border-bottom: 0; }
+  .ap-rule > span { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
+  .ap-rule b { font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .ap-rule small { font-size: 12px; color: var(--text-3); }
+  .ap-switch { appearance: none; flex: 0 0 auto; width: 34px !important; height: 20px; border-radius: 999px; background: var(--border-strong, #c8c3b6); position: relative; cursor: pointer; transition: background 0.15s; margin: 0; padding: 0 !important; border: 0 !important; }
+  .ap-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+  .ap-switch:checked { background: var(--green, #1a7158); }
+  .ap-switch:checked::after { left: 16px; }
+  .ap-switch:disabled { opacity: 0.5; cursor: default; }
+  .ap-more summary { cursor: pointer; font-size: 12.5px; color: var(--text-3); }
+  .ap-more p { margin: 6px 0 0; font-size: 12.5px; color: var(--text-3); line-height: 1.5; }
+  .ap-foot { margin: 0; font-size: 12px; color: var(--text-4); }
+  .ap-link { align-self: flex-start; border: 0; background: none; padding: 0; color: var(--spec); font: 500 13px var(--font-sans); cursor: pointer; }
   .pj-envs { display: flex; gap: 8px; }
   .pj-env { padding: 4px 12px; border-radius: 12px; font: 12px var(--font-mono); border: 1px solid var(--border); }
   .pj-env.dev { color: #15803d; border-color: #86efac; }
