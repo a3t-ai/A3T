@@ -55,3 +55,15 @@ export function hostActions(): () => void {
   let done = false;
   return () => { if (!done) { done = true; hosts--; } };
 }
+
+// How many item views are fitted over the Details pane right now. While an
+// item is opening, the shell keeps the page under it out of sight until one is.
+let fitted = $state(0);
+export function paneFitted(): boolean {
+  return fitted > 0;
+}
+export function fitOpened(): () => void {
+  fitted++;
+  let done = false;
+  return () => { if (!done) { done = true; fitted--; } };
+}

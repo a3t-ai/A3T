@@ -7,6 +7,7 @@
 // the pane, no backdrop, no slide across the window.
 
 import { getContext, setContext } from 'svelte';
+import { fitOpened } from '$lib/stores/detailActions.svelte.ts';
 
 const KEY = Symbol('a3t.detailsPane');
 
@@ -26,6 +27,9 @@ export function detailsPane(): PaneHost | null {
 /// it as stacks are pinned, expanded or dragged. Does nothing without a host.
 export function fitToPane(node: HTMLElement, host: PaneHost | null) {
   if (!host) return {};
+  // Marked so the shell can show it while it hides the page underneath.
+  node.dataset.fitted = '';
+  const closeFit = fitOpened();
   let raf = 0;
   const place = () => {
     const el = host();
@@ -44,6 +48,7 @@ export function fitToPane(node: HTMLElement, host: PaneHost | null) {
   window.addEventListener('resize', schedule);
   return {
     destroy() {
+      closeFit();
       cancelAnimationFrame(raf);
       ro.disconnect();
       window.removeEventListener('resize', schedule);
