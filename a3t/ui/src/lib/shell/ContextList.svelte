@@ -8,6 +8,7 @@
   } from '$lib/stores/apps.svelte.ts';
   import { deleteChatSession, setPin } from '$lib/services/api';
   import { getProject } from '$lib/stores/context.svelte.ts';
+  import { setItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
   import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
 
   let { appType }: { appType: string } = $props();
@@ -177,6 +178,13 @@
     load(src);
   });
 
+  // Refresh lives in the stack's control bar, not beside the main action.
+  $effect(() => {
+    const src = spec?.source;
+    if (!src) return;
+    return setItemsRefresh(() => load(src), loading);
+  });
+
   function select(item: Item) {
     const panel = getActivePanel();
     const title = panel?.title ?? contextLabel(appType);
@@ -287,11 +295,6 @@
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> New flow
         </button>
       {/if}
-      <button class="ctx-icon" onclick={() => load(spec!.source)} title="Refresh" aria-label="Refresh" disabled={loading}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M14 8A6 6 0 112.6 5.5" /><path d="M2 2v4h4" />
-        </svg>
-      </button>
     </div>
   </div>
 

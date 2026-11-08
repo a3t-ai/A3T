@@ -14,7 +14,7 @@
   import Resizer from './Resizer.svelte';
   import CommandPalette from './CommandPalette.svelte';
   import DetailsHost from './DetailsHost.svelte';
-  import { getDetailActions } from '$lib/stores/detailActions.svelte.ts';
+  import { getDetailActions, getItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
@@ -131,6 +131,14 @@
       style:width={midMode === 'pop' ? `${width('chatPop')}px` : undefined}>
       {#if midMode === 'pop'}<Resizer k="chatPop" edge="left" label="Items and Chat" overlay />{/if}
       <StackBar stack="mid">
+        {#snippet right()}
+          {#if face === 'items' && getItemsRefresh()}
+            {@const r = getItemsRefresh()!}
+            <button class="da" onclick={r.run} disabled={r.busy} title="Refresh" aria-label="Refresh">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8A6 6 0 112.6 5.5" /><path d="M2 2v4h4" /></svg>
+            </button>
+          {/if}
+        {/snippet}
         {#snippet left()}
           <div class="seg" role="group" aria-label="Show">
             <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
@@ -249,6 +257,7 @@
   /* The open item's actions, in the Details bar before Expand and Pin. */
   .dacts { display: inline-flex; align-items: center; gap: 4px; }
   .da { height: 28px; min-width: 28px; padding: 0 7px; border-radius: 7px; border: 1px solid transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--text-3); cursor: pointer; font: 500 12.5px var(--font-sans); }
+  .da:disabled { opacity: 0.4; cursor: default; }
   .da:hover { background: var(--bg-subtle); border-color: var(--border); color: var(--text-1); }
   .da.save { border-color: var(--border); color: var(--text-1); background: var(--bg-surface); }
   .da.save:hover { border-color: var(--green, #1a7158); color: var(--green, #1a7158); }

@@ -27,3 +27,19 @@ export function setDetailActions(actions: DetailActions): () => void {
     if (current?.owner === owner) current = null;
   };
 }
+
+// The Items list's Refresh, drawn in the Items | Chat stack bar.
+let itemsRefresh = $state<{ owner: symbol; run: () => void; busy: boolean } | null>(null);
+
+export function getItemsRefresh(): { run: () => void; busy: boolean } | null {
+  return itemsRefresh;
+}
+
+/// Register the list's refresh; returns the clear function (only clears its own).
+export function setItemsRefresh(run: () => void, busy: boolean): () => void {
+  const owner = Symbol('items-refresh');
+  itemsRefresh = { owner, run, busy };
+  return () => {
+    if (itemsRefresh?.owner === owner) itemsRefresh = null;
+  };
+}
