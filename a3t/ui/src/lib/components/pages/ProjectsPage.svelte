@@ -57,7 +57,7 @@
   /// Detail: what it is (Overview), what is in it (Contents), what runs where and
   /// each environment's variables (Environments), whether it is healthy (Health), who may do what (Access &
   /// policy), and its setup (Settings). Create: Settings → Access & policy → Review.
-  type Tab = 'overview' | 'contents' | 'environments' | 'health' | 'access' | 'settings' | 'review';
+  type Tab = 'overview' | 'contents' | 'environments' | 'health' | 'access' | 'billing' | 'settings' | 'review';
   let tab = $state<Tab>('overview');
   // Releases: each flow in the project, its versions and the active one.
   let releases = $state<{ name: string; versions: string[]; active: string }[]>([]);
@@ -242,6 +242,34 @@
     return Number(m[2]) > 0 ? `${m[1]}.${Number(m[2]) - 1}.0` : Number(m[1]) > 1 ? `${Number(m[1]) - 1}.0.0` : v;
   }
 
+  // ── Billing: who pays, what it costs, its budget ──
+  // SAMPLE until billing accounts and per-project metering exist (UI
+  // limitations, SRV-9). The tab says so; nothing here is presented as live.
+  const BILLING_ACCOUNTS = [
+    { id: 'ba-main', name: 'Main account', how: 'Card ending 4242', owner: 'organisation' },
+    { id: 'ba-rnd', name: 'R&D', how: 'Invoice, net 30', owner: 'organisation' },
+    { id: 'ba-personal', name: 'Personal', how: 'Card ending 0019', owner: 'you' },
+  ];
+  let billingAccount = $state('ba-main');
+  let costCentre = $state('');
+  let billingContact = $state('');
+  let budget = $state(500);
+  let warnAt = $state(80);
+  let onLimit = $state<'notify' | 'pause-nonprod'>('notify');
+  const spend = $derived.by(() => {
+    const lines = [
+      { what: 'Model tokens', detail: '18.4 M in · 2.1 M out', cost: 212.4 },
+      { what: 'Runs', detail: '41,230 runs', cost: 41.2 },
+      { what: 'Runtime hours', detail: '612 h', cost: 73.4 },
+      { what: 'Storage and memory', detail: '38 GB', cost: 9.1 },
+    ];
+    const items = insight ? [...insight.agents.map((a) => ({ kind: 'agent', name: a.name })), ...insight.flows.map((f) => ({ kind: 'flow', name: f.name }))] : [];
+    const weights = [0.46, 0.21, 0.12, 0.08, 0.05, 0.04, 0.02, 0.01, 0.005, 0.005];
+    const total = lines.reduce((n, l) => n + l.cost, 0);
+    return { lines, total, byItem: items.slice(0, 6).map((it, i) => ({ ...it, cost: total * (weights[i] ?? 0.005) })) };
+  });
+  const money = (n: number) => n.toLocaleString(undefined, { style: 'currency', currency: 'EUR', maximumFractionDigits: n < 100 ? 2 : 0 });
+
   // Access & policy
   let showRoles = $state(false);
   const initialsOf = (s: string) => s.replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
@@ -281,6 +309,7 @@
       { id: 'environments', icon: ICON.environments, label: 'Environments', hint: 'What runs where, and the variables each environment gives its deployments' },
       { id: 'health', icon: ICON.health, label: 'Health', hint: "Its deployments and recent failures" },
       { id: 'access', icon: ICON.access, label: `Access & policy`, hint: 'Members, where it runs, who else may use it, its rules' },
+      { id: 'billing', icon: ICON.billing, label: 'Billing', hint: 'Who pays, what it costs, and its budget' },
       { id: 'settings', icon: ICON.settings, label: 'Settings', hint: 'Name, visibility, environments, ownership' },
     ];
   });
@@ -292,6 +321,7 @@
     access: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>',
     settings: '<circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/>',
     review: '<path d="M3 8l3 3 7-7"/>',
+    billing: '<rect x="1.5" y="3.5" width="13" height="9" rx="1.5"/><path d="M1.5 6.5h13M4 10h3"/>',
   };
 
   function card(p: Project) {
@@ -675,6 +705,12 @@
         </label>
         <label><span>Display name</span><input bind:value={newDisplay} placeholder={newName || 'Orders'} /></label>
         <label><span>Description</span><textarea rows="3" bind:value={newDesc} placeholder="What this project delivers"></textarea></label>
+        <label><span>Billing account</span>
+          <select bind:value={billingAccount}>
+            {#each BILLING_ACCOUNTS.filter((a) => owner.startsWith('org:') ? a.owner === 'organisation' : true) as a (a.id)}<option value={a.id}>{a.name} — {a.how}</option>{/each}
+          </select>
+          <em>Who pays for what it uses. (Sample accounts until billing is connected.)</em>
+        </label>
         <label class="pj-check">
           <input type="checkbox" bind:checked={newPrivate} />
           <span><b>Private</b><em>{owner.startsWith('org:') ? "Only the project's members and the org's admins and security admins see it." : 'Only you see it.'}</em></span>
@@ -692,6 +728,7 @@
           <div><span>Display name</span>{newDisplay.trim() || newName.trim() || '—'}</div>
           <div><span>Description</span>{newDesc.trim() || '—'}</div>
           <div><span>Visibility</span>{newPrivate ? 'Private' : owner.startsWith('org:') ? 'Visible to the organisation' : 'Visible to you'}</div>
+          <div><span>Billed to</span>{BILLING_ACCOUNTS.find((a) => a.id === billingAccount)?.name ?? '—'} <span class="dim">(sample)</span></div>
           <div><span>Members</span>{dMembers.length ? dMembers.map((m) => `${m.name || m.email || m.id} (${m.role})`).join(', ') : 'None besides the owner'}</div>
           <div><span>Runs on</span>{dPolicy.runtime === 'isolated' ? 'Its own runtimes only' : dPolicy.runtime === 'shared' ? 'Shared runtimes' : 'The default'}</div>
           <div><span>Exposed to</span>{ex.audience === 'none' ? 'Nobody else' : ex.audience === 'public' ? 'All orgs' : (ex.orgs ?? []).join(', ') || 'Selected orgs'}</div>
@@ -878,6 +915,65 @@
         {@render membersBlock()}
         {@render policyBlock()}
         <button class="ap-link" onclick={() => navigateTo('logs', 'Decision log', { q: info.namespace })}>See what was allowed and blocked in this project →</button>
+      </div>
+
+    {:else if tab === 'billing' && info}
+      <div class="ap">
+        <div class="pj-sample"><b>Sample</b> Billing accounts and per-project costs are not connected yet — this shows how the screen will work. Changes here are not saved.</div>
+
+        <section class="ap-card">
+          <header class="ap-head"><div><h3>Billing account</h3><p>Who pays for what this project uses.</p></div>
+            <button class="link" onclick={() => navigateToDetail('settings', 'Settings', 'billing.invoices')}>Invoices</button></header>
+          <div class="ap-choices">
+            {#each BILLING_ACCOUNTS.filter((a) => info.owner_kind === 'org' ? a.owner === 'organisation' : true) as a (a.id)}
+              <label class="ap-choice" class:on={billingAccount === a.id} class:off={!canEdit}>
+                <input type="radio" name="pj-billing" checked={billingAccount === a.id} disabled={!canEdit} onchange={() => (billingAccount = a.id)} />
+                <b>{a.name}</b><span>{a.how} · {a.owner === 'you' ? 'yours' : info.owner_kind === 'org' ? info.owner : a.owner}</span>
+              </label>
+            {/each}
+          </div>
+          <div class="ap-two">
+            <label class="ap-field"><span>Cost centre</span><input type="text" bind:value={costCentre} placeholder="e.g. MKT-204" disabled={!canEdit} /></label>
+            <label class="ap-field"><span>Billing contact</span><input type="text" bind:value={billingContact} placeholder="finance@company.com" disabled={!canEdit} /></label>
+          </div>
+        </section>
+
+        <section class="ap-card">
+          <header class="ap-head"><div><h3>This month</h3><p>So far, against its budget.</p></div><b class="bl-total">{money(spend.total)}</b></header>
+          <div class="bl-bar" class:warn={spend.total / budget * 100 >= warnAt} title="{Math.round(spend.total / budget * 100)}% of {money(budget)}">
+            <span style:width="{Math.min(100, spend.total / budget * 100)}%"></span>
+          </div>
+          <p class="ap-foot">{Math.round(spend.total / budget * 100)}% of the {money(budget)} monthly budget.</p>
+          <ul class="bl-lines">
+            {#each spend.lines as l (l.what)}<li><span><b>{l.what}</b><small>{l.detail}</small></span><span class="bl-cost">{money(l.cost)}</span></li>{/each}
+          </ul>
+        </section>
+
+        <section class="ap-card">
+          <header class="ap-head"><div><h3>Where it goes</h3><p>Its agents and flows by cost this month.</p></div></header>
+          {#if spend.byItem.length === 0}<p class="dim">Nothing has run yet.</p>
+          {:else}
+            <ul class="bl-lines">
+              {#each spend.byItem as it (it.kind + it.name)}
+                <li><span><b class="mono">{it.name}</b><small>{it.kind}</small></span>
+                  <span class="bl-share"><span style:width="{Math.round(it.cost / spend.total * 100)}%"></span></span>
+                  <span class="bl-cost">{money(it.cost)}</span></li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
+        <section class="ap-card">
+          <header class="ap-head"><div><h3>Budget</h3><p>A monthly limit, when to warn, and what happens at the limit.</p></div></header>
+          <div class="ap-two">
+            <label class="ap-field"><span>Monthly budget (EUR)</span><input type="number" min="0" step="50" bind:value={budget} disabled={!canEdit} /></label>
+            <label class="ap-field"><span>Warn at (%)</span><input type="number" min="1" max="100" bind:value={warnAt} disabled={!canEdit} /></label>
+          </div>
+          <div class="ap-choices">
+            <label class="ap-choice" class:on={onLimit === 'notify'} class:off={!canEdit}><input type="radio" name="pj-limit" checked={onLimit === 'notify'} disabled={!canEdit} onchange={() => (onLimit = 'notify')} /><b>Notify only</b><span>Owners and the billing contact are told; everything keeps running.</span></label>
+            <label class="ap-choice" class:on={onLimit === 'pause-nonprod'} class:off={!canEdit}><input type="radio" name="pj-limit" checked={onLimit === 'pause-nonprod'} disabled={!canEdit} onchange={() => (onLimit = 'pause-nonprod')} /><b>Pause dev and staging</b><span>Non-production deployments pause; prod keeps running.</span></label>
+          </div>
+        </section>
       </div>
 
     {:else if tab === 'settings' && info}
@@ -1125,6 +1221,21 @@
   .ap-more p { margin: 6px 0 0; font-size: 12.5px; color: var(--text-3); line-height: 1.5; }
   .ap-foot { margin: 0; font-size: 12px; color: var(--text-4); }
   .ap-link { align-self: flex-start; border: 0; background: none; padding: 0; color: var(--spec); font: 500 13px var(--font-sans); cursor: pointer; }
+  /* Billing */
+  .ap-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .bl-total { font: 400 24px var(--font-serif); color: var(--text-1); }
+  .bl-bar { height: 8px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+  .bl-bar span { display: block; height: 100%; background: var(--green, #1a7158); border-radius: 999px; }
+  .bl-bar.warn span { background: var(--warn, #b45309); }
+  .bl-lines { list-style: none; margin: 0; padding: 0; }
+  .bl-lines li { display: flex; align-items: center; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--divider, var(--border)); }
+  .bl-lines li:last-child { border-bottom: 0; }
+  .bl-lines li > span:first-child { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .bl-lines b { font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .bl-lines small { font-size: 12px; color: var(--text-3); }
+  .bl-cost { flex: 0 0 auto; font: 500 13px var(--font-mono); color: var(--text-1); }
+  .bl-share { flex: 0 0 120px; height: 6px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+  .bl-share span { display: block; height: 100%; background: var(--spec); }
   .pj-envs { display: flex; gap: 8px; }
   .pj-env { padding: 4px 12px; border-radius: 12px; font: 12px var(--font-mono); border: 1px solid var(--border); }
   .pj-env.dev { color: #15803d; border-color: #86efac; }
