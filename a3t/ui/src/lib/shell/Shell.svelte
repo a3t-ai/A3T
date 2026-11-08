@@ -15,10 +15,12 @@
   import CommandPalette from './CommandPalette.svelte';
   import DetailsHost from './DetailsHost.svelte';
   import AppWelcome from './AppWelcome.svelte';
+  import ChatArtifactHost from './ChatArtifactHost.svelte';
+  import { getChatArtifact, setArtifactPinned } from '$lib/stores/chatArtifact.svelte.ts';
   import { getDetailActions, getItemsRefresh, actionsHosted, paneFitted } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
-  import { getActivePanel, navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { hasContext, APP_CONTEXT } from '$lib/stores/apps.svelte.ts';
+  import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { hasContext, APP_CONTEXT, trackOpen } from '$lib/stores/apps.svelte.ts';
   import {
     menuDocked, docked, getOverlay, openOverlay, closeOverlay, getFace, setFace, width,
     togglePin, toggleFace, togglePalette, escape, revealDetails, getToast, getChatSession,
@@ -56,8 +58,47 @@
     kind === 'own' || kind === 'page' ? 'pane'
     : d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
   /// A page app's pop-in is Chat only.
-  /// AI Chat's middle stack is its conversation list only.
-  const shownFace = $derived(kind === 'page' ? 'chat' : kind === 'chat' ? 'items' : face);
+  // ── The chat's editing pane (a card's item, co-edited with the agent) ──
+  // It shows in Details beside the conversation that opened it: AI Chat's open
+  // conversation, or the Chat face's in any other app. Popped in over Details,
+  // or pinned to take Details — in AI Chat the conversation then moves to the
+  // middle stack's Chat face, so the item and the conversation sit side by side.
+  const art = $derived(getChatArtifact());
+  const artInView = $derived(!!art && art.session === (kind === 'chat' ? selectedId : getChatSession()));
+  const artPinned = $derived(artInView && !!art?.pinned);
+  /// AI Chat with its item pinned: the conversation is in the middle stack.
+  const chatBeside = $derived(kind === 'chat' && artPinned);
+  let artHost = $state<ReturnType<typeof ChatArtifactHost>>();
+
+  /// AI Chat's middle stack is its conversation list — and, while an item is
+  /// pinned in Details, the conversation itself (the Chat face).
+  const shownFace = $derived(kind === 'page' ? 'chat' : kind === 'chat' && !chatBeside ? 'items' : face);
+  $effect(() => {
+    if (!chatBeside) return;
+    const sel = selectedId;
+    untrack(() => { setChatSession(sel); setFace('chat'); });
+  });
+  /// Opening an item where Details is out of sight brings Details in.
+  let lastArt: unknown = null;
+  $effect(() => {
+    const a = art?.artifact;
+    untrack(() => {
+      if (a && a !== lastArt && artInView && detMode === 'off') openOverlay('details');
+      lastArt = a ?? null;
+    });
+  });
+  /// Over Details when Details is docked; otherwise (pinned, or Details itself
+  /// popped in) it fills Details.
+  const artMode = $derived<'pop' | 'fill' | 'hidden'>(!artInView ? 'hidden' : artPinned || detMode !== 'pane' ? 'fill' : 'pop');
+  /// The item in its own app: the conversation goes along in that app's Chat face.
+  function openArtInApp(link: { type: string; title: string; id: string }) {
+    const sess = art?.session;
+    if (!artHost?.close()) return;
+    if (sess) setChatSession(sess);
+    trackOpen(link.type, link.title);
+    navigateToDetail(link.type, link.title, link.id);
+    setFace('chat');
+  }
 
   /// Items is the list and Details is one item. For an app with a list,
   /// Details shows the app's welcome until something is picked or created;
@@ -147,7 +188,11 @@
     }
     else if (mod && e.key === '.') { e.preventDefault(); togglePin('details'); }
     else if (mod && e.key === '\\') { e.preventDefault(); togglePin('menu'); }
-    else if (e.key === 'Escape' && !e.defaultPrevented) { if (escape()) e.preventDefault(); }
+    else if (e.key === 'Escape' && !e.defaultPrevented) {
+      // A popped-in item closes first; pinned, it stays until unpinned.
+      if (artMode === 'pop') { e.preventDefault(); artHost?.close(); }
+      else if (escape()) e.preventDefault();
+    }
   }
 
   function newConversation() { setChatSession(''); setFace('chat'); }
@@ -194,7 +239,7 @@
         {#snippet left()}
           {#if kind === 'page'}
             <span class="sbname">Chat</span>
-          {:else if kind === 'chat'}
+          {:else if kind === 'chat' && !chatBeside}
             <span class="sbname">Items</span>
           {:else}
             <div class="seg" role="group" aria-label="Show">
@@ -202,7 +247,7 @@
               <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
             </div>
           {/if}
-          {#if shownFace === 'chat' && getChatSession()}
+          {#if shownFace === 'chat' && getChatSession() && kind !== 'chat'}
             <button class="sb-btn" onclick={newConversation} title="New conversation" aria-label="New conversation">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10" /></svg>
             </button>
@@ -221,7 +266,10 @@
         {/if}
       </div>
       <div class="face" class:hidden={shownFace !== 'chat'}>
-        {#if chatMounted}
+        <!-- In AI Chat the conversation is in Details, and comes here only while
+             an item is pinned beside it: never both, or two copies of the one
+             conversation would each answer the pane and the agent. -->
+        {#if chatMounted && (kind !== 'chat' || chatBeside)}
           {#key getChatSession()}<ChatPageAI docked />{/key}
         {/if}
       </div>
@@ -231,7 +279,9 @@
     <section class="details {detMode}" bind:this={detEl} aria-label="Details"
       style:width={detMode === 'pop' ? `${width('detailsPop')}px` : undefined}>
       {#if detMode === 'pop'}<Resizer k="detailsPop" edge="left" label="Details" overlay />{/if}
-      <StackBar stack="details">
+      <StackBar stack="details"
+        pin={artMode === 'fill' ? { on: artPinned, toggle: () => setArtifactPinned(!artPinned), what: artPinned ? 'it from beside the conversation' : 'this beside the conversation' } : undefined}
+        onclose={artMode === 'fill' && !artPinned ? () => artHost?.close() : undefined}>
         {#snippet left()}<span class="sbname">Details</span>{/snippet}
         {#snippet right()}
           {#if getDetailActions() && !actionsHosted()}
@@ -261,10 +311,11 @@
         {#if nothingSelected}
           <AppWelcome appType={activeType} title={panel?.title ?? 'App'}
             onitems={!isVisible('mid') || getFace() !== 'items' ? () => showMid('items') : undefined} />
-        {:else}
+        {:else if !chatBeside}
           <DetailsHost host={() => pageEl}><PanelStack /></DetailsHost>
         {/if}
       </div>
+      <ChatArtifactHost bind:this={artHost} mode={artMode} onopenapp={openArtInApp} />
     </section>
 
     {#if midMode === 'off' && kind !== 'own'}

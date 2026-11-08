@@ -3,6 +3,8 @@
 // Adding a kind means adding a row here and a row in the server's widget table —
 // not another component. `get`/`save` name the MCP tools, so every mutation keeps
 // going through the Cedar-gated tool path with the user's own token.
+import { categorize } from '$lib/core/resources/categories';
+
 export type ArtifactKind = 'flow' | 'flow_draft' | 'agent' | 'template' | 'resource' | 'trigger' | 'canvas';
 
 export interface ArtifactSpec {
@@ -94,4 +96,30 @@ export function rowMeta(kind: ArtifactKind, meta: Record<string, any> = {}): str
   if (meta.enabled === false) bits.push('disabled');
   if (meta.description) bits.push(String(meta.description).slice(0, 60));
   return bits.join(' · ');
+}
+
+/// The section the pane opens on: the designer's graph for flows, templates and
+/// canvases; the Form tab for the JSON-shaped kinds.
+export function initialSection(kind: ArtifactKind): string {
+  return ['flow', 'flow_draft', 'template', 'canvas'].includes(kind) ? 'graph' : 'form';
+}
+
+/// Where the item lives in the Console: the app, and the id its Items list and
+/// page open it by. Null for a draft, which exists only in the conversation
+/// until saved.
+export function appLinkFor(a: { kind: ArtifactKind; namespace: string; name: string; text?: string; id?: string }):
+  { type: string; title: string; id: string } | null {
+  switch (a.kind) {
+    case 'agent': return { type: 'agents', title: 'Agents', id: a.id || a.name };
+    case 'template': return { type: 'templates', title: 'Templates', id: a.name };
+    case 'canvas': return { type: 'canvas', title: 'Canvas', id: a.name };
+    case 'trigger': return a.id ? { type: 'triggers', title: 'Triggers', id: a.id } : null;
+    case 'flow': return { type: 'resources', title: 'Resources', id: `flows:${a.namespace}/${a.name}` };
+    case 'resource': {
+      let type = '';
+      try { const j = JSON.parse(a.text ?? '{}'); type = j.type ?? j.type_ref ?? ''; } catch { /* not JSON */ }
+      return type ? { type: 'resources', title: 'Resources', id: `${categorize(type)}:${a.namespace}/${a.name}` } : null;
+    }
+    default: return null;
+  }
 }

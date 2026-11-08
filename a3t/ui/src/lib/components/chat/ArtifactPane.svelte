@@ -9,13 +9,13 @@
   import CanvasDeployBar from './CanvasDeployBar.svelte';
   import CanvasDesigner from '$lib/components/editor/CanvasDesigner.svelte';
   import { mcpCall } from '$lib/services/api';
-  import { openInStudio, navigateToDetail } from '$lib/stores/panels.svelte';
+  import { openInStudio } from '$lib/stores/panels.svelte';
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import JsonForm from './JsonForm.svelte';
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
-  import { ARTIFACTS, toEditorText, idArgsFor, type ArtifactKind } from './artifacts';
+  import { ARTIFACTS, toEditorText, idArgsFor, appLinkFor, initialSection, type ArtifactKind } from './artifacts';
 
-  let { artifact, revision, onclose, onapplied, onsection, onask, onedit }: {
+  let { artifact, revision, onclose, onapplied, onsection, onask, onedit, onopenapp }: {
     artifact: { kind: ArtifactKind; namespace: string; name: string; text: string; id?: string };
     /// A newer version of the *same* artifact produced by the agent. Applied in
     /// place so a revision refreshes this pane instead of requiring the user to
@@ -31,12 +31,16 @@
     /// saw the registry copy and would answer about a flow the user had already
     /// changed.
     onedit?: (state: { text: string; dirty: boolean }) => void;
+    /// Open the item in its own app (Agents, Templates…), where it is the app's
+    /// selected item. The host decides what happens to this pane.
+    onopenapp?: (link: { type: string; title: string; id: string }) => void;
   } = $props();
+  const appLink = $derived(appLinkFor(artifact));
 
   const spec = $derived(ARTIFACTS[artifact.kind]);
-  const agentId = $derived.by(() => { if (artifact.kind !== 'agent') return ''; if (artifact.id) return artifact.id; try { const j = JSON.parse(artifact.text ?? '{}'); return j.id ?? j.agent_id ?? ''; } catch { return ''; } });
   let text = $state(artifact.text);
-  let section = $state('graph');
+  // What is on screen. The host mounts one pane per item, so this is set once.
+  let section = $state(initialSection(untrack(() => artifact.kind)));
   let saving = $state(false);
   let confirmedOverwrite = $state(false);
   let baseText = $state(artifact.text);
@@ -228,23 +232,31 @@
 </script>
 
 <div class="pane">
+  <!-- The item's header row, like every item in Details: what it is, then its
+       actions — Save last. Closing belongs to the pop-in, not the item. -->
   <div class="pane-head">
-    <div class="pane-id-inline"><span class="pane-kind">{spec.label}</span>{artifact.namespace}/{artifact.name}</div>
+    <span class="pane-icon" aria-hidden="true">{spec.label.slice(0, 2).toUpperCase()}</span>
+    <div class="pane-id">
+      <div class="pane-crumb">{spec.draft ? 'draft · not saved' : spec.label} · {artifact.namespace}</div>
+      <div class="pane-name">{artifact.name}{#if dirty}<span class="pane-unsaved">unsaved</span>{/if}</div>
+    </div>
     <div class="pane-actions">
       <button class="pbtn" onclick={() => onask?.(`About ${spec.label} ${artifact.namespace}/${artifact.name} (${section}): `)} title="Ask the agent about this">Ask to change…</button>
+      {#if appLink && onopenapp}
+        <button class="pbtn" onclick={() => onopenapp?.(appLink)} title="Open it in {appLink.title}, as that app's selected item">Open in {appLink.title}</button>
+      {/if}
+      {#if artifact.kind !== 'flow_draft'}
+        <button class="pbtn" title="Open in Studio"
+          onclick={() => openInStudio(artifact.kind as Exclude<ArtifactKind, 'flow_draft'>, artifact.namespace, artifact.name, artifact.id)}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 3h4v4M13 3L7 9M11 9v4H3V5h4" /></svg>
+          Open in Studio
+        </button>
+      {/if}
       {#if spec.save && artifact.kind !== 'canvas'}
         <button class="pbtn primary" onclick={save} disabled={saving}>
           {saving ? 'Saving…' : (spec.draft ? 'Save to registry' : 'Save')}
         </button>
       {/if}
-      {#if artifact.kind !== 'flow_draft'}
-        {#if artifact.kind === 'agent' && agentId}
-          <button class="pbtn" title="Open the agent: what it does, remembers and was blocked from" onclick={() => navigateToDetail('agents', 'Agents', agentId)}>Open agent</button>
-        {/if}
-        <button class="pbtn" title="Open in Studio"
-          onclick={() => openInStudio(artifact.kind as Exclude<ArtifactKind, 'flow_draft'>, artifact.namespace, artifact.name, artifact.id)}>↗</button>
-      {/if}
-      <button class="pbtn" onclick={() => onclose?.()} title="Close">✕</button>
     </div>
   </div>
   {#if artifact.kind === 'canvas'}
@@ -304,12 +316,12 @@
         <div class="pane-tabs">
           {#if artifact.kind === 'agent'}
             <button class="pane-tab" class:active={jsonView === 'graph'}
-                    onclick={() => { jsonView = 'graph'; onsection?.('graph'); }}>Graph</button>
+                    onclick={() => { jsonView = 'graph'; section = 'graph'; onsection?.('graph'); }}>Graph</button>
           {/if}
           <button class="pane-tab" class:active={jsonView === 'form'}
-                  onclick={() => { jsonView = 'form'; onsection?.('form'); }}>Form</button>
+                  onclick={() => { jsonView = 'form'; section = 'form'; onsection?.('form'); }}>Form</button>
           <button class="pane-tab" class:active={jsonView === 'code'}
-                  onclick={() => { jsonView = 'code'; onsection?.('code'); }}>Code</button>
+                  onclick={() => { jsonView = 'code'; section = 'code'; onsection?.('code'); }}>Code</button>
         </div>
         <div class="pane-tabbed">
           {#if jsonView === 'graph'}
@@ -340,24 +352,24 @@
   /* `min-height: 0` matters as much as min-width: as a grid item this would
      otherwise be sized by its content, pushing the row past the viewport. */
   .pane { display: flex; flex-direction: column; height: 100%;
-          min-width: 0; min-height: 0; overflow: hidden;
-          border-left: 1px solid var(--border); background: var(--bg-surface); }
-  .pane-head { display: flex; align-items: center; justify-content: space-between;
-               gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  .pane-id-inline { display: flex; align-items: center; gap: 7px; min-width: 0;
-                    font-family: var(--font-mono); font-size: 12px; color: var(--text-2);
-                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pane-kind.draft { border-color: var(--ephemeral, #7c5cff); color: var(--ephemeral, #7c5cff); }
-  .pane-unsaved { font-family: var(--font-sans); font-size: 10px; color: var(--ephemeral, #7c5cff);
-                  border: 1px dashed var(--ephemeral, #7c5cff); border-radius: 4px; padding: 1px 5px; }
-  .pane-kind { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em;
-               color: var(--text-3); border: 1px solid var(--border); border-radius: 4px;
-               padding: 1px 5px; font-family: var(--font-sans); }
-  .pane-actions { display: flex; gap: 5px; flex-shrink: 0; }
-  .pbtn { font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 5px;
-          border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-2); }
-  .pbtn:hover { color: var(--text-1); border-color: var(--border-strong); }
-  .pbtn.primary { background: var(--text-1); color: var(--bg-page); border-color: var(--text-1); }
+          min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-surface); }
+  .pane-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+               padding: 12px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+  .pane-icon { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; display: inline-flex;
+               align-items: center; justify-content: center; font: 600 11px var(--font-sans);
+               color: #fff; background: var(--spec, #5530a8); }
+  .pane-id { flex: 1 1 180px; min-width: 0; }
+  .pane-crumb { font: 400 11.5px var(--font-mono); color: var(--text-3); }
+  .pane-name { font: 400 18px/1.25 var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pane-unsaved { font: 500 10px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase;
+                  color: var(--ephemeral, #b45309); border: 1px dashed currentColor; border-radius: 4px; padding: 0 5px; }
+  .pane-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pbtn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; cursor: pointer;
+          border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface);
+          font: 500 13px var(--font-sans); color: var(--text-1); white-space: nowrap; }
+  .pbtn:hover { background: var(--bg-subtle); }
+  .pbtn.primary { background: var(--green, #1a7158); color: #fff; border-color: var(--green, #1a7158); }
   .pbtn:disabled { opacity: 0.5; cursor: not-allowed; }
   .pane-revision { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
                    padding: 6px 10px; font-size: 11.5px; color: var(--text-2);

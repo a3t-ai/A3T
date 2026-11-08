@@ -21,7 +21,6 @@
            fetchChatSessions, fetchChatSession, deleteChatSession } from '$lib/services/api';
   import { renderMarkdown } from '$lib/utils/markdown';
   import ArtifactWidget from '$lib/components/chat/ArtifactWidget.svelte';
-  import ArtifactPane from '$lib/components/chat/ArtifactPane.svelte';
   import ApprovalCard from '$lib/components/chat/ApprovalCard.svelte';
   import CanvasPresetCards from '$lib/components/chat/CanvasPresetCards.svelte';
   import CanvasPlacementCard from '$lib/components/chat/CanvasPlacementCard.svelte';
@@ -31,6 +30,9 @@
   import { ARTIFACTS, LIST_KIND_TO_ITEM, toEditorText, type ArtifactKind } from '$lib/components/chat/artifacts';
   import { bumpContext, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
   import { getChatSession, setChatSession } from '$lib/stores/layout.svelte.ts';
+  import {
+    artifactFor, openChatArtifact, setArtifactRevision, paneMessageFor, takePaneMessage, type ChatArtifact,
+  } from '$lib/stores/chatArtifact.svelte.ts';
 
   /// Docked: the Chat face of the shell's middle stack, beside whatever Details
   /// shows. Its conversation is the shell's (layout store), not the URL's, so
@@ -104,59 +106,13 @@
   // The conversation list, its resizing and its icon rail all moved to the
   // shell's context pane, so this page no longer owns a side column.
 
-  // ── Artifact pane width ──
-  // The pane had no handle after the conversation list moved to the shell, so it
-  // was stuck at a fixed share of the width. Persisted per browser.
-  const LS_PANE = 'a3t.chat.pane.w';
-  const PANE_MIN = 320;
-  let paneW = $state<number>(loadLS<number>(LS_PANE, 560));
-  let paneDragging = $state(false);
-  let chatLayoutEl = $state<HTMLDivElement>();
-  let layoutW = $state(0);
-
-  function paneMax() {
-    const w = layoutW || 1200;
-    return Math.max(PANE_MIN, w - 420);   // always leave the transcript readable
-  }
-  /// The width actually drawn. The stored width came from whatever window it was
-  /// dragged in; clamping only while dragging let a width saved on a wide screen
-  /// fill a narrower one, so the designer covered the chat and the user lost the
-  /// conversation they were co-authoring in. Clamped on every layout instead.
-  const paneShown = $derived(Math.min(paneW, paneMax()));
-  function setPaneW(w: number) {
-    paneW = Math.min(paneMax(), Math.max(PANE_MIN, Math.round(w)));
-    try { localStorage.setItem(LS_PANE, JSON.stringify(paneW)); } catch {}
-  }
-  function startPaneDrag(e: PointerEvent) {
-    paneDragging = true;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    e.preventDefault();
-  }
-  function onPaneDrag(e: PointerEvent) {
-    if (!paneDragging || !chatLayoutEl) return;
-    // Measured from the right edge: the pane is the right-hand column.
-    setPaneW(chatLayoutEl.getBoundingClientRect().right - e.clientX);
-  }
-  function endPaneDrag(e: PointerEvent) {
-    paneDragging = false;
-    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
-  }
-
   // ── Right-hand artifact pane (flow viewer/editor) ──
   /// Ceiling on the unsaved-buffer text sent in `ui_context`, in characters.
   const UI_DRAFT_MAX = 12000;
-  let openArtifact = $state<{ kind: ArtifactKind; namespace: string; name: string; text: string; id?: string } | null>(null);
-  /// Which section of the open artifact is on screen — sent with the next turn
-  /// so "tighten this" resolves to what the user is actually reading.
-  let openSection = $state('graph');
-  /// Newest streamed version of whatever the pane has open. A revised draft
-  /// should refresh the open pane rather than appear only as another card the
-  /// user has to click.
-  let openRevision = $state<{ text: string; seq: number; edit?: string } | null>(null);
-  /// The live editor buffer for the open artifact, including edits the user has
-  /// not saved. Sent with the next turn so the agent reasons about what is on
-  /// screen rather than the registry copy, which may now be stale.
-  let openEdit = $state<{ text: string; dirty: boolean } | null>(null);
+  // The open item lives in the shared store (stores/chatArtifact): the shell
+  // draws its editing pane in Details, so it survives this conversation moving
+  // between Details and the middle stack. `openArtifact` etc. are this
+  // conversation's view of it (declared below, after `sessionId`).
   let revisionSeq = 0;
   let lastRevisionKey = '';
 
@@ -178,7 +134,7 @@
         if (key === lastRevisionKey) return;   // already seen this part
         lastRevisionKey = key;
         const next = toEditorText(d.raw ?? '', ARTIFACTS[kind as ArtifactKind].format);
-        if (next && next !== open.text) openRevision = { text: next, seq: ++revisionSeq };
+        if (next && next !== open.text) setArtifactRevision({ text: next, seq: ++revisionSeq });
         return;
       }
     }
@@ -206,7 +162,7 @@
     }
     if (!editsPrimed) { editsPrimed = true; return; }
     const l = latest as { key: string; raw: string; summary: string } | null;
-    if (l && open) untrack(() => { openRevision = { text: l.raw, seq: ++revisionSeq, edit: l.summary }; });
+    if (l && open) untrack(() => { setArtifactRevision({ text: l.raw, seq: ++revisionSeq, edit: l.summary }); });
   });
 
   let messagesEl = $state<HTMLDivElement>();
@@ -235,6 +191,31 @@
 
   /// No session in the URL — show the centred composer, create nothing yet.
   const landing = $derived(!sessionId);
+
+  // This conversation's open item (see stores/chatArtifact).
+  const openState = $derived(artifactFor(sessionId));
+  const openArtifact = $derived(openState?.artifact ?? null);
+  const openSection = $derived(openState?.section ?? 'graph');
+  const openEdit = $derived(openState?.edit ?? null);
+  function openItem(a: ChatArtifact) {
+    if (!sessionId) return;
+    // Opening another item replaces the pane, and with it any unsaved edits.
+    const cur = openState;
+    const same = cur && cur.artifact.kind === a.kind && cur.artifact.namespace === a.namespace && cur.artifact.name === a.name;
+    if (cur?.edit?.dirty && !same && !confirm(`Open ${a.name}? Your unsaved changes to ${cur.artifact.name} will be lost.`)) return;
+    if (!same) openChatArtifact(sessionId, a);
+  }
+  // What the pane hands back: a turn to send ("I saved…"), or text for the
+  // composer ("About this flow: …"). Taken once, by this conversation only.
+  $effect(() => {
+    const m = paneMessageFor(sessionId);
+    if (!m) return;
+    untrack(() => {
+      takePaneMessage(m.seq);
+      if (m.kind === 'applied') noteChange(m.text);
+      else { inputValue = m.text; requestAnimationFrame(() => inputEl?.focus()); }
+    });
+  });
 
   function llmLabel(llm: string) { return llm ? llm.split('/').pop() : ''; }
   /// Server-side session key — agent-scoped, matching the webhook path so both
@@ -854,8 +835,7 @@
   }
 </script>
 
-<div class="chat-layout" bind:this={chatLayoutEl} bind:clientWidth={layoutW}
-     style="grid-template-columns: 1fr{openArtifact ? ` 6px ${paneShown}px` : ''};">
+<div class="chat-layout">
   <!-- Left: conversation history -->
   <!-- Chat body. The conversation list is the shell's context pane now, so this
        owns only the agent selection and the transcript. -->
@@ -891,13 +871,13 @@
               {#if w.kind === 'canvas-presets'}
                 <!-- A choice is sent back as a message, so it passes the same
                      tools and gates as anything the user types. -->
-                <CanvasPresetCards data={w.data} onchoose={noteChange} onview={(a) => (openArtifact = a)} />
+                <CanvasPresetCards data={w.data} onchoose={noteChange} onview={openItem} />
               {:else if w.kind === 'canvas-placement'}
                 <CanvasPlacementCard data={w.data} />
               {:else if w.kind in ARTIFACTS}
-                <ArtifactWidget kind={w.kind as ArtifactKind} data={w.data} onopen={(a) => (openArtifact = a)} />
+                <ArtifactWidget kind={w.kind as ArtifactKind} data={w.data} onopen={openItem} />
               {:else if w.kind in LIST_KIND_TO_ITEM}
-                <ListWidget kind={w.kind} data={w.data} onopen={(a) => (openArtifact = a)} />
+                <ListWidget kind={w.kind} data={w.data} onopen={openItem} />
               {/if}
             {/each}
             {#if toolsOf(msg).length > 0}
@@ -1069,30 +1049,6 @@
     {/if}
   </div>
 
-  {#if openArtifact}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="pane-resizer"
-      class:dragging={paneDragging}
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize the editor pane"
-      onpointerdown={startPaneDrag}
-      onpointermove={onPaneDrag}
-      onpointerup={endPaneDrag}
-      onpointercancel={endPaneDrag}
-      ondblclick={() => setPaneW(560)}
-    ></div>
-    <ArtifactPane
-      artifact={openArtifact}
-      revision={openRevision}
-      onclose={() => { openArtifact = null; openEdit = null; }}
-      onapplied={noteChange}
-      onsection={(sec) => (openSection = sec)}
-      onedit={(st) => (openEdit = st)}
-      onask={(prefix) => { inputValue = prefix; }}
-    />
-  {/if}
 </div>
 
 <style>
@@ -1130,18 +1086,9 @@
     max-height: 340px;
     overflow-y: auto;
   }
-  .pane-resizer {
-    cursor: col-resize;
-    background: var(--border);
-    opacity: 0.35;
-    transition: opacity 0.12s;
-    touch-action: none;
-  }
-  .pane-resizer:hover, .pane-resizer.dragging { opacity: 1; background: var(--border-strong); }
-
   .chat-layout {
     display: grid;
-    /* columns are set inline: sidebar | resizer | chat | optional artifact pane */
+    /* One column: the conversation. An open item is edited in Details (the shell). */
     height: 100%;
     /* The row must be capped at the container. Without this it is an implicit
        `auto` row: tall content in the artifact pane grew the row past the
