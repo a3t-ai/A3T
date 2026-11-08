@@ -15,11 +15,11 @@
   import CommandPalette from './CommandPalette.svelte';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
-  import { hasContext } from '$lib/stores/apps.svelte.ts';
+  import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
   import {
     menuDocked, docked, getOverlay, openOverlay, closeOverlay, getFace, setFace, width,
     togglePin, toggleFace, togglePalette, escape, revealDetails, getToast, getChatSession,
-    setChatSession, MENU_LABELS_AT,
+    setChatSession, MENU_LABELS_AT, isVisible, showMid,
   } from '$lib/stores/layout.svelte.ts';
 
   const panel = $derived(getActivePanel());
@@ -33,6 +33,18 @@
   const menuMode = $derived(menuDocked() ? 'dock' : overlay === 'menu' ? 'pop' : 'off');
   const midMode = $derived(d.mid ? (d.details ? 'col' : 'wide') : overlay === 'mid' ? 'pop' : 'off');
   const detMode = $derived(d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
+
+  /// Items is the list and Details is one item. For an app with a list that
+  /// can open an item, Details stays empty until something is picked; its main
+  /// page (with create and the other app-wide actions) is one click away as the
+  /// overview. Apps without a list keep their page in Details.
+  let overviewFor = $state<Record<string, boolean>>({});
+  const listApp = $derived(hasContext(activeType) && !!APP_CONTEXT[activeType]?.focuses);
+  const nothingSelected = $derived(listApp && !selectedId && !overviewFor[activeType]);
+  const hasDetails = $derived(!nothingSelected);
+  function showOverview() { overviewFor = { ...overviewFor, [activeType]: true }; }
+  // Picking an item and coming back to the app starts from the empty state again.
+  $effect(() => { if (selectedId) untrack(() => { if (overviewFor[activeType]) overviewFor = { ...overviewFor, [activeType]: false }; }); });
 
   // Chat mounts the first time it is shown, then stays mounted so a reply keeps
   // streaming while you look at Items.
@@ -49,7 +61,9 @@
       const selChanged = sel !== lastSel && !!sel;
       const typeChanged = type !== lastType;
       lastSel = sel; lastType = type;
-      if (selChanged || (typeChanged && type && !hasContext(type))) revealDetails();
+      // Coming into an app starts from its list, not a previously opened overview.
+      if (typeChanged && Object.keys(overviewFor).length) overviewFor = {};
+      if (selChanged || (typeChanged && type && !(hasContext(type) && APP_CONTEXT[type]?.focuses))) revealDetails();
     });
   });
 
@@ -138,13 +152,26 @@
       <StackBar stack="details">
         {#snippet left()}<span class="sbname">Details</span>{/snippet}
       </StackBar>
-      <div class="page"><PanelStack /></div>
+      <div class="page">
+        {#if nothingSelected}
+          <div class="empty">
+            <b>Nothing selected</b>
+            <span>Pick from {contextLabel(activeType).toLowerCase()} in Items, or ask in Chat.</span>
+            <div class="empty-actions">
+              {#if !isVisible('mid') || getFace() !== 'items'}<button class="link" onclick={() => showMid('items')}>Show Items</button>{/if}
+              <button class="link" onclick={showOverview}>{panel?.title ?? 'App'} overview</button>
+            </div>
+          </div>
+        {:else}
+          <PanelStack />
+        {/if}
+      </div>
     </section>
 
     {#if midMode === 'off'}
       <button class="edge" onclick={() => openOverlay('mid')} title="Open Items | Chat (Ctrl J)">Items · Chat</button>
     {/if}
-    {#if detMode === 'off'}
+    {#if detMode === 'off' && hasDetails}
       <button class="edge" style:top={midMode === 'off' ? '210px' : '90px'} onclick={() => openOverlay('details')} title="Open Details">Details</button>
     {/if}
   </div>
@@ -184,6 +211,9 @@
 
   .note { margin: 40px 20px; display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center; color: var(--text-3); font-size: 13px; }
   .note b { color: var(--text-1); font-weight: 600; }
+  .empty { margin: 72px 24px; display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center; color: var(--text-3); font-size: 13px; }
+  .empty b { font: 400 22px var(--font-serif); color: var(--text-1); }
+  .empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
   .link { margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); padding: 5px 12px; font: 500 12px var(--font-sans); color: var(--spec); cursor: pointer; }
 
   /* Edge tab: where an unpinned stack waits. */

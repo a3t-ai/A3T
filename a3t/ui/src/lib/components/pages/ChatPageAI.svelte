@@ -1203,11 +1203,16 @@
   /* Docked in the shell's middle stack the column is narrow whatever the window
      is, so the layout follows the column, not the viewport. */
   .chat-layout.docked { container-type: inline-size; }
-  @container (max-width: 760px) {
-    .intents { grid-template-columns: repeat(2, 1fr); padding: 0 16px; }
-    .landing-head { padding: 0 16px 18px; }
-  }
-  @container (max-width: 380px) { .intents { grid-template-columns: 1fr; } }
+  /* Docked, the message box always sits at the bottom, as in a running thread:
+     the greeting at the top, suggestions as chips just above the box. */
+  .chat-layout.docked .chat-main.landing { justify-content: flex-start; }
+  .chat-layout.docked .landing-head { order: 0; padding: 28px 16px 8px; }
+  .chat-layout.docked .landing-title { font-size: 22px; }
+  .chat-layout.docked .intents { order: 1; margin: auto 0 0; padding: 0 16px 8px; display: flex; flex-wrap: wrap; gap: 6px; max-width: none; }
+  .chat-layout.docked .intent { flex-direction: row; padding: 5px 10px; border-radius: 999px; }
+  .chat-layout.docked .intent b { font-size: 12px; font-weight: 500; }
+  .chat-layout.docked .intent span { display: none; }
+  .chat-layout.docked .chat-input-area { order: 2; padding: 8px 16px 14px; }
   .landing-lists { max-width: 860px; margin: 0 auto; width: 100%; padding: 0 32px 24px; box-sizing: border-box; }
 
 

@@ -36,10 +36,19 @@
   async function load() {
     error = '';
     const res = await execFlow('a3t-error-log', 'a3t', { action: 'list', ...(cls ? { class: cls } : {}), limit: 200 }, { silent: true });
-    if (!res.ok) { error = res.error ?? 'Could not read the error log.'; return; }
-    if (res.data?.ok === false) { error = res.data.error ?? 'Refused'; return; }
+    if (!res.ok) { error = text(res.error) || 'Could not read the error log.'; return; }
+    if (res.data?.ok === false) { error = text(res.data.error) || 'Refused'; return; }
     rows = res.data?.errors ?? [];
     if (!cls) counts = res.data?.counts ?? {};
+  }
+
+  /// An error can arrive as a string or as an object with a message.
+  function text(e: unknown): string {
+    if (!e) return '';
+    if (typeof e === 'string') return e;
+    const o = e as { message?: unknown; error?: unknown; detail?: unknown };
+    for (const v of [o.message, o.error, o.detail]) if (typeof v === 'string' && v) return v;
+    return '';
   }
 
   onMount(load);

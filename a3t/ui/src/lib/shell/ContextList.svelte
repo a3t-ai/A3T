@@ -4,7 +4,7 @@
   /// above it owns pinning, and selecting an item opens it in Details.
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import {
-    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_,
+    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, getPins,
   } from '$lib/stores/apps.svelte.ts';
   import { deleteChatSession } from '$lib/services/api';
   import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
@@ -73,6 +73,12 @@
   /// Rows grouped under their namespace, or null for lists that have none
   /// (conversations, resource categories) — those stay flat.
   const groups = $derived(groupByNamespace(shown));
+
+  /// Pinned items first, as their own group; they stay in their namespace too.
+  const pinnedShown = $derived.by<Item[]>(() => {
+    const ids = getPins(appType);
+    return ids.map((id) => shown.find((i) => i.id === id)).filter(Boolean) as Item[];
+  });
 
   // ── Collapsed namespace groups, remembered per app in this browser ──
   const collapseKey = $derived(`a3t.ctx.collapsed.${appType}`);
@@ -252,6 +258,20 @@
   {/if}
 
   <div class="ctx-body">
+    {#if pinnedShown.length > 0 && !error}
+      <section class="ctx-group ctx-pinned">
+        <button class="ctx-ghead" onclick={() => toggleGroup('__pinned')} aria-expanded={isOpen('__pinned')}>
+          <svg class="ctx-chev" class:open={isOpen('__pinned')} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
+          <span class="ctx-gname">Pinned</span>
+          <span class="ctx-gcount">{pinnedShown.length}</span>
+        </button>
+        {#if isOpen('__pinned')}
+          <div class="ctx-gitems">
+            {#each pinnedShown as item (item.id)}{@render row(item)}{/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
     {#if loading && items.length === 0}
       <!-- the header bar shows loading -->
     {:else if error}
