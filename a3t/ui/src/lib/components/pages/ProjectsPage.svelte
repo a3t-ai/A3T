@@ -628,14 +628,22 @@
 
     {:else if tab === 'overview' && info}
       <div class="pj-form">
-        {#if info.description}<p class="pj-lead">{info.description}</p>
-        {:else}<p class="pj-note">No description yet.{#if canEdit} <button class="link" onclick={() => (tab = 'settings')}>Add one in Settings</button>{/if}</p>{/if}
-        <div class="pj-facts">
-          <div><span>Owner</span>{info.owner_kind === 'org' ? `org ${info.owner}` : `@${info.owner}`}</div>
-          <div><span>Visibility</span>{info.private ? 'Private' : info.owner_kind === 'org' ? 'Visible to the organisation' : 'Visible to you'}</div>
-          <div><span>Your role</span>{info.role ?? '—'}</div>
-          <div><span>Created</span>{info.created_at ? new Date(info.created_at).toLocaleDateString() : '—'}</div>
-        </div>
+        <!-- About: what it is, then the four facts as a grid — read at a glance. -->
+        <section class="pj-card">
+          {#if info.description}<p class="pj-lead">{info.description}</p>
+          {:else}
+            <div class="pj-empty">
+              <span>No description yet — say what this project delivers, so others know what they are looking at.</span>
+              {#if canEdit}<button class="pj-btn" onclick={() => (tab = 'settings')}>Add a description</button>{/if}
+            </div>
+          {/if}
+          <dl class="pj-kv">
+            <div><dt>Owner</dt><dd>{info.owner_kind === 'org' ? `Organisation ${info.owner}` : `@${info.owner}`}</dd></div>
+            <div><dt>Visibility</dt><dd>{info.private ? 'Private' : info.owner_kind === 'org' ? 'The organisation' : 'Only you'}</dd></div>
+            <div><dt>Your role</dt><dd>{info.role ?? '—'}</dd></div>
+            <div><dt>Created</dt><dd>{info.created_at ? new Date(info.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</dd></div>
+          </dl>
+        </section>
         {#if !insight}
           <!-- the header bar shows loading -->
         {:else}
@@ -647,7 +655,7 @@
             <button class="pj-tile" onclick={() => (tab = 'health')}><b>{recentRuns.length}</b><span>{recentRuns.length === 1 ? 'run today' : 'runs today'}</span></button>
             <button class="pj-tile" class:bad={failedRecent.length > 0} onclick={() => (tab = 'health')}><b>{failedRecent.length}</b><span>failed today</span></button>
           </div>
-          <h4>Latest runs</h4>
+          <div class="pj-h"><h4>Latest runs</h4>{#if insight.runs.length}<button class="link" onclick={() => navigateTo('executions', 'Executions')}>All runs</button>{/if}</div>
           {#if insight.runs.length === 0}<p class="dim">Nothing has run in this project yet.</p>
           {:else}
             <div class="pj-list">
@@ -882,7 +890,18 @@
   .pj-report { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--text-2); }
   .pj-report .pj-btn { align-self: flex-start; }
   .pj-facts { display: grid; gap: 6px; font-size: 12.5px; color: var(--text-2); }
-  .pj-facts > div > span:first-child { display: inline-block; width: 104px; color: var(--text-4); }
+  /* Facts as rows: label, value, a hairline between — not running text. */
+  .pj-facts { gap: 0 !important; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); overflow: hidden; }
+  .pj-facts > div { display: flex; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--divider, var(--border)); }
+  .pj-facts > div:last-child { border-bottom: 0; }
+  .pj-facts > div > span:first-child { flex: 0 0 110px; color: var(--text-4); }
+  .pj-card { display: flex; flex-direction: column; gap: 16px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
+  .pj-empty { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 14px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 10px; font-size: 13px; color: var(--text-3); }
+  .pj-empty span { flex: 1 1 240px; }
+  .pj-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 14px 18px; margin: 0; }
+  .pj-kv dt { font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-4); margin-bottom: 4px; }
+  .pj-kv dd { margin: 0; font-size: 13.5px; color: var(--text-1); }
+  .pj-h { display: flex; align-items: baseline; justify-content: space-between; margin-top: 6px; }
   .pj-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .pj-btn { padding: 7px 14px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; color: var(--text-1); cursor: pointer; }
   .pj-btn:hover:not(:disabled) { border-color: var(--spec); color: var(--spec); }
