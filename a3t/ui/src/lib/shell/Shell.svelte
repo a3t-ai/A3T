@@ -295,9 +295,12 @@
           {#if midMode === 'off' || midMode === 'pop'}
             {@const what = kind === 'page' ? 'Chat' : kind === 'chat' || face === 'items' ? 'Items' : 'Chat'}
             <button class="mid-toggle" class:on={midMode === 'pop'} onclick={() => (midMode === 'pop' ? closeOverlay() : openOverlay('mid'))}
-              title="{midMode === 'pop' ? 'Hide' : 'Show'} {what} (Ctrl J)" aria-expanded={midMode === 'pop'}>
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 2.5v11" /></svg>
-              <span>{what}</span>
+              title="{midMode === 'pop' ? 'Hide' : 'Show'} {what} (Ctrl J)" aria-label="{midMode === 'pop' ? 'Hide' : 'Show'} {what}" aria-expanded={midMode === 'pop'}>
+              {#if what === 'Items'}
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11" /><circle cx="4.5" cy="6" r="1" fill="currentColor" /><circle cx="4.5" cy="12" r="1" fill="currentColor" /><circle cx="4.5" cy="18" r="1" fill="currentColor" /></svg>
+              {:else}
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" /></svg>
+              {/if}
             </button>
           {/if}
           <span class="sbname">Details</span>
@@ -362,9 +365,11 @@
   .details.pop { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; border-left: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
   /* The unpinned middle stack pops in where it lives: from the left, after the menu. */
   .mid.pop { position: absolute; top: 0; left: 0; bottom: 0; z-index: 25; border-right: 1px solid var(--border); box-shadow: var(--shadow-lg, 0 12px 30px rgba(30, 25, 15, 0.12)); max-width: calc(100% - 24px); }
-  .mid-toggle { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 8px; margin-right: 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12.5px var(--font-sans); color: var(--text-2); cursor: pointer; }
-  .mid-toggle:hover { color: var(--text-1); border-color: var(--border-strong, #d9d4c6); }
-  .mid-toggle.on { color: var(--spec); border-color: var(--spec); background: var(--spec-bg); }
+  /* Same size and look as the stack bar's other controls (Expand, Pin). */
+  .mid-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; margin: 0 6px 0 -4px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-3); cursor: pointer; flex: 0 0 auto; }
+  .mid-toggle:hover { background: var(--bg-subtle); border-color: var(--border); color: var(--text-1); }
+  .mid-toggle.on { color: var(--spec); }
+  .mid-toggle:focus-visible { outline: 2px solid var(--spec); outline-offset: 1px; }
   .mid.off, .details.off { display: none; }
   .face { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .face.hidden { display: none; }
