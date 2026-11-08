@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
   import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
@@ -354,6 +355,7 @@
               {/if}
             </div>
           </div>
+          <DetailActionsBar />
         </div>
 
         <WizardSteps steps={pjSteps} active={tab} wizard={panel === 'create'} onselect={(id) => (tab = id as any)} />

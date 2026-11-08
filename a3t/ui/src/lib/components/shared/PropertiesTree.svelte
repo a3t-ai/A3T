@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
   import WizardSteps, { type WizardStep } from './WizardSteps.svelte';
   import { detailsPane } from '$lib/shell/detailsPane';
   /// In the shell's Details pane: the item's header, then its sections as
@@ -35,6 +36,7 @@
       <div class="pt-name">{name}</div>
       <div class="pt-meta">{meta}</div>
     </div>
+    <DetailActionsBar />
   </div>
   {#if steps}
     <WizardSteps {steps} active={activeNode} {wizard} {onselect} />
@@ -59,7 +61,7 @@
 
   .pt-header { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
   .pt-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; }
-  .pt-info { min-width: 0; }
+  .pt-info { min-width: 0; flex: 1 1 auto; }
   .pt-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pt-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

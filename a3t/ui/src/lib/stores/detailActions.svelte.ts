@@ -43,3 +43,15 @@ export function setItemsRefresh(run: () => void, busy: boolean): () => void {
     if (itemsRefresh?.owner === owner) itemsRefresh = null;
   };
 }
+
+// Whether an item header is showing the actions (DetailActionsBar). When none
+// is, the Details stack bar shows them instead, so they are never lost.
+let hosts = $state(0);
+export function actionsHosted(): boolean {
+  return hosts > 0;
+}
+export function hostActions(): () => void {
+  hosts++;
+  let done = false;
+  return () => { if (!done) { done = true; hosts--; } };
+}

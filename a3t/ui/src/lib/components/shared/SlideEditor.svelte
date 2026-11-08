@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
   // The full-screen editor shell used by the Template editor — extracted so
   // Canvas (and others) render the IDENTICAL layout: a slide-in panel with a
   // left section rail, a top-right action bar (open/save/duplicate/close), and a
@@ -79,6 +80,7 @@
             <div class="sp-tree-name">{name || 'Untitled'}</div>
             <div class="sp-tree-meta">{meta}</div>
           </div>
+          <DetailActionsBar />
         </div>
         {#if steps}
           <WizardSteps {steps} {active} {wizard} {onselect} />

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { inContext, namespacesFor, isPlatform, itemProject, getProject } from '$lib/stores/context.svelte.ts';
@@ -459,6 +460,7 @@
     <div class="te-rail-head">
       <div class="te-rail-icon">{(formName || 'NT').slice(0, 2).toUpperCase()}</div>
       <div><div class="te-rail-name">{formName || 'New trigger'}</div><div class="te-rail-meta">{formType} · {formNs || '—'}</div></div>
+      <DetailActionsBar />
     </div>
     <WizardSteps steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }} />
   </aside>

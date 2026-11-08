@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
   import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
   /// Inside the shell the selected template fills the Details pane.
   const pane = detailsPane();
@@ -511,6 +512,7 @@ do:
                 <div class="sp-tree-name">{template.name ? template.name.split('-').map(w => (w[0]?.toUpperCase() ?? '') + w.slice(1)).join(' ') : 'New Template'}</div>
                 <div class="sp-tree-meta">v{template.activeVersion}</div>
               </div>
+              <DetailActionsBar />
             </div>
             <WizardSteps steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)} />
           </div>

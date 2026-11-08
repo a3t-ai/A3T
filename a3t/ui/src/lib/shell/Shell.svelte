@@ -14,7 +14,7 @@
   import Resizer from './Resizer.svelte';
   import CommandPalette from './CommandPalette.svelte';
   import DetailsHost from './DetailsHost.svelte';
-  import { getDetailActions, getItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
+  import { getDetailActions, getItemsRefresh, actionsHosted } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
@@ -190,7 +190,7 @@
       <StackBar stack="details">
         {#snippet left()}<span class="sbname">Details</span>{/snippet}
         {#snippet right()}
-          {#if getDetailActions()}
+          {#if getDetailActions() && !actionsHosted()}
             {@const a = getDetailActions()!}
             <span class="dacts">
               {#if a.onopenineditor}
