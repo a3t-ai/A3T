@@ -13,26 +13,28 @@ const ALL_ROLES: UserRole[] = ['superadmin', 'securityadmin', 'admin', 'operator
 const ADMIN_PLUS: UserRole[] = ['superadmin', 'securityadmin', 'admin'];
 const OPERATOR_PLUS: UserRole[] = ['superadmin', 'admin', 'operator'];
 
-// Agents are the product, so they come first; then what an agent is built
-// from; then governing and running them (the console's main users are
-// security and governance teams — developers build in VS Code with Claude,
-// over MCP); then the workspace.
+// Chat and Projects stay on top; then agents and what they are built from;
+// then governing and running them (the console's main users are security
+// and governance teams — developers build in VS Code with Claude, over MCP);
+// then the Studio, for when VS Code is not at hand.
 export const MENU_CONFIG: MenuGroup[] = [
+  {
+    label: 'Home',
+    roles: ALL_ROLES,
+    items: [
+      { type: 'chat',       label: 'AI Chat',    tag: null, icon: 'chat',    roles: ALL_ROLES },
+      { type: 'projects',   label: 'Projects',   tag: null, icon: 'project', roles: ALL_ROLES },
+    ],
+  },
   {
     label: 'Agents',
     roles: ALL_ROLES,
     items: [
       { type: 'agents',     label: 'Agents',     tag: 'pods',  icon: 'agent',    roles: ALL_ROLES },
-    ],
-  },
-  {
-    label: 'Built from',
-    roles: ALL_ROLES,
-    items: [
       { type: 'templates',  label: 'Templates',  tag: 'sw/v1', icon: 'grid',     roles: ALL_ROLES },
-      { type: 'resources',  label: 'Resources',  tag: null,    icon: 'cabinet',  roles: ALL_ROLES },
       { type: 'triggers',   label: 'Triggers',   tag: null,    icon: 'trigger',  roles: ALL_ROLES },
       { type: 'canvas',     label: 'Canvas',     tag: 'crd',   icon: 'canvas',   roles: ALL_ROLES },
+      { type: 'resources',  label: 'Resources',  tag: null,    icon: 'cabinet',  roles: ALL_ROLES },
       { type: 'knowledge',  label: 'Knowledge',  tag: null,    icon: 'kg',       roles: ALL_ROLES },
       { type: 'memory',     label: 'Memory',     tag: null,    icon: 'memory',   roles: ALL_ROLES },
     ],
@@ -50,11 +52,9 @@ export const MENU_CONFIG: MenuGroup[] = [
     ],
   },
   {
-    label: 'Workspace',
+    label: 'Studio',
     roles: ALL_ROLES,
     items: [
-      { type: 'projects',    label: 'Projects', tag: null, icon: 'project', roles: ALL_ROLES },
-      { type: 'chat',        label: 'AI Chat',  tag: null, icon: 'chat',    roles: ALL_ROLES },
       // For when VS Code is not at hand: one editor for every kind of item.
       // /db-console still opens it pinned to databases, for old links.
       { type: 'flow-editor', label: 'Studio',   tag: null, icon: 'studio',  roles: ALL_ROLES },

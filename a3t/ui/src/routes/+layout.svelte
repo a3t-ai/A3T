@@ -49,12 +49,12 @@
     }
 
     if (hasSession) {
-      // Restore from URL, else land on Agents — the product, first in the menu.
+      // Restore from URL, else land on Chat, first in the menu.
       // The project comes first: the panels read the rest of the same URL.
       initContext();
       const restored = initFromUrl();
       if (!restored) {
-        navigateTo('agents', 'Agents');
+        navigateTo('chat', 'AI Chat');
       }
       setupPopState();
       // Initialize editor context (registry + ajv) in background
