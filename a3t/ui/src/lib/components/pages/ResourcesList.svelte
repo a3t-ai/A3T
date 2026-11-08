@@ -452,6 +452,8 @@ do:
       allResources = await fetchAllResources();
     } catch (e) { error = String(e); }
     finally { loading = false; }
+    // The shell's "New resource": the form asks for the kind first.
+    if (getActivePanel()?.props?.create) openCreate('');
   });
 
   // A different project (or "show platform") is a different list.

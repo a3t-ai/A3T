@@ -197,6 +197,25 @@
 
   let asideEl: HTMLElement | undefined = $state();
 
+  /// Every app's Items header has one main action. Most open the app's create
+  /// form in Details (a fresh `create` value each time, so a second click opens
+  /// a fresh form); a few go where creating actually happens.
+  const NEW_LABEL: Record<string, string> = {
+    chat: 'New conversation', projects: 'New project', agents: 'New agent', templates: 'New template',
+    triggers: 'New trigger', resources: 'New resource', canvas: 'New canvas', runtime: 'New runtime',
+    security: 'New policy', executions: 'Run a flow',
+  };
+  const newLabel = $derived(NEW_LABEL[appType] ?? (spec?.source === 'flows' ? 'New flow' : ''));
+  function newItem() {
+    if (spec?.source === 'sessions') return newChat();
+    if (spec?.source === 'flows') return newFlow();
+    if (appType === 'executions') { trackOpen('flow-editor', 'Studio'); navigateTo('flow-editor', 'Studio'); settleContextPane(); return; }
+    const title = getActivePanel()?.title ?? contextLabel(appType);
+    trackOpen(appType, title);
+    navigateTo(appType, title, appType === 'security' ? { selectedId: 'policies', create: Date.now() } : { create: Date.now() });
+    settleContextPane();
+  }
+
   function newChat() {
     trackOpen('chat', 'AI Chat');
     // A fresh client id; the transcript row appears once the first turn completes.
@@ -286,13 +305,9 @@
       <h1 class="ctx-title">{getActivePanel()?.title ?? contextLabel(appType)}</h1>
     </div>
     <div class="ctx-actions">
-      {#if spec?.source === 'sessions'}
-        <button class="ctx-primary" onclick={newChat}>
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> New conversation
-        </button>
-      {:else if spec?.source === 'flows'}
-        <button class="ctx-primary" onclick={newFlow}>
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> New flow
+      {#if newLabel}
+        <button class="ctx-primary" onclick={newItem}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> {newLabel}
         </button>
       {/if}
     </div>

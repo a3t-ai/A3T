@@ -47,7 +47,7 @@
          instance and the page goes on showing the previous item. Keying on the
          selection is the whole mechanism: every page already loads its item on
          mount, which is the "remount and restore" model this shell chose. -->
-    {#key `${activePanel.type}:${activePanel.props?.selectedId ?? ''}`}
+    {#key `${activePanel.type}:${activePanel.props?.selectedId ?? ''}:${activePanel.props?.create ?? ''}`}
     {#if activePanel.type === 'dashboard'}
       <Placeholder type="dashboard" />
     {:else if activePanel.type === 'chat'}

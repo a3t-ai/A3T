@@ -16,7 +16,7 @@
   import DetailsHost from './DetailsHost.svelte';
   import { getDetailActions, getItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
-  import { getActivePanel } from '$lib/stores/panels.svelte.ts';
+  import { getActivePanel, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
   import {
     menuDocked, docked, getOverlay, openOverlay, closeOverlay, getFace, setFace, width,
@@ -42,11 +42,23 @@
   /// overview. Apps without a list keep their page in Details.
   let overviewFor = $state<Record<string, boolean>>({});
   const listApp = $derived(hasContext(activeType) && !!APP_CONTEXT[activeType]?.focuses);
-  const nothingSelected = $derived(listApp && !selectedId && !overviewFor[activeType]);
+  const creating = $derived(!!panel?.props?.create);
+  const nothingSelected = $derived(listApp && !selectedId && !creating && !overviewFor[activeType]);
   const hasDetails = $derived(!nothingSelected);
   function showOverview() { overviewFor = { ...overviewFor, [activeType]: true }; }
   // Picking an item and coming back to the app starts from the empty state again.
   $effect(() => { if (selectedId) untrack(() => { if (overviewFor[activeType]) overviewFor = { ...overviewFor, [activeType]: false }; }); });
+
+  // A create form closed (its actions went away): drop the request from the
+  // URL so Details goes back to "Nothing selected" and New works again.
+  let hadActions = false;
+  $effect(() => {
+    const has = !!getDetailActions();
+    untrack(() => {
+      if (hadActions && !has && panel?.props?.create && !panel?.props?.selectedId) navigateTo(activeType, panel.title);
+      hadActions = has;
+    });
+  });
 
   // Chat mounts the first time it is shown, then stays mounted so a reply keeps
   // streaming while you look at Items.
@@ -57,10 +69,12 @@
   // has nothing to pick in Items, so its page is shown straight away.
   let lastSel = '';
   let lastType = '';
+  let lastCreate: unknown = undefined;
   $effect(() => {
-    const sel = selectedId, type = activeType;
+    const sel = selectedId, type = activeType, create = panel?.props?.create;
     untrack(() => {
-      const selChanged = sel !== lastSel && !!sel;
+      const selChanged = (sel !== lastSel && !!sel) || (!!create && create !== lastCreate);
+      lastCreate = create;
       const typeChanged = type !== lastType;
       lastSel = sel; lastType = type;
       // Coming into an app starts from its list, not a previously opened overview.

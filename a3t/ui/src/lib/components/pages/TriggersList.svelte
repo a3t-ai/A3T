@@ -211,6 +211,7 @@
 
   onMount(() => {
     loadTriggers(); loadFlows();
+    if (getActivePanel()?.props?.create) openCreate();  // the shell's "New trigger"
     window.addEventListener('trigger-disconnect', handleDisconnect);
     return () => window.removeEventListener('trigger-disconnect', handleDisconnect);
   });

@@ -8,6 +8,7 @@
   import DesignerPanel from '$lib/components/shared/DesignerPanel.svelte';
   import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
   import { onMount } from 'svelte';
+  import { getActivePanel } from '$lib/stores/panels.svelte.ts';
 
   const CREATE_NODES = [
     { id: 'details', label: 'Details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
@@ -84,7 +85,11 @@
     loading = false;
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    // The shell's "New policy" (Security → Policies).
+    if (getActivePanel()?.props?.create) openCreate();
+  });
 
   function selectPolicy(p: Policy) {
     selected = { ...p };

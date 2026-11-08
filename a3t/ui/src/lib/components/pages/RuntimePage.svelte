@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import { inBackground } from '$lib/core/status/activity';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   /// The Runtime console — where live systems are operated.
@@ -156,10 +157,10 @@
     loading = false;
     if (!res.ok) { error = res.error || 'Could not load runtimes'; return; }
     error = '';
-    runtimes = res.data.runtimes ?? [];
-    unplaced = res.data.unplaced ?? [];
-    host = res.data.host ?? null;
-    controller = res.data.controller ?? 'none';
+    runtimes = res.data?.runtimes ?? [];
+    unplaced = res.data?.unplaced ?? [];
+    host = res.data?.host ?? null;
+    controller = res.data?.controller ?? 'none';
     if (view === 'deployment') {
       const p = await opsApi.probe(selKey);
       probe = p.ok ? p.data : null;
@@ -171,6 +172,8 @@
   let timer: ReturnType<typeof setInterval> | undefined;
   onMount(() => {
     load();
+    // The shell's "New runtime".
+    if (getActivePanel()?.props?.create) { newRt = { name: '', namespace: 'default', labels: '', url: '', isDefault: false }; newRtErr = ''; }
     timer = setInterval(() => { if (!document.hidden && !busy && !pausing && !terminating && !newRt) void inBackground(load); }, 5000);
   });
   onDestroy(() => clearInterval(timer));
@@ -630,23 +633,26 @@
 {/if}
 
 <!-- New runtime -->
-{#if newRt}
-  <div class="modal-bg" role="presentation" onclick={() => (newRt = null)}></div>
-  <div class="modal" role="dialog" aria-label="New runtime">
-    <h3>New runtime</h3>
-    <p>A pool canvases place work into. Its labels are what placement selects on.</p>
-    <label>Name <input bind:value={newRt.name} placeholder="rt-staging" /></label>
-    <label>Namespace <input bind:value={newRt.namespace} placeholder="default" /></label>
-    <label>Labels <input bind:value={newRt.labels} placeholder="tier=test, class=cpu" onkeydown={(e) => e.key === 'Enter' && createRuntime()} /></label>
-    <label><span>URL <span class="muted">(optional)</span></span> <input bind:value={newRt.url} placeholder="http://runtime-gpu.a3t.svc:3002" /></label>
-    <label class="chk"><input type="checkbox" bind:checked={newRt.isDefault} /> Default pool <span class="muted">— used when a canvas selects no labels</span></label>
-    {#if newRtErr}<p class="err">{newRtErr}</p>{/if}
-    <div class="modal-acts">
-      <button class="btn" onclick={() => (newRt = null)}>Cancel</button>
-      <button class="btn runtime" disabled={!!busy || !newRt.name.trim()} onclick={createRuntime}>Create runtime</button>
+<!-- A new runtime opens like any other item: in the Details pane inside the
+     shell, sliding in elsewhere. -->
+<SlidePanel open={!!newRt} onclose={() => (newRt = null)} onsave={newRt?.name.trim() && !busy ? createRuntime : undefined}>
+  {#if newRt}
+    <div class="rt-new">
+      <h3>New runtime</h3>
+      <p>A pool canvases place work into. Its labels are what placement selects on.</p>
+      <label>Name <input bind:value={newRt.name} placeholder="rt-staging" /></label>
+      <label>Namespace <input bind:value={newRt.namespace} placeholder="default" /></label>
+      <label>Labels <input bind:value={newRt.labels} placeholder="tier=test, class=cpu" onkeydown={(e) => e.key === 'Enter' && createRuntime()} /></label>
+      <label><span>URL <span class="muted">(optional)</span></span> <input bind:value={newRt.url} placeholder="http://runtime-gpu.a3t.svc:3002" /></label>
+      <label class="chk"><input type="checkbox" bind:checked={newRt.isDefault} /> Default pool <span class="muted">— used when a canvas selects no labels</span></label>
+      {#if newRtErr}<p class="err">{newRtErr}</p>{/if}
+      <div class="modal-acts">
+        <button class="btn" onclick={() => (newRt = null)}>Cancel</button>
+        <button class="btn runtime" disabled={!!busy || !newRt.name.trim()} onclick={createRuntime}>Create runtime</button>
+      </div>
     </div>
-  </div>
-{/if}
+  {/if}
+</SlidePanel>
 
 <!-- Pause dialog: says exactly what callers will get -->
 {#if pausing}
@@ -777,6 +783,14 @@
 
   .empty { padding: 32px; text-align: center; color: var(--text-3); }
 
+  .rt-new { max-width: 560px; padding: 22px 24px; display: flex; flex-direction: column; overflow-y: auto; height: 100%; box-sizing: border-box; }
+  .rt-new h3 { margin: 0 0 8px; font: 400 20px var(--font-serif); }
+  .rt-new p { font-size: 13px; color: var(--text-2); margin: 0 0 10px; }
+  .rt-new label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-2); }
+  .rt-new label + label { margin-top: 10px; }
+  .rt-new label.chk { flex-direction: row; align-items: center; gap: 8px; }
+  .rt-new label.chk input { width: auto; }
+  .rt-new input { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 13px; }
   .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 50; }
   .modal { position: fixed; z-index: 51; top: 20vh; left: 50%; transform: translateX(-50%); width: min(480px, calc(100vw - 32px)); background: var(--bg-surface); border-radius: var(--r); box-shadow: var(--shadow-lg); padding: 20px; }
   .modal h3 { margin: 0 0 8px; font-size: 16px; }

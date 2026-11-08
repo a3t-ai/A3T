@@ -278,7 +278,8 @@ do:
     loadTemplates();
     // Restore selection from URL
     const panel = getActivePanel();
-    if (panel?.props?.selectedId) {
+    if (panel?.props?.create) newTemplate();  // the shell's "New template"
+    else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
     }
   });

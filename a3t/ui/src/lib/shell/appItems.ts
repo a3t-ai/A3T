@@ -286,7 +286,7 @@ const BADGE = {
 async function runtimeTree(): Promise<AppItem[]> {
   const res = await opsApi.overview();
   if (!res.ok) throw new Error(res.error || 'Could not load runtimes');
-  const d = res.data;
+  const d = res.data ?? {};
   const host = d.host?.host || 'flowr';
   const out: AppItem[] = [{
     id: `host:${host}`, label: host, badge: 'H', badgeStyle: BADGE.host, depth: 0,

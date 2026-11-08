@@ -44,7 +44,7 @@
     live = {}; controllerOn = false;
     if (ops.ok) {
       controllerOn = true;
-      const rows = [...(ops.data.runtimes ?? []).flatMap((r: any) => r.deployments), ...(ops.data.unplaced ?? [])];
+      const rows = [...(ops.data?.runtimes ?? []).flatMap((r: any) => r.deployments), ...(ops.data?.unplaced ?? [])];
       const LABEL: Record<string, string> = { serving: 'serving', paused: 'paused', 'runtime-paused': 'runtime paused', hibernated: 'hibernated', unplaced: 'unplaced' };
       for (const row of rows) {
         live[row.deployment.flowRef] = { phase: LABEL[row.serving] ?? row.serving, message: row.deployment.pauseReason ?? '', runtime: row.deployment.runtime };
@@ -85,6 +85,8 @@
     void load();
   });
   onMount(async () => {
+    // The shell's "New canvas": open the designer straight away.
+    if (getActivePanel()?.props?.create) newCanvas();
     await load();
     // Deep-link from an agent's "Edit canvas" → open the designer on that canvas.
     const p = getActivePanel();

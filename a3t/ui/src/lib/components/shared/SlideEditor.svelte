@@ -7,6 +7,8 @@
   import type { Snippet } from 'svelte';
   import WizardSteps, { type WizardStep } from './WizardSteps.svelte';
   import WizardNav from './WizardNav.svelte';
+  import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
 
   let {
     open = false,
@@ -49,6 +51,16 @@
   } = $props();
 
   let closing = $state(false);
+  /// Inside the shell the editor fills the Details pane, and its actions go in
+  /// the Details stack bar (one bar, not two).
+  const pane = detailsPane();
+  $effect(() => {
+    if (!pane || !open) return;
+    return setDetailActions({
+      onopenineditor: onopen, onsave, onclose: close,
+      extra: onduplicate ? [{ label: 'Duplicate', run: onduplicate }] : undefined,
+    });
+  });
   function close() {
     closing = true;
     setTimeout(() => { closing = false; onclose(); }, 200);
@@ -56,8 +68,8 @@
 </script>
 
 {#if open}
-  <div class="slide-overlay" class:closing onclick={close} role="presentation"></div>
-  <div class="slide-panel" class:closing>
+  {#if !pane}<div class="slide-overlay" class:closing onclick={close} role="presentation"></div>{/if}
+  <div class="slide-panel" class:closing class:in-pane={!!pane} use:fitToPane={pane}>
     <div class="sp-layout">
       <!-- LEFT: section rail -->
       <div class="sp-tree-panel">
@@ -84,6 +96,7 @@
 
       <!-- MAIN: action bar + content -->
       <div class="sp-main">
+        {#if !pane}
         <div class="sp-close-bar">
           {#if onopen}
             <div class="sp-btn-wrap">
@@ -116,6 +129,7 @@
             <span class="sp-tooltip">Close</span>
           </div>
         </div>
+        {/if}
         <div class="sp-content">{@render children()}</div>
         {#if steps}<WizardNav {steps} {active} {wizard} {onselect} final={onsave} finalLabel={saveLabel} finalBusy={saving} busyLabel={wizard ? 'Creating…' : 'Saving…'} />{/if}
       </div>
@@ -167,4 +181,14 @@
   .sp-close { width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-surface); color: var(--text-3); cursor: pointer; display: grid; place-items: center; transition: all 0.12s; }
   .sp-close:hover { background: var(--text-1); color: var(--bg-page); border-color: var(--text-1); }
   .sp-content { flex: 1; min-height: 0; overflow: hidden; }
+  /* In the shell's Details pane: flush with the pane, header and section tabs
+     across the top, content below. */
+  .slide-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: none; }
+  .slide-panel.in-pane.closing { animation: none; opacity: 0; }
+  .slide-panel.in-pane .sp-layout { display: flex; flex-direction: column; }
+  .slide-panel.in-pane .sp-tree-panel { flex: 0 0 auto; border-right: 0; overflow: visible; }
+  .slide-panel.in-pane .sp-tree-head { min-height: 0; padding: 12px 18px; }
+  .slide-panel.in-pane .sp-tree-name { font-size: 18px; font-weight: 400; }
+  .slide-panel.in-pane .sp-tree { flex-direction: row; padding: 0 12px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+  .slide-panel.in-pane .sp-main { flex: 1 1 auto; min-height: 0; padding-top: 0; }
 </style>

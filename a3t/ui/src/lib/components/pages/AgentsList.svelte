@@ -550,6 +550,9 @@
       newAgentPanel();
       newAgent.template_id = panel.props.createFromTemplate;
       onTemplateChange();
+    } else if (panel?.props?.create) {
+      // The shell's "New agent" in Items.
+      newAgentPanel();
     } else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
       // "Open its memory", "Review its controls"… land on that tab.
