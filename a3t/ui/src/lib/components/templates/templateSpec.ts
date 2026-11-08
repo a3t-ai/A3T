@@ -18,6 +18,8 @@ export interface TemplateFacts {
   description?: string;
   version?: string;
   namespace?: string;
+  /// A copy: the template and version it was made from (`<project>/<name>@<version>`).
+  copiedFrom?: string;
   /// What a caller passes in, and what comes back.
   inputs: Field[];
   outputs: Field[];
@@ -81,6 +83,7 @@ export function readTemplate(specYaml: string | undefined): TemplateFacts {
   out.description = doc.metadata?.description ?? doc.description ?? d.metadata?.description;
   out.version = doc.version != null ? String(doc.version) : undefined;
   out.namespace = doc.namespace;
+  out.copiedFrom = doc.metadata?.copiedFrom ?? undefined;
   const declared = fieldsOf(d.input?.schema);
   out.inputs = declared.length ? declared : fieldsOf(d.contextSchema);
   out.outputs = fieldsOf(d.output?.schema);
@@ -107,4 +110,29 @@ export function readTemplate(specYaml: string | undefined): TemplateFacts {
     if ((Array.isArray(h?.before) && h.before.length) || (Array.isArray(h?.after) && h.after.length)) out.hooks.push(name);
   }
   return out;
+}
+
+/// A template's spec made into a copy's: its own name and project, version
+/// 1.0.0, and where it came from. Edits the `document:` block line by line so
+/// the rest of the spec — comments included — is kept as written.
+export function specForCopy(spec: string, to: { name: string; namespace: string; from: string }): string {
+  const lines = spec.split('\n');
+  const start = lines.findIndex((l) => /^document:\s*$/.test(l));
+  if (start < 0) return `document:\n  name: ${to.name}\n  namespace: ${to.namespace}\n  version: '1.0.0'\n  metadata:\n    copiedFrom: ${to.from}\n` + spec;
+  let end = lines.findIndex((l, i) => i > start && /^\S/.test(l));
+  if (end < 0) end = lines.length;
+  const block = lines.slice(start + 1, end);
+  const set = (key: string, value: string) => {
+    const i = block.findIndex((l) => new RegExp(`^  ${key}:`).test(l));
+    if (i >= 0) block[i] = `  ${key}: ${value}`; else block.push(`  ${key}: ${value}`);
+  };
+  set('name', to.name);
+  set('namespace', to.namespace);
+  set('version', "'1.0.0'");
+  const m = block.findIndex((l) => /^  metadata:\s*$/.test(l));
+  if (m >= 0) {
+    const c = block.findIndex((l, i) => i > m && /^    copiedFrom:/.test(l));
+    if (c >= 0) block[c] = `    copiedFrom: ${to.from}`; else block.splice(m + 1, 0, `    copiedFrom: ${to.from}`);
+  } else block.push('  metadata:', `    copiedFrom: ${to.from}`);
+  return [...lines.slice(0, start + 1), ...block, ...lines.slice(end)].join('\n');
 }

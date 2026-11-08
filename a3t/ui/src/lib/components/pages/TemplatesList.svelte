@@ -21,7 +21,7 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
-  import { inContext, projectOf, getProject, canAdminNamespace, isReleaseProject } from '$lib/stores/context.svelte.ts';
+  import { inContext, projectOf, getProject, getProjects, canAdminNamespace, isReleaseProject } from '$lib/stores/context.svelte.ts';
 
   // Stacked sub-editors (unlimited depth)
   interface SubEditor { type: string; data?: any; closing?: boolean }
@@ -86,6 +86,7 @@
   import { onMount, untrack } from 'svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import TemplateGuide from '$lib/components/templates/TemplateGuide.svelte';
+  import { specForCopy } from '$lib/components/templates/templateSpec';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
 
   const canCreate = can('create', 'template');
@@ -348,31 +349,34 @@ do:
   /// An inherited template (Shared / Training / Community), opened read-only.
   let viewTemplate = $state<any>(null);
   let template = $derived(draftTemplate ? draftTemplate : viewTemplate ? viewTemplate : (selected ? (inView.find(t => t.name === selected) ?? allTemplates.find(t => t.name === selected)) : null));
-  const readOnly = $derived(!!template?.readOnly);
+  /// Base templates are never edited in place: anything that is not yours
+  /// (platform, shared, training, community, inherited) is read-only — you
+  /// clone it and change your copy.
+  const readOnly = $derived(!!template?.readOnly || (!draftTemplate?.isNew && !!template && template.source !== 'my'));
 
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.
-  /// A template as its users meet it — About, How to use, Try it, Production —
-  /// then the author's views, Design and Settings. A new one: its details, then
-  /// its design.
+  /// A template as people meet it — About, How it works, Versions — and, for
+  /// your own copies only, Design and Settings. A new one: its details, then its
+  /// design.
   const GUIDE_ICON = {
     about: '<circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 5h.01"/>',
-    use: '<path d="M3 4h10M3 8h10M3 12h6"/>',
-    try: '<path d="M5 3l8 5-8 5z"/>',
-    production: '<path d="M2 13l4-4 3 3 5-6"/><path d="M10 6h4v4"/>',
+    works: '<rect x="1.5" y="2.5" width="5" height="4" rx="1"/><rect x="9.5" y="9.5" width="5" height="4" rx="1"/><path d="M4 6.5v3a2 2 0 002 2h3.5"/>',
+    versions: '<path d="M8 2v6l4 2"/><circle cx="8" cy="8" r="6.5"/>',
   };
   const tplSteps = $derived.by((): WizardStep[] => draftTemplate?.isNew ? [
     { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
       need: 'Name the template: lowercase letters, digits and dashes.' },
     { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
   ] : [
-    { id: 'about', icon: GUIDE_ICON.about, label: 'About', hint: 'What it is and what it does' },
-    { id: 'use', icon: GUIDE_ICON.use, label: 'How to use', hint: 'What you set to make an agent from it, and how to call it' },
-    { id: 'try', icon: GUIDE_ICON.try, label: 'Try it', hint: 'Run it with your input and see what comes back' },
-    { id: 'production', icon: GUIDE_ICON.production, label: 'Production', hint: 'What is in place, and how to take it live' },
-    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
-    { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
-      need: 'Name the template: lowercase letters, digits and dashes.' },
+    { id: 'about', icon: GUIDE_ICON.about, label: 'About', hint: 'What it is — and clone it, or use an agent built from it' },
+    { id: 'works', icon: GUIDE_ICON.works, label: 'How it works', hint: 'What is inside: its prompt, model, tools, memory, hooks and workflow' },
+    { id: 'versions', icon: GUIDE_ICON.versions, label: 'Versions', hint: 'Its releases, its copies and the agents built from it' },
+    ...(readOnly ? [] : [
+      { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+      { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+        need: 'Name the template: lowercase letters, digits and dashes.' },
+    ]),
   ]);
 
   function openInherited(it: ExposedItem) {
@@ -383,7 +387,7 @@ do:
     propNode = 'about';
   }
 
-  let propNode = $state<'about' | 'use' | 'try' | 'production' | 'yaml' | 'detail'>('about');
+  let propNode = $state<'about' | 'works' | 'versions' | 'yaml' | 'detail'>('about');
 
   // The chat's context: this template, the tab on screen, and its spec as
   // edited. Picking another template is a new key, so its spec is the saved one.
@@ -490,25 +494,38 @@ do:
     }
   }
 
-  async function duplicateTemplate() {
-    if (!template) return;
-    const newName = `${template.name}-copy`;
-    const id = `tpl-${crypto.randomUUID().slice(0, 8)}`;
+  // ── Clone and edit ──
+  // The copy is a template of your own: its spec rewritten to its own name and
+  // project (version 1.0.0) with where it came from — a verbatim copy kept the
+  // base's project, so it landed there, not in yours.
+  let copyRequest = $state(0);
+  function requestCopy() { propNode = 'about'; copyRequest++; }
+  /// Projects you may create a copy in, the one you are working in first.
+  const copyProjects = $derived.by(() => {
+    const cur = getProject();
+    return getProjects()
+      .filter((p) => !p.platform && (p.info?.can_admin || ['owner', 'developer'].includes(p.info?.role ?? '')))
+      .map((p) => ({ name: p.name, label: p.info?.display_name && p.info.display_name !== p.name ? `${p.info.display_name} (${p.name})` : p.name }))
+      .sort((a, b) => (a.name === cur ? -1 : b.name === cur ? 1 : a.name.localeCompare(b.name)));
+  });
+  async function copyTemplate(name: string, namespace: string): Promise<string | null> {
+    if (!template) return 'Nothing to copy.';
+    const from = `${template.namespace ?? ''}/${template.name}@${template.activeVersion ?? template.version ?? '1.0.0'}`;
     const res = await execFlow('a3t-templates-create', 'a3t', {
       org_id: 'org-default',
       user_id: $currentUser?.id ?? '',
       timestamp: new Date().toISOString(),
       data: {
-        id, name: newName, version: template.version,
-        source: 'my', spec_yaml: template.spec_yaml,
+        id: `tpl-${crypto.randomUUID().slice(0, 8)}`, name, version: '1.0.0',
+        source: 'my', spec_yaml: specForCopy(template.spec_yaml ?? '', { name, namespace, from }),
         tags: Array.isArray(template.tags) ? template.tags.join(',') : (template.tags ?? ''),
         vertical: template.vertical ?? '',
       },
     });
-    if (res.ok) {
-      await loadTemplates();
-      selectTemplate(newName);
-    }
+    if (!res.ok) return res.error ?? 'The copy was not made.';
+    await loadTemplates();
+    selectTemplate(name);
+    return null;
   }
 
   // In the shell's Details pane the stack bar carries this panel's actions.
@@ -519,7 +536,8 @@ do:
       onopenineditor: () => (t && !draftTemplate ? openInStudio('template', t.namespace ?? 'a3t', t.name, t.id) : navigateTo('flow-editor', 'Studio')),
       onsave: $canEditTpl && !readOnly ? saveTemplate : undefined,
       onclose: closePanel,
-      extra: [{ label: 'Duplicate', run: duplicateTemplate }],
+      // A base template is cloned, never edited; your own can be duplicated.
+      extra: [{ label: readOnly ? 'Clone and edit' : 'Duplicate', run: requestCopy }],
     });
   });
 
@@ -589,10 +607,10 @@ do:
               </div>
               {/if}
               <div class="sp-btn-wrap">
-                <button class="sp-action-btn" onclick={duplicateTemplate}>
+                <button class="sp-action-btn" onclick={requestCopy}>
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="10" height="10" rx="1"/><path d="M4 12H3a1 1 0 01-1-1V3a1 1 0 011-1h8a1 1 0 011 1v1"/></svg>
                 </button>
-                <span class="sp-tooltip">Duplicate template</span>
+                <span class="sp-tooltip">{readOnly ? 'Clone and edit' : 'Duplicate template'}</span>
               </div>
               <div class="sp-btn-wrap">
                 <button class="sp-close" onclick={closePanel}>
@@ -606,7 +624,7 @@ do:
               {#if propNode === 'detail'}
                 <div class="sp-form">
                   <h3>{template.isNew ? 'New template' : 'Settings'}</h3>
-                  {#if readOnly}<p class="ro-note">Read-only — inherited from <span class="mono">{template.namespace}</span>. Duplicate it to make your own copy, or create agents from it.</p>{/if}
+                  {#if readOnly}<p class="ro-note">Read-only — inherited from <span class="mono">{template.namespace}</span>. Clone it to make your own copy, or create agents from it.</p>{/if}
                   {#if template.isNew}
                     <p class="sf-hint">Name it, then build it in Design, then save.</p>
                     <label class="cf-field"><span>Name</span>
@@ -651,8 +669,10 @@ do:
                   <div class="sp-empty">No spec defined for this template.</div>
                 {/if}
 
-              {:else if propNode === 'about' || propNode === 'use' || propNode === 'try' || propNode === 'production'}
-                <TemplateGuide view={propNode} {template} agents={templateAgents} {agentsLoading} onview={(id) => (propNode = id as any)} />
+              {:else if propNode === 'about' || propNode === 'works' || propNode === 'versions'}
+                <TemplateGuide view={propNode} {template} {readOnly} agents={templateAgents} {agentsLoading} {allTemplates}
+                  projects={copyProjects} {copyRequest} oncopy={copyTemplate} onview={(id) => (propNode = id as any)}
+                  onopentemplate={(t) => navigateToDetail('templates', 'Templates', t.name)} />
               {/if}
             </div>
             <WizardNav steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)}

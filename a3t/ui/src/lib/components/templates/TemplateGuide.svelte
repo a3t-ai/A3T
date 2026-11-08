@@ -1,70 +1,88 @@
 <script lang="ts">
-  /// A template as its users meet it, in order: what it is (About), how to use
-  /// it (How to use), does it work (Try it), and taking it live (Production).
-  /// Authors' views — the designer and its settings — stay on the Templates page.
+  /// A template as people meet it: a blueprint to understand, then copy or use.
+  /// About (what it is, and the choice: clone and edit, or use an agent already
+  /// built from it), How it works (a read-only tour of what is inside), and
+  /// Versions (its releases, its copies, its agents — and, for a copy, its base).
+  /// Base templates are never edited in place; only your copies are, in the
+  /// page's Design and Settings.
   ///
-  /// Facts come from the template's spec (templateSpec.ts) and its agents;
-  /// nothing is made up. Try it runs through an agent built from the template:
-  /// a template has no endpoint of its own, and a changed prompt cannot be tried
-  /// until the server accepts one (UI limitations, SRV-10) — it says so.
+  /// Facts come from the spec (templateSpec.ts) and the registry; nothing is
+  /// made up.
   import { navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
-  import { webhookChat } from '$lib/services/api';
+  import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import { readTemplate } from './templateSpec';
-  import { runsOf, addRun } from './tryRuns.svelte.ts';
 
-  let { view, template, agents = [], agentsLoading = false, onview }: {
-    view: 'about' | 'use' | 'try' | 'production';
+  let { view, template, readOnly, agents = [], agentsLoading = false, allTemplates = [], projects = [], copyRequest = 0, oncopy, onview, onopentemplate }: {
+    view: 'about' | 'works' | 'versions';
     template: any;
+    /// A base template (not yours): read-only, copied rather than edited.
+    readOnly: boolean;
     agents?: any[];
     agentsLoading?: boolean;
-    /// Move to another tab of the template (About ↔ Design, …).
+    allTemplates?: any[];
+    /// Projects you may create a copy in.
+    projects?: { name: string; label: string }[];
+    /// A new value opens the copy form (the header's Clone and edit).
+    copyRequest?: number;
+    oncopy?: (name: string, namespace: string) => Promise<string | null>;
     onview?: (id: string) => void;
+    onopentemplate?: (t: any) => void;
   } = $props();
 
   const facts = $derived(readTemplate(template?.spec_yaml));
   const title = $derived(facts.title || template?.name || 'Template');
+  const ref = $derived(`${template?.namespace ?? facts.namespace ?? ''}/${template?.name ?? ''}`);
   const createAgent = () => navigateTo('agents', 'Agents', { createFromTemplate: template.id });
 
-  // ── Try it ──
-  let tryAgent = $state('');
-  let tryMessage = $state('Hello — what can you do for me?');
-  let tryModel = $state('');
-  let running = $state(false);
-  // Kept per template for the visit, so they survive switching tabs.
-  const results = $derived(runsOf(template?.id));
-  const chosen = $derived(agents.find((a) => a.id === tryAgent) ?? agents[0]);
-  async function run() {
-    const a = chosen;
-    if (!a || !tryMessage.trim() || running) return;
-    running = true;
-    const t0 = performance.now();
-    const body: Record<string, unknown> = { message: tryMessage.trim(), session_id: `${a.id}:tryit-${Date.now()}` };
-    if (tryModel.trim()) body.llm_resource = tryModel.trim();
-    const r = await webhookChat(`/agent/${a.id}/chat`, body, { maxPolls: 90, pollInterval: 1000 });
-    const ms = Math.round(performance.now() - t0);
-    const d: any = r.data;
-    const raw = d?.content ?? d?.output?.content ?? d?.output ?? d?.agent_output ?? d;
-    const text = r.ok ? (typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2)) : (r.error ?? 'The agent did not answer');
-    addRun(template.id, { ok: r.ok && !!String(text).trim() && d?.stopped_reason !== 'error', text: String(text || '(No answer.)'), ms, toolCalls: d?.tool_calls_made, stopped: d?.stopped_reason, input: tryMessage.trim(), agent: a.name ?? a.id, at: Date.now() });
-    running = false;
+  // Copies made from this template, and — for a copy — the template it came from.
+  const copies = $derived(allTemplates.filter((t) => t !== template && String(readTemplate(t.spec_yaml).copiedFrom ?? '').startsWith(`${ref}@`)));
+  const base = $derived.by(() => {
+    if (!facts.copiedFrom) return null;
+    const [path, version] = facts.copiedFrom.split('@');
+    const [ns, name] = path.split('/');
+    const t = allTemplates.find((x) => x.name === name && (x.namespace ?? '') === ns);
+    const current = t ? String(t.activeVersion ?? t.version) : '';
+    return { path, version, template: t, newer: t && version && current !== version ? current : null };
+  });
+
+  // ── Clone and edit ──
+  let copying = $state(false);
+  let copyName = $state('');
+  let copyProject = $state('');
+  let copyBusy = $state(false);
+  let copyError = $state('');
+  function freeName(ns: string) {
+    const taken = new Set(allTemplates.filter((t) => (t.namespace ?? '') === ns).map((t) => t.name));
+    let n = `${template.name}-copy`;
+    for (let i = 2; taken.has(n); i++) n = `${template.name}-copy-${i}`;
+    return n;
   }
-  const lastOk = $derived(results.some((r) => r.ok));
-
-  // ── Production: what is in place, each linked to where it is done ──
-  const checks = $derived([
-    { ok: !!(facts.summary || facts.description), label: 'Says what it does', hint: 'A summary and description in its spec, so people can choose it.', go: 'yaml' },
-    { ok: !!facts.agent.model, label: 'Has a model', hint: facts.agent.model ? `Uses ${facts.agent.model}.` : 'Agents built from it must choose one.', go: 'yaml' },
-    { ok: facts.hooks.length > 0, label: 'Has guardrails or hooks', hint: facts.hooks.length ? `Hooks: ${facts.hooks.join(', ')}.` : 'No hook runs before or after its steps.', go: 'yaml' },
-    { ok: !!facts.agent.memory, label: 'Has memory set up', hint: facts.agent.memory ? `Remembers under ${facts.agent.memory}.` : 'Its agents start fresh every time.', go: 'yaml' },
-    { ok: lastOk, label: 'Worked when tried', hint: lastOk ? 'A Try it run answered, this session.' : 'Run it once in Try it.', go: 'try' },
-    { ok: agents.length > 0, label: 'Has an agent', hint: agents.length ? `${agents.length} agent${agents.length > 1 ? 's' : ''} built from it.` : 'Create one to deploy it.', go: 'use' },
-  ]);
-  const ready = $derived(checks.filter((c) => c.ok).length);
-
-  async function copy(text: string) { try { await navigator.clipboard.writeText(text); } catch { /* not allowed here */ } }
-  const sampleAgent = $derived(agents[0]?.id ?? '<agent-id>');
-  const curl = $derived(`curl -X POST "$A3T_URL/agent/${sampleAgent}/chat" \\\n  -H "Authorization: Bearer $A3T_TOKEN" -H "Content-Type: application/json" \\\n  -d '{"message": "Hello", "session_id": "my-session"}'`);
+  function openCopy() {
+    copyProject = projects[0]?.name ?? '';
+    copyName = freeName(copyProject);
+    copyError = '';
+    copying = true;
+  }
+  let seenRequest = 0;
+  $effect(() => { if (copyRequest && copyRequest !== seenRequest) { seenRequest = copyRequest; openCopy(); } });
+  async function doCopy() {
+    if (!oncopy || !copyName.trim() || !copyProject) return;
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(copyName.trim())) { copyError = 'A name is lowercase letters, digits and dashes.'; return; }
+    if (allTemplates.some((t) => t.name === copyName.trim() && (t.namespace ?? '') === copyProject)) { copyError = `${copyProject} already has a template ${copyName.trim()}.`; return; }
+    copyBusy = true; copyError = '';
+    copyError = (await oncopy(copyName.trim(), copyProject)) ?? '';
+    copyBusy = false;
+    if (!copyError) copying = false;
+  }
 </script>
+
+{#snippet agentRows(list: any[])}
+  <ul class="tg-agents">
+    {#each list as a (a.id)}
+      <li><button onclick={() => navigateToDetail('agents', 'Agents', a.name ?? a.id)}><span class="mono">{a.name ?? a.id}</span><small>{a.namespace ?? ''}{a.mode ? ` · ${a.mode}` : ''}</small><span class="tg-st">{a.status ?? ''}</span></button></li>
+    {/each}
+  </ul>
+{/snippet}
 
 <div class="tg">
   {#if facts.parseError}<div class="tg-warn">Its spec does not parse, so some of this is missing: {facts.parseError}</div>{/if}
@@ -78,12 +96,46 @@
         {#each facts.description.trim().split(/\n\s*\n/) as para}<p class="tg-desc">{para.replace(/\s*\n\s*/g, ' ')}</p>{/each}
       {/if}
       {#if !facts.summary && !facts.description}
-        <div class="tg-empty">
-          <span>Its spec has no summary or description yet — add <span class="mono">document.summary</span> so people know what it is for.</span>
-          <button class="tg-btn" onclick={() => onview?.('yaml')}>Open the design</button>
-        </div>
+        <p class="tg-dim">{readOnly ? 'It has no summary or description.' : 'No summary or description yet — add document.summary in Design so people know what it is for.'}</p>
       {/if}
+      {#if base}<p class="tg-lineage">Your copy of <button class="link" onclick={() => base?.template && onopentemplate?.(base.template)}>{base.path}</button> v{base.version}{#if base.newer} — <b>v{base.newer} is out</b>{/if}</p>{/if}
     </section>
+
+    <!-- The choice: change it (as a copy), or use an agent already built from it. -->
+    {#if readOnly}
+      <div class="tg-choice">
+        <section class="tg-card tg-option" class:on={copying}>
+          <h3>Clone and edit</h3>
+          <p class="tg-dim">Make your own copy in one of your projects and change it there. This template stays as it is.</p>
+          {#if !copying}
+            <div><button class="tg-btn primary" onclick={openCopy} disabled={!projects.length}>Clone and edit</button></div>
+            {#if !projects.length}<p class="tg-dim">You need a project you can write to.</p>{/if}
+          {:else}
+            <div class="tg-form">
+              <label><span>Name of your copy</span><input type="text" class="mono" bind:value={copyName} /></label>
+              <label><span>In project</span>
+                <select bind:value={copyProject} onchange={() => (copyName = freeName(copyProject))}>{#each projects as p (p.name)}<option value={p.name}>{p.label}</option>{/each}</select>
+              </label>
+              {#if copyError}<p class="tg-err">{copyError}</p>{/if}
+              <div class="tg-next"><button class="tg-btn primary" onclick={doCopy} disabled={copyBusy || !copyName.trim()}>{copyBusy ? 'Copying…' : 'Make my copy'}</button><button class="tg-btn" onclick={() => (copying = false)}>Cancel</button></div>
+            </div>
+          {/if}
+        </section>
+        <section class="tg-card tg-option">
+          <h3>Use an agent built from it</h3>
+          {#if agentsLoading}
+            <!-- the header bar shows loading -->
+          {:else if agents.length}
+            <p class="tg-dim">{agents.length} ready to use — open one to chat with it or deploy it.</p>
+            {@render agentRows(agents.slice(0, 4))}
+            {#if agents.length > 4}<button class="link" onclick={() => onview?.('versions')}>All {agents.length}</button>{/if}
+          {:else}<p class="tg-dim">None yet.</p>{/if}
+          <button class="link tg-more" onclick={createAgent}>Or create a new agent from it</button>
+        </section>
+      </div>
+    {:else}
+      <div class="tg-next"><button class="tg-btn primary" onclick={createAgent}>Create an agent from it</button><button class="tg-btn" onclick={() => onview?.('yaml')}>Edit its design</button></div>
+    {/if}
 
     <section class="tg-card">
       <h3>What it is made of</h3>
@@ -92,8 +144,8 @@
         <span class="tg-chip"><b>Tools</b>{facts.agent.mcpServers.length + facts.agent.tools.length ? [...facts.agent.mcpServers, ...facts.agent.tools].join(', ') : 'none'}</span>
         <span class="tg-chip"><b>Memory</b>{facts.agent.memory ? 'yes' : 'none'}</span>
         <span class="tg-chip"><b>Hooks</b>{facts.hooks.length ? facts.hooks.join(', ') : 'none'}</span>
-        {#if facts.agent.maxIterations}<span class="tg-chip"><b>Step limit</b>{facts.agent.maxIterations}</span>{/if}
       </div>
+      <button class="link tg-more" onclick={() => onview?.('works')}>How it works →</button>
     </section>
 
     <div class="tg-two">
@@ -113,110 +165,66 @@
 
     <dl class="tg-kv">
       <div><dt>Version</dt><dd>{template.activeVersion ?? template.version ?? facts.version ?? '—'}</dd></div>
-      <div><dt>Project</dt><dd>{template.namespace ?? facts.namespace ?? '—'}</dd></div>
+      <div><dt>From</dt><dd>{template.namespace ?? facts.namespace ?? '—'}</dd></div>
       <div><dt>By</dt><dd>{template.created_by || '—'}</dd></div>
-      <div><dt>Agents from it</dt><dd><button class="link" onclick={() => onview?.('production')}>{agentsLoading ? '…' : agents.length}</button></dd></div>
+      <div><dt>Used by</dt><dd><button class="link" onclick={() => onview?.('versions')}>{agentsLoading ? '…' : `${agents.length} agent${agents.length === 1 ? '' : 's'} · ${copies.length} cop${copies.length === 1 ? 'y' : 'ies'}`}</button></dd></div>
     </dl>
-    <div class="tg-next"><button class="tg-btn primary" onclick={() => onview?.('try')}>Try it</button><button class="tg-btn" onclick={() => onview?.('use')}>How to use it</button></div>
 
-  {:else if view === 'use'}
+  {:else if view === 'works'}
+    {#if readOnly}<p class="tg-note">Read-only. To change any of this, <button class="link" onclick={() => { onview?.('about'); openCopy(); }}>clone it</button> and edit your copy.</p>{/if}
     <section class="tg-card">
-      <h3>Make an agent from it</h3>
-      <p class="tg-dim">A template is the blueprint; an agent is a working copy with its own choices. You set:</p>
-      <ol class="tg-steps">
-        <li><b>A model</b><span>{facts.agent.model ? `Defaults to ${facts.agent.model}; pick another if you like.` : 'Required — the template does not set one.'}</span></li>
-        <li><b>Tools</b><span>{facts.agent.mcpServers.length ? `It comes with ${facts.agent.mcpServers.join(', ')}; add or remove.` : 'Optional — connect MCP servers it may call.'}</span></li>
-        <li><b>The prompt</b><span>Optional — it starts from the template's; adjust it for your case.</span></li>
-        <li><b>How it is started</b><span>Chat, an HTTP endpoint, or as a tool other agents call (MCP).</span></li>
-      </ol>
-      <div><button class="tg-btn primary" onclick={createAgent}>Create an agent from it</button></div>
+      <h3>Its prompt</h3>
+      {#if facts.agent.systemPrompt}<pre class="tg-out">{facts.agent.systemPrompt}</pre>{:else}<p class="tg-dim">It sets none; each agent brings its own.</p>{/if}
     </section>
     <section class="tg-card">
-      <h3>Call it</h3>
-      <p class="tg-dim">Once you have an agent{agents.length ? ` — for example ${agents[0].name}` : ''}:</p>
-      <div class="tg-way"><b>Chat</b><span>Talk to it in AI Chat, choosing the agent in the message box.</span><button class="tg-btn" onclick={() => navigateTo('chat', 'AI Chat')}>Open AI Chat</button></div>
-      <div class="tg-way"><b>HTTP</b><span>Send a message to its endpoint.</span><button class="tg-btn" onclick={() => copy(curl)}>Copy</button></div>
-      <pre class="tg-code">{curl}</pre>
-      <div class="tg-way"><b>From other agents</b><span>Expose it as a tool (MCP) when you create the agent; other agents then call it by name.</span></div>
-    </section>
-
-  {:else if view === 'try'}
-    {#if agentsLoading}
-      <!-- the header bar shows loading -->
-    {:else if agents.length === 0}
-      <section class="tg-card">
-        <h3>Try it</h3>
-        <p class="tg-dim">A template runs through an agent built from it. Create one to try it — you can keep it as your test agent.</p>
-        <div><button class="tg-btn primary" onclick={createAgent}>Create a test agent</button></div>
-      </section>
-    {:else}
-      <section class="tg-card">
-        <h3>Quick test</h3>
-        <div class="tg-form">
-          {#if agents.length > 1}
-            <label><span>Through</span>
-              <select bind:value={tryAgent}>{#each agents as a (a.id)}<option value={a.id}>{a.name ?? a.id}</option>{/each}</select>
-            </label>
-          {:else}<p class="tg-dim">Through <b>{agents[0].name ?? agents[0].id}</b>, an agent built from it.</p>{/if}
-          <label><span>Your message</span><textarea rows="3" bind:value={tryMessage}></textarea></label>
-          <label><span>Model (optional)</span><input type="text" bind:value={tryModel} placeholder={facts.agent.model ?? 'project/llm-resource'} /></label>
-          <div class="tg-next"><button class="tg-btn primary" onclick={run} disabled={running || !tryMessage.trim()}>{running ? 'Running…' : 'Run'}</button></div>
-        </div>
-      </section>
-
-      {#if results.length}
-        <div class="tg-results" class:two={results.length > 1}>
-          {#each results.slice(0, 2) as r, i (r.at)}
-            <section class="tg-card tg-result" class:bad={!r.ok}>
-              <header><span class="tg-verdict">{r.ok ? 'Worked' : 'Did not work'}</span><small>{i === 0 ? 'Latest' : 'Before'} · {(r.ms / 1000).toFixed(1)} s{r.toolCalls != null ? ` · ${r.toolCalls} tool call${r.toolCalls === 1 ? '' : 's'}` : ''}{r.stopped ? ` · ${r.stopped.replace('_', ' ')}` : ''}</small></header>
-              <p class="tg-in">“{r.input}”</p>
-              <pre class="tg-out">{r.text}</pre>
-            </section>
-          {/each}
-        </div>
-      {/if}
-
-      <section class="tg-card">
-        <h3>Its prompt</h3>
-        {#if facts.agent.systemPrompt}<pre class="tg-out">{facts.agent.systemPrompt}</pre>{:else}<p class="tg-dim">It sets no prompt; agents bring their own.</p>{/if}
-        <p class="tg-dim">Trying a changed prompt here needs the server to accept one per run (SRV-10). Change it in Design, or in an agent built from it.</p>
-      </section>
-    {/if}
-
-  {:else if view === 'production'}
-    <section class="tg-card">
-      <header class="tg-head"><h3>Ready for production?</h3><span class="tg-score">{ready} of {checks.length}</span></header>
-      <ul class="tg-checks">
-        {#each checks as c (c.label)}
-          <li class:ok={c.ok}>
-            <span class="tg-mark" aria-hidden="true">{c.ok ? '✓' : '○'}</span>
-            <span><b>{c.label}</b><small>{c.hint}</small></span>
-            {#if !c.ok}<button class="link" onclick={() => onview?.(c.go)}>Fix</button>{/if}
-          </li>
-        {/each}
+      <h3>What it uses</h3>
+      <ul class="tg-facts">
+        <li><b>Model</b><span>{facts.agent.model ?? 'None set — each agent built from it chooses one.'}</span></li>
+        <li><b>Tools</b><span>{[...facts.agent.mcpServers, ...facts.agent.tools].join(', ') || 'None.'}</span></li>
+        <li><b>Memory</b><span>{facts.agent.memory ? `Kept under ${facts.agent.memory}.` : 'None — each run starts fresh.'}</span></li>
+        <li><b>Hooks</b><span>{facts.hooks.length ? `${facts.hooks.join(', ')} — run around its steps (guardrails, redaction, checks).` : 'None.'}</span></li>
+        {#if facts.agent.maxIterations != null}<li><b>Step limit</b><span>{facts.agent.maxIterations} steps per turn.</span></li>{/if}
+        {#if facts.agent.temperature != null}<li><b>Temperature</b><span>{facts.agent.temperature}</span></li>{/if}
       </ul>
     </section>
+    <section class="tg-card tg-flow">
+      <h3>Its workflow</h3>
+      {#if template.spec_yaml}
+        <div class="tg-graph"><FlowEditorPane part="main" initialYaml={template.spec_yaml} readOnly /></div>
+      {:else}<p class="tg-dim">No workflow in its spec.</p>{/if}
+    </section>
+
+  {:else if view === 'versions'}
+    {#if base}
+      <section class="tg-card">
+        <h3>Copied from</h3>
+        <p class="tg-dim"><button class="link" onclick={() => base?.template && onopentemplate?.(base.template)}>{base.path}</button>, version {base.version}.
+          {#if base.newer}<b>Version {base.newer} is out</b> — compare it, and bring changes into your copy in Design.{:else if base.template}It is still the latest.{:else}It is no longer listed.{/if}</p>
+      </section>
+    {/if}
     <section class="tg-card">
-      <h3>Take it live</h3>
-      <ol class="tg-steps">
-        <li><b>Create an agent from it</b><span>Choose its model, tools and how it is started.</span></li>
-        <li><b>Deploy it</b><span>A canvas puts the agent on a runtime, in dev first.</span></li>
-        <li><b>Promote it</b><span>From dev to staging to prod, in the project's Environments.</span></li>
-      </ol>
-      <div class="tg-next"><button class="tg-btn primary" onclick={createAgent}>Create an agent</button><button class="tg-btn" onclick={() => navigateTo('canvas', 'Canvas', { create: Date.now() })}>New canvas</button></div>
+      <h3>Versions</h3>
+      <ul class="tg-facts">
+        {#each [...(template.versions ?? [template.activeVersion ?? template.version])].reverse() as v (v)}
+          <li><b class="mono">v{v}</b><span>{v === (template.activeVersion ?? template.version) ? 'Current — what new agents and copies get.' : 'Earlier release.'}</span></li>
+        {/each}
+      </ul>
     </section>
     <section class="tg-card">
       <h3>Agents built from it <span class="tg-count">{agents.length}</span></h3>
       {#if agentsLoading}
         <!-- the header bar shows loading -->
-      {:else if agents.length === 0}<p class="tg-dim">None yet.</p>
-      {:else}
+      {:else if agents.length}{@render agentRows(agents)}{:else}<p class="tg-dim">None yet.</p>{/if}
+    </section>
+    <section class="tg-card">
+      <h3>Copies of it <span class="tg-count">{copies.length}</span></h3>
+      {#if copies.length}
         <ul class="tg-agents">
-          {#each agents as a (a.id)}
-            <li><button onclick={() => navigateToDetail('agents', 'Agents', a.name ?? a.id)}><span class="mono">{a.name ?? a.id}</span><small>{a.mode ?? ''}</small><span class="tg-st">{a.status ?? ''}</span></button></li>
+          {#each copies as c (c.id)}
+            <li><button onclick={() => onopentemplate?.(c)}><span class="mono">{c.name}</span><small>{c.namespace ?? ''}</small><span class="tg-st">from v{String(readTemplate(c.spec_yaml).copiedFrom ?? '').split('@')[1] ?? '?'}</span></button></li>
           {/each}
         </ul>
-      {/if}
+      {:else}<p class="tg-dim">None you can see.</p>{/if}
     </section>
   {/if}
 </div>
@@ -224,24 +232,31 @@
 <style>
   .tg { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 28px; max-width: 760px; }
   .tg-warn { padding: 9px 12px; border: 1px solid var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
+  .tg-note { margin: 0; padding: 9px 12px; border-radius: 8px; background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
   .tg-hero h2 { margin: 0; font: 400 26px/1.25 var(--font-serif); color: var(--text-1); }
   .tg-summary { margin: 8px 0 0; font-size: 16px; color: var(--text-1); line-height: 1.45; }
   .tg-desc { margin: 8px 0 0; font-size: 13.5px; color: var(--text-2); line-height: 1.6; max-width: 68ch; }
-  .tg-empty { margin-top: 10px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 14px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 10px; font-size: 13px; color: var(--text-3); }
-  .tg-empty > span { flex: 1 1 260px; }
+  .tg-lineage { margin: 10px 0 0; font-size: 13px; color: var(--text-3); }
+  .tg-lineage b { color: var(--warn, #b45309); font-weight: 600; }
+  .tg-choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .tg-option.on { border-color: var(--spec); }
   .tg-card { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
   .tg-card h3 { margin: 0; font: 400 17px var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px; }
-  .tg-head { display: flex; align-items: baseline; justify-content: space-between; }
-  .tg-score { font: 500 12px var(--font-mono); color: var(--text-3); }
   .tg-chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .tg-chip { display: inline-flex; gap: 6px; align-items: baseline; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-subtle); font-size: 12.5px; color: var(--text-1); }
   .tg-chip b { font: 500 10.5px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-4); }
+  .tg-more { align-self: flex-start; }
   .tg-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
   .tg-fields { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .tg-fields li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 13px; }
   .tg-fields small { color: var(--text-4); font-size: 11.5px; }
   .tg-fields em { flex-basis: 100%; font-style: normal; font-size: 12px; color: var(--text-3); }
+  .tg-facts { list-style: none; margin: 0; padding: 0; }
+  .tg-facts li { display: flex; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--divider, var(--border)); font-size: 13px; }
+  .tg-facts li:last-child { border-bottom: 0; }
+  .tg-facts b { flex: 0 0 110px; color: var(--text-3); font-weight: 500; }
   .tg-dim { margin: 0; font-size: 13px; color: var(--text-3); }
+  .tg-err { margin: 0; font-size: 12.5px; color: var(--err, #b42318); }
   .tg-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 14px; margin: 0; padding: 4px 2px; }
   .tg-kv dt { font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-4); margin-bottom: 4px; }
   .tg-kv dd { margin: 0; font-size: 13.5px; color: var(--text-1); }
@@ -250,31 +265,11 @@
   .tg-btn:hover:not(:disabled) { border-color: var(--spec); }
   .tg-btn.primary { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
   .tg-btn:disabled { opacity: 0.55; cursor: default; }
-  .tg-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
-  .tg-steps li { font-size: 13px; color: var(--text-1); }
-  .tg-steps li span { display: block; color: var(--text-3); font-size: 12.5px; }
-  .tg-way { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
-  .tg-way b { flex: 0 0 120px; }
-  .tg-way span { flex: 1 1 220px; color: var(--text-3); }
-  .tg-code, .tg-out { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font: 12px/1.5 var(--font-mono); color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
-  .tg-out { max-height: 260px; overflow-y: auto; }
   .tg-form { display: flex; flex-direction: column; gap: 10px; }
   .tg-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
-  .tg-results { display: grid; gap: 14px; }
-  .tg-results.two { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-  .tg-result header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-  .tg-verdict { font: 600 11px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--green, #15803d); }
-  .tg-result.bad .tg-verdict { color: var(--err, #b42318); }
-  .tg-result small { font-size: 12px; color: var(--text-3); }
-  .tg-in { margin: 0; font-size: 12.5px; color: var(--text-3); font-style: italic; }
-  .tg-checks { list-style: none; margin: 0; padding: 0; }
-  .tg-checks li { display: flex; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--divider, var(--border)); }
-  .tg-checks li:last-child { border-bottom: 0; }
-  .tg-checks li > span:nth-child(2) { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
-  .tg-checks b { font-size: 13px; color: var(--text-1); }
-  .tg-checks small { font-size: 12px; color: var(--text-3); }
-  .tg-mark { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--border); color: var(--text-4); font-size: 12px; }
-  .tg-checks li.ok .tg-mark { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
+  .tg-out { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font: 12px/1.5 var(--font-mono); color: var(--text-1); white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
+  .tg-flow { padding-bottom: 12px; }
+  .tg-graph { height: 360px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .tg-count { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
   .tg-agents { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .tg-agents button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); cursor: pointer; font: inherit; font-size: 13px; text-align: left; }
