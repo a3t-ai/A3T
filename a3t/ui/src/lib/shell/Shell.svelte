@@ -33,8 +33,15 @@
 
   /// How each stack is laid out right now.
   const menuMode = $derived(menuDocked() ? 'dock' : overlay === 'menu' ? 'pop' : 'off');
-  const midMode = $derived(d.mid ? (d.details ? 'col' : 'wide') : overlay === 'mid' ? 'pop' : 'off');
-  const detMode = $derived(d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
+  /// Apps with their own explorer (Studio, Memory, Knowledge) need no Items: their
+  /// page takes the width, and Chat pops in from the edge when wanted.
+  const OWN_EXPLORER = new Set(['flow-editor', 'memory', 'knowledge']);
+  const ownExplorer = $derived(OWN_EXPLORER.has(activeType));
+  const midMode = $derived(ownExplorer ? (overlay === 'mid' ? 'pop' : 'off')
+    : d.mid ? (d.details ? 'col' : 'wide') : overlay === 'mid' ? 'pop' : 'off');
+  const detMode = $derived(ownExplorer ? 'pane' : d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
+  /// The face shown: always Chat where there are no Items.
+  const shownFace = $derived(ownExplorer ? 'chat' : face);
 
   /// Items is the list and Details is one item. For an app with a list that
   /// can open an item, Details stays empty until something is picked; its main
@@ -63,7 +70,7 @@
   // Chat mounts the first time it is shown, then stays mounted so a reply keeps
   // streaming while you look at Items.
   let chatMounted = $state(false);
-  $effect(() => { if (face === 'chat' && midMode !== 'off') chatMounted = true; });
+  $effect(() => { if (shownFace === 'chat' && midMode !== 'off') chatMounted = true; });
 
   // Selecting an item puts Details where it can be seen. An app with no list
   // has nothing to pick in Items, so its page is shown straight away.
@@ -146,7 +153,7 @@
       {#if midMode === 'pop'}<Resizer k="chatPop" edge="left" label="Items and Chat" overlay />{/if}
       <StackBar stack="mid">
         {#snippet right()}
-          {#if face === 'items' && getItemsRefresh()}
+          {#if shownFace === 'items' && getItemsRefresh()}
             {@const r = getItemsRefresh()!}
             <button class="da" onclick={r.run} disabled={r.busy} title="Refresh" aria-label="Refresh">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8A6 6 0 112.6 5.5" /><path d="M2 2v4h4" /></svg>
@@ -154,18 +161,22 @@
           {/if}
         {/snippet}
         {#snippet left()}
-          <div class="seg" role="group" aria-label="Show">
-            <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
-            <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
-          </div>
-          {#if face === 'chat' && getChatSession()}
+          {#if ownExplorer}
+            <span class="sbname">Chat</span>
+          {:else}
+            <div class="seg" role="group" aria-label="Show">
+              <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
+              <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
+            </div>
+          {/if}
+          {#if shownFace === 'chat' && getChatSession()}
             <button class="sb-btn" onclick={newConversation} title="New conversation" aria-label="New conversation">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10" /></svg>
             </button>
           {/if}
         {/snippet}
       </StackBar>
-      <div class="face" class:hidden={face !== 'items'}>
+      <div class="face" class:hidden={shownFace !== 'items'}>
         {#if hasContext(activeType)}
           {#key activeType}<ContextList appType={activeType} />{/key}
         {:else}
@@ -176,7 +187,7 @@
           </div>
         {/if}
       </div>
-      <div class="face" class:hidden={face !== 'chat'}>
+      <div class="face" class:hidden={shownFace !== 'chat'}>
         {#if chatMounted}
           {#key getChatSession()}<ChatPageAI docked />{/key}
         {/if}
@@ -229,7 +240,7 @@
     </section>
 
     {#if midMode === 'off'}
-      <button class="edge" onclick={() => openOverlay('mid')} title="Open Items | Chat (Ctrl J)">Items · Chat</button>
+      <button class="edge" onclick={() => openOverlay('mid')} title={ownExplorer ? 'Open Chat (Ctrl J)' : 'Open Items | Chat (Ctrl J)'}>{ownExplorer ? 'Chat' : 'Items · Chat'}</button>
     {/if}
     {#if detMode === 'off' && hasDetails}
       <button class="edge" style:top={midMode === 'off' ? '210px' : '90px'} onclick={() => openOverlay('details')} title="Open Details">Details</button>
