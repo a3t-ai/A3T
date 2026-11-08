@@ -191,6 +191,7 @@
   });
 
   function select(item: Item) {
+    if (item.group) { toggleGroup(item.id); return; }
     const panel = getActivePanel();
     const title = panel?.title ?? contextLabel(appType);
     trackOpen(appType, title);
@@ -281,7 +282,7 @@
         <span class="ctx-st {tone ?? ''}">{item.status}</span>
       {/if}
     </button>
-    {#if !item.pending && spec?.focuses}
+    {#if !item.pending && !item.group && spec?.focuses}
       <span class="ctx-acts">
         {#if spec?.source === 'sessions'}
           <button class="ctx-rb" onclick={(e) => removeItem(e, item)} title="Delete — this cannot be undone" aria-label="Delete">

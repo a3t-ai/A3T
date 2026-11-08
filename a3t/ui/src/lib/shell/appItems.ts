@@ -20,6 +20,8 @@ export type AppItem = {
   /// Single-letter badge + its colours, for the fixed resource categories.
   badge?: string;
   badgeStyle?: string;
+  /// A heading row in a tree: picking it opens or closes its branch.
+  group?: boolean;
   /// A conversation that exists only in this browser so far.
   pending?: boolean;
   /// Registry namespace. The list GROUPS by this, so it is kept as data rather
@@ -179,37 +181,51 @@ async function loadAll(source: string): Promise<AppItem[]> {
   }
 
   if (source === 'resources') {
-    // Every resource and flow, grouped by kind in the categories' own order.
+    // A tree like Runtimes: each kind, then its resources. Every namespace is
+    // asked at once — one after another left the list blank for as long as the
+    // slowest project took — and a namespace that doesn't answer is skipped.
     // Id `<category>:<namespace>/<name>`: the Resources page opens that one.
+    const nss = namespacesFor('picker');
+    const [resLists, flowLists] = await Promise.all([
+      Promise.all(nss.map((ns) => within(mcpCall('list_resources', { namespace: ns })).then((r) => [ns, r] as const))),
+      Promise.all(nss.map((ns) => within(mcpCall('list_flows', { namespace: ns })).then((r) => [ns, r] as const))),
+    ]);
     const byCat: Record<string, AppItem[]> = {};
-    for (const ns of namespacesFor('picker')) {
-      const res = await mcpCall('list_resources', { namespace: ns });
-      if (!res.ok) continue;
+    for (const [ns, res] of resLists) {
+      if (!res?.ok) continue;
       for (const r of rows(res.data, 'resources')) {
         if (r.type === 'project') continue; // the Projects app's records
         const project = itemProject('resource', r.namespace ?? ns, r);
         if (!inContext(project, 'shared')) continue;
         const c = categorize(r.type ?? '');
-        (byCat[c] ??= []).push({ id: `${c}:${r.namespace ?? ns}/${r.name}`, label: r.name, sub: [project, r.type].filter(Boolean).join(' · ') });
+        (byCat[c] ??= []).push({ id: `${c}:${r.namespace ?? ns}/${r.name}`, label: r.name, depth: 1,
+          sub: [project, r.type].filter(Boolean).join(' · ') });
       }
     }
-    for (const ns of namespacesFor('picker')) {
-      const fl = await mcpCall('list_flows', { namespace: ns });
-      if (!fl.ok) continue;
+    for (const [ns, fl] of flowLists) {
+      if (!fl?.ok) continue;
       for (const f of rows(fl.data, 'workflows', 'flows')) {
         const project = itemProject('flow', f.namespace ?? ns, f);
         if (!inContext(project, 'owned')) continue;
-        (byCat.flows ??= []).push({ id: `flows:${f.namespace ?? ns}/${f.name}`, label: f.name,
+        (byCat.flows ??= []).push({ id: `flows:${f.namespace ?? ns}/${f.name}`, label: f.name, depth: 1,
           sub: [project, f.version ? `v${f.version}` : ''].filter(Boolean).join(' · '), status: f.enabled === false ? 'disabled' : undefined });
       }
     }
     const known = new Set<string>(RESOURCE_CATEGORIES.map((c) => c.key));
-    return [
-      ...RESOURCE_CATEGORIES.filter((c) => c.key !== 'all' && byCat[c.key]?.length)
-        .flatMap((c) => byCat[c.key].map((it) => ({ ...it, namespace: c.label }))),
+    const kinds = [
+      ...RESOURCE_CATEGORIES.filter((c) => c.key !== 'all').map((c) => ({ key: c.key, label: c.label, icon: c.icon, style: c.iconStyle })),
       // Kinds the categories don't name yet, so nothing goes missing.
-      ...Object.entries(byCat).filter(([k]) => !known.has(k)).flatMap(([, l]) => l.map((it) => ({ ...it, namespace: 'Other' }))),
+      ...Object.keys(byCat).filter((k) => !known.has(k)).map((k) => ({ key: k, label: k === 'other' ? 'Other' : k, icon: '?', style: 'background:var(--bg-subtle);color:var(--text-4)' })),
     ];
+    const out: AppItem[] = [];
+    for (const k of kinds) {
+      const list = (byCat[k.key] ?? []).sort((a, b) => a.label.localeCompare(b.label));
+      if (!list.length) continue;
+      out.push({ id: `kind:${k.key}`, label: k.label, badge: k.icon, badgeStyle: k.style, depth: 0, group: true,
+        sub: `${list.length} ${list.length === 1 ? 'item' : 'items'}` });
+      out.push(...list);
+    }
+    return out;
   }
   if (source === 'resource-categories') {
     // Fixed categories, always all shown — a zero is information. Counts come from
@@ -326,6 +342,12 @@ const BADGE = {
   flow: 'background:var(--spec-bg,#ede7ff);color:var(--spec,#5530a8)',
   agent: 'background:var(--ephemeral-bg,#fff4e5);color:var(--ephemeral,#b45309)',
 };
+/// A list call that hasn't answered in time counts as failed, so one slow
+/// namespace can't hold the whole list back.
+function within<T>(p: Promise<T>, ms = 12000): Promise<T | null> {
+  return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+}
+
 async function runtimeTree(): Promise<AppItem[]> {
   const res = await opsApi.overview();
   if (!res.ok) throw new Error(res.error || 'Could not load runtimes');
