@@ -54,10 +54,10 @@
 
   // ── Panel state ──
   let panel = $state<'closed' | 'create' | 'detail'>('closed');
-  /// Detail: what it is (Overview), what is in it (Contents), what runs where
-  /// (Delivery), whether it is healthy (Health), who may do what (Access &
+  /// Detail: what it is (Overview), what is in it (Contents), what runs where and
+  /// each environment's variables (Environments), whether it is healthy (Health), who may do what (Access &
   /// policy), and its setup (Settings). Create: Settings → Access & policy → Review.
-  type Tab = 'overview' | 'contents' | 'delivery' | 'health' | 'access' | 'settings' | 'review';
+  type Tab = 'overview' | 'contents' | 'environments' | 'health' | 'access' | 'settings' | 'review';
   let tab = $state<Tab>('overview');
   // Releases: each flow in the project, its versions and the active one.
   let releases = $state<{ name: string; versions: string[]; active: string }[]>([]);
@@ -80,7 +80,9 @@
     say(r.ok ? `${name}: callers without a pin now get ${version}.` : (r.error ?? 'Could not activate'), r.ok);
     await loadReleases(info.namespace);
   }
-  $effect(() => { if (tab === 'delivery' && panel === 'detail' && info) void loadReleases(info.namespace); });
+  // Contents shows each flow's releases, with the active one switchable.
+  $effect(() => { if (tab === 'contents' && panel === 'detail' && info) void loadReleases(info.namespace); });
+
 
   // ── What the project holds and how it is doing (Overview, Contents, Health) ──
   type Row = { name: string; id?: string; type?: string; status?: string; sub?: string };
@@ -189,6 +191,56 @@
   /// The same rule the server applies to changing and deleting a project.
   const canEdit = $derived(panel === 'create' || (!!info && (info.can_admin || info.role === 'owner')));
   const adminOrgs = $derived(orgs.filter((o) => o.role === 'admin'));
+  /// Orgs this project can move to: those you administer, other than its own.
+  const targetOrgs = $derived(adminOrgs.filter((o) => !(info?.owner_kind === 'org' && o.handle === info?.owner)));
+
+  // ── Environments: what runs where, and each environment's variables ──
+  // SAMPLE until the server has them (UI limitations, SRV-5…7): the project
+  // record does not store variables, a canvas does not pass them to its pods,
+  // and nothing yet says which version runs in which environment. The tab says
+  // so; nothing here is presented as live.
+  const envNames = $derived<string[]>(info?.environments?.length ? info.environments : ENVIRONMENTS);
+  type EnvVar = { name: string; secret: boolean; values: Record<string, string> };
+  let envVars = $state<EnvVar[]>([]);
+  let envVarsFor = '';
+  function sampleVars(ns: string): EnvVar[] {
+    return [
+      { name: 'LOG_LEVEL', secret: false, values: { dev: 'debug', staging: 'info', prod: 'warn' } },
+      { name: 'LLM_MODEL', secret: false, values: { dev: 'claude-haiku-5-5', staging: 'claude-sonnet-5-5', prod: 'claude-sonnet-5-5' } },
+      { name: 'ORDERS_DB', secret: false, values: { dev: `${ns}/orders-db-dev`, staging: `${ns}/orders-db-staging`, prod: `${ns}/orders-db` } },
+      { name: 'PAGER_TOKEN', secret: true, values: { dev: `${ns}/pager-dev`, staging: '', prod: `${ns}/pager-prod` } },
+    ];
+  }
+  $effect(() => {
+    const ns = panel === 'detail' ? info?.namespace : undefined;
+    untrack(() => { if (ns && ns !== envVarsFor) { envVarsFor = ns; envVars = sampleVars(ns); } });
+  });
+  function addVar() { envVars = [...envVars, { name: '', secret: false, values: {} }]; }
+  function removeVar(i: number) { envVars = envVars.filter((_, j) => j !== i); }
+  const missingValues = $derived(envVars.reduce((n, v) => n + envNames.filter((e) => v.name.trim() && !(v.values[e] ?? '').trim()).length, 0));
+  /// Which version of each flow and agent runs in each environment (sample).
+  const whereRuns = $derived.by(() => {
+    if (!insight) return [];
+    const rows = [
+      ...insight.flows.map((f) => ({ kind: 'flow', name: f.name, latest: releases.find((r) => r.name === f.name)?.active ?? f.sub?.replace(/^v/, '') ?? '' })),
+      ...insight.agents.map((a) => ({ kind: 'agent', name: a.name, latest: '1.0.0' })),
+    ];
+    return rows.map((r, i) => {
+      const at: Record<string, string> = {};
+      envNames.forEach((e, k) => {
+        // dev runs the latest, later environments a step behind; the last row
+        // has not reached the last environment.
+        if (i === rows.length - 1 && k === envNames.length - 1 && rows.length > 1) return;
+        at[e] = k === envNames.length - 1 && r.latest ? previous(r.latest) : r.latest;
+      });
+      return { ...r, at };
+    });
+  });
+  function previous(v: string) {
+    const m = v.match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) return v;
+    return Number(m[2]) > 0 ? `${m[1]}.${Number(m[2]) - 1}.0` : Number(m[1]) > 1 ? `${Number(m[1]) - 1}.0.0` : v;
+  }
 
   function say(text: string, ok = false) { message = text; messageOk = ok; }
 
@@ -205,7 +257,7 @@
     return [
       { id: 'overview', icon: ICON.overview, label: 'Overview', hint: 'What it is and how it is doing' },
       { id: 'contents', icon: ICON.contents, label: `Contents${insight ? ` (${insight.agents.length + insight.flows.length + insight.templates.length + insight.resources.length + insight.triggers.length + insight.canvases.length})` : ''}`, hint: 'Agents, flows, templates, resources, triggers and canvases in it' },
-      { id: 'delivery', icon: ICON.delivery, label: 'Delivery', hint: 'Which version runs, and where' },
+      { id: 'environments', icon: ICON.environments, label: 'Environments', hint: 'What runs where, and the variables each environment gives its deployments' },
       { id: 'health', icon: ICON.health, label: 'Health', hint: "Its deployments and recent failures" },
       { id: 'access', icon: ICON.access, label: `Access & policy`, hint: 'Members, where it runs, who else may use it, its rules' },
       { id: 'settings', icon: ICON.settings, label: 'Settings', hint: 'Name, visibility, environments, ownership' },
@@ -214,7 +266,7 @@
   const ICON = {
     overview: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>',
     contents: '<path d="M2 4h12M2 8h12M2 12h8"/>',
-    delivery: '<path d="M2 8V2h6l6 6-6 6z"/><circle cx="5" cy="5" r="1"/>',
+    environments: '<path d="M8 1L1 5l7 4 7-4z"/><path d="M1 8l7 4 7-4"/><path d="M1 11l7 4 7-4"/>',
     health: '<path d="M1 8h3l2-4 3 8 2-4h4"/>',
     access: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>',
     settings: '<circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/>',
@@ -682,9 +734,20 @@
             {:else}
               <div class="pj-list">
                 {#each list as r (r.id ?? r.name)}
-                  <button class="pj-li" onclick={() => openItem(kind as any, r)} title="Open in its app">
-                    <span class="mono">{r.name}</span><span class="dim">{r.sub ?? ''}</span>{#if r.status}<span class="pj-st">{r.status}</span>{/if}
-                  </button>
+                  {@const rel = kind === 'flow' ? releases.find((x) => x.name === r.name) : undefined}
+                  <div class="pj-li-row">
+                    <button class="pj-li" onclick={() => openItem(kind as any, r)} title="Open in its app">
+                      <span class="mono">{r.name}</span><span class="dim">{rel ? '' : (r.sub ?? '')}</span>{#if r.status}<span class="pj-st">{r.status}</span>{/if}
+                    </button>
+                    <!-- Which release callers without a pinned version get. -->
+                    {#if rel}
+                      <select class="pj-ver-pick" value={rel.active} disabled={!canEdit || rel.versions.length < 2}
+                        title="The active release: what callers get unless they pin a version"
+                        onchange={(e) => activate(rel.name, e.currentTarget.value)}>
+                        {#each rel.versions as v}<option value={v}>v{v}{v === rel.active ? ' · active' : ''}</option>{/each}
+                      </select>
+                    {/if}
+                  </div>
                 {/each}
               </div>
             {/if}
@@ -692,36 +755,52 @@
         {/if}
       </div>
 
-    {:else if tab === 'delivery' && info}
+    {:else if tab === 'environments' && info}
       <div class="pj-form">
-        <p class="pj-note">Each flow keeps every version released here. Callers that pin one (<span class="mono">run: workflow … version: 1.0.0</span>) keep it; everyone else gets the active one. Activate rolls that back or forward — one release at a time, never all callers' pins.</p>
-        {#if panel === 'create'}<p class="dim">Releases appear here once the project has flows.</p>
-        {:else if releasesLoading}
+        <div class="pj-sample"><b>Sample</b> Environments are not stored or deployed yet — this shows how the screen will work. Edits here are not saved.</div>
+
+        <div class="pj-h"><h4>What runs where</h4><button class="link" onclick={() => navigateTo('runtime', 'Runtimes')}>Details in Runtimes</button></div>
+        {#if !insight}
           <!-- the header bar shows loading -->
-        {:else if releases.length === 0}<p class="dim">No flows in this project yet.</p>
+        {:else if whereRuns.length === 0}<p class="dim">Nothing in this project to deploy yet.</p>
         {:else}
-          <table class="pj-table">
-            <thead><tr><th>Flow</th><th>Releases</th><th>Active</th></tr></thead>
+          <table class="pj-table pj-matrix">
+            <thead><tr><th></th>{#each envNames as e}<th><span class="pj-env {e}">{e}</span></th>{/each}</tr></thead>
             <tbody>
-              {#each releases as r (r.name)}
+              {#each whereRuns as m (m.kind + m.name)}
                 <tr>
-                  <td class="mono">{r.name}</td>
-                  <td class="mono dim">{r.versions.join(', ')}</td>
-                  <td>
-                    <select value={r.active} disabled={!canEdit || r.versions.length < 2} onchange={(e) => activate(r.name, e.currentTarget.value)}>
-                      {#each r.versions as v}<option value={v}>{v}</option>{/each}
-                    </select>
-                  </td>
+                  <td><span class="mono">{m.name}</span> <span class="dim">{m.kind}</span></td>
+                  {#each envNames as e}<td>{#if m.at[e]}<span class="pj-ver">v{m.at[e]}</span>{:else}<span class="dim">not deployed</span>{/if}</td>{/each}
                 </tr>
               {/each}
             </tbody>
           </table>
         {/if}
-      </div>
-      <div class="pj-form">
-        <h4>Environments</h4>
-        <div class="pj-envs">{#each view.environments?.length ? view.environments : ENVIRONMENTS as env}<span class="pj-env {env}">{env}</span>{/each}</div>
-        <p class="pj-note">Environments arrive with the next stage: runtimes labelled per environment, the environment switcher in the top bar, per-environment resource values and promotion from dev to prod.</p>
+
+        <div class="pj-h"><h4>Variables</h4>{#if canEdit}<button class="pj-btn" onclick={addVar}>Add variable</button>{/if}</div>
+        <p class="pj-note">A canvas deploying into an environment hands that environment's values to its pods. A secret's value is a Secret resource to read it from, never the secret itself.</p>
+        <table class="pj-table pj-vars">
+          <thead><tr><th>Name</th>{#each envNames as e}<th><span class="pj-env {e}">{e}</span></th>{/each}<th></th></tr></thead>
+          <tbody>
+            {#each envVars as v, i (i)}
+              <tr>
+                <td>
+                  <input class="mono" bind:value={v.name} placeholder="NAME" disabled={!canEdit} />
+                  <label class="pj-secret"><input type="checkbox" bind:checked={v.secret} disabled={!canEdit} /> secret</label>
+                </td>
+                {#each envNames as e}
+                  <td class:missing={!!v.name.trim() && !(v.values[e] ?? '').trim()}>
+                    <input class="mono" bind:value={v.values[e]} placeholder={v.secret ? 'project/secret' : 'not set'} disabled={!canEdit} />
+                  </td>
+                {/each}
+                <td>{#if canEdit}<button class="pj-x" onclick={() => removeVar(i)} title="Remove {v.name || 'this variable'}" aria-label="Remove">×</button>{/if}</td>
+              </tr>
+            {:else}
+              <tr><td colspan={envNames.length + 2} class="dim">No variables yet.</td></tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if missingValues}<p class="pj-warn">{missingValues} value{missingValues > 1 ? 's are' : ' is'} not set — a deployment there gets nothing for {missingValues > 1 ? 'them' : 'it'}.</p>{/if}
       </div>
 
     {:else if tab === 'health' && info}
@@ -784,20 +863,30 @@
           <div><span>Namespace</span><span class="mono">{info.namespace}</span></div>
           <div><span>Owner</span>{info.owner_kind === 'org' ? `org ${info.owner}` : `@${info.owner}`}</div>
         </div>
-        <h4>Environments</h4>
-        <div class="pj-envs">{#each view.environments?.length ? view.environments : ENVIRONMENTS as env}<span class="pj-env {env}">{env}</span>{/each}</div>
-        <p class="pj-note">Environments arrive with the next stage: runtimes labelled per environment, the environment switcher in the top bar, per-environment resource values and promotion from dev to prod.</p>
-        {#if info.owner_kind === 'user' && info.role === 'owner'}
+        <!-- Change the owner: a personal project moves into an org (the server
+             does this); an org's project to another org needs the server first
+             (UI limitations, SRV-8) — shown, and said, not pretended. -->
+        {#if (info.owner_kind === 'user' && info.role === 'owner') || (info.owner_kind === 'org' && canEdit)}
           <div class="pj-box">
-            <h4>Move to an organisation</h4>
-            {#if adminOrgs.length === 0}
-              <p class="pj-note">You need the admin role in an organisation to move a project into it.</p>
+            <h4>{info.owner_kind === 'org' ? 'Change organisation' : 'Move to an organisation'}</h4>
+            {#if targetOrgs.length === 0}
+              <p class="pj-note">You need the admin role in {info.owner_kind === 'org' ? 'another' : 'an'} organisation to move a project into it.</p>
+            {:else if info.owner_kind === 'org'}
+              <p class="pj-note">Now owned by <b>{info.owner}</b>. Moving it makes the namespace <span class="mono">&lt;org&gt;-{info.name}</span>, with its flows, resources and triggers.</p>
+              <div class="pj-row">
+                <select bind:value={moveOrg}>
+                  <option value="">Choose an organisation…</option>
+                  {#each targetOrgs as o}<option value={o.handle}>{o.handle}</option>{/each}
+                </select>
+                <button class="pj-btn" disabled>Preview</button>
+              </div>
+              <p class="pj-warn">Not available yet: the server moves only a personal project into an organisation, not between organisations.</p>
             {:else}
               <p class="pj-note">The namespace becomes <span class="mono">&lt;org&gt;-{info.name}</span>. Flows, resources and triggers move with it, and references inside the project are rewritten. Run history stays under the old name.</p>
               <div class="pj-row">
                 <select bind:value={moveOrg} onchange={() => (moveReport = null)}>
                   <option value="">Choose an organisation…</option>
-                  {#each adminOrgs as o}<option value={o.handle}>{o.handle}</option>{/each}
+                  {#each targetOrgs as o}<option value={o.handle}>{o.handle}</option>{/each}
                 </select>
                 <button class="pj-btn" onclick={previewMove} disabled={!moveOrg || saving}>Preview</button>
               </div>
@@ -943,6 +1032,18 @@
   .pj-danger { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--err-bg, #fde8e8); border-radius: 10px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
   .pj-danger h4 { color: var(--err, #b42318) !important; }
   .link { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font: inherit; }
+  .pj-sample { display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border: 1px dashed var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
+  .pj-sample b { font: 600 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--warn, #b45309); }
+  .pj-matrix td, .pj-matrix th { text-align: left; }
+  .pj-ver { font: 500 12px var(--font-mono); color: var(--text-1); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
+  .pj-vars td { padding: 5px 6px; }
+  .pj-vars input.mono { width: 100%; box-sizing: border-box; font-size: 12px; }
+  .pj-vars td.missing input { border-color: var(--warn, #b45309); background: var(--warn-bg, #fbf0e0); }
+  .pj-secret { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 4px; margin-top: 4px; font-size: 11px !important; }
+  .pj-warn { margin: 0; font-size: 12px; color: var(--warn, #b45309); }
+  .pj-li-row { display: flex; align-items: center; gap: 8px; }
+  .pj-li-row .pj-li { flex: 1 1 auto; min-width: 0; }
+  .pj-ver-pick { flex: 0 0 auto; font: 12px var(--font-mono); }
   .pj-envs { display: flex; gap: 8px; }
   .pj-env { padding: 4px 12px; border-radius: 12px; font: 12px var(--font-mono); border: 1px solid var(--border); }
   .pj-env.dev { color: #15803d; border-color: #86efac; }

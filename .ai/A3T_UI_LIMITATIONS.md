@@ -51,6 +51,20 @@ works around them where that is safe, and says so here.
 | SRV-3 | `list_resources` returns the same resource twice: `a3t/flowr-system-db`. | Was: the Resources list in Items stayed blank (the repeated key stopped Svelte drawing the list). | `list_resources` (resource registry) | Return each resource once. The UI now drops repeated rows (77db3e6), which hides the duplicate; remove that once the server is fixed, or keep it and log the duplicate. | partial |
 | SRV-4 | `ui_context` has no field for the app or the selected item, only for one document (`kind`, `name`, `section`, `dirty`, `draft_text`). | Nothing visible. With no document open, the UI sends the app as `kind: "page", name: "Agents"`, and an item no view has described as `kind: "Settings item", name: "<id>"`. The prompt reads correctly ("The console is currently showing page `Agents`"), but the agent cannot tell the levels apart. | `prompt_with_ui_context` in `call_agent.rs`; UI: `stores/activeItem.svelte.ts` | Accept `app` and `item` alongside the document fields, and say all three in the prompt ("in Agents, on agent acme/triage-bot, its Configuration tab"). | partial |
 
+### Project environments (the Projects → Environments tab is built on sample data)
+
+The tab shows what each environment should hold: which version of each flow and
+agent runs where, and the variables each environment gives its deployments. It
+is marked **Sample** and its edits are not saved until these land. Design:
+`.ai/A3T_DASH_PROJECTS_ENVIRONMENTS.md` (D2).
+
+| # | Missing | Where | Needed | Status |
+|---|---|---|---|---|
+| SRV-5 | Store a project's environments and their variables. The project record has an `environments` column (default `["dev","staging","prod"]`), but `update` never writes it, and there is nowhere for variables. | `a3t/backend/flows/a3t/a3t_projects.yaml` (`update-write`) | `environments: [{ name, order, vars: [{ name, value \| secret_ref }] }]` saved by `update` and returned by `list`; a secret is a reference to a Secret resource, never a value | open |
+| SRV-6 | A canvas deploying into an environment does not pass that environment's variables on. Pod env is the runtime's defaults plus a fixed set of extras. | `flowr/crates/flowr-canvas/src/reconciler.rs` (`apply_sandbox`, `extra_env`); the canvas CRD | Resolve the canvas's environment, read the project's variables for it, put them in the CRD, and from there in the pod's `env` (secrets as `valueFrom.secretKeyRef`) | open |
+| SRV-7 | Nothing says which version runs in which environment. | `/ops/overview` deployments; runtime labels | Each deployment carries its environment (from the runtime's `a3t.io/env` label) and the version it pinned, so the UI can draw the flows × environments matrix from live data | open |
+| SRV-8 | A project can't move between organisations: `move` takes only a personal project into an org. | `a3t_projects.yaml` (`move-allowed`) | Allow an org's project when the caller is admin in both orgs (or superadmin); the rest of `move` (namespace rewrite, references) already applies | open |
+
 UI-14 (edits to the open document without a permission prompt) is also on the
 server side, and matters more now: the Studio's assistant is the Chat beside the
 Explorer, which uses `propose_edit` for every document edit (ce1461a).
