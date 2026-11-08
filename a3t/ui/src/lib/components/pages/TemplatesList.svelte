@@ -85,6 +85,7 @@
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { onMount, untrack } from 'svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
+  import TemplateGuide from '$lib/components/templates/TemplateGuide.svelte';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
 
   const canCreate = can('create', 'template');
@@ -298,6 +299,20 @@ do:
     });
   });
 
+  // Whichever way a template is opened (Items, a link, the page), start on
+  // About and load the agents built from it.
+  let guideFor = '';
+  $effect(() => {
+    const t = template;
+    const key = t && !draftTemplate?.isNew ? `${t.namespace ?? ''}/${t.id ?? t.name}` : '';
+    untrack(() => {
+      if (!key || key === guideFor) return;
+      guideFor = key;
+      propNode = 'about';
+      void loadTemplateAgents();
+    });
+  });
+
   // Collapsible sections
   let sections = $state<Record<string, boolean>>({ platform: true, my: true, released: true, training: true, community: false });
 
@@ -337,13 +352,27 @@ do:
 
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.
-  const tplSteps = $derived.by((): WizardStep[] => [
-    { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: 'Template Detail', hint: 'Name, version and tags', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+  /// A template as its users meet it — About, How to use, Try it, Production —
+  /// then the author's views, Design and Settings. A new one: its details, then
+  /// its design.
+  const GUIDE_ICON = {
+    about: '<circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 5h.01"/>',
+    use: '<path d="M3 4h10M3 8h10M3 12h6"/>',
+    try: '<path d="M5 3l8 5-8 5z"/>',
+    production: '<path d="M2 13l4-4 3 3 5-6"/><path d="M10 6h4v4"/>',
+  };
+  const tplSteps = $derived.by((): WizardStep[] => draftTemplate?.isNew ? [
+    { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
       need: 'Name the template: lowercase letters, digits and dashes.' },
-    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Template YAML', hint: 'The spec: hooks, LLM, tools, memory', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
-    { id: 'policy', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>', label: 'Policy', hint: 'What its agents may do' },
-    { id: 'ownership', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>', label: 'Ownership & Access', hint: 'Who owns it and who can use it' },
-    ...(draftTemplate?.isNew ? [] : [{ id: 'agents', icon: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>', label: 'Agents', hint: 'Agents built from it' }]),
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+  ] : [
+    { id: 'about', icon: GUIDE_ICON.about, label: 'About', hint: 'What it is and what it does' },
+    { id: 'use', icon: GUIDE_ICON.use, label: 'How to use', hint: 'What you set to make an agent from it, and how to call it' },
+    { id: 'try', icon: GUIDE_ICON.try, label: 'Try it', hint: 'Run it with your input and see what comes back' },
+    { id: 'production', icon: GUIDE_ICON.production, label: 'Production', hint: 'What is in place, and how to take it live' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+      need: 'Name the template: lowercase letters, digits and dashes.' },
   ]);
 
   function openInherited(it: ExposedItem) {
@@ -351,10 +380,10 @@ do:
     if (!base) return;
     draftTemplate = null; selected = '';
     viewTemplate = { ...base, namespace: it.namespace, readOnly: true };
-    propNode = 'yaml';
+    propNode = 'about';
   }
 
-  let propNode = $state<'detail' | 'yaml' | 'policy' | 'ownership' | 'agents'>('detail');
+  let propNode = $state<'about' | 'use' | 'try' | 'production' | 'yaml' | 'detail'>('about');
 
   // The chat's context: this template, the tab on screen, and its spec as
   // edited. Picking another template is a new key, so its spec is the saved one.
@@ -371,9 +400,8 @@ do:
   function selectTemplate(name: string) {
     draftTemplate = null; viewTemplate = null;
     selected = name;
-    propNode = 'yaml';
+    propNode = 'about';
     navigateToDetail('templates', 'Templates', name);
-    loadTemplateAgents();
   }
 
   // Open the edit slide-in on a blank draft. Tags are kept as a comma string
@@ -577,10 +605,10 @@ do:
             <div class="sp-content">
               {#if propNode === 'detail'}
                 <div class="sp-form">
-                  <h3>{template.isNew ? 'New Template' : 'Template Details'}</h3>
+                  <h3>{template.isNew ? 'New template' : 'Settings'}</h3>
                   {#if readOnly}<p class="ro-note">Read-only — inherited from <span class="mono">{template.namespace}</span>. Duplicate it to make your own copy, or create agents from it.</p>{/if}
                   {#if template.isNew}
-                    <p class="sf-hint">Set the name and details, edit the spec in Template YAML, then save.</p>
+                    <p class="sf-hint">Name it, then build it in Design, then save.</p>
                     <label class="cf-field"><span>Name</span>
                       <input type="text" bind:value={draftTemplate.name} placeholder="my-agent-template"
                         oninput={() => { if (!specEdited) draftTemplate.spec_yaml = defaultSpecYaml(draftTemplate.name); }} />
@@ -605,6 +633,14 @@ do:
                       <div class="sf-row"><span class="sf-k">Published</span><span class="sf-v">{template.published ?? 'false'}</span></div>
                       <div class="sf-row"><span class="sf-k">Tags</span><span class="sf-v">{Array.isArray(template.tags) ? template.tags.join(', ') : (template.tags || '-')}</span></div>
                     </div>
+                    <!-- Who owns it: the record's own values (the old view showed
+                         fixed placeholders). -->
+                    <h3>Ownership</h3>
+                    <div class="sf-kv">
+                      <div class="sf-row"><span class="sf-k">Project</span><span class="sf-v mono">{template.namespace ?? '—'}</span></div>
+                      <div class="sf-row"><span class="sf-k">Created by</span><span class="sf-v">{template.created_by || '—'}</span></div>
+                      <div class="sf-row"><span class="sf-k">Created</span><span class="sf-v">{template.created_at ? new Date(template.created_at).toLocaleString() : '—'}</span></div>
+                    </div>
                   {/if}
                 </div>
 
@@ -615,57 +651,8 @@ do:
                   <div class="sp-empty">No spec defined for this template.</div>
                 {/if}
 
-              {:else if propNode === 'agents' && !draftTemplate?.isNew}
-                <div class="sp-form">
-                  <div class="pf-head">
-                    <h3>Agents</h3>
-                    {#if template?.id && !draftTemplate?.isNew}<button class="btn spec sm" onclick={() => navigateTo('agents', 'Agents', { createFromTemplate: template.id })}>+ Create Agent</button>{/if}
-                  </div>
-                  <p class="sf-hint">Agents instantiated from this template — one template, many agents.</p>
-                  {#if agentsLoading}
-                    <!-- the header bar shows loading -->
-                  {:else if templateAgents.length === 0}
-                    <div class="sf-placeholder">No agents created from this template yet.</div>
-                  {:else}
-                    <div class="sf-agents-list">
-                      {#each templateAgents as a}
-                        <div class="sf-agent-row">
-                          <div class="sf-agent-info">
-                            <strong>{a.name}</strong>
-                            <span class="mono dim" style="font-size: 11px;">{a.id}</span>
-                          </div>
-                          <span class="sf-agent-mode">{a.mode}</span>
-                          <span class="sf-agent-status" class:active={a.status === 'running'} class:draft={a.status === 'draft'}>{a.status}</span>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-
-              {:else if propNode === 'ownership'}
-                <div class="sp-form">
-                  <h3>Ownership &amp; Access</h3>
-                  <div class="sf-kv">
-                    <div class="sf-row"><span class="sf-k">Created by</span><span class="sf-v">usr-superadmin</span></div>
-                    <div class="sf-row"><span class="sf-k">Org</span><span class="sf-v">org-default</span></div>
-                    {#if template.created_at}<div class="sf-row"><span class="sf-k">Created</span><span class="sf-v">{new Date(template.created_at).toLocaleString()}</span></div>{/if}
-                    <div class="sf-row"><span class="sf-k">Namespace</span><span class="sf-v">a3t</span></div>
-                  </div>
-                </div>
-
-              {:else if propNode === 'policy'}
-                <div class="sp-form">
-                  <h3>Policy</h3>
-                  <p class="sf-hint">Security and runtime policy for agents using this template.</p>
-                  <div class="sf-kv">
-                    <div class="sf-row"><span class="sf-k">Preset</span><select class="sf-select"><option value="standard" selected>standard</option><option value="restricted">restricted</option><option value="elevated">elevated</option></select></div>
-                    <div class="sf-row"><span class="sf-k">Runtime</span><select class="sf-select"><option value="sandboxed" selected>sandboxed</option><option value="co-located">co-located</option></select></div>
-                    <div class="sf-row"><span class="sf-k">Audit</span><select class="sf-select"><option value="all_decisions" selected>all_decisions</option><option value="failures_only">failures_only</option><option value="none">none</option></select></div>
-                    <div class="sf-row"><span class="sf-k">Max Flow Depth</span><span class="sf-v">3</span></div>
-                    <div class="sf-row"><span class="sf-k">Memory Scopes</span><span class="sf-v">private, shared</span></div>
-                  </div>
-                  <div class="sf-note">Policy intersected with ClusterPolicy and PolicyPreset.</div>
-                </div>
+              {:else if propNode === 'about' || propNode === 'use' || propNode === 'try' || propNode === 'production'}
+                <TemplateGuide view={propNode} {template} agents={templateAgents} {agentsLoading} onview={(id) => (propNode = id as any)} />
               {/if}
             </div>
             <WizardNav steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)}
