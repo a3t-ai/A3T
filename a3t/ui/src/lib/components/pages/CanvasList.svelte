@@ -15,7 +15,7 @@
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import CanvasDesigner from '$lib/components/editor/CanvasDesigner.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
   let loading = $state(true);
   let error = $state('');
@@ -92,10 +92,23 @@
     const p = getActivePanel();
     // Also from the submenu, which addresses a canvas by `selectedId`.
     const want = p?.props?.editCanvas ?? p?.props?.selectedId;
-    if (want) {
-      const c = canvases.find((x) => x.name === want);
-      if (c) editCanvas(c);
-    }
+    if (want) openById(want);
+  });
+  function openById(want: string) {
+    const c = canvases.find((x) => x.name === want);
+    if (c) editCanvas(c);
+  }
+
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) openById(id);
+    });
   });
 
   // Client mirror of flowr-types::canvas::select_runtime — shows which runtime pool

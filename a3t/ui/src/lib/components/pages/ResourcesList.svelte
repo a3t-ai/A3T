@@ -21,7 +21,7 @@
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import { navigateTo, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { can, currentUser } from '$lib/stores/auth';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { namespacesFor, inContext, itemProject, getProject, isPlatform } from '$lib/stores/context.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import * as YAML from 'yaml';
@@ -456,11 +456,27 @@ do:
     if (getActivePanel()?.props?.create) openCreate('');
     // A resource picked in the shell's Items: `<category>:<namespace>/<name>`.
     const sel = getActivePanel()?.props?.selectedId as string | undefined;
-    const m = sel?.match(/^([^:]+):([^/]+)\/(.+)$/);
-    if (m) {
-      const r = allResources.find((x) => x.category === m[1] && x.namespace === m[2] && x.name === m[3]);
-      if (r) selectResource(r);
-    }
+    if (sel) openById(sel);
+  });
+
+  /// A resource picked in the shell's Items: `<category>:<namespace>/<name>`.
+  function openById(sel: string) {
+    const m = sel.match(/^([^:]+):([^/]+)\/(.+)$/);
+    if (!m) return;
+    const r = allResources.find((x) => x.category === m[1] && x.namespace === m[2] && x.name === m[3]);
+    if (r) selectResource(r);
+  }
+
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) openById(id);
+    });
   });
 
   // A different project (or "show platform") is a different list.

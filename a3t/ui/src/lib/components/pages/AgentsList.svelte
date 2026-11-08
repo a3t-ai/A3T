@@ -11,7 +11,7 @@
   import { discoverServerTools, allToolNames, toolSections, isDestructive, serverRef, type ServerTools } from '$lib/services/mcpTools';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { can } from '$lib/stores/auth';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import * as YAML from 'yaml';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
@@ -558,6 +558,18 @@
       // "Open its memory", "Review its controls"… land on that tab.
       if (panel.props.tab && (treeNodes.some((n) => n.id === panel.props.tab))) propNode = panel.props.tab;
     }
+  });
+
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) selected = id;
+    });
   });
 </script>
 

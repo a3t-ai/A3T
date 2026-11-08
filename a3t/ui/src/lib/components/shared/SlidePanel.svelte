@@ -90,10 +90,9 @@
   }
   .sp-panel.closing { animation: panelOut 0.2s ease-in forwards; }
   /* In the Details pane: flush with the pane, below the shell's pop-ins. */
-  .sp-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: paneIn 0.15s ease-out; }
-  .sp-panel.in-pane.closing { animation: paneOut 0.15s ease-in forwards; }
-  @keyframes paneIn { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes paneOut { from { opacity: 1; } to { opacity: 0; } }
+  /* In Details an item replaces what was there: no fade, which let the page under it show through. */
+  .sp-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: none; }
+  .sp-panel.in-pane.closing { animation: none; opacity: 0; }
   /* In the pane an item's sections run as tabs across the top, not a tree on
      the left (PropertiesTree switches to tabs there too). */
   /* Every page lays an item out as a rail (header and sections) beside its

@@ -80,10 +80,11 @@
   const nothingSelected = $derived(listApp && !selectedId && !creating);
   const hasDetails = $derived(!nothingSelected);
 
-  /// Apps whose item opens as a view fitted over the app's own page. Until it
-  /// is in place, the page under it (its old list, banner and New button) is
-  /// kept out of sight — it flashed up on every pick. If no view arrives (the
-  /// item is gone, or failed to load) the page shows after a few seconds.
+  /// Apps whose item opens as a view fitted over the app's own page. While an
+  /// item is shown, the page under it (its old list, banner and New button) is
+  /// never visible — not while the item opens, and not during any transition.
+  /// If no view arrives (the item is gone, or failed to load) the page shows
+  /// after a few seconds rather than leaving Details blank.
   const FITS_ITEM = new Set(['agents', 'templates', 'triggers', 'projects', 'resources', 'executions', 'canvas']);
   let gaveUp = $state(false);
   $effect(() => {
@@ -92,7 +93,8 @@
     const t = setTimeout(() => (gaveUp = true), 4000);
     return () => clearTimeout(t);
   });
-  const opening = $derived(FITS_ITEM.has(activeType) && (!!selectedId || creating) && !paneFitted() && !gaveUp);
+  const covering = $derived(FITS_ITEM.has(activeType) && (!!selectedId || creating) && (paneFitted() || !gaveUp));
+  const opening = $derived(covering && !paneFitted());
 
   // A create form closed (its actions went away): drop the request from the
   // URL so Details goes back to "Nothing selected" and New works again.
@@ -264,7 +266,7 @@
           {/if}
         {/snippet}
       </StackBar>
-      <div class="page" class:opening bind:this={pageEl}>
+      <div class="page" class:covering bind:this={pageEl}>
         {#if opening}<div class="opening-note" role="status">Opening…</div>{/if}
         {#if nothingSelected}
           <AppWelcome appType={activeType} title={panel?.title ?? 'App'}
@@ -309,8 +311,8 @@
   .details { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-page); position: relative; }
   .page { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
   /* While an item opens, only the item's own view may show. */
-  .page.opening > :global(*:not(.opening-note)) { visibility: hidden; }
-  .page.opening :global([data-fitted]) { visibility: visible; }
+  .page.covering > :global(*:not(.opening-note)) { visibility: hidden; }
+  .page.covering :global([data-fitted]) { visibility: visible; }
   .opening-note { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding-top: 64px; font-size: 13px; color: var(--text-3); }
   .sbname { font: 500 11px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

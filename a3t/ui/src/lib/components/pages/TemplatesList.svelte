@@ -83,7 +83,7 @@
   }
   import { can, canAny, currentUser } from '$lib/stores/auth';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
 
   const canCreate = can('create', 'template');
@@ -283,6 +283,18 @@ do:
     else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
     }
+  });
+
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) selected = id;
+    });
   });
 
   // Collapsible sections

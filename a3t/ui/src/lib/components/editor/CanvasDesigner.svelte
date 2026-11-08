@@ -101,7 +101,8 @@
 
   // Embedded instances are mounted per canvas (the pane keys them), so they
   // initialise once on mount; the slide-in panel initialises each time it opens.
-  $effect(() => { if (open || embedded) void init(); });
+  // …and again when it is pointed at another canvas while open.
+  $effect(() => { void canvas; if (open || embedded) void init(); });
 
   async function init() {
     msg = ''; activeSection = 'flow'; depInput = ''; leftMode = 'code'; rightMode = 'form';

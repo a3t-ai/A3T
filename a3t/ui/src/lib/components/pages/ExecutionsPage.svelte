@@ -9,7 +9,7 @@
   import { getProject } from '$lib/stores/context.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import RunView from '$lib/components/run/RunView.svelte';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import { detailsPane } from '$lib/shell/detailsPane';
   import { getActivePanel, navigateTo, openInStudio } from '$lib/stores/panels.svelte.ts';
@@ -106,7 +106,22 @@
     // it is (its flow, project and status), or by id alone if it isn't listed.
     const id = getActivePanel()?.props?.selectedId as string | undefined;
     await load();
-    if (id) void openDetail(rows.find((r) => r.instance_id === id) ?? ({ instance_id: id, name: '', namespace: '', status: '' } as unknown as Exec));
+    if (id) openById(id);
+  });
+  function openById(id: string) {
+    void openDetail(rows.find((r) => r.instance_id === id) ?? ({ instance_id: id, name: '', namespace: '', status: '' } as unknown as Exec));
+  }
+
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) openById(id);
+    });
   });
   /// Closing a run opened from Items goes back to the list's empty Details.
   function closeRun() {
