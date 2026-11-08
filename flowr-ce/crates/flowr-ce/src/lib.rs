@@ -912,7 +912,15 @@ async fn await_outcome(
                 return Ok(state);
             }
         }
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), futures::StreamExt::next(&mut news)).await;
+        // Read the run again only when its phase changed (or every 2 s): each step's
+        // progress notice (`seq`) re-read it before, for nothing.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match tokio::time::timeout_at(deadline, futures::StreamExt::next(&mut news)).await {
+                Ok(Some(msg)) if msg.get("phase").is_none() => continue,
+                _ => break,
+            }
+        }
     }
 }
 

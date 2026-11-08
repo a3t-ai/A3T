@@ -164,9 +164,26 @@ pub(crate) fn class_of(task: &NamedTask) -> StepClass {
         Task::Emit(_) => StepClass::Idempotent,
         Task::Call(c) => match &c.target {
             CallTarget::Http(h) if h.method.as_deref().map(|m| m.eq_ignore_ascii_case("get")).unwrap_or(false) => StepClass::Read,
+            CallTarget::Function(f) if reads_only(f, c.with.as_ref()) => StepClass::Read,
             _ => StepClass::Effect,
         },
         _ => StepClass::Effect,
+    }
+}
+
+/// Calls to FlowR's own stores that only read: running one again after a crash is
+/// safe, so they are journaled like pure steps (no durable start, results flushed
+/// with the next commit). State reads, platform-table queries, AQL reads.
+fn reads_only(function: &str, with: Option<&Value>) -> bool {
+    let arg = |k: &str| with.and_then(|w| w.get(k)).and_then(|v| v.as_str());
+    match function {
+        "state:get" => true,
+        "lancedb" => matches!(arg("operation").unwrap_or("query"), "query" | "list_tables"),
+        "adb" | "clawdb" => {
+            let verb = arg("query").and_then(|q| q.split_whitespace().next()).unwrap_or("");
+            ["RECALL", "LOOKUP", "SCAN"].iter().any(|v| verb.eq_ignore_ascii_case(v))
+        }
+        _ => false,
     }
 }
 
@@ -769,7 +786,9 @@ impl StepHook for JournalHook {
             return self.listen(&key, task, listen, input).await;
         }
 
-        if class != StepClass::Pure {
+        // A pure or read-only step needs no durable start: run again after a crash, it
+        // does the same (or reads afresh) and nothing outside the run changed.
+        if !matches!(class, StepClass::Pure | StepClass::Read) {
             self.kill("before_step_started", &key)?;
             let attempt = *self.attempts.lock().unwrap().get(&key).unwrap_or(&0);
             let input_used = edited.as_ref().unwrap_or(input);
@@ -819,7 +838,7 @@ impl StepHook for JournalHook {
             }
         };
         let pause = if self.debug && !self.resuming_from(&key, when) { self.breakpoint(&key, when, input) } else { None };
-        if class == StepClass::Pure && matches!(rec, Record::StepCompleted { .. }) && pause.is_none() {
+        if matches!(class, StepClass::Pure | StepClass::Read) && matches!(rec, Record::StepCompleted { .. }) && pause.is_none() {
             let flush = {
                 let mut p = self.pending.lock().unwrap();
                 p.push(rec);

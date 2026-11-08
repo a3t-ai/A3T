@@ -388,9 +388,15 @@ async fn keep_alive(engine: Arc<dyn EngineStore>, lease: Lease, run: RunId, epoc
                 }
             }
             msg = news.next() => {
-                if msg.is_none() {
+                let Some(msg) = msg else {
                     // The store stopped publishing; keep heartbeating.
                     news = futures::stream::pending().boxed();
+                    continue;
+                };
+                // Only a request (cancel) concerns the worker: step progress (`seq`),
+                // events and approvals are its own doing or reach it otherwise, and
+                // re-reading the run on each was most of a flow's store reads.
+                if msg.get("request").is_none() {
                     continue;
                 }
                 if let Ok(Some(r)) = engine.get(run).await {

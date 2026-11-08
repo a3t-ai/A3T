@@ -180,6 +180,25 @@ pub fn adb_endpoint(url: &str, flight_url: Option<&str>) -> AdbEndpoint {
 /// The endpoint of an ADB resource (`namespace/name`, or `name` in `default`):
 /// `config.url` (or `endpoint`) and optional `config.flight_url`.
 pub async fn resolve_adb(storage: &dyn flowr_storage::StorageBackend, resource: &str) -> std::result::Result<AdbEndpoint, String> {
+    // Every `call:adb` names its resource: without this, each one read the registry
+    // (another ADB round trip) before its own query. An edited resource takes effect
+    // within RESOLVED_FOR.
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    const RESOLVED_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+    static RESOLVED: OnceLock<Mutex<HashMap<String, (std::time::Instant, AdbEndpoint)>>> = OnceLock::new();
+    let cache = RESOLVED.get_or_init(Default::default);
+    if let Some((at, ep)) = cache.lock().unwrap().get(resource) {
+        if at.elapsed() < RESOLVED_FOR {
+            return Ok(ep.clone());
+        }
+    }
+    let ep = resolve_adb_uncached(storage, resource).await?;
+    cache.lock().unwrap().insert(resource.to_string(), (std::time::Instant::now(), ep.clone()));
+    Ok(ep)
+}
+
+async fn resolve_adb_uncached(storage: &dyn flowr_storage::StorageBackend, resource: &str) -> std::result::Result<AdbEndpoint, String> {
     let (ns, name) = resource.split_once('/').unwrap_or(("default", resource));
     let r = storage
         .resources()
