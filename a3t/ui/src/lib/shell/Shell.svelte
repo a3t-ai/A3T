@@ -112,7 +112,6 @@
   const creating = $derived(!!panel?.props?.create);
   // AI Chat with nothing picked is a new conversation, not a welcome page.
   const nothingSelected = $derived(listApp && kind !== 'chat' && !selectedId && !creating);
-  const hasDetails = $derived(!nothingSelected);
 
   /// Apps whose item opens as a view fitted over the app's own page. While an
   /// item is shown, the page under it (its old list, banner and New button) is
@@ -239,7 +238,9 @@
       style:width={midMode === 'pop' ? `${width('chatPop')}px` : undefined}
       style:left={midMode === 'pop' && !isNarrow() ? `${menuMode === 'dock' ? width('menu') : 0}px` : undefined}>
       {#if midMode === 'pop'}<Resizer k="chatPop" edge="right" label="Items and Chat" overlay />{/if}
-      {#if detMode === 'off' && hasDetails}
+      <!-- Whenever Details is unpinned: with nothing picked it still holds the
+           app's welcome, and the arrow is the only way back to it. -->
+      {#if detMode === 'off'}
         <button class="peek at-right" onclick={() => openOverlay('details')} title="Show Details" aria-label="Show Details">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3L5 8l5 5" /></svg>
         </button>
