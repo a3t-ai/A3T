@@ -210,17 +210,28 @@
   const landing = $derived(!sessionId);
 
   // This conversation's open item (see stores/chatArtifact).
-  const openState = $derived(artifactFor(sessionId));
+  // Only in AI Chat (the Details conversation, or the docked one beside a
+  // pinned item there): elsewhere the pane is not on screen, so this chat talks
+  // about the app's active item instead.
+  const inChatApp = $derived(getActivePanel()?.type === 'chat');
+  const openState = $derived(inChatApp ? artifactFor(sessionId) : null);
   const openArtifact = $derived(openState?.artifact ?? null);
   const openSection = $derived(openState?.section ?? 'graph');
   const openEdit = $derived(openState?.edit ?? null);
   function openItem(a: ChatArtifact) {
     if (!sessionId) return;
-    // Opening another item replaces the pane, and with it any unsaved edits.
-    const cur = openState;
+    // Opening another item replaces the pane, and with it any unsaved edits —
+    // also the pane kept for this conversation while you are elsewhere.
+    const cur = artifactFor(sessionId);
     const same = cur && cur.artifact.kind === a.kind && cur.artifact.namespace === a.namespace && cur.artifact.name === a.name;
     if (cur?.edit?.dirty && !same && !confirm(`Open ${a.name}? Your unsaved changes to ${cur.artifact.name} will be lost.`)) return;
     if (!same) openChatArtifact(sessionId, a);
+    // A widget's scope is AI Chat. From a chat beside another app, Open goes
+    // back to AI Chat — this conversation — where the item is open.
+    if (!inChatApp) {
+      trackOpen('chat', 'AI Chat');
+      navigateToDetail('chat', 'AI Chat', sessionId);
+    }
   }
   // What the pane hands back: a turn to send ("I saved…"), or text for the
   // composer ("About this flow: …"). Taken once, by this conversation only.

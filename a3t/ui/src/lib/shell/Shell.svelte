@@ -69,7 +69,10 @@
   // or pinned to take Details — in AI Chat the conversation then moves to the
   // middle stack's Chat face, so the item and the conversation sit side by side.
   const art = $derived(getChatArtifact());
-  const artInView = $derived(!!art && art.session === (kind === 'chat' ? selectedId : getChatSession()));
+  // Chat widgets belong to AI Chat: the pane shows only there, beside the
+  // conversation that opened it. Leaving AI Chat hides it (kept, unsaved edits
+  // and all) until you come back; it never follows into another app.
+  const artInView = $derived(!!art && kind === 'chat' && art.session === selectedId);
   const artPinned = $derived(artInView && !!art?.pinned);
   /// AI Chat with its item pinned: the conversation is in the middle stack.
   const chatBeside = $derived(kind === 'chat' && artPinned);
