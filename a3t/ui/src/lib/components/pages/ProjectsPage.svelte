@@ -1071,8 +1071,10 @@
   .pj-secret { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 4px; margin-top: 4px; font-size: 11px !important; }
   .pj-warn { margin: 0; font-size: 12px; color: var(--warn, #b45309); }
   .pj-li-row { display: flex; align-items: center; gap: 8px; }
-  .pj-li-row .pj-li { flex: 1 1 auto; min-width: 0; }
-  .pj-ver-pick { flex: 0 0 auto; font: 12px var(--font-mono); }
+  /* The name takes the row; the release menu its own width (the form's select
+     rule is width: 100%, which squeezed the name to nothing). */
+  .pj-li-row .pj-li { flex: 1 1 auto; min-width: 160px; }
+  .pj-form .pj-ver-pick { flex: 0 0 auto; width: auto; max-width: 180px; font: 12px var(--font-mono); }
   /* Access & policy: four plain cards */
   .ap { display: flex; flex-direction: column; gap: 14px; }
   .ap-card { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
