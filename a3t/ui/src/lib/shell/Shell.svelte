@@ -14,10 +14,11 @@
   import Resizer from './Resizer.svelte';
   import CommandPalette from './CommandPalette.svelte';
   import DetailsHost from './DetailsHost.svelte';
+  import AppWelcome from './AppWelcome.svelte';
   import { getDetailActions, getItemsRefresh, actionsHosted } from '$lib/stores/detailActions.svelte.ts';
   import ChatPageAI from '$lib/components/pages/ChatPageAI.svelte';
   import { getActivePanel, navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { hasContext, APP_CONTEXT, contextLabel } from '$lib/stores/apps.svelte.ts';
+  import { hasContext, APP_CONTEXT } from '$lib/stores/apps.svelte.ts';
   import {
     menuDocked, docked, getOverlay, openOverlay, closeOverlay, getFace, setFace, width,
     togglePin, toggleFace, togglePalette, escape, revealDetails, getToast, getChatSession,
@@ -258,14 +259,8 @@
       </StackBar>
       <div class="page" bind:this={pageEl}>
         {#if nothingSelected}
-          <div class="empty">
-            <b>Nothing selected</b>
-            <span>Pick from {contextLabel(activeType).toLowerCase()} in Items, or ask in Chat.</span>
-            <div class="empty-actions">
-              {#if !isVisible('mid') || getFace() !== 'items'}<button class="link" onclick={() => showMid('items')}>Show Items</button>{/if}
-              <button class="link" onclick={showOverview}>{panel?.title ?? 'App'} overview</button>
-            </div>
-          </div>
+          <AppWelcome appType={activeType} title={panel?.title ?? 'App'} onoverview={showOverview}
+            onitems={!isVisible('mid') || getFace() !== 'items' ? () => showMid('items') : undefined} />
         {:else}
           {#if kind !== 'chat'}<DetailsHost host={() => pageEl}><PanelStack /></DetailsHost>{/if}
         {/if}
@@ -324,9 +319,6 @@
 
   .note { margin: 40px 20px; display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center; color: var(--text-3); font-size: 13px; }
   .note b { color: var(--text-1); font-weight: 600; }
-  .empty { margin: 72px 24px; display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center; color: var(--text-3); font-size: 13px; }
-  .empty b { font: 400 22px var(--font-serif); color: var(--text-1); }
-  .empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
   .link { margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); padding: 5px 12px; font: 500 12px var(--font-sans); color: var(--spec); cursor: pointer; }
 
   /* The menu's shoulder arrow: on its right edge near the top, half outside. */
