@@ -5,7 +5,8 @@
   import { closeOverlay, getOverlay } from '$lib/stores/layout.svelte.ts';
 
   /// Wide enough for labels (the menu's width is the user's, by dragging).
-  let { wide = false }: { wide?: boolean } = $props();
+  /// `foot`: the shell's control for the menu itself (hide / keep it), above the version.
+  let { wide = false, foot }: { wide?: boolean; foot?: import('svelte').Snippet } = $props();
 
   let menuGroups = $derived($filteredMenuGroups);
   let activeType = $derived(getActivePanel()?.type ?? 'dashboard');
@@ -69,6 +70,7 @@
   </div>
 
   <div class="sidebar-bottom">
+    {#if foot}{@render foot()}{/if}
     <div class="version-pill">v0.5</div>
   </div>
 </nav>
@@ -87,12 +89,16 @@
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
+    /* The apps scroll; the foot (menu control, version) stays in view. */
+    overflow: hidden;
     width: 100%;
   }
 
   .sidebar-top {
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: none;
     display: flex;
     flex-direction: column;
     padding: 8px 0;
@@ -148,9 +154,14 @@
   .nav-ico { flex-shrink: 0; }
   .nav-btn.active .nav-ico { color: var(--ephemeral); }
 
+  /* One row — the menu control beside the version — so the foot is no taller
+     than the version alone was and the apps above keep their room. */
   .sidebar-bottom {
-    padding: 8px 0 12px;
+    flex: 0 0 auto;
+    padding: 4px 0 6px;
     display: flex;
+    align-items: center;
+    gap: 4px;
     justify-content: center;
     border-top: 1px solid var(--divider);
   }
