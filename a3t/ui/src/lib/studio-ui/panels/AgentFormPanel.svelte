@@ -58,7 +58,7 @@
   <div class="err">{doc.error}</div>
 {:else}
   <div class="af">
-    <div class="head"><span class="title">{doc.isNew ? 'New agent' : 'Agent'}</span><span class="grow"></span><SaveBar {doc} {workspace} valid={!need.length} /></div>
+    <div class="head"><span class="title">{doc.isNew ? 'New agent' : 'Agent'}</span><span class="grow"></span><SaveBar {doc} {workspace} valid={!need.length} panel /></div>
     <div class="body">
       {#key doc.address}
         {#if doc.isNew}

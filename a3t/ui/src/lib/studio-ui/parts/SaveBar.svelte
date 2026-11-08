@@ -9,11 +9,32 @@
   ///     Merge     the registry's changes into yours   } only when the registry
   ///     Push      yours over the registry's copy      } moved on (a conflict)
   /// See ../sync.ts. (Deploy, Run and Debug are the views' own Run ▾.)
+  import { untrack } from 'svelte';
   import type { Doc, Workspace } from '$lib/studio-core';
   import { conflicted, merge, push, sync, type SyncMode } from '../sync';
 
   /// `quiet`: only failures are written out (narrow bars); the chips say the rest.
-  let { doc, workspace, valid = true, quiet = false }: { doc: Doc; workspace: Workspace; valid?: boolean; quiet?: boolean } = $props();
+  /// `panel`: this bar is in a panel (Form, Config). One bar per document is
+  /// shown: the view's while the view has one on screen, else the panel's.
+  let { doc, workspace, valid = true, quiet = false, panel = false }: { doc: Doc; workspace: Workspace; valid?: boolean; quiet?: boolean; panel?: boolean } = $props();
+
+  // A view's bar is the document's bar while it is on screen.
+  $effect(() => {
+    if (panel) return;
+    const d = doc;
+    untrack(() => { d.ui.viewBars = (d.ui.viewBars ?? 0) + 1; });
+    return () => { d.ui.viewBars = Math.max(0, (d.ui.viewBars ?? 1) - 1); };
+  });
+  /// A panel's checks (an agent's required fields…) still hold when the view's
+  /// bar is the one shown, so the panel hands them to the document.
+  $effect(() => {
+    if (!panel) return;
+    const d = doc, v = valid;
+    untrack(() => { d.ui.panelValid = v; });
+    return () => { if (d.ui.panelValid === v) delete d.ui.panelValid; };
+  });
+  const showBar = $derived(!panel || !(doc.ui.viewBars > 0));
+  const ok = $derived(valid && (panel || doc.ui.panelValid !== false));
 
   const kind = $derived(workspace.kindOf(doc));
   const unsaved = $derived(workspace.isDirty(doc));
@@ -41,7 +62,7 @@
   };
   let mode = $state<SyncMode>((() => { try { const m = localStorage.getItem('a3t.studio.syncMode'); return m === 'versions' ? m : 'sync'; } catch { return 'sync'; } })());
   let menu = $state(false);
-  const enabled = (m: SyncMode) => (m === 'merge' || m === 'push' ? conflict && !doc.isNew : m === 'versions' ? !!kind.versions : valid);
+  const enabled = (m: SyncMode) => (m === 'merge' || m === 'push' ? conflict && !doc.isNew : m === 'versions' ? !!kind.versions : ok);
   /// Merge and Push are for a conflict; without one the main button is Sync.
   const shown = $derived<SyncMode>(enabled(mode) ? mode : 'sync');
   function go(m: SyncMode) {
@@ -59,7 +80,7 @@
 
   /// Ctrl/⌘+S saves the active document only.
   function onkey(e: KeyboardEvent) {
-    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's' || workspace.active !== doc) return;
+    if (!showBar || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's' || workspace.active !== doc) return;
     e.preventDefault();
     save();
   }
@@ -71,7 +92,7 @@
 
 <svelte:window onkeydown={onkey} />
 
-{#if kind.push}
+{#if kind.push && showBar}
   <span class="sb">
     {#if unsaved}<span class="chip unsaved" title="Edits not saved yet — Save (Ctrl/⌘+S) keeps them as a draft">unsaved</span>
     {:else if doc.draft}<span class="chip draft" title="Saved here {ago(doc.draft.at)}, not in the registry yet">draft<button class="x" onclick={discard} title="Discard the draft">×</button></span>{/if}
