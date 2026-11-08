@@ -12,7 +12,7 @@
   import { onMount, onDestroy } from 'svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import { detailsPane } from '$lib/shell/detailsPane';
-  import { getActivePanel, navigateTo } from '$lib/stores/panels.svelte.ts';
+  import { getActivePanel, navigateTo, openInStudio } from '$lib/stores/panels.svelte.ts';
   /// Inside the shell a run picked in Items opens in the Details pane.
   const pane = detailsPane();
 
@@ -101,11 +101,12 @@
     if (auto) { timer = setInterval(() => void inBackground(() => load()), 4000); } else { clearInterval(timer); timer = null; }
   }
 
-  onMount(() => {
-    load();
-    // A run picked in the shell's Items list.
+  onMount(async () => {
+    // A run picked in the shell's Items list: open it once the list says what
+    // it is (its flow, project and status), or by id alone if it isn't listed.
     const id = getActivePanel()?.props?.selectedId as string | undefined;
-    if (id) void openDetail({ instance_id: id, name: '', namespace: '', status: '' } as unknown as Exec);
+    await load();
+    if (id) void openDetail(rows.find((r) => r.instance_id === id) ?? ({ instance_id: id, name: '', namespace: '', status: '' } as unknown as Exec));
   });
   /// Closing a run opened from Items goes back to the list's empty Details.
   function closeRun() {
@@ -197,8 +198,18 @@
 {/snippet}
 
 {#if pane}
+  <!-- In the Details pane a run is an item like any other: its header, its
+       actions in the action bar, the run view's tabs straight below. -->
   <SlidePanel open={!!(selected && detail)} onclose={closeRun}>
-    <div class="drawer in-pane">{#if detail}{@render runDetail()}{/if}</div>
+    {#if detail}
+      {#if runsMode}
+        <RunView runId={detail.instance_id} crumb={`Executions${detail.namespace ? ' · ' + detail.namespace : ''}`}
+          title={detail.name || 'Run'} onopen={detail.name ? () => openInStudio('flow', detail!.namespace || 'a3t', detail!.name) : undefined}
+          onrerun={(id) => { void load(); openDetail({ ...detail!, instance_id: id }); }} />
+      {:else}
+        <div class="drawer in-pane">{@render runDetail()}</div>
+      {/if}
+    {/if}
   </SlidePanel>
 {/if}
 

@@ -9,8 +9,16 @@
 
   /// `shared`: the flow's state shared with the editor graph — this view
   /// publishes the run's position to it and shows the step picked there.
-  let { runId, flowSteps = [], onrerun, shared = null }:
-    { runId: string; flowSteps?: string[]; onrerun?: (id: string) => void; shared?: FlowDebug | null } = $props();
+  let { runId, flowSteps = [], onrerun, shared = null, crumb = '', title = '', onopen }:
+    { runId: string; flowSteps?: string[]; onrerun?: (id: string) => void; shared?: FlowDebug | null;
+      /// Item mode (the shell's Details pane): the run gets the standard item
+      /// header (breadcrumb, name with its status, a meta line, the action bar)
+      /// with the tabs straight under it.
+      crumb?: string; title?: string; onopen?: () => void } = $props();
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
+  import { detailsPane } from '$lib/shell/detailsPane';
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
+  const item = !!title && !!detailsPane();
 
   type Step = { step_key: string; status: string; class?: string; duration_us?: number; attempts?: number; edited?: boolean;
                 started_at?: string; completed_at?: string; seq?: number; error?: any; fire_at?: string; listening?: any; asking?: any };
@@ -168,6 +176,20 @@
     onrerun?.(r.data.run_id);
   }
 
+  // Item mode: the run's actions go in the shared action bar.
+  $effect(() => {
+    if (!item || !run) return;
+    const can = !live && run.can_steer;
+    return setDetailActions({
+      onopenineditor: onopen,
+      extra: [
+        ...(live && run.can_steer ? [{ label: 'Stop', run: cancel }] : []),
+        ...(can ? [{ label: 'Re-run in debug', run: () => rerun(true) }, { label: 'Re-run', run: () => rerun(false) }] : []),
+      ],
+    });
+  });
+  const initials = (t: string) => t.replace(/[^a-z0-9]+/gi, ' ').trim().split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'RN';
+
   // ── Timeline ──
   // From the moment the run was queued (`created_at`) to its end (or now):
   // the wait for a worker, the run's own life — loading, pauses, timers,
@@ -258,7 +280,24 @@
 {:else if !run}
   <!-- the header bar shows loading -->
 {:else}
-  <div class="rv">
+  <div class="rv" class:item>
+    {#if item}
+      <div class="rv-ihead">
+        <span class="rv-icon">{initials(title)}</span>
+        <div class="rv-it">
+          <div class="rv-crumb">{crumb}</div>
+          <div class="rv-name">{title} <span class="rv-st {phaseClass(run.phase)}">{run.phase}</span>{#if run.debug}<span class="rv-st">debug</span>{/if}</div>
+          <div class="rv-meta">
+            <span class="mono" title="Run id">{run.run_id}</span>
+            {#if run.duration_us}<span>· {dur(run.duration_us)}</span>{/if}
+            {#if run.principal_id}<span>· by {run.principal_id}</span>{/if}
+            {#if run.resume_count > 0}<span title="Resumed after an interruption, a timer or a pause">· resumed {run.resume_count}×</span>{/if}
+            {#if run.current_step}<span>· at <span class="mono">{run.current_step}</span></span>{/if}
+          </div>
+        </div>
+        <DetailActionsBar />
+      </div>
+    {:else}
     <div class="rv-head">
       <span class="pill {phaseClass(run.phase)}">{run.phase}</span>
       {#if run.debug}<span class="pill mut">debug</span>{/if}
@@ -284,6 +323,7 @@
         </span>
       {/if}
     </div>
+    {/if}
 
     {#if paused}
       <div class="rv-pause">
@@ -469,6 +509,20 @@
 
 <style>
   .rv { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+  /* Item mode: the standard item header, then the tabs and body padded below. */
+  .rv.item { gap: 0; height: 100%; min-height: 0; overflow-y: auto; }
+  .rv.item > :not(.rv-ihead) { margin-left: 20px; margin-right: 20px; }
+  .rv.item > :not(.rv-ihead) + * { margin-top: 8px; }
+  .rv-ihead { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border-light, #f0ece3); margin-bottom: 10px; }
+  .rv-icon { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; font: 600 12px var(--font-sans); color: #fff; background: #55514a; }
+  .rv-it { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .rv-crumb { font: 400 11.5px var(--font-mono); color: var(--text-3); }
+  .rv-name { font: 400 18px/1.25 var(--font-serif); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rv-st { font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-left: 6px; vertical-align: middle; }
+  .rv-st.ok { color: var(--green, #1a7158); }
+  .rv-st.err { color: var(--err, #d15858); }
+  .rv-st.live { color: var(--spec); }
+  .rv-meta { display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; color: var(--text-3); }
   .rv-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--text-2); }
   .grow { flex: 1; }
   .dim { color: var(--text-3); }
