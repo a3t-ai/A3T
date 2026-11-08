@@ -33,15 +33,14 @@
 
   /// How each stack is laid out right now.
   const menuMode = $derived(menuDocked() ? 'dock' : overlay === 'menu' ? 'pop' : 'off');
-  /// Apps with their own explorer (Studio, Memory, Knowledge) need no Items: their
-  /// page takes the width, and Chat pops in from the edge when wanted.
+  /// Apps with their own explorer and their own AI (Studio, Memory, Knowledge)
+  /// need neither Items nor Chat: their page takes the width.
   const OWN_EXPLORER = new Set(['flow-editor', 'memory', 'knowledge']);
   const ownExplorer = $derived(OWN_EXPLORER.has(activeType));
-  const midMode = $derived(ownExplorer ? (overlay === 'mid' ? 'pop' : 'off')
+  const midMode = $derived(ownExplorer ? 'off'
     : d.mid ? (d.details ? 'col' : 'wide') : overlay === 'mid' ? 'pop' : 'off');
   const detMode = $derived(ownExplorer ? 'pane' : d.details ? 'pane' : overlay === 'details' ? 'pop' : 'off');
-  /// The face shown: always Chat where there are no Items.
-  const shownFace = $derived(ownExplorer ? 'chat' : face);
+  const shownFace = $derived(face);
 
   /// Items is the list and Details is one item. For an app with a list that
   /// can open an item, Details stays empty until something is picked; its main
@@ -113,7 +112,7 @@
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
     if (mod && k === 'k') { e.preventDefault(); togglePalette(); }
-    else if (mod && k === 'j') { e.preventDefault(); toggleFace(); }
+    else if (mod && k === 'j') { e.preventDefault(); if (!ownExplorer) toggleFace(); }
     else if (mod && e.key === '.') { e.preventDefault(); togglePin('details'); }
     else if (mod && e.key === '\\') { e.preventDefault(); togglePin('menu'); }
     else if (e.key === 'Escape' && !e.defaultPrevented) { if (escape()) e.preventDefault(); }
@@ -161,14 +160,10 @@
           {/if}
         {/snippet}
         {#snippet left()}
-          {#if ownExplorer}
-            <span class="sbname">Chat</span>
-          {:else}
-            <div class="seg" role="group" aria-label="Show">
-              <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
-              <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
-            </div>
-          {/if}
+          <div class="seg" role="group" aria-label="Show">
+            <button aria-pressed={face === 'items'} onclick={() => setFace('items')}>Items</button>
+            <button aria-pressed={face === 'chat'} onclick={() => setFace('chat')}>Chat</button>
+          </div>
           {#if shownFace === 'chat' && getChatSession()}
             <button class="sb-btn" onclick={newConversation} title="New conversation" aria-label="New conversation">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10" /></svg>
@@ -239,8 +234,8 @@
       </div>
     </section>
 
-    {#if midMode === 'off'}
-      <button class="edge" onclick={() => openOverlay('mid')} title={ownExplorer ? 'Open Chat (Ctrl J)' : 'Open Items | Chat (Ctrl J)'}>{ownExplorer ? 'Chat' : 'Items · Chat'}</button>
+    {#if midMode === 'off' && !ownExplorer}
+      <button class="edge" onclick={() => openOverlay('mid')} title="Open Items | Chat (Ctrl J)">Items · Chat</button>
     {/if}
     {#if detMode === 'off' && hasDetails}
       <button class="edge" style:top={midMode === 'off' ? '210px' : '90px'} onclick={() => openOverlay('details')} title="Open Details">Details</button>
