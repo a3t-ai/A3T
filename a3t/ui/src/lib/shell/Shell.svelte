@@ -72,18 +72,13 @@
     });
   });
 
-  /// Items is the list and Details is one item. For an app with a list that
-  /// can open an item, Details stays empty until something is picked; its main
-  /// page (with create and the other app-wide actions) is one click away as the
-  /// overview. Apps without a list keep their page in Details.
-  let overviewFor = $state<Record<string, boolean>>({});
+  /// Items is the list and Details is one item. For an app with a list,
+  /// Details shows the app's welcome until something is picked or created;
+  /// the app's old list page is not shown. Apps without a list keep their page.
   const listApp = $derived(hasContext(activeType) && !!APP_CONTEXT[activeType]?.focuses);
   const creating = $derived(!!panel?.props?.create);
-  const nothingSelected = $derived(listApp && !selectedId && !creating && !overviewFor[activeType]);
+  const nothingSelected = $derived(listApp && !selectedId && !creating);
   const hasDetails = $derived(!nothingSelected);
-  function showOverview() { overviewFor = { ...overviewFor, [activeType]: true }; }
-  // Picking an item and coming back to the app starts from the empty state again.
-  $effect(() => { if (selectedId) untrack(() => { if (overviewFor[activeType]) overviewFor = { ...overviewFor, [activeType]: false }; }); });
 
   // A create form closed (its actions went away): drop the request from the
   // URL so Details goes back to "Nothing selected" and New works again.
@@ -113,8 +108,6 @@
       lastCreate = create;
       const typeChanged = type !== lastType;
       lastSel = sel; lastType = type;
-      // Coming into an app starts from its list, not a previously opened overview.
-      if (typeChanged && Object.keys(overviewFor).length) overviewFor = {};
       if (type === 'chat') return;
       if (selChanged || (typeChanged && type && !(hasContext(type) && APP_CONTEXT[type]?.focuses))) revealDetails();
     });
@@ -259,7 +252,7 @@
       </StackBar>
       <div class="page" bind:this={pageEl}>
         {#if nothingSelected}
-          <AppWelcome appType={activeType} title={panel?.title ?? 'App'} onoverview={showOverview}
+          <AppWelcome appType={activeType} title={panel?.title ?? 'App'}
             onitems={!isVisible('mid') || getFace() !== 'items' ? () => showMid('items') : undefined} />
         {:else}
           {#if kind !== 'chat'}<DetailsHost host={() => pageEl}><PanelStack /></DetailsHost>{/if}

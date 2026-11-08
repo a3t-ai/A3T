@@ -6,8 +6,7 @@
   import { contextLabel } from '$lib/stores/apps.svelte.ts';
 
   type Accent = 'spec' | 'runtime' | 'control' | 'ephemeral';
-  let { appType, title, onoverview, onitems }:
-    { appType: string; title: string; onoverview: () => void; onitems?: () => void } = $props();
+  let { appType, title, onitems }: { appType: string; title: string; onitems?: () => void } = $props();
 
   /// The banner each app's own page shows, kept short here.
   const BANNER: Record<string, { headline: string; highlight: string; subtitle: string; description: string; accent: Accent }> = {
@@ -65,7 +64,6 @@
     <span>Pick from {what} in Items to open it here, or ask in Chat.</span>
     <span class="sp"></span>
     {#if onitems}<button class="btn" onclick={onitems}>Show Items</button>{/if}
-    <button class="btn" onclick={onoverview}>{title} overview</button>
   </div>
 
   <section class="aw-sec">
@@ -74,7 +72,7 @@
       {#each DOCS as d (d.title)}
         <div class="aw-card" aria-disabled="true" title="Coming soon">
           <span class="aw-ico doc" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>
           </span>
           <span class="aw-t"><b>{d.title}</b><small>{d.sub}</small></span>
         </div>
@@ -88,7 +86,7 @@
       {#each VIDEOS as v (v.title)}
         <div class="aw-video" aria-disabled="true" title="Coming soon">
           <div class="aw-thumb">
-            <span class="aw-play" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></span>
+            <span class="aw-play" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></span>
             <span class="aw-len">{v.len}</span>
           </div>
           <b>{v.title}</b>
@@ -104,17 +102,17 @@
   .sp { flex: 1 1 auto; }
   .btn { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 13px var(--font-sans); color: var(--spec); cursor: pointer; white-space: nowrap; }
   .btn:hover { border-color: var(--spec); }
-  .aw-sec h3 { margin: 0 0 10px; font: 400 17px var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px; }
+  .aw-sec h3 { margin: 0 0 12px; font: 400 20px var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px; }
   .ph { font: 500 10px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-4); border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 4px; padding: 1px 6px; }
-  .aw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-  .aw-card { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 12px; background: var(--bg-surface); }
-  .aw-ico { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; background: var(--spec-bg); color: var(--spec); }
+  .aw-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .aw-card { display: flex; gap: 14px; align-items: center; min-height: 96px; padding: 18px 20px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 12px; background: var(--bg-surface); }
+  .aw-ico { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; background: var(--spec-bg); color: var(--spec); }
   .aw-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .aw-t b { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
-  .aw-t small { font-size: 12px; color: var(--text-3); }
+  .aw-t b { font-size: 15px; font-weight: 600; color: var(--text-1); }
+  .aw-t small { font-size: 13px; color: var(--text-3); }
   .aw-video { display: flex; flex-direction: column; gap: 8px; }
-  .aw-video b { font-size: 13px; font-weight: 600; color: var(--text-1); }
+  .aw-video b { font-size: 14.5px; font-weight: 600; color: var(--text-1); }
   .aw-thumb { position: relative; aspect-ratio: 16 / 9; border-radius: 12px; border: 1px dashed var(--border-strong, #d9d4c6); background: repeating-linear-gradient(135deg, transparent 0 10px, rgba(234, 230, 220, 0.45) 10px 20px), var(--bg-subtle); display: flex; align-items: center; justify-content: center; }
-  .aw-play { width: 40px; height: 40px; border-radius: 50%; background: var(--bg-surface); color: var(--text-2); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(30, 25, 15, 0.12); padding-left: 2px; }
+  .aw-play { width: 56px; height: 56px; border-radius: 50%; background: var(--bg-surface); color: var(--text-2); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(30, 25, 15, 0.12); padding-left: 2px; }
   .aw-len { position: absolute; right: 8px; bottom: 8px; font: 500 10.5px var(--font-mono); color: var(--text-2); background: var(--bg-surface); border-radius: 4px; padding: 1px 6px; }
 </style>
