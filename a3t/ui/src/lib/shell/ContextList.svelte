@@ -9,6 +9,7 @@
   import { deleteChatSession, setPin } from '$lib/services/api';
   import { getProject } from '$lib/stores/context.svelte.ts';
   import { setItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
+  import { getActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
 
   let { appType }: { appType: string } = $props();
@@ -193,11 +194,18 @@
     return setItemsRefresh(() => load(src), loading);
   });
 
+  /// Picking a row opens it in Details; picking the open row again closes it,
+  /// and Details goes back to the app's welcome. Either way the item on screen
+  /// is left, so unsaved edits to it are confirmed first, never dropped.
   function select(item: Item) {
     if (item.group) { toggleGroup(item.id); return; }
     const panel = getActivePanel();
     const title = panel?.title ?? contextLabel(appType);
+    const closing = item.id === activeId;
+    const open = getActiveItem();
+    if (open?.dirty && !confirm(`${closing ? 'Close' : 'Leave'} ${open.name}? Your unsaved changes will be lost.`)) return;
     trackOpen(appType, title);
+    if (closing) { navigateTo(appType, title); return; }
     if (spec?.focuses) navigateToDetail(appType, title, item.id);
     else navigateTo(appType, title);
     // The item opens in Details; a popped-in Details or list follows from that.
@@ -270,7 +278,8 @@
         <span class="ctx-twist"></span>
       {/if}
     {/if}
-    <button class="ctx-pick" onclick={() => select(item)} title={item.namespace ? `${item.namespace}/${item.label}` : item.label}
+    <button class="ctx-pick" onclick={() => select(item)}
+      title={(item.namespace ? `${item.namespace}/${item.label}` : item.label) + (item.id === activeId && !item.group ? ' — click again to close' : '')}
       aria-current={item.id === activeId}>
       {#if item.badge}
         <span class="ctx-badge" style={item.badgeStyle}>{item.badge}</span>
