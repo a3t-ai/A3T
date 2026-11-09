@@ -2,75 +2,224 @@ document:
   dsl: '1.0.3'
   namespace: system
   name: agent-engine
-  version: '2.0.0'
+  version: '2.1.0'
   metadata:
     description: >
-      Rust-native agent engine. Calls the call:a3t:agent handler which
-      implements the full 10-phase lifecycle in native code.
-      Extensions defined here are the hook points — wrapper workflows
-      can override them with before/after tasks.
+      The core agent. Every A3T agent runs through it: an A3T agent flow declares
+      metadata.a3t.extends: system/agent-engine@2.1.0 and runs this flow with its own
+      config. Each turn it (1) recalls reference knowledge from SEMANTIC memory
+      (FlowR docs, namespace system-knowledge), (2) recalls the tools that fit the
+      request from its tool catalogue in PROCEDURAL memory (namespace system-tools),
+      (3) runs the turn (system/agent-turn, the native engine), which recalls and writes the
+      agent's WORKING and EPISODIC memory on ADB, and (4) writes one row per turn to
+      a3t_agent_turns. A failed recall or log write never stops the turn: it is
+      reported to system/a3t-error-handler (one a3t_errors row) and the turn goes on
+      without it. A failed turn fails the run, and the base's error handler answers
+      it. See AGENT_ENGINE.md next to this file.
+      Input: { message, session_id, ui_context?, config? }. Output: { content,
+      session_id, tool_calls_made, iterations, procedural_hit, stopped_reason,
+      knowledge, tool_hints, degraded }.
 
 metadata:
   a3t:
     extends: system/a3t-base@1.0.0
-use:
-  extensions:
-    - on_turn_start:
-        extend: all
-        when: "${ $task.name == \"init_turn\" }"
-        before: []
-        after: []
-
-    - before_recall:
-        extend: all
-        when: "${ $task.name == \"recall_memory\" }"
-        before: []
-        after: []
-
-    - before_llm:
-        extend: call
-        before: []
-        after: []
-
-    - on_llm_response:
-        extend: call
-        before: []
-        after: []
-
-    - on_tool_call:
-        extend: all
-        when: "${ $task.name == \"dispatch_tools\" }"
-        before: []
-        after: []
-
-    - on_tool_error:
-        extend: all
-        when: "${ $task.name == \"dispatch_tools\" and $context._tool_error != null }"
-        before: []
-        after: []
-
-    - before_store:
-        extend: all
-        when: "${ $task.name == \"store_memory\" }"
-        before: []
-        after: []
-
-    - after_response:
-        extend: all
-        when: "${ $task.name == \"emit_response\" }"
-        before: []
-        after: []
-
-    - on_turn_end:
-        extend: all
-        when: "${ $task.name == \"save_session\" }"
-        before: []
-        after: []
+    # Children inherit the hooks below and the base's error handler. Turn logging
+    # is part of this flow's steps, which a child can't remove; memory stays each
+    # agent's own setting (config.memory_resource: null turns it off).
+    locked:
+      - onError
 
 do:
+  # ═══ 1. Settings: the core's defaults under the agent's own config ═══════════
+  - core_setup:
+      set:
+        _in: '${ . // {} }'
+        _started: '${ now }'
+        _soft: []
+        _knowledge: []
+        _tools: []
+        _cfg: >-
+          ${ {
+              system_prompt: "You are a helpful assistant.",
+              memory_resource: "a3t/agent-memory",
+              memory_namespace: "default",
+              memory_config: {
+                working: {read: true, write: true},
+                episodic: {read: true, write: true},
+                semantic: {read: true},
+                procedural: {read: false}
+              },
+              knowledge: {enabled: true, namespace: "system-knowledge", limit: 4, max_chars: 600},
+              tool_catalogue: {enabled: true, namespace: "system-tools", limit: 6}
+            } * (.config // {}) }
+      export:
+        as: '${ $context + . }'
+
+  - core_where:
+      set:
+        # Knowledge and the tool catalogue live on the org's ADB unless the agent
+        # names another one; with no ADB at all they are skipped.
+        _k_res: '${ $context._cfg.knowledge.resource // $context._cfg.memory_resource }'
+        _t_res: '${ $context._cfg.tool_catalogue.resource // $context._cfg.memory_resource }'
+        _ask: '${ ($context._in.message // "") | tostring }'
+        _who: '${ (($context._principal // {}).user // "") | tostring }'
+        # The run id. $workflow is null in a subflow (engine request CA-R2), and
+        # every A3T agent runs the core as one: empty there until that lands.
+        _run: '${ (($workflow // {}).id // "") | tostring }'
+      export:
+        as: '${ $context + . }'
+
+  # ═══ 2. Reference knowledge (SEMANTIC) ══════════════════════════════════════
+  - recall_knowledge:
+      if: '${ $context._cfg.knowledge.enabled == true and $context._k_res != null and ($context._ask | length) > 0 }'
+      try:
+        do:
+          - knowledge_query:
+              call: adb
+              with:
+                query: '${ "RECALL FROM SEMANTIC LIKE $q NAMESPACE \"" + $context._cfg.knowledge.namespace + "\" LIMIT " + ($context._cfg.knowledge.limit | tostring) }'
+                variables:
+                  q: '${ $context._ask }'
+                _resource: '${ $context._k_res }'
+              export:
+                as: '${ $context + {_knowledge: ((.data.records // .data.data.records // .records // []) | map(.data))} }'
+        catch:
+          do:
+            - knowledge_failed:
+                run:
+                  workflow:
+                    namespace: system
+                    name: a3t-error-handler
+                    input:
+                      error: '${ $context.error }'
+                      flow: system/agent-engine
+                      version: 2.1.0
+                      run_id: '${ $context._run }'
+                      principal: '${ $context._who }'
+                      step: recall_knowledge
+                export:
+                  as: '${ $context + {_soft: ($context._soft + [{step: "recall_knowledge", class: .class, ref: .ref}])} }'
+
+  # ═══ 3. Tools that fit the request (PROCEDURAL tool catalogue) ══════════════
+  - recall_tools:
+      if: '${ $context._cfg.tool_catalogue.enabled == true and $context._t_res != null and ($context._ask | length) > 0 }'
+      try:
+        do:
+          - tools_query:
+              call: adb
+              with:
+                query: '${ "RECALL FROM PROCEDURAL LIKE $m NAMESPACE \"" + $context._cfg.tool_catalogue.namespace + "\" LIMIT " + ($context._cfg.tool_catalogue.limit | tostring) }'
+                variables:
+                  m: '${ $context._ask }'
+                _resource: '${ $context._t_res }'
+              export:
+                as: '${ $context + {_tools: ((.data.records // .data.data.records // .records // []) | map(.data) | map(select(.kind == "tool")))} }'
+        catch:
+          do:
+            - tools_failed:
+                run:
+                  workflow:
+                    namespace: system
+                    name: a3t-error-handler
+                    input:
+                      error: '${ $context.error }'
+                      flow: system/agent-engine
+                      version: 2.1.0
+                      run_id: '${ $context._run }'
+                      principal: '${ $context._who }'
+                      step: recall_tools
+                export:
+                  as: '${ $context + {_soft: ($context._soft + [{step: "recall_tools", class: .class, ref: .ref}])} }'
+
+  # ═══ 4. The prompt: the agent's own, then what was recalled ════════════════
+  - assemble_prompt:
+      set:
+        _prompt: >-
+          ${ ($context._cfg.system_prompt // "You are a helpful assistant.")
+          + (if ($context._knowledge | length) > 0 then
+              "\n\n## Reference\nFrom the platform documentation, most relevant first. Use it when it applies; if it doesn't cover the question, say so rather than guess.\n"
+              + ($context._knowledge
+                 | map("- " + (if .title then "**" + .title + "** " else "" end)
+                       + ((.content // "") | tostring | if length > $context._cfg.knowledge.max_chars then .[0:$context._cfg.knowledge.max_chars] + "…" else . end)
+                       + (if .source then " (" + .source + ")" else "" end))
+                 | join("\n"))
+             else "" end)
+          + (if ($context._tools | length) > 0 then
+              "\n\n## Tools that fit this request\nFrom your tool catalogue. Use the tool's own description and schema when you call it.\n"
+              + ($context._tools | map("- `" + (.name // .key) + "` — " + ((.usage // .description // .pattern // "") | tostring)) | join("\n"))
+             else "" end) }
+      export:
+        as: '${ $context + . }'
+
+  # ═══ 5. The turn (system/agent-turn: memory, LLM, tools, session) ════════
+  # Its own flow because call: a3t:agent replaces the calling flow's $context with
+  # the turn's (engine request CA-R1); the core's own state stays here.
   - run_agent:
-      call: a3t:agent
-      with:
-        config: "${ .config }"
-        session_id: "${ .session_id // \"default\" }"
-        message: "${ .message }"
+      run:
+        workflow:
+          namespace: system
+          name: agent-turn
+          input:
+            config: '${ $context._cfg + {system_prompt: $context._prompt} }'
+            session_id: '${ $context._in.session_id // "default" }'
+            message: '${ $context._ask }'
+            ui_context: '${ $context._in.ui_context // null }'
+      export:
+        as: '${ $context + {_turn: .} }'
+
+  # ═══ 6. One row per turn ═══════════════════════════════════════════════════
+  - log_turn:
+      try:
+        do:
+          - turn_row:
+              call: lancedb
+              with:
+                operation: insert
+                table: a3t_agent_turns
+                records:
+                  - id: '${ "turn-" + ((now * 1000000) | floor | tostring) + "-" + ($context._in.session_id // "default") }'
+                    at: '${ now | todateiso8601 }'
+                    run_id: '${ $context._run }'
+                    session_id: '${ $context._in.session_id // "default" }'
+                    agent_id: '${ ($context._in.session_id // "") | split(":") | if length > 1 then .[0] else "" end }'
+                    principal: '${ $context._who }'
+                    llm: '${ $context._cfg.llm_resource // "" }'
+                    memory: '${ if $context._cfg.memory_resource then $context._cfg.memory_resource + " · " + $context._cfg.memory_namespace else "off" end }'
+                    outcome: '${ $context._turn.stopped_reason // "answered" }'
+                    iterations: '${ ($context._turn.iterations // 0) | tostring }'
+                    tool_calls: '${ ($context._turn.tool_calls_made // 0) | tostring }'
+                    procedural_hit: '${ ($context._turn.procedural_hit // false) | tostring }'
+                    knowledge: '${ $context._knowledge | map(.key // .title // "") | join(",") }'
+                    tool_hints: '${ $context._tools | map(.name // .key // "") | join(",") }'
+                    degraded: '${ $context._soft | map(.step) | join(",") }'
+                    duration_ms: '${ ((now - $context._started) * 1000 | floor) | tostring }'
+                _resource: a3t/a3t-platform-db
+        catch:
+          do:
+            - log_failed:
+                run:
+                  workflow:
+                    namespace: system
+                    name: a3t-error-handler
+                    input:
+                      error: '${ $context.error }'
+                      flow: system/agent-engine
+                      version: 2.1.0
+                      run_id: '${ $context._run }'
+                      principal: '${ $context._who }'
+                      step: log_turn
+                export:
+                  as: '${ $context + {_soft: ($context._soft + [{step: "log_turn", class: .class, ref: .ref}])} }'
+
+  # ═══ 7. The answer ═════════════════════════════════════════════════════════
+  - emit:
+      set:
+        content: '${ $context._turn.content }'
+        session_id: '${ $context._turn.session_id }'
+        tool_calls_made: '${ $context._turn.tool_calls_made }'
+        iterations: '${ $context._turn.iterations }'
+        procedural_hit: '${ $context._turn.procedural_hit }'
+        stopped_reason: '${ $context._turn.stopped_reason }'
+        knowledge: '${ $context._knowledge | map(.key // .title) }'
+        tool_hints: '${ $context._tools | map(.name // .key) }'
+        degraded: '${ $context._soft }'

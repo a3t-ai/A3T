@@ -279,6 +279,31 @@ do:
         principal: string
         user_message: string
       _resource: a3t/a3t-platform-db
+# One row per agent turn, written by the core agent (system/agent-engine 2.1+).
+- create-agent-turns:
+    call: lancedb
+    with:
+      operation: create_table
+      table: a3t_agent_turns
+      mode: create_if_not_exists
+      schema:
+        id: string
+        at: string
+        run_id: string
+        session_id: string
+        agent_id: string
+        principal: string
+        llm: string
+        memory: string
+        outcome: string
+        iterations: string
+        tool_calls: string
+        procedural_hit: string
+        knowledge: string
+        tool_hints: string
+        degraded: string
+        duration_ms: string
+      _resource: a3t/a3t-platform-db
 - create-early-access:
     call: lancedb
     with:

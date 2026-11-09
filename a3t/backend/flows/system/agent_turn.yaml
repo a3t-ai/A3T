@@ -1,0 +1,79 @@
+document:
+  dsl: '1.0.3'
+  namespace: system
+  name: agent-turn
+  version: '1.0.0'
+  metadata:
+    description: >
+      One agent turn on the native engine (call: a3t:agent): recall the agent's
+      WORKING / EPISODIC / SEMANTIC memory on ADB, the LLM and tool loop, the
+      memory write and the session save. Run by the core agent
+      (system/agent-engine) with the config it assembled; not meant to be run on
+      its own. Input: { config, session_id, message, ui_context? }. Output: {
+      content, session_id, tool_calls_made, iterations, procedural_hit,
+      stopped_reason }.
+
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
+
+use:
+  # Hook points of the native engine. Each runs `set` tasks only, against the
+  # turn's context (session_id, message, _messages, _agent_response, _config, ...).
+  # Hooks a child agent declares don't reach the turn yet (engine request CA-R7 in
+  # .ai/CORE_AGENT_ENGINE_REQUESTS.md).
+  extensions:
+    - on_turn_start:
+        extend: all
+        when: "${ $task.name == \"init_turn\" }"
+        before: []
+        after: []
+
+    - before_recall:
+        extend: all
+        when: "${ $task.name == \"recall_memory\" }"
+        before: []
+        after: []
+
+    - before_llm:
+        extend: call
+        before: []
+        after: []
+
+    - on_llm_response:
+        extend: call
+        before: []
+        after: []
+
+    - on_tool_call:
+        extend: all
+        when: "${ $task.name == \"dispatch_tools\" }"
+        before: []
+        after: []
+
+    - before_store:
+        extend: all
+        when: "${ $task.name == \"store_memory\" }"
+        before: []
+        after: []
+
+    - after_response:
+        extend: all
+        when: "${ $task.name == \"emit_response\" }"
+        before: []
+        after: []
+
+    - on_turn_end:
+        extend: all
+        when: "${ $task.name == \"save_session\" }"
+        before: []
+        after: []
+
+do:
+  - run_agent:
+      call: a3t:agent
+      with:
+        config: '${ .config // {} }'
+        session_id: '${ .session_id // "default" }'
+        message: '${ .message // "" }'
+        ui_context: '${ .ui_context // null }'
