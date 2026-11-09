@@ -15,7 +15,8 @@ export const APP_ICONS: Record<string, string> = {
     cabinet:   '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M2 5.5h12M2 10.5h12"/><circle cx="8" cy="3.25" r="0.7" fill="currentColor"/><circle cx="8" cy="8" r="0.7" fill="currentColor"/><circle cx="8" cy="12.75" r="0.7" fill="currentColor"/>',
     kg:        '<circle cx="8" cy="2" r="1.8"/><circle cx="2.5" cy="13" r="1.8"/><circle cx="13.5" cy="13" r="1.8"/><path d="M8 3.8V8M6.5 9.5L3.5 11.5M9.5 9.5L12.5 11.5M4.3 13h7.4"/><circle cx="8" cy="8.5" r="1.2" fill="currentColor"/>',
     knowledge: '<path d="M2 13V4a1 1 0 011-1h4l2 2h4a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1z"/><path d="M6 9l2-2 2 2"/><path d="M8 7v4"/>',
-    room:      '<path d="M2 6.5L8 2l6 4.5V14H2z"/><path d="M6 14v-4h4v4"/><path d="M5 7.5h6"/>',
+    // An open folder holding a document — files in a store (Projects is the closed folder).
+    room:      '<path d="M4.5 5.5V2.5a1 1 0 011-1h5a1 1 0 011 1v4.3"/><path d="M6.5 3.8h3"/><path d="M1.5 6.5a1 1 0 011-1h2.5l1.2 1.3h7.3a1 1 0 011 1v5.7a1 1 0 01-1 1h-11a1 1 0 01-1-1z"/>',
     memory:    '<path d="M4 2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z"/><path d="M6 2v12M10 2v12M2 6h12M2 10h12"/>',
     play:      '<polygon points="3,2 13,8 3,14"/>',
     recon:     '<circle cx="8" cy="8" r="6"/><path d="M5 8l2 2 4-4"/>',
