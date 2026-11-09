@@ -51,7 +51,7 @@ export const MENU_CONFIG: MenuGroup[] = [
     roles: ALL_ROLES,
     items: [
       { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield', roles: ADMIN_PLUS },
-      { type: 'logs',       label: 'Decision log', tag: null, icon: 'logs',   roles: ALL_ROLES },
+      { type: 'logs',       label: 'Decision log', tag: null, icon: 'decision', roles: ALL_ROLES },
     ],
   },
   {
@@ -61,7 +61,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { type: 'runtime',    label: 'Runtimes',   tag: null, icon: 'runtime', roles: ALL_ROLES },
       { type: 'executions', label: 'Executions', tag: null, icon: 'runs',    roles: ALL_ROLES },
       // The A3T error log (UX ST-1): the flow lets Admin and SuperAdmin read it.
-      { type: 'errors',     label: 'Errors',     tag: null, icon: 'logs',    roles: ['superadmin', 'admin'] },
+      { type: 'errors',     label: 'Errors',     tag: null, icon: 'alert',   roles: ['superadmin', 'admin'] },
     ],
   },
   {

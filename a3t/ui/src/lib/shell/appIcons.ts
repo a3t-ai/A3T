@@ -20,6 +20,9 @@ export const APP_ICONS: Record<string, string> = {
     memory:    '<path d="M4 2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z"/><path d="M6 2v12M10 2v12M2 6h12M2 10h12"/>',
     play:      '<polygon points="3,2 13,8 3,14"/>',
     recon:     '<circle cx="8" cy="8" r="6"/><path d="M5 8l2 2 4-4"/>',
+    // Rows marked allowed / denied — what the decision log records.
+    decision:  '<path d="M1.5 3.5l1.2 1.2 2-2.2"/><path d="M7 3.5h7.5"/><path d="M1.8 7l2.4 2.4M4.2 7L1.8 9.4"/><path d="M7 8.2h7.5"/><path d="M1.5 12.8l1.2 1.2 2-2.2"/><path d="M7 12.8h5"/>',
+    alert:     '<path d="M8 1.8l6.5 11.4a.8.8 0 01-.7 1.2H2.2a.8.8 0 01-.7-1.2z"/><path d="M8 6v3.6"/><circle cx="8" cy="12" r="0.6" fill="currentColor"/>',
     logs:      '<path d="M2 4h12M2 8h8M2 12h10"/>',
     flow:      '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>',
     test:      '<path d="M6 1v4M10 1v4M4 5h8a1 1 0 011 1v2l-2 2v4H5V10L3 8V6a1 1 0 011-1z"/><path d="M6 10h4"/>',
