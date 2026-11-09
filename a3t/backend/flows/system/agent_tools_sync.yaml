@@ -13,9 +13,14 @@ document:
       the servers on every turn (it carries the permissions); the catalogue is what
       the agent recalls to pick tools. Running it again updates changed tools and
       forgets tools a server no longer offers.
-      Input: { servers?: ["a3t/agent-flows"], tools?: [{server, name, description,
-      inputSchema?}], namespace?, resource? } (tools: add these as well, e.g. tool
-      flows). Output: { servers, stored, updated, forgotten, failed }.
+      Input: { servers?: [], tools?: [{server, name, description, inputSchema?}],
+      complete_for?: [server], namespace?, resource? }. servers: MCP servers this
+      flow lists itself (call: mcp tools/list). tools: tools listed elsewhere, e.g. by
+      a3t/backend/scripts/load-core-agent-memory.mjs, which lists the platform's own
+      MCP server with the user's token (call: mcp can't reach it yet, request
+      CA-R13); complete_for names the servers that list fully covers, so their
+      missing tools are forgotten too. Output: { servers, tools, stored, updated,
+      forgotten, failed }.
 
 metadata:
   a3t:
@@ -26,7 +31,8 @@ do:
       set:
         _res: '${ .resource // "a3t/agent-memory" }'
         _ns: '${ .namespace // "system-tools" }'
-        _servers: '${ .servers // ["a3t/agent-flows"] }'
+        _servers: '${ .servers // [] }'
+        _complete: '${ .complete_for // [] }'
         _listed: '${ .tools // [] }'
         stored: 0
         updated: 0
@@ -132,7 +138,7 @@ do:
   - stale:
       for:
         each: _server
-        in: '${ $context._servers | map(select(. as $s | ($context.failed | map(.key) | index("server:" + $s)) == null)) }'
+        in: '${ ($context._servers | map(select(. as $s | ($context.failed | map(.key) | index("server:" + $s)) == null))) + $context._complete | unique }'
         do:
           - existing:
               try:
@@ -172,7 +178,7 @@ do:
 
   - report:
       set:
-        servers: '${ $context._servers }'
+        servers: '${ ($context._servers + $context._complete) | unique }'
         tools: '${ $context._records | length }'
         stored: '${ $context.stored }'
         updated: '${ $context.updated }'

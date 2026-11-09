@@ -23,7 +23,7 @@
  *   node a3t/backend/tests/core-agent.mjs --adb <adb bin> --flowr <flowr EE bin>
  *   (KEEP=1 keeps the temp dir and prints it; LOGS=1 prints FlowR's log tail on failure)
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -194,6 +194,14 @@ do:
   kn = await aql('RECALL FROM SEMANTIC WHERE source = $s NAMESPACE "system-knowledge" LIMIT 50', { s: 'flowr/dsl.md' });
   check('ingest again: 3 sections, new text', kn.length === 3 && kn.some(x => x.data.content.includes('any list')), JSON.stringify(kn.map(x => x.data.content)));
 
+  // ── 1b. the real docs, through the loader script ──
+  const load = spawnSync(process.execPath, [join(FLOWS, '..', 'scripts', 'load-core-agent-memory.mjs'), '--url', url, '--only', 'knowledge'], { env: { ...process.env, FLOWR_TOKEN: BEARER }, encoding: 'utf8', timeout: 300000 });
+  check('loader: the docs load without failures', load.status === 0, (load.stdout + load.stderr).slice(-800));
+  const mem = await aql('RECALL FROM SEMANTIC WHERE source = $s NAMESPACE "system-knowledge" LIMIT 50', { s: 'docs/concepts/memory' });
+  check('loader: a docs page is in knowledge, in sections', mem.length >= 1 && mem.every(x => x.data.title && x.data.content), JSON.stringify(mem.map(x => x.data.title)));
+  const guide = await aql('RECALL FROM SEMANTIC WHERE source = $s NAMESPACE "system-knowledge" LIMIT 50', { s: 'core-agent/AGENT_ENGINE' });
+  check("loader: the core agent's own guide is in knowledge", guide.length >= 5, String(guide.length));
+
   // ── 2. tool catalogue ──
   const tools1 = [
     { server: 'a3t/agent-flows', name: 'execute_flow', description: 'Run a workflow by name and return its output' },
@@ -204,8 +212,17 @@ do:
   check('tools: one record per tool', !r.isError && r.out?.stored === 3, r.text);
   r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1.slice(0, 2).map(t => ({ ...t, description: t.description + '.' })), resource: 'a3t/agent-memory' });
   check('tools again: updated (stale only for listed servers)', !r.isError && r.out?.updated === 2 && r.out?.stored === 0, r.text);
+  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1.slice(0, 2), complete_for: ['a3t/agent-flows'], resource: 'a3t/agent-memory' });
+  check('tools: a complete list forgets what is gone (delete_flow)', !r.isError && r.out?.forgotten === 1, r.text);
+  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1, resource: 'a3t/agent-memory' });
   const tc = await aql('RECALL FROM PROCEDURAL WHERE kind = "tool" NAMESPACE "system-tools" LIMIT 50');
   check('tools: kind tool, schema and usage kept', tc.length === 3 && tc.every(x => x.data.name && x.data.server && 'schema' in x.data), JSON.stringify(tc.map(x => x.data)));
+
+  // The platform's own tools, through the loader script (it lists them with the token).
+  const loadTools = spawnSync(process.execPath, [join(FLOWS, '..', 'scripts', 'load-core-agent-memory.mjs'), '--url', url, '--only', 'tools', '--self-server', 'a3t/flowr-self'], { env: { ...process.env, FLOWR_TOKEN: BEARER }, encoding: 'utf8', timeout: 300000 });
+  check('loader: the platform tools load without failures', loadTools.status === 0, (loadTools.stdout + loadTools.stderr).slice(-800));
+  const own = await aql('RECALL FROM PROCEDURAL WHERE server = "a3t/flowr-self" NAMESPACE "system-tools" LIMIT 200');
+  check('loader: the platform tools are in the catalogue', own.length >= 40 && own.some(x => x.data.name === 'execute_flow'), String(own.length));
 
   // ── 3. a turn through a child agent ──
   prompts.length = 0;
