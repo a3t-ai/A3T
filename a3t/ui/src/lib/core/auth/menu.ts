@@ -13,10 +13,10 @@ const ALL_ROLES: UserRole[] = ['superadmin', 'securityadmin', 'admin', 'operator
 const ADMIN_PLUS: UserRole[] = ['superadmin', 'securityadmin', 'admin'];
 const OPERATOR_PLUS: UserRole[] = ['superadmin', 'admin', 'operator'];
 
-// Chat and Projects stay on top; then agents and what they are built from;
-// then governing and running them (the console's main users are security
-// and governance teams — developers build in VS Code with Claude, over MCP);
-// then the Studio, for when VS Code is not at hand.
+// Chat and Projects on top; agents and what they are built from; what they
+// know and keep; security and audit; runtime and logs; the Studio and
+// Settings at the bottom. The console's main users are security and
+// governance teams — developers build in VS Code with Claude, over MCP.
 export const MENU_CONFIG: MenuGroup[] = [
   {
     label: 'Home',
@@ -35,38 +35,45 @@ export const MENU_CONFIG: MenuGroup[] = [
       { type: 'triggers',   label: 'Triggers',   tag: null,    icon: 'trigger',  roles: ALL_ROLES },
       { type: 'canvas',     label: 'Canvas',     tag: 'crd',   icon: 'canvas',   roles: ALL_ROLES },
       { type: 'resources',  label: 'Resources',  tag: null,    icon: 'cabinet',  roles: ALL_ROLES },
-      { type: 'knowledge',  label: 'Knowledge',  tag: null,    icon: 'kg',       roles: ALL_ROLES },
-      { type: 'memory',     label: 'Memory',     tag: null,    icon: 'memory',   roles: ALL_ROLES },
     ],
   },
   {
-    label: 'Govern & run',
+    label: 'Knowledge & data',
     roles: ALL_ROLES,
     items: [
-      { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield',  roles: ADMIN_PLUS },
-      { type: 'logs',       label: 'Decision log', tag: null, icon: 'logs',    roles: ALL_ROLES },
-      { type: 'executions', label: 'Executions',   tag: null, icon: 'runs',    roles: ALL_ROLES },
-      { type: 'runtime',    label: 'Runtimes',     tag: null, icon: 'runtime', roles: ALL_ROLES },
+      { type: 'knowledge',  label: 'Knowledge',  tag: null, icon: 'kg',     roles: ALL_ROLES },
+      { type: 'datarooms',  label: 'Data Rooms', tag: null, icon: 'room',   roles: ALL_ROLES },
+      { type: 'memory',     label: 'Memory',     tag: null, icon: 'memory', roles: ALL_ROLES },
+    ],
+  },
+  {
+    label: 'Security & audit',
+    roles: ALL_ROLES,
+    items: [
+      { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield', roles: ADMIN_PLUS },
+      { type: 'logs',       label: 'Decision log', tag: null, icon: 'logs',   roles: ALL_ROLES },
+    ],
+  },
+  {
+    label: 'Runtime & logs',
+    roles: ALL_ROLES,
+    items: [
+      { type: 'runtime',    label: 'Runtimes',   tag: null, icon: 'runtime', roles: ALL_ROLES },
+      { type: 'executions', label: 'Executions', tag: null, icon: 'runs',    roles: ALL_ROLES },
       // The A3T error log (UX ST-1): the flow lets Admin and SuperAdmin read it.
-      { type: 'errors',     label: 'Errors',       tag: null, icon: 'logs',    roles: ['superadmin', 'admin'] },
+      { type: 'errors',     label: 'Errors',     tag: null, icon: 'logs',    roles: ['superadmin', 'admin'] },
     ],
   },
   {
-    label: 'Studio',
-    roles: ALL_ROLES,
-    items: [
-      // For when VS Code is not at hand: one editor for every kind of item.
-      // /db-console still opens it pinned to databases, for old links.
-      { type: 'flow-editor', label: 'Studio',   tag: null, icon: 'studio',  roles: ALL_ROLES },
-    ],
-  },
-  {
-    // Own group so a divider renders above Settings (each group draws a top
-    // divider; see Sidebar.svelte).
+    // Pinned to the foot of the menu, always in view: the Studio (for when
+    // VS Code is not at hand; /db-console still opens it pinned to databases)
+    // and Settings.
     label: 'Settings',
     roles: ALL_ROLES,
+    pinned: true,
     items: [
-      { type: 'settings',    label: 'Settings',     tag: null, icon: 'settings', roles: ALL_ROLES },
+      { type: 'flow-editor', label: 'Studio',   tag: null, icon: 'studio',   roles: ALL_ROLES },
+      { type: 'settings',    label: 'Settings', tag: null, icon: 'settings', roles: ALL_ROLES },
     ],
   },
 ];

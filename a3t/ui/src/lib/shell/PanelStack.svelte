@@ -19,6 +19,7 @@
   import DbConsole from '$lib/components/pages/DbConsole.svelte';
   import KnowledgePage from '$lib/components/pages/KnowledgePage.svelte';
   import MemoryPage from '$lib/components/pages/MemoryPage.svelte';
+  import DataRoomsPage from '$lib/components/pages/DataRoomsPage.svelte';
   import TestBench from '$lib/components/pages/TestBench.svelte';
   import EarlyAccessRequests from '$lib/components/pages/EarlyAccessRequests.svelte';
   import ErrorsPage from '$lib/components/pages/ErrorsPage.svelte';
@@ -73,6 +74,8 @@
       <ConsoleEditor />
     {:else if activePanel.type === 'db-console'}
       <DbConsole />
+    {:else if activePanel.type === 'datarooms'}
+      <DataRoomsPage />
     {:else if activePanel.type === 'knowledge'}
       <KnowledgePage />
     {:else if activePanel.type === 'memory'}

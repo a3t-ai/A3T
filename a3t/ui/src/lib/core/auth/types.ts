@@ -36,6 +36,8 @@ export interface MenuGroup {
   label: string;
   roles: UserRole[];
   items: MenuItem[];
+  /// Kept at the foot of the menu, always in view; the groups above scroll.
+  pinned?: boolean;
 }
 
 // Role hierarchy for quick level checks

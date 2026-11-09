@@ -46,28 +46,37 @@
 </script>
 
 <nav class="sidebar" class:wide aria-label="Menu">
+  {#snippet group(items: typeof menuGroups[number]['items'])}
+    {#each items as item}
+      <button
+        class="nav-btn"
+        class:active={activeType === item.type}
+        onclick={() => handleClick(item.type, item.label)}
+        aria-label={item.label}
+        onmouseenter={(e) => onEnter(e, item.label)}
+        onmouseleave={onLeave}
+      >
+        <svg class="nav-ico" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          {@html getIcon(item.icon)}
+        </svg>
+        {#if wide}<span class="nav-label">{item.label}</span>{/if}
+      </button>
+    {/each}
+  {/snippet}
+
   <div class="sidebar-top">
-    {#each menuGroups as group}
+    {#each menuGroups.filter((g) => !g.pinned) as g}
       <div class="nav-group">
         <div class="group-divider"></div>
-        {#each group.items as item}
-          <button
-            class="nav-btn"
-            class:active={activeType === item.type}
-            onclick={() => handleClick(item.type, item.label)}
-            aria-label={item.label}
-            onmouseenter={(e) => onEnter(e, item.label)}
-            onmouseleave={onLeave}
-          >
-            <svg class="nav-ico" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-              {@html getIcon(item.icon)}
-            </svg>
-            {#if wide}<span class="nav-label">{item.label}</span>{/if}
-          </button>
-        {/each}
+        {@render group(g.items)}
       </div>
     {/each}
   </div>
+
+  <!-- Pinned groups (Studio, Settings) stay in view while the apps above scroll. -->
+  {#each menuGroups.filter((g) => g.pinned) as g}
+    <div class="nav-group pinned">{@render group(g.items)}</div>
+  {/each}
 
   <div class="sidebar-bottom">
     {#if foot}{@render foot()}{/if}
@@ -117,6 +126,7 @@
     margin: 6px 14px;
   }
   .nav-group:first-child .group-divider { display: none; }
+  .nav-group.pinned { flex: 0 0 auto; padding: 4px 0; border-top: 1px solid var(--divider); }
 
   .nav-btn {
     display: flex;
