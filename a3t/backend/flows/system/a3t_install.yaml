@@ -64,7 +64,7 @@ do:
             updated_at: '2026-05-29T00:00:00Z'
         _resource: a3t/a3t-platform-db
 
-  # 5. SEED agent-engine (Rust-native, call:a3t:agent)
+  # 5. SEED agent-engine: the core agent (system/agent-engine; see AGENT_ENGINE.md)
   - seed-agent-engine:
       call: lancedb
       with:
@@ -74,12 +74,12 @@ do:
           - id: tpl-agent-engine
             org_id: org-default
             name: agent-engine
-            version: '2.0.0'
+            version: '2.1.0'
             source: system
             spec_yaml: ${ ($context._tpl_rows | map(select(.name == "agent-engine")) | .[0].definition | fromjson | .raw_yaml) // "system/agent-engine" }
             digest: ''
             signed_by: system
-            tags: 'core,lifecycle,multi-turn,tool-use,memory,rust-native'
+            tags: 'core,lifecycle,multi-turn,tool-use,memory,knowledge,tool-catalogue,turn-log,rust-native'
             vertical: platform
             published: 'true'
             created_by: system
