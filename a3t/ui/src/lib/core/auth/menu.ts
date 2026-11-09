@@ -41,9 +41,9 @@ export const MENU_CONFIG: MenuGroup[] = [
     label: 'Knowledge & data',
     roles: ALL_ROLES,
     items: [
-      { type: 'knowledge',  label: 'Knowledge',  tag: null, icon: 'kg',     roles: ALL_ROLES },
       { type: 'datarooms',  label: 'Data Rooms', tag: null, icon: 'room',   roles: ALL_ROLES },
       { type: 'memory',     label: 'Memory',     tag: null, icon: 'memory', roles: ALL_ROLES },
+      { type: 'knowledge',  label: 'Knowledge',  tag: null, icon: 'kg',     roles: ALL_ROLES },
     ],
   },
   {
