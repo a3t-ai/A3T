@@ -1391,6 +1391,10 @@ async fn call_llm(
         .and_then(|v| v.as_str())
         .unwrap_or("gpt-4o-mini");
 
+    // AO-4: the request below, counted and timed with its tokens (`flowr::llm` at debug).
+    let provider = flowr_metrics::llm_provider(api_url);
+    let t = flowr_metrics::Timer::start();
+    let r: std::result::Result<Value, String> = async {
     // Build messages
     let mut api_messages = vec![json!({"role": "system", "content": system_prompt})];
     for msg in messages {
@@ -1490,6 +1494,11 @@ async fn call_llm(
         "stop_reason": resp_json["choices"][0].get("finish_reason"),
         "usage": resp_json.get("usage"),
     }))
+    }
+    .await;
+    flowr_metrics::observe_llm(provider, r.is_ok(), t.took(), r.as_ref().ok().and_then(|v| v.get("usage")));
+    debug!(target: "flowr::llm", provider, model, ms = t.ms(), ok = r.is_ok(), "LLM call");
+    r
 }
 
 

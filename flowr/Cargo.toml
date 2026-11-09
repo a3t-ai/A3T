@@ -33,6 +33,7 @@ flowr-types = { path = "../shared/flowr-types" }
 flowr-storage = { path = "../shared/flowr-storage" }
 flowr-mcp-core = { path = "../shared/flowr-mcp-core" }
 flowr-policy = { path = "../shared/flowr-policy" }
+flowr-metrics = { path = "../shared/flowr-metrics" }
 
 # Legacy crates (excluded from workspace, kept for reference)
 # flowr-core, flowr-tasks, flowr-registry, flowr-hub, flowr-worker, flowr-suspend

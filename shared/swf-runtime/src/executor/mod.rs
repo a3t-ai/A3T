@@ -837,6 +837,7 @@ impl WorkflowExecutor {
                     };
                     let decision = flowr_policy::policy_hook().check(&policy_req).await;
                     tracing::Span::current().record("aesop.decision", decision.label());
+                    flowr_metrics::get().policy.with_label_values(&[decision.label()]).inc();
                     flowr_policy::audit::record(&policy_req, &decision);
                     // A flow step has no interactive approver — the run may have
                     // been started by a trigger with nobody watching. `Ask` therefore
@@ -855,7 +856,16 @@ impl WorkflowExecutor {
                             "non_interactive() collapses Ask into Deny"
                         ),
                     }
-                    handler.execute(named_task, input, ctx).await
+                    // AO-3: each step by its task type (a registered handler's name).
+                    let t = flowr_metrics::Timer::start();
+                    let r = handler.execute(named_task, input, ctx).await;
+                    flowr_metrics::observe(&flowr_metrics::get().steps, &flowr_metrics::get().step_seconds, &[handler_name], r.is_ok(), t.took());
+                    if t.took() >= flowr_metrics::slow() {
+                        tracing::info!(target: "flowr::step", step = %named_task.name, task_type = %handler_name, ms = t.ms(), ok = r.is_ok(), "slow step");
+                    } else {
+                        tracing::debug!(target: "flowr::step", step = %named_task.name, task_type = %handler_name, ms = t.ms(), ok = r.is_ok(), "step");
+                    }
+                    r
                 }
                 .instrument(span)
                 .await

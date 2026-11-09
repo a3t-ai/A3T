@@ -269,7 +269,21 @@ pub(crate) async fn finish<S: futures::Stream + Unpin>(stream: &mut S) {
 }
 
 /// A Flight `do_action` with a JSON body; the answer's JSON.
+/// AO-4: [`flight_action_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::result::Result<Value, String> {
+    let t = flowr_metrics::Timer::start();
+    let r = flight_action_raw(ep, kind, body).await;
+    let kind = format!("action:{}", if kind.len() <= 32 && kind.chars().all(|c| c.is_ascii_lowercase() || c == '_') { kind } else { "other" });
+    flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
+    if t.took() >= flowr_metrics::slow() {
+        tracing::info!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "slow ADB call");
+    } else {
+        tracing::debug!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "ADB call");
+    }
+    r
+}
+
+async fn flight_action_raw(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::result::Result<Value, String> {
     use futures::StreamExt;
     let mut client = flight_client(ep)?;
     let action = arrow_flight::Action { r#type: kind.to_string(), body: body.to_string().into() };
@@ -319,7 +333,21 @@ pub fn adb_code(text: &str) -> (Option<String>, String) {
 }
 
 /// Rows of an ADB platform table (`do_get`).
+/// AO-4: [`flight_get_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_get(ep: &AdbEndpoint, table: &str, filter: Option<&str>, limit: usize) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
+    let t = flowr_metrics::Timer::start();
+    let r = flight_get_raw(ep, table, filter, limit).await;
+    let kind = "get".to_string();
+    flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
+    if t.took() >= flowr_metrics::slow() {
+        tracing::info!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "slow ADB call");
+    } else {
+        tracing::debug!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "ADB call");
+    }
+    r
+}
+
+async fn flight_get_raw(ep: &AdbEndpoint, table: &str, filter: Option<&str>, limit: usize) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     use futures::TryStreamExt;
     let mut client = flight_client(ep)?;
     let ticket = json!({ "table": table, "filter": filter, "limit": limit });
@@ -337,7 +365,21 @@ pub async fn flight_get(ep: &AdbEndpoint, table: &str, filter: Option<&str>, lim
 
 /// Read-only SQL over an ADB's memory and platform tables (`do_get` with a `sql`
 /// ticket; the superadmin's console, not flows).
+/// AO-4: [`flight_sql_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_sql(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
+    let t = flowr_metrics::Timer::start();
+    let r = flight_sql_raw(ep, sql, limit).await;
+    let kind = "sql".to_string();
+    flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
+    if t.took() >= flowr_metrics::slow() {
+        tracing::info!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "slow ADB call");
+    } else {
+        tracing::debug!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "ADB call");
+    }
+    r
+}
+
+async fn flight_sql_raw(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     use futures::TryStreamExt;
     let mut client = flight_client(ep)?;
     let ticket = json!({ "sql": sql, "limit": limit });
@@ -355,7 +397,21 @@ pub async fn flight_sql(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std:
 
 /// Insert a batch into an ADB platform table (`do_put`) — or, with `replace`, make
 /// it the whole table (columns included); the answer's metadata.
+/// AO-4: [`flight_put_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_put(ep: &AdbEndpoint, table: &str, batch: arrow_array::RecordBatch, replace: bool) -> std::result::Result<Value, String> {
+    let t = flowr_metrics::Timer::start();
+    let r = flight_put_raw(ep, table, batch, replace).await;
+    let kind = "put".to_string();
+    flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
+    if t.took() >= flowr_metrics::slow() {
+        tracing::info!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "slow ADB call");
+    } else {
+        tracing::debug!(target: "flowr::adb", kind = %kind, flight = %ep.flight, ms = t.ms(), ok = r.is_ok(), "ADB call");
+    }
+    r
+}
+
+async fn flight_put_raw(ep: &AdbEndpoint, table: &str, batch: arrow_array::RecordBatch, replace: bool) -> std::result::Result<Value, String> {
     use futures::StreamExt;
     let mut client = flight_client(ep)?;
     let mut path = vec![table.to_string()];

@@ -115,6 +115,10 @@ fn is_public(path: &str) -> bool {
     if EXACT.contains(&path) {
         return true;
     }
+    // AO-1: a scraper inside the cluster, when FLOWR_METRICS_OPEN is set (no secrets in it).
+    if path == "/metrics" && std::env::var("FLOWR_METRICS_OPEN").is_ok_and(|v| v == "1" || v == "true") {
+        return true;
+    }
     // Webhooks are invoked by external systems that hold no user JWT; they are
     // authorized at the trigger level, not by this middleware.
     path == "/webhook" || path.starts_with("/webhook/")
@@ -130,6 +134,8 @@ fn www_authenticate(resource_uri: &str) -> String {
 }
 
 fn unauthorized(resource_uri: &str, msg: &str) -> Response {
+    let reason = if msg.starts_with("Missing") { "no_token" } else { "bad_token" };
+    flowr_metrics::get().auth_failures.with_label_values(&[reason]).inc();
     (
         StatusCode::UNAUTHORIZED,
         [(

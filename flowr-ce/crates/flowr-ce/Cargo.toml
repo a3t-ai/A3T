@@ -27,6 +27,7 @@ flowr-types.workspace = true
 flowr-storage.workspace = true
 flowr-mcp-core.workspace = true
 flowr-policy.workspace = true
+flowr-metrics.workspace = true
 adb-executor.workspace = true
 adb-core.workspace = true
 

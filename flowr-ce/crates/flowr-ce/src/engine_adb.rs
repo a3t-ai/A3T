@@ -123,9 +123,8 @@ impl FlightTransport {
     }
 }
 
-#[async_trait]
-impl Transport for FlightTransport {
-    async fn call(&self, op: &str, args: Value) -> StoreResult<Value> {
+impl FlightTransport {
+    async fn call_raw(&self, op: &str, args: Value) -> StoreResult<Value> {
         let body = json!({ "space": self.space, "op": op, "args": args }).to_string();
         // Retried briefly, like the gateway client: ADB restarting must not fail a run's write.
         let mut wait = Duration::from_millis(200);
@@ -169,6 +168,24 @@ impl Transport for FlightTransport {
         }
         unreachable!()
     }
+}
+
+#[async_trait]
+impl Transport for FlightTransport {
+    async fn call(&self, op: &str, args: Value) -> StoreResult<Value> {
+        // AO-4: each engine store op, counted and timed (`flowr::engine` at debug).
+        let t = flowr_metrics::Timer::start();
+        let r = self.call_raw(op, args).await;
+        flowr_metrics::observe(&flowr_metrics::get().engine_ops, &flowr_metrics::get().engine_seconds, &[op], r.is_ok(), t.took());
+        if t.took() >= flowr_metrics::slow() {
+            tracing::info!(target: "flowr::engine", op, ms = t.ms(), ok = r.is_ok(), "slow engine op");
+        } else {
+            tracing::debug!(target: "flowr::engine", op, ms = t.ms(), ok = r.is_ok(), "engine op");
+        }
+        r
+    }
+
+
 
     /// Notices from ADB, reconnecting until the receiver is dropped (best effort).
     ///

@@ -1,0 +1,10 @@
+[package]
+name = "flowr-metrics"
+version = "0.1.0"
+edition = "2021"
+description = "FlowR's process metrics (AO-1, .ai/A3T_OBSERVABILITY.md): one Prometheus registry"
+
+[dependencies]
+# Text format only: no protobuf.
+prometheus = { version = "=0.13.4", default-features = false }
+serde_json = "1"

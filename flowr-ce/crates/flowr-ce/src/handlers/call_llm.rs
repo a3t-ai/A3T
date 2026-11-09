@@ -102,11 +102,20 @@ impl TaskHandler for LlmHandler {
 
         info!(task = %task.name, provider = %provider, model = %model, "calling LLM");
 
-        if provider == "anthropic" {
+        // AO-4: counted and timed with its tokens; the label is the URL's provider.
+        let label = match api_url {
+            Some(u) => flowr_metrics::llm_provider(u),
+            None => flowr_metrics::bounded(provider, flowr_metrics::LLM_PROVIDERS),
+        };
+        let t = flowr_metrics::Timer::start();
+        let r = if provider == "anthropic" {
             self.call_anthropic(api_key, api_url, model, max_tokens, temperature, system_prompt, prompt, messages, tools).await
         } else {
             self.call_openai(api_key, api_url, model, max_tokens, temperature, system_prompt, prompt, messages, tools).await
-        }
+        };
+        flowr_metrics::observe_llm(label, r.is_ok(), t.took(), r.as_ref().ok().and_then(|o| o.output.get("usage")));
+        tracing::debug!(target: "flowr::llm", provider = label, model = %model, ms = t.ms(), ok = r.is_ok(), "LLM call");
+        r
     }
 }
 

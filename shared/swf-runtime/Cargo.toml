@@ -9,6 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 swf-parser = { path = "../swf-parser" }
 flowr-policy = { path = "../flowr-policy" }
+flowr-metrics = { path = "../flowr-metrics" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
