@@ -269,12 +269,47 @@ fn next_flight_node(ep: &AdbEndpoint, failed: usize) {
 
 /// Whether an error says this node does not serve the call (a follower, a node down):
 /// the call may go to another node of the replica set.
+/// Only cases where the request cannot have run (no connection, or a follower's refusal),
+/// so sending it again is safe even for an insert: a request that may have reached the
+/// leader (a timeout, a reset mid-call) is not re-sent.
 fn not_served(err: &str) -> bool {
-    err.contains("ADB request to") || err.contains("not the leader") || err.contains("Unavailable") || err.contains("transport error")
+    err.contains("not the leader") || err.contains("Connection refused") || err.contains("tcp connect") || err.contains("connect error")
 }
 
+/// C-16: reads (table and SQL reads, AQL RECALL / LOOKUP / SCAN) go to the replica set's
+/// nodes in turn — ADB followers answer them as fresh as the leader — instead of all
+/// to the leader. Writes stay with the node calls use now (the leader).
+static READ_TURN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The node a read goes to first (`None`: one node, or reads spread off by
+/// `FLOWR_ADB_SPREAD_READS=0`).
+fn read_node(ep: &AdbEndpoint) -> Option<usize> {
+    static SPREAD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*SPREAD.get_or_init(|| std::env::var("FLOWR_ADB_SPREAD_READS").map_or(true, |v| v != "0")) {
+        return None;
+    }
+    let n = ep.flight.split(',').filter(|s| !s.trim().is_empty()).count();
+    (n > 1).then(|| READ_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % n)
+}
+
+/// An AQL statement a follower answers (RECALL, LOOKUP, SCAN).
+fn aql_read(body: &Value) -> bool {
+    let q = body.get("query").and_then(|q| q.as_str()).unwrap_or("");
+    let first = q.split_whitespace().find(|w| !w.starts_with("--")).unwrap_or("");
+    ["RECALL", "LOOKUP", "SCAN"].iter().any(|v| first.eq_ignore_ascii_case(v))
+}
+
+/// How long a call waits for a leader when no node serves it (an election, C-21).
+const LEADER_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn flight_client(ep: &AdbEndpoint) -> std::result::Result<AdbFlightClient, String> {
-    let (nodes, i) = flight_nodes(ep);
+    flight_client_at(ep, None)
+}
+
+/// A client for node `at` of `ep` (`None`: the node calls use now).
+fn flight_client_at(ep: &AdbEndpoint, at: Option<usize>) -> std::result::Result<AdbFlightClient, String> {
+    let (nodes, cur) = flight_nodes(ep);
+    let i = at.unwrap_or(cur);
     let flight = nodes.get(i).map(String::as_str).unwrap_or(ep.flight.as_str());
     let http = ep.http.split(',').nth(i).map(str::trim).unwrap_or(ep.http.as_str());
     let bearer = flowr_mcp_core::adb_auth_header(http)
@@ -315,16 +350,23 @@ pub(crate) async fn finish<S: futures::Stream + Unpin>(stream: &mut S) {
 pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::result::Result<Value, String> {
     let t = flowr_metrics::Timer::start();
     // C-8: a node that does not serve the call (a follower, a node down): the next one.
+    // C-21: no node serving it (an election in progress): keep trying the nodes in turn,
+    // a short pause after each full pass, for up to LEADER_WAIT.
     let (nodes, _) = flight_nodes(ep);
-    let mut r = flight_action_raw(ep, kind, body).await;
-    for _ in 1..nodes.len() {
-        match &r {
-            Err(e) if not_served(e) => {
-                next_flight_node(ep, flight_nodes(ep).1);
-                r = flight_action_raw(ep, kind, body).await;
-            }
-            _ => break,
+    let deadline = std::time::Instant::now() + LEADER_WAIT;
+    let first = if kind == "list_tables" || (kind == "aql" && aql_read(body)) { read_node(ep) } else { None };
+    let mut r = flight_action_raw(ep, first, kind, body).await;
+    if first.is_some() && matches!(&r, Err(e) if not_served(e)) {
+        r = flight_action_raw(ep, None, kind, body).await;
+    }
+    let mut tried = 1;
+    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+        next_flight_node(ep, flight_nodes(ep).1);
+        if tried % nodes.len().max(1) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
+        tried += 1;
+        r = flight_action_raw(ep, None, kind, body).await;
     }
     let kind = format!("action:{}", if kind.len() <= 32 && kind.chars().all(|c| c.is_ascii_lowercase() || c == '_') { kind } else { "other" });
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
@@ -336,9 +378,9 @@ pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::r
     r
 }
 
-async fn flight_action_raw(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::result::Result<Value, String> {
+async fn flight_action_raw(ep: &AdbEndpoint, at: Option<usize>, kind: &str, body: &Value) -> std::result::Result<Value, String> {
     use futures::StreamExt;
-    let mut client = flight_client(ep)?;
+    let mut client = flight_client_at(ep, at)?;
     let action = arrow_flight::Action { r#type: kind.to_string(), body: body.to_string().into() };
     let mut stream = client
         .do_action(action)
@@ -390,16 +432,23 @@ pub fn adb_code(text: &str) -> (Option<String>, String) {
 pub async fn flight_get(ep: &AdbEndpoint, table: &str, filter: Option<&str>, limit: usize) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     let t = flowr_metrics::Timer::start();
     // C-8: a node that does not serve the call (a follower, a node down): the next one.
+    // C-21: no node serving it (an election in progress): keep trying the nodes in turn,
+    // a short pause after each full pass, for up to LEADER_WAIT.
     let (nodes, _) = flight_nodes(ep);
-    let mut r = flight_get_raw(ep, table, filter, limit).await;
-    for _ in 1..nodes.len() {
-        match &r {
-            Err(e) if not_served(e) => {
-                next_flight_node(ep, flight_nodes(ep).1);
-                r = flight_get_raw(ep, table, filter, limit).await;
-            }
-            _ => break,
+    let deadline = std::time::Instant::now() + LEADER_WAIT;
+    let first = read_node(ep);
+    let mut r = flight_get_raw(ep, first, table, filter, limit).await;
+    if first.is_some() && matches!(&r, Err(e) if not_served(e)) {
+        r = flight_get_raw(ep, None, table, filter, limit).await;
+    }
+    let mut tried = 1;
+    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+        next_flight_node(ep, flight_nodes(ep).1);
+        if tried % nodes.len().max(1) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
+        tried += 1;
+        r = flight_get_raw(ep, None, table, filter, limit).await;
     }
     let kind = "get".to_string();
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
@@ -411,9 +460,9 @@ pub async fn flight_get(ep: &AdbEndpoint, table: &str, filter: Option<&str>, lim
     r
 }
 
-async fn flight_get_raw(ep: &AdbEndpoint, table: &str, filter: Option<&str>, limit: usize) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
+async fn flight_get_raw(ep: &AdbEndpoint, at: Option<usize>, table: &str, filter: Option<&str>, limit: usize) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     use futures::TryStreamExt;
-    let mut client = flight_client(ep)?;
+    let mut client = flight_client_at(ep, at)?;
     let ticket = json!({ "table": table, "filter": filter, "limit": limit });
     let stream = client
         .do_get(arrow_flight::Ticket { ticket: ticket.to_string().into() })
@@ -433,16 +482,23 @@ async fn flight_get_raw(ep: &AdbEndpoint, table: &str, filter: Option<&str>, lim
 pub async fn flight_sql(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     let t = flowr_metrics::Timer::start();
     // C-8: a node that does not serve the call (a follower, a node down): the next one.
+    // C-21: no node serving it (an election in progress): keep trying the nodes in turn,
+    // a short pause after each full pass, for up to LEADER_WAIT.
     let (nodes, _) = flight_nodes(ep);
-    let mut r = flight_sql_raw(ep, sql, limit).await;
-    for _ in 1..nodes.len() {
-        match &r {
-            Err(e) if not_served(e) => {
-                next_flight_node(ep, flight_nodes(ep).1);
-                r = flight_sql_raw(ep, sql, limit).await;
-            }
-            _ => break,
+    let deadline = std::time::Instant::now() + LEADER_WAIT;
+    let first = read_node(ep);
+    let mut r = flight_sql_raw(ep, first, sql, limit).await;
+    if first.is_some() && matches!(&r, Err(e) if not_served(e)) {
+        r = flight_sql_raw(ep, None, sql, limit).await;
+    }
+    let mut tried = 1;
+    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+        next_flight_node(ep, flight_nodes(ep).1);
+        if tried % nodes.len().max(1) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
+        tried += 1;
+        r = flight_sql_raw(ep, None, sql, limit).await;
     }
     let kind = "sql".to_string();
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
@@ -454,9 +510,9 @@ pub async fn flight_sql(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std:
     r
 }
 
-async fn flight_sql_raw(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
+async fn flight_sql_raw(ep: &AdbEndpoint, at: Option<usize>, sql: &str, limit: Option<u64>) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     use futures::TryStreamExt;
-    let mut client = flight_client(ep)?;
+    let mut client = flight_client_at(ep, at)?;
     let ticket = json!({ "sql": sql, "limit": limit });
     let stream = client
         .do_get(arrow_flight::Ticket { ticket: ticket.to_string().into() })
@@ -477,16 +533,19 @@ pub async fn flight_put(ep: &AdbEndpoint, table: &str, batch: arrow_array::Recor
     let t = flowr_metrics::Timer::start();
     // C-8: a node that does not serve the call: the next one (the batch's arrays are
     // shared, so the copy is cheap).
+    // C-21: no node serving it (an election in progress): keep trying the nodes in turn,
+    // a short pause after each full pass, for up to LEADER_WAIT.
     let (nodes, _) = flight_nodes(ep);
+    let deadline = std::time::Instant::now() + LEADER_WAIT;
     let mut r = flight_put_raw(ep, table, batch.clone(), replace).await;
-    for _ in 1..nodes.len() {
-        match &r {
-            Err(e) if not_served(e) => {
-                next_flight_node(ep, flight_nodes(ep).1);
-                r = flight_put_raw(ep, table, batch.clone(), replace).await;
-            }
-            _ => break,
+    let mut tried = 1;
+    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+        next_flight_node(ep, flight_nodes(ep).1);
+        if tried % nodes.len().max(1) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
+        tried += 1;
+        r = flight_put_raw(ep, table, batch.clone(), replace).await;
     }
     let kind = "put".to_string();
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());

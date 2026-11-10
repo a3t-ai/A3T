@@ -155,7 +155,10 @@ impl FlightTransport {
         // Retried briefly, like the gateway client: ADB restarting must not fail a run's write.
         let mut wait = Duration::from_millis(200);
         let nodes = self.channels.len();
-        for attempt in 0..(5 + nodes) {
+        // C-21: retried for as long as an election takes (bounded), not a fixed count.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        for attempt in 0.. {
+            let last = std::time::Instant::now() >= deadline;
             let on = self.current.load(std::sync::atomic::Ordering::Relaxed) % nodes;
             // C-8: the first pass over the other nodes goes without the backoff sleep.
             let hop = |this: &Self| { this.next_node(on); attempt + 1 < nodes };
@@ -169,10 +172,10 @@ impl FlightTransport {
                     let answer = match s.next().await {
                         Some(Ok(a)) => a,
                         // The connection can also break after the call was accepted.
-                        Some(Err(e)) if retriable(&e) && attempt < 4 + nodes => {
+                        Some(Err(e)) if retriable(&e) && !last => {
                             if !hop(self) {
                                 tokio::time::sleep(wait).await;
-                                wait *= 2;
+                                wait = (wait * 2).min(Duration::from_secs(2));
                             }
                             continue;
                         }
@@ -191,10 +194,10 @@ impl FlightTransport {
                 // Cancelled: the HTTP/2 connection went away under the call (an ADB
                 // restart or failover); the call did not reach ADB or is retried under
                 // the same arguments, which the engine core treats idempotently.
-                Err(e) if retriable(&e) && attempt < 4 + nodes => {
+                Err(e) if retriable(&e) && !last => {
                     if !hop(self) {
                         tokio::time::sleep(wait).await;
-                        wait *= 2;
+                        wait = (wait * 2).min(Duration::from_secs(2));
                     }
                 }
                 Err(e) => return Err(StoreError::Backend(format!("ADB at {}: {}", self.url, e.message()))),
