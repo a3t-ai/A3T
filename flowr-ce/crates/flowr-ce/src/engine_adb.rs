@@ -90,22 +90,34 @@ fn retriable(e: &tonic::Status) -> bool {
 /// `do_action("engine_subscribe")` for notices.
 pub struct FlightTransport {
     url: String,
-    channel: tonic::transport::Channel,
+    /// C-8: every ADB node's Flight address (`FLOWR_ENGINE_ADB_URL` may list them, comma
+    /// separated): only the leader serves Flight, so a call that finds a node unavailable
+    /// moves on to the next, and stays with the one that answers.
+    channels: Arc<Vec<tonic::transport::Channel>>,
+    current: Arc<std::sync::atomic::AtomicUsize>,
     bearer: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
     space: String,
 }
 
 impl FlightTransport {
     pub fn new(url: &str, token: Option<String>, space: String) -> Result<Self, String> {
-        let channel = tonic::transport::Channel::from_shared(url.to_string())
-            .map_err(|e| format!("bad ADB Flight URL {url}: {e}"))?
-            .connect_timeout(Duration::from_secs(5))
-            .connect_lazy();
+        let mut channels = Vec::new();
+        for u in url.split(',').map(str::trim).filter(|u| !u.is_empty()) {
+            channels.push(
+                tonic::transport::Channel::from_shared(u.to_string())
+                    .map_err(|e| format!("bad ADB Flight URL {u}: {e}"))?
+                    .connect_timeout(Duration::from_secs(5))
+                    .connect_lazy(),
+            );
+        }
+        if channels.is_empty() {
+            return Err("no ADB Flight URL".into());
+        }
         let bearer = match token {
             Some(t) => Some(format!("Bearer {t}").parse().map_err(|_| "the engine token is not a valid header".to_string())?),
             None => None,
         };
-        Ok(Self { url: url.to_string(), channel, bearer, space })
+        Ok(Self { url: url.to_string(), channels: Arc::new(channels), current: Default::default(), bearer, space })
     }
 
     fn request<T>(&self, body: T) -> tonic::Request<T> {
@@ -116,8 +128,22 @@ impl FlightTransport {
         r
     }
 
+    /// The node to call now.
+    fn channel(&self) -> tonic::transport::Channel {
+        let i = self.current.load(std::sync::atomic::Ordering::Relaxed) % self.channels.len();
+        self.channels[i].clone()
+    }
+
+    /// The node `failed` did not answer: try the next (another caller may have moved on).
+    fn next_node(&self, failed: usize) {
+        let n = self.channels.len();
+        if n > 1 {
+            let _ = self.current.compare_exchange(failed, (failed + 1) % n, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     fn client(&self) -> arrow_flight::flight_service_client::FlightServiceClient<tonic::transport::Channel> {
-        arrow_flight::flight_service_client::FlightServiceClient::new(self.channel.clone())
+        arrow_flight::flight_service_client::FlightServiceClient::new(self.channel())
             .max_decoding_message_size(64 << 20)
             .max_encoding_message_size(64 << 20)
     }
@@ -128,7 +154,11 @@ impl FlightTransport {
         let body = json!({ "space": self.space, "op": op, "args": args }).to_string();
         // Retried briefly, like the gateway client: ADB restarting must not fail a run's write.
         let mut wait = Duration::from_millis(200);
-        for attempt in 0..5 {
+        let nodes = self.channels.len();
+        for attempt in 0..(5 + nodes) {
+            let on = self.current.load(std::sync::atomic::Ordering::Relaxed) % nodes;
+            // C-8: the first pass over the other nodes goes without the backoff sleep.
+            let hop = |this: &Self| { this.next_node(on); attempt + 1 < nodes };
             let action = arrow_flight::Action { r#type: "engine".into(), body: body.clone().into() };
             // A call on a connection that broke must fail and be retried, not hang.
             let mut req = self.request(action);
@@ -139,9 +169,11 @@ impl FlightTransport {
                     let answer = match s.next().await {
                         Some(Ok(a)) => a,
                         // The connection can also break after the call was accepted.
-                        Some(Err(e)) if retriable(&e) && attempt < 4 => {
-                            tokio::time::sleep(wait).await;
-                            wait *= 2;
+                        Some(Err(e)) if retriable(&e) && attempt < 4 + nodes => {
+                            if !hop(self) {
+                                tokio::time::sleep(wait).await;
+                                wait *= 2;
+                            }
                             continue;
                         }
                         Some(Err(e)) => return Err(StoreError::Backend(format!("ADB {op}: {}", e.message()))),
@@ -159,9 +191,11 @@ impl FlightTransport {
                 // Cancelled: the HTTP/2 connection went away under the call (an ADB
                 // restart or failover); the call did not reach ADB or is retried under
                 // the same arguments, which the engine core treats idempotently.
-                Err(e) if retriable(&e) && attempt < 4 => {
-                    tokio::time::sleep(wait).await;
-                    wait *= 2;
+                Err(e) if retriable(&e) && attempt < 4 + nodes => {
+                    if !hop(self) {
+                        tokio::time::sleep(wait).await;
+                        wait *= 2;
+                    }
                 }
                 Err(e) => return Err(StoreError::Backend(format!("ADB at {}: {}", self.url, e.message()))),
             }
@@ -195,10 +229,12 @@ impl Transport for FlightTransport {
     fn subscribe(&self, topic: &str) -> BoxStream<'static, Value> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let body = json!({ "space": self.space, "topic": topic }).to_string();
-        let (channel, bearer) = (self.channel.clone(), self.bearer.clone());
+        let (channels, current, bearer) = (Arc::clone(&self.channels), Arc::clone(&self.current), self.bearer.clone());
         tokio::spawn(async move {
             while !tx.is_closed() {
-                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channel.clone());
+                // The node the calls use now (C-8): after a takeover, the new leader.
+                let on = current.load(std::sync::atomic::Ordering::Relaxed) % channels.len();
+                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channels[on].clone());
                 let mut req = tonic::Request::new(arrow_flight::Action { r#type: "engine_subscribe".into(), body: body.clone().into() });
                 if let Some(b) = &bearer {
                     req.metadata_mut().insert("authorization", b.clone());
@@ -207,6 +243,9 @@ impl Transport for FlightTransport {
                     r = client.do_action(req) => r,
                     _ = tx.closed() => return,
                 };
+                if opened.is_err() && channels.len() > 1 {
+                    let _ = current.compare_exchange(on, (on + 1) % channels.len(), std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+                }
                 if let Ok(r) = opened {
                     let mut s = r.into_inner();
                     loop {

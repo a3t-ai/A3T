@@ -162,6 +162,15 @@ pub const ADB_FLIGHT_PORT: u16 = 3001;
 /// The endpoint of an ADB at `url`: Flight at `flight_url`, else the same host on
 /// ADB's default Flight port.
 pub fn adb_endpoint(url: &str, flight_url: Option<&str>) -> AdbEndpoint {
+    // C-8: a replica set's nodes, comma separated (only the leader serves Flight; calls
+    // find it, see `flight_nodes`). Each HTTP address maps to its Flight address.
+    if url.contains(',') && flight_url.is_none() {
+        let eps: Vec<AdbEndpoint> = url.split(',').map(str::trim).filter(|u| !u.is_empty()).map(|u| adb_endpoint(u, None)).collect();
+        return AdbEndpoint {
+            http: eps.iter().map(|e| e.http.as_str()).collect::<Vec<_>>().join(","),
+            flight: eps.iter().map(|e| e.flight.as_str()).collect::<Vec<_>>().join(","),
+        };
+    }
     let http = url.trim_end_matches('/').to_string();
     let flight = match flight_url {
         Some(f) => f.trim_end_matches('/').to_string(),
@@ -233,9 +242,42 @@ impl tonic::service::Interceptor for AdbBearer {
 pub type AdbFlightClient =
     arrow_flight::flight_service_client::FlightServiceClient<tonic::service::interceptor::InterceptedService<tonic::transport::Channel, AdbBearer>>;
 
+/// C-8: which node of an endpoint's replica set calls go to now, per endpoint (shared by
+/// every caller), by index into its comma-separated Flight addresses.
+static FLIGHT_NODE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> = std::sync::OnceLock::new();
+
+/// The Flight addresses of `ep` (one, or a replica set's) and the index calls use now.
+fn flight_nodes(ep: &AdbEndpoint) -> (Vec<String>, usize) {
+    let nodes: Vec<String> = ep.flight.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let i = FLIGHT_NODE.get_or_init(Default::default).lock().unwrap().get(&ep.flight).copied().unwrap_or(0);
+    let n = nodes.len().max(1);
+    (nodes, i % n)
+}
+
+/// The node at `failed` did not serve the call: the next one is tried, unless another
+/// caller already moved on.
+fn next_flight_node(ep: &AdbEndpoint, failed: usize) {
+    let n = ep.flight.split(',').filter(|s| !s.trim().is_empty()).count();
+    if n > 1 {
+        let mut m = FLIGHT_NODE.get_or_init(Default::default).lock().unwrap();
+        let cur = m.entry(ep.flight.clone()).or_insert(0);
+        if *cur % n == failed {
+            *cur = (failed + 1) % n;
+        }
+    }
+}
+
+/// Whether an error says this node does not serve the call (a follower, a node down):
+/// the call may go to another node of the replica set.
+fn not_served(err: &str) -> bool {
+    err.contains("ADB request to") || err.contains("not the leader") || err.contains("Unavailable") || err.contains("transport error")
+}
+
 pub fn flight_client(ep: &AdbEndpoint) -> std::result::Result<AdbFlightClient, String> {
-    let flight = ep.flight.as_str();
-    let bearer = flowr_mcp_core::adb_auth_header(&ep.http)
+    let (nodes, i) = flight_nodes(ep);
+    let flight = nodes.get(i).map(String::as_str).unwrap_or(ep.flight.as_str());
+    let http = ep.http.split(',').nth(i).map(str::trim).unwrap_or(ep.http.as_str());
+    let bearer = flowr_mcp_core::adb_auth_header(http)
         .or_else(|| flowr_mcp_core::adb_auth_header(flight))
         .and_then(|h| h.parse().ok());
     use std::collections::HashMap;
@@ -272,7 +314,18 @@ pub(crate) async fn finish<S: futures::Stream + Unpin>(stream: &mut S) {
 /// AO-4: [`flight_action_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::result::Result<Value, String> {
     let t = flowr_metrics::Timer::start();
-    let r = flight_action_raw(ep, kind, body).await;
+    // C-8: a node that does not serve the call (a follower, a node down): the next one.
+    let (nodes, _) = flight_nodes(ep);
+    let mut r = flight_action_raw(ep, kind, body).await;
+    for _ in 1..nodes.len() {
+        match &r {
+            Err(e) if not_served(e) => {
+                next_flight_node(ep, flight_nodes(ep).1);
+                r = flight_action_raw(ep, kind, body).await;
+            }
+            _ => break,
+        }
+    }
     let kind = format!("action:{}", if kind.len() <= 32 && kind.chars().all(|c| c.is_ascii_lowercase() || c == '_') { kind } else { "other" });
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
     if t.took() >= flowr_metrics::slow() {
@@ -336,7 +389,18 @@ pub fn adb_code(text: &str) -> (Option<String>, String) {
 /// AO-4: [`flight_get_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_get(ep: &AdbEndpoint, table: &str, filter: Option<&str>, limit: usize) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     let t = flowr_metrics::Timer::start();
-    let r = flight_get_raw(ep, table, filter, limit).await;
+    // C-8: a node that does not serve the call (a follower, a node down): the next one.
+    let (nodes, _) = flight_nodes(ep);
+    let mut r = flight_get_raw(ep, table, filter, limit).await;
+    for _ in 1..nodes.len() {
+        match &r {
+            Err(e) if not_served(e) => {
+                next_flight_node(ep, flight_nodes(ep).1);
+                r = flight_get_raw(ep, table, filter, limit).await;
+            }
+            _ => break,
+        }
+    }
     let kind = "get".to_string();
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
     if t.took() >= flowr_metrics::slow() {
@@ -368,7 +432,18 @@ async fn flight_get_raw(ep: &AdbEndpoint, table: &str, filter: Option<&str>, lim
 /// AO-4: [`flight_sql_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_sql(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std::result::Result<Vec<arrow_array::RecordBatch>, String> {
     let t = flowr_metrics::Timer::start();
-    let r = flight_sql_raw(ep, sql, limit).await;
+    // C-8: a node that does not serve the call (a follower, a node down): the next one.
+    let (nodes, _) = flight_nodes(ep);
+    let mut r = flight_sql_raw(ep, sql, limit).await;
+    for _ in 1..nodes.len() {
+        match &r {
+            Err(e) if not_served(e) => {
+                next_flight_node(ep, flight_nodes(ep).1);
+                r = flight_sql_raw(ep, sql, limit).await;
+            }
+            _ => break,
+        }
+    }
     let kind = "sql".to_string();
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
     if t.took() >= flowr_metrics::slow() {
@@ -400,7 +475,19 @@ async fn flight_sql_raw(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std:
 /// AO-4: [`flight_put_raw`], counted and timed (`flowr::adb` at debug).
 pub async fn flight_put(ep: &AdbEndpoint, table: &str, batch: arrow_array::RecordBatch, replace: bool) -> std::result::Result<Value, String> {
     let t = flowr_metrics::Timer::start();
-    let r = flight_put_raw(ep, table, batch, replace).await;
+    // C-8: a node that does not serve the call: the next one (the batch's arrays are
+    // shared, so the copy is cheap).
+    let (nodes, _) = flight_nodes(ep);
+    let mut r = flight_put_raw(ep, table, batch.clone(), replace).await;
+    for _ in 1..nodes.len() {
+        match &r {
+            Err(e) if not_served(e) => {
+                next_flight_node(ep, flight_nodes(ep).1);
+                r = flight_put_raw(ep, table, batch.clone(), replace).await;
+            }
+            _ => break,
+        }
+    }
     let kind = "put".to_string();
     flowr_metrics::observe(&flowr_metrics::get().adb_calls, &flowr_metrics::get().adb_seconds, &[kind.as_str()], r.is_ok(), t.took());
     if t.took() >= flowr_metrics::slow() {
