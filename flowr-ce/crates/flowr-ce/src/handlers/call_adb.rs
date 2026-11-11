@@ -276,6 +276,32 @@ fn not_served(err: &str) -> bool {
     err.contains("not the leader") || err.contains("Connection refused") || err.contains("tcp connect") || err.contains("connect error")
 }
 
+/// PF-31: whether a call was cut off in transit (the node went down mid-call: a
+/// reset, a closed stream, a transport error). It may have run, so it is sent again
+/// only when running it twice gives the same result ([`idempotent_action`], reads).
+fn cut_off(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    ["transport error", "connection reset", "broken pipe", "stream closed", "h2 protocol error", "connection closed", "no answer", "unexpected eof"]
+        .iter()
+        .any(|t| e.contains(t))
+}
+
+/// Flight actions that may run twice: reads, and writes whose second run changes
+/// nothing (an upsert writes the same row again; create-if-missing finds it made).
+fn idempotent_action(kind: &str, body: &Value) -> bool {
+    match kind {
+        "list_tables" | "upsert" => true,
+        "aql" => aql_read(body),
+        "create_table" => body.get("mode").and_then(|m| m.as_str()).is_none_or(|m| m == "create_if_not_exists" || m == "exist_ok"),
+        _ => false,
+    }
+}
+
+/// Whether a call should go to the next node: not served, or a repeatable call cut off.
+fn again(r: &std::result::Result<impl Sized, String>, repeatable: bool) -> bool {
+    matches!(r, Err(e) if not_served(e) || (repeatable && cut_off(e)))
+}
+
 /// C-16: reads (table and SQL reads, AQL RECALL / LOOKUP / SCAN) go to the replica set's
 /// nodes in turn — ADB followers answer them as fresh as the leader — instead of all
 /// to the leader. Writes stay with the node calls use now (the leader).
@@ -354,13 +380,14 @@ pub async fn flight_action(ep: &AdbEndpoint, kind: &str, body: &Value) -> std::r
     // a short pause after each full pass, for up to LEADER_WAIT.
     let (nodes, _) = flight_nodes(ep);
     let deadline = std::time::Instant::now() + LEADER_WAIT;
+    let repeatable = idempotent_action(kind, body);
     let first = if kind == "list_tables" || (kind == "aql" && aql_read(body)) { read_node(ep) } else { None };
     let mut r = flight_action_raw(ep, first, kind, body).await;
-    if first.is_some() && matches!(&r, Err(e) if not_served(e)) {
+    if first.is_some() && again(&r, repeatable) {
         r = flight_action_raw(ep, None, kind, body).await;
     }
     let mut tried = 1;
-    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+    while again(&r, repeatable) && std::time::Instant::now() < deadline {
         next_flight_node(ep, flight_nodes(ep).1);
         if tried % nodes.len().max(1) == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -438,11 +465,11 @@ pub async fn flight_get(ep: &AdbEndpoint, table: &str, filter: Option<&str>, lim
     let deadline = std::time::Instant::now() + LEADER_WAIT;
     let first = read_node(ep);
     let mut r = flight_get_raw(ep, first, table, filter, limit).await;
-    if first.is_some() && matches!(&r, Err(e) if not_served(e)) {
+    if first.is_some() && again(&r, true) {
         r = flight_get_raw(ep, None, table, filter, limit).await;
     }
     let mut tried = 1;
-    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+    while again(&r, true) && std::time::Instant::now() < deadline {
         next_flight_node(ep, flight_nodes(ep).1);
         if tried % nodes.len().max(1) == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -488,11 +515,11 @@ pub async fn flight_sql(ep: &AdbEndpoint, sql: &str, limit: Option<u64>) -> std:
     let deadline = std::time::Instant::now() + LEADER_WAIT;
     let first = read_node(ep);
     let mut r = flight_sql_raw(ep, first, sql, limit).await;
-    if first.is_some() && matches!(&r, Err(e) if not_served(e)) {
+    if first.is_some() && again(&r, true) {
         r = flight_sql_raw(ep, None, sql, limit).await;
     }
     let mut tried = 1;
-    while matches!(&r, Err(e) if not_served(e)) && std::time::Instant::now() < deadline {
+    while again(&r, true) && std::time::Instant::now() < deadline {
         next_flight_node(ep, flight_nodes(ep).1);
         if tried % nodes.len().max(1) == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
