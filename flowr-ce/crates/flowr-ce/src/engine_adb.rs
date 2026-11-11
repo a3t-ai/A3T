@@ -121,6 +121,10 @@ pub struct FlightTransport {
     /// Each node's URL, to open a fresh channel (PF-41), and its protocol errors in a row.
     urls: Arc<Vec<String>>,
     strikes: Arc<Vec<std::sync::atomic::AtomicU32>>,
+    /// Notice streams (`subscribe`) on connections of their own (PF-41): a run's stream
+    /// is reset when the run ends, and once 1,024 resets pile up on one HTTP/2
+    /// connection h2 fails it — with every engine call on it.
+    sub_channels: Arc<Vec<tonic::transport::Channel>>,
     current: Arc<std::sync::atomic::AtomicUsize>,
     bearer: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
     space: String,
@@ -134,6 +138,7 @@ impl FlightTransport {
             channels.push(std::sync::RwLock::new(connect(u)?));
         }
         let strikes = urls.iter().map(|_| std::sync::atomic::AtomicU32::new(0)).collect();
+        let sub_channels = urls.iter().map(|u| connect(u)).collect::<Result<Vec<_>, _>>()?;
         if channels.is_empty() {
             return Err("no ADB Flight URL".into());
         }
@@ -141,7 +146,7 @@ impl FlightTransport {
             Some(t) => Some(format!("Bearer {t}").parse().map_err(|_| "the engine token is not a valid header".to_string())?),
             None => None,
         };
-        Ok(Self { url: url.to_string(), channels: Arc::new(channels), urls: Arc::new(urls), strikes: Arc::new(strikes), current: Default::default(), bearer, space })
+        Ok(Self { url: url.to_string(), channels: Arc::new(channels), urls: Arc::new(urls), strikes: Arc::new(strikes), sub_channels: Arc::new(sub_channels), current: Default::default(), bearer, space })
     }
 
     fn request<T>(&self, body: T) -> tonic::Request<T> {
@@ -284,12 +289,12 @@ impl Transport for FlightTransport {
     fn subscribe(&self, topic: &str) -> BoxStream<'static, Value> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let body = json!({ "space": self.space, "topic": topic }).to_string();
-        let (channels, current, bearer) = (Arc::clone(&self.channels), Arc::clone(&self.current), self.bearer.clone());
+        let (channels, current, bearer) = (Arc::clone(&self.sub_channels), Arc::clone(&self.current), self.bearer.clone());
         tokio::spawn(async move {
             while !tx.is_closed() {
                 // The node the calls use now (C-8): after a takeover, the new leader.
                 let on = current.load(std::sync::atomic::Ordering::Relaxed) % channels.len();
-                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channels[on].read().unwrap().clone());
+                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channels[on].clone());
                 let mut req = tonic::Request::new(arrow_flight::Action { r#type: "engine_subscribe".into(), body: body.clone().into() });
                 if let Some(b) = &bearer {
                     req.metadata_mut().insert("authorization", b.clone());
