@@ -82,8 +82,32 @@ pub fn remote_from_env(data_dir: &str) -> Option<Client<FlightTransport>> {
 /// A failure of the connection, not an answer from ADB. An HTTP/2 GOAWAY reaches the
 /// caller as `Internal`, so a call must recognise it by its message.
 fn retriable(e: &tonic::Status) -> bool {
-    matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded)
-        || (e.code() == tonic::Code::Internal && e.message().contains("h2 protocol error"))
+    matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded) || protocol_error(e)
+}
+
+/// An HTTP/2 protocol error on the connection (PF-41): retried, and after
+/// [`PROTOCOL_STRIKES`] in a row on one node its channel is replaced, since the old
+/// connection can keep failing every call made on it.
+fn protocol_error(e: &tonic::Status) -> bool {
+    e.code() == tonic::Code::Internal && e.message().contains("h2 protocol error")
+}
+
+const PROTOCOL_STRIKES: u32 = 2;
+
+/// A status with its source chain, for the log (the message alone said only
+/// "h2 protocol error: http2 error").
+fn status_detail(e: &tonic::Status) -> String {
+    let mut out = format!("{:?}: {}", e.code(), e.message());
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push_str(&format!(" <- {s}"));
+        src = s.source();
+    }
+    out
+}
+
+fn connect(u: &str) -> Result<tonic::transport::Channel, String> {
+    Ok(tonic::transport::Channel::from_shared(u.to_string()).map_err(|e| format!("bad ADB Flight URL {u}: {e}"))?.connect_timeout(Duration::from_secs(5)).connect_lazy())
 }
 
 /// The engine wire over ADB's Flight: `do_action("engine")` per op,
@@ -93,7 +117,10 @@ pub struct FlightTransport {
     /// C-8: every ADB node's Flight address (`FLOWR_ENGINE_ADB_URL` may list them, comma
     /// separated): only the leader serves Flight, so a call that finds a node unavailable
     /// moves on to the next, and stays with the one that answers.
-    channels: Arc<Vec<tonic::transport::Channel>>,
+    channels: Arc<Vec<std::sync::RwLock<tonic::transport::Channel>>>,
+    /// Each node's URL, to open a fresh channel (PF-41), and its protocol errors in a row.
+    urls: Arc<Vec<String>>,
+    strikes: Arc<Vec<std::sync::atomic::AtomicU32>>,
     current: Arc<std::sync::atomic::AtomicUsize>,
     bearer: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
     space: String,
@@ -101,15 +128,12 @@ pub struct FlightTransport {
 
 impl FlightTransport {
     pub fn new(url: &str, token: Option<String>, space: String) -> Result<Self, String> {
+        let urls: Vec<String> = url.split(',').map(str::trim).filter(|u| !u.is_empty()).map(String::from).collect();
         let mut channels = Vec::new();
-        for u in url.split(',').map(str::trim).filter(|u| !u.is_empty()) {
-            channels.push(
-                tonic::transport::Channel::from_shared(u.to_string())
-                    .map_err(|e| format!("bad ADB Flight URL {u}: {e}"))?
-                    .connect_timeout(Duration::from_secs(5))
-                    .connect_lazy(),
-            );
+        for u in &urls {
+            channels.push(std::sync::RwLock::new(connect(u)?));
         }
+        let strikes = urls.iter().map(|_| std::sync::atomic::AtomicU32::new(0)).collect();
         if channels.is_empty() {
             return Err("no ADB Flight URL".into());
         }
@@ -117,7 +141,7 @@ impl FlightTransport {
             Some(t) => Some(format!("Bearer {t}").parse().map_err(|_| "the engine token is not a valid header".to_string())?),
             None => None,
         };
-        Ok(Self { url: url.to_string(), channels: Arc::new(channels), current: Default::default(), bearer, space })
+        Ok(Self { url: url.to_string(), channels: Arc::new(channels), urls: Arc::new(urls), strikes: Arc::new(strikes), current: Default::default(), bearer, space })
     }
 
     fn request<T>(&self, body: T) -> tonic::Request<T> {
@@ -131,7 +155,26 @@ impl FlightTransport {
     /// The node to call now.
     fn channel(&self) -> tonic::transport::Channel {
         let i = self.current.load(std::sync::atomic::Ordering::Relaxed) % self.channels.len();
-        self.channels[i].clone()
+        self.channels[i].read().unwrap().clone()
+    }
+
+    /// A call on node `i` answered (or failed otherwise): its protocol errors start over.
+    fn healthy(&self, i: usize) {
+        self.strikes[i].store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// A protocol error on node `i` (PF-41): logged with its cause; after
+    /// [`PROTOCOL_STRIKES`] in a row the node gets a new channel (a new connection).
+    fn protocol_strike(&self, i: usize, op: &str, e: &tonic::Status) {
+        let n = self.strikes[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        warn!(node = %self.urls[i], op, strikes = n, error = %status_detail(e), "HTTP/2 protocol error on the ADB engine connection");
+        if n >= PROTOCOL_STRIKES {
+            if let Ok(c) = connect(&self.urls[i]) {
+                *self.channels[i].write().unwrap() = c;
+                self.strikes[i].store(0, std::sync::atomic::Ordering::Relaxed);
+                warn!(node = %self.urls[i], "ADB engine channel replaced after repeated HTTP/2 protocol errors");
+            }
+        }
     }
 
     /// The node `failed` did not answer: try the next (another caller may have moved on).
@@ -170,9 +213,15 @@ impl FlightTransport {
                 Ok(r) => {
                     let mut s = r.into_inner();
                     let answer = match s.next().await {
-                        Some(Ok(a)) => a,
+                        Some(Ok(a)) => {
+                            self.healthy(on);
+                            a
+                        }
                         // The connection can also break after the call was accepted.
                         Some(Err(e)) if retriable(&e) && !last => {
+                            if protocol_error(&e) {
+                                self.protocol_strike(on, op, &e);
+                            }
                             if !hop(self) {
                                 tokio::time::sleep(wait).await;
                                 wait = (wait * 2).min(Duration::from_secs(2));
@@ -195,12 +244,15 @@ impl FlightTransport {
                 // restart or failover); the call did not reach ADB or is retried under
                 // the same arguments, which the engine core treats idempotently.
                 Err(e) if retriable(&e) && !last => {
+                    if protocol_error(&e) {
+                        self.protocol_strike(on, op, &e);
+                    }
                     if !hop(self) {
                         tokio::time::sleep(wait).await;
                         wait = (wait * 2).min(Duration::from_secs(2));
                     }
                 }
-                Err(e) => return Err(StoreError::Backend(format!("ADB at {}: {}", self.url, e.message()))),
+                Err(e) => return Err(StoreError::Backend(format!("ADB at {}: {}", self.url, status_detail(&e)))),
             }
         }
         unreachable!()
@@ -237,7 +289,7 @@ impl Transport for FlightTransport {
             while !tx.is_closed() {
                 // The node the calls use now (C-8): after a takeover, the new leader.
                 let on = current.load(std::sync::atomic::Ordering::Relaxed) % channels.len();
-                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channels[on].clone());
+                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channels[on].read().unwrap().clone());
                 let mut req = tonic::Request::new(arrow_flight::Action { r#type: "engine_subscribe".into(), body: body.clone().into() });
                 if let Some(b) = &bearer {
                     req.metadata_mut().insert("authorization", b.clone());
