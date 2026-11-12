@@ -1370,7 +1370,7 @@ async fn chat_ui_stream_handler(
     };
     let message = body.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let namespace = body.get("namespace").and_then(|v| v.as_str()).unwrap_or("a3t").to_string();
-    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("a3t-chat-engine").to_string();
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("tmpl_a3t_agent").to_string();
 
     // Attach *before* enqueueing so nothing this run emits can be missed, and
     // take a live-only subscription: the ring still holds the previous turn
@@ -2219,7 +2219,7 @@ async fn mcp_create_agent(
                     },
                     targets: vec![flowr_ce_agents::TriggerTarget::Workflow {
                         namespace: "system".to_string(),
-                        name: "agent-template".to_string(),
+                        name: "tmpl_system_agent_engine".to_string(),
                         input_mapping: None,
                     }],
                     enabled: true,
@@ -2242,7 +2242,7 @@ async fn mcp_create_agent(
                     },
                     targets: vec![flowr_ce_agents::TriggerTarget::Workflow {
                         namespace: "system".to_string(),
-                        name: "agent-template".to_string(),
+                        name: "tmpl_system_agent_engine".to_string(),
                         input_mapping: None,
                     }],
                     enabled: true,
@@ -2398,17 +2398,19 @@ async fn mcp_send_message(storage: &Arc<dyn StorageBackend>, principal: &Princip
         Err(e) => return CallToolResult::error(format!("Failed to load agent config: {}", e)),
     };
 
-    // Build execution input for system/agent-template
+    // Build execution input for the core agent, system/tmpl_system_agent_engine
     let mut template_input = json!({
         "session_id": agent_id,
         "message": message,
     });
     if let Some(ctx) = context {
-        template_input["context"] = ctx;
+        // The core agent (system/tmpl_system_agent_engine) reads what the user is
+        // looking at as `ui_context`.
+        template_input["ui_context"] = ctx;
     }
     template_input["config"] = agent_config;
 
-    // Execute the agent-template workflow as the message sender (E0.4b/E2 #3):
+    // Execute the core agent (system/tmpl_system_agent_engine) as the message sender (E0.4b/E2 #3):
     // the flow runs under the caller's identity, so the agent it spawns acts
     // on-behalf-of a real principal (not ambient) and its tool calls are gated
     // by the template ceiling rather than refused as ambient-agent.
@@ -2416,7 +2418,7 @@ async fn mcp_send_message(storage: &Arc<dyn StorageBackend>, principal: &Princip
         Ok(p) => p,
         Err(e) => return CallToolResult::error(e),
     };
-    let request = ExecutionRequest::new("system", "agent-template")
+    let request = ExecutionRequest::new("system", "tmpl_system_agent_engine")
         .with_input(template_input)
         .with_principal(on_branch);
     let instance_id = request.instance_id;

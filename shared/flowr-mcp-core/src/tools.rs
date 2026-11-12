@@ -885,7 +885,7 @@ conversation, because the request the user would approve is never raised."
                     "namespace": { "type": "string", "default": "default" },
                     "description": { "type": "string" },
                     "tags": { "type": "array", "items": { "type": "string" } },
-                    "spec": { "type": "object", "description": "The CNCF workflow definition (or reference to system/agent-template)" },
+                    "spec": { "type": "object", "description": "The CNCF workflow definition (or reference to system/tmpl_system_agent_engine)" },
                     "defaults": { "type": "object", "description": "Default agent config (system_prompt, llm_resource, memory, tools, etc.)" }
                 },
                 "required": ["name", "version", "spec"]
@@ -983,7 +983,7 @@ conversation, because the request the user would approve is never raised."
         // ── Agent Execution Tools ─────────────────────────────────────
         Tool {
             name: "send_message".to_string(),
-            description: "Send a message to an agent. Executes the agent-template workflow with the message and returns the response.".to_string(),
+            description: "Send a message to an agent. Runs the core agent (system/tmpl_system_agent_engine) with the message and returns the response.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

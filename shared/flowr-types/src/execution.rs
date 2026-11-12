@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn execution_state_carries_the_requesting_principal() {
         let who = flowr_policy::Principal::human("u-123", vec!["SuperAdmin".into()]);
-        let req = ExecutionRequest::new("a3t", "a3t-chat-engine")
+        let req = ExecutionRequest::new("a3t", "tmpl_a3t_agent")
             .with_principal(who.clone());
         let state = ExecutionState::new(&req, "1.0.0");
         assert_eq!(state.principal.as_ref().map(|p| p.id()), Some("u-123"));
@@ -331,7 +331,7 @@ mod tests {
         let legacy = serde_json::json!({
             "instance_id": uuid::Uuid::nil(),
             "namespace": "a3t",
-            "name": "a3t-chat-engine",
+            "name": "tmpl_a3t_agent",
             "version": "1.0.0",
             "status": "completed",
             "input": { "message": "hi" },
