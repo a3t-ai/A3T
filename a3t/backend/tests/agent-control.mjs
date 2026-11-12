@@ -181,6 +181,15 @@ do:
   r = await ctl({ action: 'create', name: 'x', from: { kind: 'agent', id: 'agt-parent' }, mode: 'fork' });
   check('create: fork goes through FlowR, refused here', r.isError && /fork/i.test(r.text), r.text);
 
+  // ── relate replaces ──
+  await ctl({ action: 'create', id: 'agt-root', name: 'root', from: { kind: 'template', id: 'tpl-support' } });
+  await ctl({ action: 'create', id: 'agt-moved', name: 'moved', from: { kind: 'template', id: 'tpl-support' } });
+  r = await ctl({ action: 'relate', id: 'agt-moved', parent: { kind: 'agent', id: 'agt-root' }, relation: 'inherit' });
+  r = await ctl({ action: 'lineage', id: 'agt-moved' });
+  check('relate replaces the relation', JSON.stringify((r.out?.ancestors ?? []).map(a => a.id)) === JSON.stringify(['agt-root', 'tpl-support']), JSON.stringify(r.out));
+  r = await ctl({ action: 'lineage', id: 'agt-root' });
+  check('  one row per agent', (r.out?.descendants ?? []).filter(d => d.id === 'agt-moved').length === 1, JSON.stringify(r.out));
+
   // ── lineage ──
   r = await ctl({ action: 'create', id: 'agt-grand', name: 'support-eu-de', from: { kind: 'agent', id: 'agt-child' }, mode: 'clone' });
   r = await ctl({ action: 'lineage', id: 'agt-grand' });

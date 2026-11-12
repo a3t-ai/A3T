@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: a3t-agent-control
-  version: '1.0.0'
+  version: '1.0.1'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -300,6 +300,21 @@ do:
           status: 400
           title: Can't record the relation
           detail: 'relate needs id, parent: {kind, id} and relation fork | branch | clone | inherit | template.'
+  # An agent has one relation: recording it again replaces the old one.
+  - relate_replace:
+      call: lancedb
+      with:
+        operation: delete
+        table: agent_relations
+        filter: '${ "id = ''rel-" + $context._in.id + "''" }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
   - relate_insert:
       call: lancedb
       with:
