@@ -1,0 +1,23 @@
+{
+  "id": "01a04972-b66b-7831-95db-16182015b702",
+  "name": "agent-agt-c78598c0-chat",
+  "namespace": "a3t",
+  "config": {
+    "type": "webhook",
+    "path": "/agent/agt-c78598c0/chat",
+    "method": null,
+    "secret": null,
+    "message_template": null
+  },
+  "targets": [
+    {
+      "type": "workflow",
+      "namespace": "a3t",
+      "name": "Test Template",
+      "input_mapping": null
+    }
+  ],
+  "enabled": true,
+  "status": "active",
+  "description": null
+}
