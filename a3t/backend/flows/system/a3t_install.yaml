@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: system
   name: a3t-install
-  version: 1.0.0
+  version: 1.1.0
   metadata:
     description: >
       Full A3T platform install — schema + seed agent-template.

@@ -1,0 +1,51 @@
+document:
+  dsl: '1.0.3'
+  namespace: system
+  name: agent-engine-install
+  version: '1.0.0'
+  metadata:
+    description: >
+      Upgrades an installed platform to the core agent (system/agent-engine 2.1+)
+      without running the full install again: creates the turn log table
+      a3t_agent_turns if it is missing. Safe to run again. A fresh install gets the
+      same table from system/a3t-schema-install. Output: { tables }.
+
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
+
+do:
+  # One row per agent turn, written by the core agent. Same schema as the
+  # create-agent-turns step of system/a3t-schema-install.
+  - create-agent-turns:
+      call: lancedb
+      with:
+        operation: create_table
+        table: a3t_agent_turns
+        mode: create_if_not_exists
+        schema:
+          id: string
+          at: string
+          run_id: string
+          session_id: string
+          agent_id: string
+          principal: string
+          llm: string
+          memory: string
+          outcome: string
+          iterations: string
+          tool_calls: string
+          procedural_hit: string
+          knowledge: string
+          tool_hints: string
+          degraded: string
+          duration_ms: string
+        _resource: a3t/a3t-platform-db
+
+  - verify:
+      call: lancedb
+      with:
+        operation: list_tables
+        _resource: a3t/a3t-platform-db
+      output:
+        as: '${ {tables: ((if type == "array" then . else (.tables // .) end) | map(select(. == "a3t_agent_turns")))} }'

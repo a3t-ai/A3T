@@ -144,7 +144,7 @@ try {
   await must('create_resource', { namespace: 'a3t', name: 'a3t-platform-db', type_ref: 'platform-db', config: { backend: 'adb', url: adbUrl, flight_url: flightUrl } });
 
   // ── flows: the base first ──
-  for (const f of ['system/a3t_base.yaml', 'system/a3t_error_handler.yaml', 'system/agent_turn.yaml', 'system/agent-engine.yaml', 'system/agent_knowledge_ingest.yaml', 'system/agent_tools_sync.yaml', 'a3t/a3t_chat_engine.yaml']) {
+  for (const f of ['system/a3t_base.yaml', 'system/a3t_error_handler.yaml', 'system/agent_turn.yaml', 'system/agent-engine.yaml', 'system/agent_knowledge_ingest.yaml', 'system/agent_tools_sync.yaml', 'system/agent_engine_install.yaml', 'a3t/a3t_chat_engine.yaml']) {
     const r = await tool('create_flow', { yaml: readFileSync(join(FLOWS, f), 'utf8') });
     check(`load ${f}`, !r.isError, r.text);
   }
@@ -158,6 +158,11 @@ ${tableStep('create-agent-turns')}
 ${tableStep('create-agent-configs')}
 ` });
   let rt = await run('a3t', 'core-test-tables', {});
+  // The upgrade flow for installed platforms: creates the turn log table, twice is fine.
+  for (const n of [1, 2]) {
+    const ri = await run('system', 'agent-engine-install', {});
+    check(`agent-engine-install run ${n}`, (ri.out?.tables ?? []).includes('a3t_agent_turns'), ri.text?.slice(0, 400));
+  }
   check('platform tables a3t_errors, a3t_agent_turns created', !rt.isError, rt.text);
   await must('create_flow', { yaml: `document: { dsl: '1.0.3', namespace: a3t, name: core-test-rows, version: '1.0.0' }
 do:
