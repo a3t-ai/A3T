@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The agents control plane (a3t/a3t-agent-control), end to end on a real FlowR and ADB.
+ * The agents control plane (a3t/flow_a3t_agent_control), end to end on a real FlowR and ADB.
  *
  * Starts its own ADB and FlowR EE (throwaway JWT secret), loads the platform base,
  * the error handler and the control flows, creates the platform tables, then checks:
@@ -129,11 +129,11 @@ try {
 
   await must('create_resource', { namespace: 'a3t', name: 'adb', type_ref: 'adb', config: { url: adbUrl, flight_url: flightUrl } });
   await must('create_resource', { namespace: 'a3t', name: 'a3t-platform-db', type_ref: 'platform-db', config: { backend: 'adb', url: adbUrl, flight_url: flightUrl } });
-  for (const f of ['system/a3t_base.yaml', 'system/a3t_error_handler.yaml', 'system/agent_control_install.yaml', 'a3t/a3t_agent_control.yaml']) {
+  for (const f of ['system/flow_system_base.yaml', 'system/flow_system_error_handler.yaml', 'system/flow_system_agent_control_install.yaml', 'a3t/flow_a3t_agent_control.yaml']) {
     const r = await tool('create_flow', { yaml: readFileSync(join(FLOWS, f), 'utf8') });
     check(`load ${f}`, !r.isError, r.text);
   }
-  const install = readFileSync(join(FLOWS, 'system/a3t_schema_install.yaml'), 'utf8');
+  const install = readFileSync(join(FLOWS, 'system/flow_system_schema_install.yaml'), 'utf8');
   const tableStep = name => install.slice(install.indexOf(`- ${name}:`)).split(/\n- /)[0];
   await must('create_flow', { yaml: `document: { dsl: '1.0.3', namespace: a3t, name: ctl-test-tables, version: '1.0.0' }
 do:
@@ -144,8 +144,8 @@ ${tableStep('create-agent-events')}
 ` });
   check('platform tables', !(await run('a3t', 'ctl-test-tables', {})).isError);
   for (const n of [1, 2]) {
-    const ri = await run('system', 'agent-control-install', {});
-    check(`agent-control-install run ${n}`, ['agent_relations', 'agent_shares'].every(t => (ri.out?.tables ?? []).includes(t)), ri.text?.slice(0, 400));
+    const ri = await run('system', 'flow_system_agent_control_install', {});
+    check(`flow_system_agent_control_install run ${n}`, ['agent_relations', 'agent_shares'].every(t => (ri.out?.tables ?? []).includes(t)), ri.text?.slice(0, 400));
   }
   await must('create_flow', { yaml: `document: { dsl: '1.0.3', namespace: a3t, name: core-test-rows, version: '1.0.0' }
 do:
@@ -161,11 +161,11 @@ do:
         operation: insert
         table: template_registry
         records:
-          - { id: tpl-support, org_id: org-default, name: support-agent, version: '2.1.0', source: system, spec_yaml: 'system/agent-engine', digest: '', signed_by: '', tags: '', vertical: '', published: 'true', created_by: test, created_at: '2026-11-12', updated_at: '2026-11-12' }
+          - { id: tpl-support, org_id: org-default, name: support-agent, version: '2.1.0', source: system, spec_yaml: 'system/tmpl_system_agent_engine', digest: '', signed_by: '', tags: '', vertical: '', published: 'true', created_by: test, created_at: '2026-11-12', updated_at: '2026-11-12' }
         _resource: a3t/a3t-platform-db
 ` });
   check('seed template', !(await run('a3t', 'ctl-test-seed', {})).isError);
-  const ctl = input => run('a3t', 'a3t-agent-control', { org_id: 'org-default', user_id: 'tester', ...input });
+  const ctl = input => run('a3t', 'flow_a3t_agent_control', { org_id: 'org-default', user_id: 'tester', ...input });
 
   // ── create ──
   let r = await ctl({ action: 'create', id: 'agt-parent', name: 'support-main', project: 'acme', from: { kind: 'template', id: 'tpl-support' }, values: { system_prompt: 'You help Acme customers.', llm_resource: 'a3t/x' } });

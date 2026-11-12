@@ -1,0 +1,61 @@
+document:
+  dsl: '1.0.3'
+  namespace: system
+  name: flow_system_agent_control_install
+  version: '1.0.1'
+  metadata:
+    description: >
+      Creates the tables of the agents control plane (a3t/flow_a3t_agent_control) if they
+      are missing. Safe to run again. agent_relations: one row per agent, where it
+      came from (template, inherit, fork, clone, branch, evolved). agent_shares: one
+      row per agent and target namespace (or "*" for public), with its rights.
+      Output: { tables }.
+
+metadata:
+  a3t:
+    extends: system/flow_system_base@1.0.0
+
+do:
+  - create-relations:
+      call: lancedb
+      with:
+        operation: create_table
+        table: agent_relations
+        mode: create_if_not_exists
+        schema:
+          id: string
+          agent_id: string
+          parent_kind: string
+          parent_id: string
+          parent_version: string
+          relation: string
+          created_by: string
+          created_at: string
+          updated_at: string
+        _resource: a3t/a3t-platform-db
+
+  - create-shares:
+      call: lancedb
+      with:
+        operation: create_table
+        table: agent_shares
+        mode: create_if_not_exists
+        schema:
+          id: string
+          agent_id: string
+          target: string
+          can_call: string
+          can_inherit: string
+          can_fork: string
+          can_merge_back: string
+          granted_by: string
+          granted_at: string
+        _resource: a3t/a3t-platform-db
+
+  - verify:
+      call: lancedb
+      with:
+        operation: list_tables
+        _resource: a3t/a3t-platform-db
+      output:
+        as: '${ {tables: ((if type == "array" then . else (.tables // .data // []) end) | map(if type == "object" then (.name // .table // "") else . end) | map(select(. == "agent_relations" or . == "agent_shares")))} }'

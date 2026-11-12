@@ -1,0 +1,99 @@
+document:
+  dsl: 1.0.3
+  namespace: a3t
+  name: flow_a3t_early_access
+  version: 1.0.0
+  metadata:
+    description: >
+      Early-access requests. The login page's webhook (/webhook/a3t/early-access)
+      posts { id, name, email, company, use_case, provider?, email_verified?,
+      created_at }: anyone may submit, so the fields are checked and capped here and
+      the time is the server's. Saves to early_access_requests with status "new".
+      { action: "list" } answers the requests, newest first, to an Admin or
+      SuperAdmin; a refusal is { ok: false, error }.
+metadata:
+  a3t:
+    extends: system/flow_system_base@1.0.0
+do:
+- whoami:
+    set:
+      _admin: '${ (($context._principal // {}).roles // []) | (index("Admin") != null or index("SuperAdmin") != null) }'
+      _args: '${ (.input // .) }'
+    export:
+      as: .
+- route:
+    switch:
+    - list:
+        when: '${ ($context._args.action // "") == "list" }'
+        then: check-admin
+    - default:
+        then: check-request
+- check-admin:
+    switch:
+    - no:
+        when: '${ $context._admin != true }'
+        then: deny
+    - default:
+        then: read
+- deny:
+    set:
+      ok: false
+      error: Only an admin can read early-access requests.
+    then: end
+- read:
+    try:
+      do:
+      - query:
+          call: lancedb
+          with:
+            operation: query
+            table: early_access_requests
+            limit: 5000
+            _resource: a3t/a3t-platform-db
+      catch:
+        do:
+        - no-table:
+            # No table yet means nobody has asked yet.
+            set:
+              rows: []
+            output:
+              as: '${ [] }'
+- newest-first:
+    set:
+      rows: '${ (if type == "array" then . else [] end) | sort_by(.created_at) | reverse }'
+    output:
+      as: '${ .rows }'
+    then: end
+- check-request:
+    switch:
+    - bad-email:
+        when: '${ ($context._args.email // "" | tostring | test("^[^@\\s]{1,120}@[^@\\s]{1,120}\\.[^@\\s]{1,40}$")) | not }'
+        then: refuse-email
+    - default:
+        then: save
+- refuse-email:
+    raise:
+      error:
+        type: https://serverlessworkflow.io/spec/1.0.0/errors/validation
+        status: 400
+        title: Invalid request
+        detail: A valid email address is required.
+- save:
+    call: lancedb
+    with:
+      operation: insert
+      table: early_access_requests
+      records:
+      - id: '${ ($context._args.id // "" | tostring) as $i | if ($i | test("^[A-Za-z0-9-]{1,64}$")) then $i else "ea-" + (now | tostring) end }'
+        name: '${ ($context._args.name // "") | tostring | .[0:200] }'
+        email: '${ $context._args.email | tostring }'
+        company: '${ ($context._args.company // "") | tostring | .[0:200] }'
+        use_case: '${ ($context._args.use_case // "") | tostring | .[0:2000] }'
+        provider: '${ ($context._args.provider // "") | tostring | .[0:40] }'
+        email_verified: '${ ($context._args.email_verified // false) | tostring }'
+        status: new
+        created_at: '${ now | todateiso8601 }'
+      _resource: a3t/a3t-platform-db
+- saved:
+    set:
+      ok: true

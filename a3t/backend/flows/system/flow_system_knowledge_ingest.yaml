@@ -1,0 +1,155 @@
+document:
+  dsl: '1.0.3'
+  namespace: system
+  name: flow_system_knowledge_ingest
+  version: '1.0.0'
+  metadata:
+    description: >
+      Loads reference documents into the core agent's knowledge: SEMANTIC memory,
+      namespace system-knowledge by default. Each document is split at its level-2
+      headings ("## "), and each section is one record, keyed
+      doc:<source>#<n> with kind "doc", title, source and content. Running it again
+      with the same source replaces that source's sections (UPDATE), so re-ingesting
+      the docs after they change is safe; sections the new text no longer has are
+      forgotten. Input: { documents: [{source, title?, text}], namespace?, resource?,
+      max_chars? }. Output: { stored, updated, forgotten, failed: [{key, error}] }.
+      Script: a3t/backend/scripts/ingest-knowledge.mjs reads the docs folders and
+      calls this flow.
+
+metadata:
+  a3t:
+    extends: system/flow_system_base@1.0.0
+
+do:
+  - setup:
+      set:
+        _res: '${ .resource // "a3t/adb" }'
+        _ns: '${ .namespace // "system-knowledge" }'
+        # Sections: [{key, source, title, content}], at most max_chars each (a longer
+        # section is cut into parts of that size).
+        _sections: >-
+          ${ (.max_chars // 2000) as $max
+          | [ (.documents // [])[] as $d
+              | ($d.text // "" | tostring) as $t
+              | ([$t | split("\n## ")[]] | to_entries) as $parts
+              | $parts[]
+              | (.value | split("\n") ) as $lines
+              | (if .key == 0 then ($d.title // ($lines[0] | ltrimstr("# "))) else ($lines[0] | ltrimstr("## ")) end) as $title
+              # The section's text without its heading line (the heading is its title).
+              | ($lines[1:] | join("\n") | ltrimstr("\n")) as $body
+              | .key as $i
+              | [range(0; ($body | length); $max)] | to_entries[]
+              | .value as $o
+              | { key: ("doc:" + $d.source + "#" + ($i | tostring) + (if .key > 0 then "." + (.key | tostring) else "" end)),
+                  source: $d.source,
+                  title: $title,
+                  content: ($body | .[$o:($o + $max)]) }
+              | select((.content | gsub("\\s"; "") | length) > 0) ] }
+        _sources: '${ [(.documents // [])[] | .source] | unique }'
+        stored: 0
+        updated: 0
+        forgotten: 0
+        failed: []
+      export:
+        as: '${ $context + . }'
+
+  - write_sections:
+      for:
+        each: _s
+        in: '${ $context._sections }'
+        do:
+          - store_one:
+              try:
+                do:
+                  - store:
+                      call: adb
+                      with:
+                        # AQL STORE takes no variables in its values yet (request
+                        # ADB-R1), so values are quoted here: \ and " escaped.
+                        query: >-
+                          ${ def q: "\"" + (tostring | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\"";
+                          "STORE INTO SEMANTIC (key = " + ($_s.key | q) + ", kind = \"doc\", source = " + ($_s.source | q)
+                          + ", title = " + ($_s.title | q) + ", content = " + ($_s.content | q) + ") NAMESPACE " + ($context._ns | q) }
+                        _resource: '${ $context._res }'
+                      export:
+                        as: '${ $context + {stored: ($context.stored + 1)} }'
+                catch:
+                  do:
+                    # The key is there already: replace its values.
+                    - update_existing:
+                        if: '${ (($context.error.detail // "") + ($context.error.title // "")) | test("key_exists") }'
+                        try:
+                          do:
+                            - update:
+                                call: adb
+                                with:
+                                  query: >-
+                                    ${ def q: "\"" + (tostring | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\"";
+                                    "UPDATE INTO SEMANTIC WHERE key = " + ($_s.key | q) + " (kind = \"doc\", source = " + ($_s.source | q)
+                                    + ", title = " + ($_s.title | q) + ", content = " + ($_s.content | q) + ") NAMESPACE " + ($context._ns | q) }
+                                  _resource: '${ $context._res }'
+                                export:
+                                  as: '${ $context + {updated: ($context.updated + 1)} }'
+                          catch:
+                            do:
+                              - update_failed:
+                                  set:
+                                    failed: '${ $context.failed + [{key: $_s.key, error: ($context.error.detail // $context.error.title // "update failed")}] }'
+                                  export:
+                                    as: '${ $context + . }'
+                    - store_failed:
+                        if: '${ ((($context.error.detail // "") + ($context.error.title // "")) | test("key_exists")) | not }'
+                        set:
+                          failed: '${ $context.failed + [{key: $_s.key, error: ($context.error.detail // $context.error.title // "store failed")}] }'
+                        export:
+                          as: '${ $context + . }'
+
+  # Sections a source no longer has: what is stored for it, minus what was just written.
+  - stale:
+      for:
+        each: _src
+        in: '${ $context._sources }'
+        do:
+          - existing:
+              try:
+                do:
+                  - list_source:
+                      call: adb
+                      with:
+                        query: '${ "RECALL FROM SEMANTIC WHERE source = $src NAMESPACE \"" + $context._ns + "\" LIMIT 1000" }'
+                        variables:
+                          src: '${ $_src }'
+                        _resource: '${ $context._res }'
+                      export:
+                        as: >-
+                          ${ $context + {_old: [((.data.records // .data.data.records // .records // [])[] | .data.key)
+                             | select(. as $k | ($context._sections | map(.key) | index($k)) == null)]} }
+                  - forget_old:
+                      for:
+                        each: _k
+                        in: '${ $context._old }'
+                        do:
+                          - forget_one:
+                              call: adb
+                              with:
+                                query: '${ "FORGET FROM SEMANTIC WHERE key = $k NAMESPACE \"" + $context._ns + "\"" }'
+                                variables:
+                                  k: '${ $_k }'
+                                _resource: '${ $context._res }'
+                              export:
+                                as: '${ $context + {forgotten: ($context.forgotten + 1)} }'
+                catch:
+                  do:
+                    - stale_failed:
+                        set:
+                          failed: '${ $context.failed + [{key: ("source:" + $_src), error: ($context.error.detail // $context.error.title // "clean-up failed")}] }'
+                        export:
+                          as: '${ $context + . }'
+
+  - report:
+      set:
+        stored: '${ $context.stored }'
+        updated: '${ $context.updated }'
+        forgotten: '${ $context.forgotten }'
+        sections: '${ $context._sections | length }'
+        failed: '${ $context.failed }'

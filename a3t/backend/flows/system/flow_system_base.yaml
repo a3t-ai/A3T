@@ -1,0 +1,21 @@
+document:
+  dsl: 1.0.3
+  namespace: system
+  name: flow_system_base
+  version: 1.0.0
+  metadata:
+    description: >
+      The A3T base (UX ST-1). Every flow in the a3t and system namespaces declares
+      metadata.a3t.extends: system/flow_system_base@1.0.0 and so runs with what is here. It
+      holds the error handler now; limits, audit, metering and redaction join it as
+      hooks. A child can't override what `locked` names. Not meant to be run itself.
+metadata:
+  a3t:
+    base: true
+    onError: system/flow_system_error_handler
+    locked:
+    - onError
+do:
+- nothing:
+    set:
+      base: true

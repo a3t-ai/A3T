@@ -1,0 +1,100 @@
+document:
+  dsl: '1.0.3'
+  namespace: a3t
+  name: tmpl_a3t_agent
+  version: '4.0.0'
+  metadata:
+    description: >
+      A3T chat: every message from the console's AI Chat and from an agent's Chat
+      tab (POST /chat) runs here. It is an A3T agent on the core agent: it extends
+      system/tmpl_system_agent_engine@2.1.0 and runs it with the agent's own values, read from
+      the agent's record (agent_configs; the session id is <agent-id>:<session>).
+      A session with no agent is the A3T assistant. What the request carries wins
+      over the record (llm_resource, enabled_tools, mcp_servers), as the Chat tab
+      sends them. Input: { message, session_id, llm_resource?, enabled_tools?,
+      mcp_servers?, context?, ui_context? }. Output: the core agent's.
+
+metadata:
+  a3t:
+    extends: system/tmpl_system_agent_engine@2.1.0
+
+do:
+  - who:
+      set:
+        _in: '${ . // {} }'
+        _agent_id: >-
+          ${ (.session_id // "") | split(":") | if length > 1 and (.[0] | test("^agt-[A-Za-z0-9_-]+$")) then .[0] else null end }
+        _row: null
+      export:
+        as: '${ $context + . }'
+
+  # The agent's record. Missing or unreadable: the turn goes on as the A3T
+  # assistant, and the failure is logged once.
+  - load_agent:
+      if: '${ $context._agent_id != null }'
+      try:
+        do:
+          - agent_row:
+              call: lancedb
+              with:
+                operation: query
+                table: agent_configs
+                filter: '${ "id = ''" + $context._agent_id + "''" }'
+                limit: 1
+                _resource: a3t/a3t-platform-db
+              export:
+                as: '${ $context + {_row: ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null)} }'
+        catch:
+          do:
+            - agent_unreadable:
+                run:
+                  workflow:
+                    namespace: system
+                    name: flow_system_error_handler
+                    input:
+                      error: '${ $context.error }'
+                      flow: a3t/tmpl_a3t_agent
+                      version: 4.0.0
+                      run_id: '${ (($workflow // {}).id // "") | tostring }'
+                      principal: '${ (($context._principal // {}).user // "") | tostring }'
+                      step: load_agent
+
+  - values:
+      set:
+        _vars: '${ (($context._row // {}).variables // "{}") | if type == "string" then (try fromjson catch {}) // {} else . end }'
+        _rb: '${ (($context._row // {}).resource_bindings // "{}") | if type == "string" then (try fromjson catch {}) // {} else . end }'
+        _mode: '${ ($context._row // {}).mode // "session" }'
+      export:
+        as: '${ $context + . }'
+
+  - config:
+      set:
+        _cfg: >-
+          ${ {
+              system_prompt: ($context._vars.system_prompt // $context._vars.instructions
+                // "You are the A3T assistant, inside the A3T console. A3T runs AI agents: templates are their code (CNCF Serverless Workflow flows on the FlowR engine), agents are templates with their own values, released and called by other apps over REST, MCP or A2A. Their memory is ADB.\n\nHelp the user build, inspect and operate agents, flows, triggers and resources. Use your tools to read the real state instead of guessing. Propose changes to flows as YAML for the user to review rather than saving behind their back, unless they ask you to. Be concise."),
+              llm_resource: ($context._in.llm_resource // $context._rb.llm // "a3t/Austra"),
+              mcp_servers: ($context._in.mcp_servers // $context._vars.mcp_servers // ["a3t/agent-flows"]),
+              temperature: ($context._vars.temperature // 0.4),
+              max_iterations: ($context._vars.max_iterations // 10),
+              memory_namespace: ($context._agent_id // "a3t-assistant")
+            }
+            + (if ($context._in | has("enabled_tools")) then {enabled_tools: $context._in.enabled_tools}
+               elif ($context._vars.enabled_tools != null) then {enabled_tools: $context._vars.enabled_tools}
+               else {} end)
+            + (if $context._mode == "ephemeral" then {memory_resource: null}
+               elif ($context._mode == "persistent" or $context._mode == "reactive") then {memory_config: {semantic: {read: true, reflect: true}}}
+               else {} end) }
+      export:
+        as: '${ $context + . }'
+
+  - turn:
+      run:
+        workflow:
+          namespace: system
+          name: tmpl_system_agent_engine
+          input:
+            message: '${ $context._in.message }'
+            session_id: '${ $context._in.session_id }'
+            ui_context: '${ $context._in.ui_context // null }'
+            config: '${ $context._cfg }'

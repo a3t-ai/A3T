@@ -3,10 +3,10 @@
  * Fill the core agent's shared memory on a FlowR:
  *
  *   knowledge: the FlowR docs (a3t/wwwdocs pages, plus the core agent's own guide)
- *              → system/agent-knowledge-ingest → SEMANTIC, namespace system-knowledge
+ *              → system/flow_system_knowledge_ingest → SEMANTIC, namespace system-knowledge
  *   tools:     the platform's own MCP tools (listed here with FLOWR_TOKEN, as
  *              --self-server, default a3t/agent-flows) and any --servers FlowR lists
- *              itself → system/agent-tools-sync → PROCEDURAL, namespace system-tools
+ *              itself → system/flow_system_tools_sync → PROCEDURAL, namespace system-tools
  *
  * Safe to run again: unchanged sections and tools are updated in place; removed ones
  * are forgotten.
@@ -81,7 +81,7 @@ if (args.only !== 'tools') {
     for (let i = 0; i < docs.length; i += 4) {
       const batch = docs.slice(i, i + 4);
       try {
-        const out = await call('execute_flow', { namespace: 'system', name: 'agent-knowledge-ingest', input: { documents: batch, resource } });
+        const out = await call('execute_flow', { namespace: 'system', name: 'flow_system_knowledge_ingest', input: { documents: batch, resource } });
         console.log(`  ${batch.map(d => d.source).join(', ')}: stored ${out.stored}, updated ${out.updated}, forgotten ${out.forgotten}${out.failed?.length ? `, FAILED ${out.failed.length}` : ''}`);
         failed += out.failed?.length ?? 0;
       } catch (e) { console.error(`  ✗ ${e.message}`); failed++; }
@@ -95,7 +95,7 @@ if (args.only !== 'knowledge') {
       // The platform's own tools, as the user sees them.
       const own = selfServer ? ((await rpc('tools/list', {})).result?.tools ?? []).map(t => ({ server: selfServer, name: t.name, description: t.description ?? '', inputSchema: t.inputSchema ?? {} })) : [];
       if (selfServer && !own.length) throw new Error(`${selfServer}: tools/list returned no tools`);
-      const out = await call('execute_flow', { namespace: 'system', name: 'agent-tools-sync', input: { servers, tools: own, complete_for: selfServer ? [selfServer] : [], resource } });
+      const out = await call('execute_flow', { namespace: 'system', name: 'flow_system_tools_sync', input: { servers, tools: own, complete_for: selfServer ? [selfServer] : [], resource } });
       console.log(`  ${out.tools} tools: stored ${out.stored}, updated ${out.updated}, forgotten ${out.forgotten}${out.failed?.length ? `, FAILED: ${JSON.stringify(out.failed)}` : ''}`);
       failed += out.failed?.length ?? 0;
     } catch (e) { console.error(`  ✗ ${e.message}`); failed++; }

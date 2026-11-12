@@ -20,10 +20,10 @@ replace live sessions with only the recovered ones.
 import json, sys, urllib.request
 
 API   = "https://console.dev.a3t.io"
-# Only the chat *wrappers*. system/agent-engine and system/agent-template are the
+# Only the chat *wrappers*. system/tmpl_system_agent_engine and system/agent-template are the
 # subflows these dispatch to and repeat the same session_id + message, so
 # including them would duplicate every turn.
-CHAT_WORKFLOWS = {("a3t", "a3t-chat-engine"), ("a3t", "a3t-chat-agent")}
+CHAT_WORKFLOWS = {("a3t", "tmpl_a3t_agent")}
 
 def rpc(tok, name, args):
     req = urllib.request.Request(f"{API}/message",

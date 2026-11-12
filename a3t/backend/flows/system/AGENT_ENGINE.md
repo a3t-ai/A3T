@@ -1,6 +1,6 @@
-# The core agent: `system/agent-engine`
+# The core agent: `system/tmpl_system_agent_engine`
 
-Every agent in A3T runs through one flow, `system/agent-engine`. It does the work every
+Every agent in A3T runs through one flow, `system/tmpl_system_agent_engine`. It does the work every
 agent needs, so an agent you build only says what makes it different: its instructions,
 model, tools and memory settings.
 
@@ -19,13 +19,13 @@ own) extend it.
 
 | Flow | What it does |
 |---|---|
-| `system/agent-engine` | **The core agent.** Applies defaults, recalls knowledge and tools, assembles the prompt, runs the turn, logs it and answers. |
-| `system/agent-turn` | One turn on the native engine (`call: a3t:agent`): memory recall, the LLM and tool loop, the memory write, the session save. Only the core runs it. |
-| `system/agent-knowledge-ingest` | Loads documents into semantic memory as sections (namespace `system-knowledge`). |
-| `system/agent-tools-sync` | Keeps the tool catalogue in procedural memory (namespace `system-tools`), from the MCP servers. |
-| `system/a3t-base` | The base of every platform flow. Its error handler is locked, so no flow can switch it off. |
-| `system/a3t-error-handler` | Sorts a failure into one of five classes (policy, transient, limit, input, bug), writes one `a3t_errors` row, and gives the user a plain message. |
-| `a3t/a3t-chat-engine` | A3T chat: the first A3T agent on the core. |
+| `system/tmpl_system_agent_engine` | **The core agent.** Applies defaults, recalls knowledge and tools, assembles the prompt, runs the turn, logs it and answers. |
+| `system/flow_system_agent_turn` | One turn on the native engine (`call: a3t:agent`): memory recall, the LLM and tool loop, the memory write, the session save. Only the core runs it. |
+| `system/flow_system_knowledge_ingest` | Loads documents into semantic memory as sections (namespace `system-knowledge`). |
+| `system/flow_system_tools_sync` | Keeps the tool catalogue in procedural memory (namespace `system-tools`), from the MCP servers. |
+| `system/flow_system_base` | The base of every platform flow. Its error handler is locked, so no flow can switch it off. |
+| `system/flow_system_error_handler` | Sorts a failure into one of five classes (policy, transient, limit, input, bug), writes one `a3t_errors` row, and gives the user a plain message. |
+| `a3t/tmpl_a3t_agent` | A3T chat: the first A3T agent on the core. |
 
 ## A turn, step by step
 
@@ -35,7 +35,7 @@ input {message, session_id, ui_context?, config?}
   2. knowledge    RECALL FROM SEMANTIC LIKE <message> NAMESPACE "system-knowledge" LIMIT 4
   3. tools        RECALL FROM PROCEDURAL LIKE <message> NAMESPACE "system-tools" LIMIT 6
   4. prompt       the agent's instructions, then "## Reference" and "## Tools that fit this request"
-  5. turn         system/agent-turn → call: a3t:agent
+  5. turn         system/flow_system_agent_turn → call: a3t:agent
                     recall: WORKING + EPISODIC of this session; SEMANTIC facts of the agent
                     LLM ↔ tools loop (tools from the agent's MCP servers, with live permissions)
                     store:  WORKING ← the user's message; EPISODIC ← the reply
@@ -47,7 +47,7 @@ input {message, session_id, ui_context?, config?}
 
 Steps 2, 3 and 6 never stop a turn. If one fails:
 
-- it goes to `system/a3t-error-handler`, which writes one `a3t_errors` row;
+- it goes to `system/flow_system_error_handler`, which writes one `a3t_errors` row;
 - it is listed in the answer's `degraded` as `{step, class, ref}`;
 - the turn goes on without it.
 
@@ -62,8 +62,8 @@ didn't answer in time …", and so on.
 | WORKING | this conversation's messages | the agent's own (`<project>--<agent>`), or `config.memory_namespace` | the turn | the turn |
 | EPISODIC | what the agent answered, per turn | the agent's own | the turn | the turn |
 | SEMANTIC (the agent's facts) | lasting facts about the user and the work | the agent's own | reflection, when `memory_config.semantic.reflect` is on | the turn |
-| SEMANTIC (knowledge) | the FlowR docs, in sections | `system-knowledge`, shared | `system/agent-knowledge-ingest` | the core, step 2 |
-| PROCEDURAL (tool catalogue) | one record per tool: name, server, description, usage, schema | `system-tools`, shared | `system/agent-tools-sync` | the core, step 3 |
+| SEMANTIC (knowledge) | the FlowR docs, in sections | `system-knowledge`, shared | `system/flow_system_knowledge_ingest` | the core, step 2 |
+| PROCEDURAL (tool catalogue) | one record per tool: name, server, description, usage, schema | `system-tools`, shared | `system/flow_system_tools_sync` | the core, step 3 |
 
 - **Where it is:** all memory is on the org's ADB, resource `a3t/adb`, unless
   the agent names another one.
@@ -106,13 +106,13 @@ An A3T agent is a short flow. It extends the core and runs it with its own confi
 document: { dsl: '1.0.3', namespace: my-project, name: release-checker, version: '1.0.0' }
 metadata:
   a3t:
-    extends: system/agent-engine@2.1.0     # the core's base: error handler, locks
+    extends: system/tmpl_system_agent_engine@2.1.0     # the core's base: error handler, locks
 do:
   - agent:
       run:
         workflow:
           namespace: system
-          name: agent-engine
+          name: tmpl_system_agent_engine
           input:
             message: '${ .message }'
             session_id: '${ .session_id }'
@@ -127,11 +127,11 @@ do:
 
 - **Session ids:** pass a session id of the form `<agent-id>:<anything>` (for example
   `agt-1a2b:web-42`). Memory and the owner check then belong to that agent.
-- **Reading the agent's values:** `a3t/a3t-chat-engine` is a full example. It reads the
+- **Reading the agent's values:** `a3t/tmpl_a3t_agent` is a full example. It reads the
   agent's record (`agent_configs`) and turns its values into `config`.
 
-In the console, agents made from the `agent-engine` template run through
-`a3t/a3t-chat-engine`, so they get the core without writing a flow.
+In the console, agents made from the `tmpl_system_agent_engine` template run through
+`a3t/tmpl_a3t_agent`, so they get the core without writing a flow.
 
 ## Clone and use an agent
 
@@ -144,8 +144,8 @@ Ways to copy an agent, by where you work:
 - **REST, to another project:** `POST /agents/{id}/transfer` with
   `{"project": "…", "new_agent": {"name": "…"}}`. This carries procedures only: no
   episodes or facts.
-- **The core itself:** to give an org its own core, copy `agent-engine.yaml` into a
-  project namespace and change it there. A3T agents keep extending `system/agent-engine`
+- **The core itself:** to give an org its own core, copy `tmpl_system_agent_engine.yaml` into a
+  project namespace and change it there. A3T agents keep extending `system/tmpl_system_agent_engine`
   unless you point them at the copy.
 
 Ways to call an agent:
@@ -168,10 +168,10 @@ FLOWR_TOKEN=<your console token> node a3t/backend/scripts/load-core-agent-memory
 What it loads:
 
 - **Knowledge:** the `a3t/wwwdocs` pages and this guide, through
-  `system/agent-knowledge-ingest`.
+  `system/flow_system_knowledge_ingest`.
 - **Tools:** the platform's own tools, as server `a3t/agent-flows`. The script lists them
   with your token. It also loads the tools of any `--servers <ns/name>,…` that FlowR can
-  list itself. Both go through `system/agent-tools-sync`.
+  list itself. Both go through `system/flow_system_tools_sync`.
 
 Running it again updates in place and forgets what is gone. Add `--dry-run` to see what
 it would send.
@@ -181,7 +181,7 @@ it would send.
 | Where | What |
 |---|---|
 | `a3t_agent_turns` (platform DB) | One row per turn: `run_id`, `session_id`, `agent_id`, `principal`, `llm`, `memory`, `outcome`, `iterations`, `tool_calls`, `knowledge`, `tool_hints`, `degraded`, `duration_ms`. |
-| `a3t_errors` (platform DB) | One row per handled failure: `class`, `code`, `flow`, `step`, `run_id`, `detail`, `user_message`. Read it through `a3t/a3t-error-log` (Admin and SuperAdmin). |
+| `a3t_errors` (platform DB) | One row per handled failure: `class`, `code`, `flow`, `step`, `run_id`, `detail`, `user_message`. Read it through `a3t/flow_a3t_error_log` (Admin and SuperAdmin). |
 | `agent_runs`, `agent_usage` | Written by the engine for agents with a memory space: version, memory point, tokens and time per turn. |
 
 ## Writing flows for FlowR: where it differs from CNCF 1.0
@@ -192,7 +192,7 @@ it would send.
   `(x // {}).a` (CA-R10).
 - **`$workflow` and `$runtime` are `null` in a subflow:** guard with
   `($workflow // {}).id` (CA-R2).
-- **Agent hooks (`use.extensions` on `system/agent-turn`) run `set` tasks only** (CA-R9).
+- **Agent hooks (`use.extensions` on `system/flow_system_agent_turn`) run `set` tasks only** (CA-R9).
 - **`create_flow` doesn't replace a flow that exists:** use `update_flow`.
 - **`call: mcp` can't reach the platform's own MCP server on EE**, which needs a token
   (CA-R13).
