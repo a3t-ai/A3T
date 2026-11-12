@@ -23,7 +23,7 @@ metadata:
 do:
   - setup:
       set:
-        _res: '${ .resource // "a3t/agent-memory" }'
+        _res: '${ .resource // "a3t/adb" }'
         _ns: '${ .namespace // "system-knowledge" }'
         # Sections: [{key, source, title, content}], at most max_chars each (a longer
         # section is cut into parts of that size).

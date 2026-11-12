@@ -29,7 +29,7 @@ metadata:
 do:
   - setup:
       set:
-        _res: '${ .resource // "a3t/agent-memory" }'
+        _res: '${ .resource // "a3t/adb" }'
         _ns: '${ .namespace // "system-tools" }'
         _servers: '${ .servers // [] }'
         _complete: '${ .complete_for // [] }'

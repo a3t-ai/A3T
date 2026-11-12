@@ -12,7 +12,7 @@
  * are forgotten.
  *
  *   FLOWR_TOKEN=<bearer> node a3t/backend/scripts/load-core-agent-memory.mjs \
- *     --url https://<flowr> [--resource a3t/agent-memory] [--self-server a3t/agent-flows] [--servers <ns/name>,...] \
+ *     --url https://<flowr> [--resource a3t/adb] [--self-server a3t/agent-flows] [--servers <ns/name>,...] \
  *     [--only knowledge|tools] [--dry-run]
  *
  * FLOWR_TOKEN is a user's access token (the console's), never printed. --dry-run
@@ -26,10 +26,10 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => (
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DRY = args['dry-run'] === 'true';
 if (!args.url && !DRY) {
-  console.error('usage: FLOWR_TOKEN=… load-core-agent-memory.mjs --url <flowr> [--resource a3t/agent-memory] [--servers a,b] [--only knowledge|tools] [--dry-run]');
+  console.error('usage: FLOWR_TOKEN=… load-core-agent-memory.mjs --url <flowr> [--resource a3t/adb] [--servers a,b] [--only knowledge|tools] [--dry-run]');
   process.exit(2);
 }
-const resource = args.resource ?? 'a3t/agent-memory';
+const resource = args.resource ?? 'a3t/adb';
 const servers = (args.servers ?? '').split(',').filter(Boolean);
 const selfServer = args['self-server'] ?? 'a3t/agent-flows';
 

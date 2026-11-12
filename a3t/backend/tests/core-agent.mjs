@@ -139,7 +139,7 @@ try {
 
   // ── resources, as A3T's are named ──
   await must('create_resource', { namespace: 'a3t', name: 'stub-llm', type_ref: 'llm', config: { provider: 'openai', api_url: `http://127.0.0.1:${llmPort}`, api_key: 'stub', model: 'stub' } });
-  await must('create_resource', { namespace: 'a3t', name: 'agent-memory', type_ref: 'adb', config: { url: adbUrl, flight_url: flightUrl } });
+  await must('create_resource', { namespace: 'a3t', name: 'adb', type_ref: 'adb', config: { url: adbUrl, flight_url: flightUrl } });
   await must('create_resource', { namespace: 'a3t', name: 'dead-adb', type_ref: 'adb', config: { url: 'http://127.0.0.1:1', flight_url: 'http://127.0.0.1:1' } });
   await must('create_resource', { namespace: 'a3t', name: 'a3t-platform-db', type_ref: 'platform-db', config: { backend: 'adb', url: adbUrl, flight_url: flightUrl } });
 
@@ -188,13 +188,13 @@ do:
 
   // ── 1. knowledge ──
   const doc1 = { source: 'flowr/dsl.md', title: 'FlowR DSL', text: '# FlowR DSL\nFlows are CNCF Serverless Workflow 1.0.3.\n## Error handling\nA try task runs its do tasks; catch handles a failure and sees it as $context.error.\n## Loops\nA for task iterates over a list with each and in.\n## Old section\nThis section will be removed.' };
-  let r = await run('system', 'agent-knowledge-ingest', { documents: [doc1], resource: 'a3t/agent-memory' });
+  let r = await run('system', 'agent-knowledge-ingest', { documents: [doc1], resource: 'a3t/adb' });
   check('ingest: sections stored', !r.isError && r.out?.stored === 4 && (r.out?.failed ?? []).length === 0, r.text);
   let kn = await aql('RECALL FROM SEMANTIC WHERE source = $s NAMESPACE "system-knowledge" LIMIT 50', { s: 'flowr/dsl.md' });
   check('ingest: records keyed per section, kind doc', kn.length === 4 && kn.every(x => x.data.kind === 'doc' && x.data.key.startsWith('doc:flowr/dsl.md#')), JSON.stringify(kn.map(x => x.data.key)));
   check('ingest: quotes and $ survive', kn.some(x => (x.data.content ?? '').includes('$context.error')), JSON.stringify(kn.map(x => x.data.content)));
   const doc2 = { ...doc1, text: doc1.text.replace('\n## Old section\nThis section will be removed.', '').replace('iterates over a list', 'iterates over any list') };
-  r = await run('system', 'agent-knowledge-ingest', { documents: [doc2], resource: 'a3t/agent-memory' });
+  r = await run('system', 'agent-knowledge-ingest', { documents: [doc2], resource: 'a3t/adb' });
   check('ingest again: updated in place, removed section forgotten', !r.isError && r.out?.updated === 3 && r.out?.forgotten === 1 && r.out?.stored === 0, r.text);
   kn = await aql('RECALL FROM SEMANTIC WHERE source = $s NAMESPACE "system-knowledge" LIMIT 50', { s: 'flowr/dsl.md' });
   check('ingest again: 3 sections, new text', kn.length === 3 && kn.some(x => x.data.content.includes('any list')), JSON.stringify(kn.map(x => x.data.content)));
@@ -213,13 +213,13 @@ do:
     { server: 'a3t/agent-flows', name: 'list_flows', description: 'List the registered workflows' },
     { server: 'a3t/agent-flows', name: 'delete_flow', description: 'Remove a workflow' },
   ];
-  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1, resource: 'a3t/agent-memory' });
+  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1, resource: 'a3t/adb' });
   check('tools: one record per tool', !r.isError && r.out?.stored === 3, r.text);
-  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1.slice(0, 2).map(t => ({ ...t, description: t.description + '.' })), resource: 'a3t/agent-memory' });
+  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1.slice(0, 2).map(t => ({ ...t, description: t.description + '.' })), resource: 'a3t/adb' });
   check('tools again: updated (stale only for listed servers)', !r.isError && r.out?.updated === 2 && r.out?.stored === 0, r.text);
-  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1.slice(0, 2), complete_for: ['a3t/agent-flows'], resource: 'a3t/agent-memory' });
+  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1.slice(0, 2), complete_for: ['a3t/agent-flows'], resource: 'a3t/adb' });
   check('tools: a complete list forgets what is gone (delete_flow)', !r.isError && r.out?.forgotten === 1, r.text);
-  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1, resource: 'a3t/agent-memory' });
+  r = await run('system', 'agent-tools-sync', { servers: [], tools: tools1, resource: 'a3t/adb' });
   const tc = await aql('RECALL FROM PROCEDURAL WHERE kind = "tool" NAMESPACE "system-tools" LIMIT 50');
   check('tools: kind tool, schema and usage kept', tc.length === 3 && tc.every(x => x.data.name && x.data.server && 'schema' in x.data), JSON.stringify(tc.map(x => x.data)));
 

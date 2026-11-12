@@ -65,7 +65,7 @@ didn't answer in time …", and so on.
 | SEMANTIC (knowledge) | the FlowR docs, in sections | `system-knowledge`, shared | `system/agent-knowledge-ingest` | the core, step 2 |
 | PROCEDURAL (tool catalogue) | one record per tool: name, server, description, usage, schema | `system-tools`, shared | `system/agent-tools-sync` | the core, step 3 |
 
-- **Where it is:** all memory is on the org's ADB, resource `a3t/agent-memory`, unless
+- **Where it is:** all memory is on the org's ADB, resource `a3t/adb`, unless
   the agent names another one.
 - **Agents with a memory space:** an agent that has its own space (Agents → Memory, or
   `PUT /agents/{id}/memory`) always uses it. Branches, forks and tags work on that space.
@@ -84,7 +84,7 @@ mcp_servers: []                 # e.g. [a3t/agent-flows]
 enabled_tools: <absent>         # absent = every tool of those servers; a list narrows it
 temperature: 0.7
 max_iterations: 10
-memory_resource: a3t/agent-memory   # null = no memory at all
+memory_resource: a3t/adb   # null = no memory at all
 memory_namespace: default
 memory_config:
   working:    {read: true, write: true}

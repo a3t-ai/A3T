@@ -184,7 +184,7 @@ tries again.
 ### CA-R12 — The org's ADB resource name, visible to flows
 
 `agent_space::org_adb()` reads `A3T_ADB_RESOURCE`, and flows can't see it. So the core
-defaults to `a3t/agent-memory`.
+defaults to `a3t/adb`.
 
 - **Done when:** flows can read it, for example as `$runtime.adb`.
 

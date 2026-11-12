@@ -41,7 +41,7 @@ do:
         _cfg: >-
           ${ {
               system_prompt: "You are a helpful assistant.",
-              memory_resource: "a3t/agent-memory",
+              memory_resource: "a3t/adb",
               memory_namespace: "default",
               memory_config: {
                 working: {read: true, write: true},
