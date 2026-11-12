@@ -1,0 +1,13 @@
+
+document: { dsl: 1.0.3, namespace: a3t, name: st1-fault, version: 1.0.0 }
+metadata: { a3t: { onError: system/a3t-error-handler, durability: transient } }
+do:
+- pick:
+    switch:
+    - input: { when: '${ .fault == "bad-input" }', then: bad-input }
+    - default: { then: bug }
+- bad-input:
+    raise: { error: { type: 'https://serverlessworkflow.io/spec/1.0.0/errors/validation', status: 400, title: Invalid input, detail: 'st1 e2e: name is required' } }
+- bug:
+    raise: { error: { type: 'https://serverlessworkflow.io/spec/1.0.0/errors/runtime', status: 500, title: Boom, detail: 'st1 e2e: index out of range' } }
+

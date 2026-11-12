@@ -1,0 +1,23 @@
+{
+  "id": "01a107cf-3666-76b3-9d7d-b40a07b2b66d",
+  "name": "ops-ping-hook",
+  "namespace": "a3t",
+  "config": {
+    "type": "webhook",
+    "path": "/ops-ping",
+    "method": null,
+    "secret": null,
+    "message_template": null
+  },
+  "targets": [
+    {
+      "type": "workflow",
+      "namespace": "a3t",
+      "name": "ops-ping",
+      "input_mapping": null
+    }
+  ],
+  "enabled": true,
+  "status": "active",
+  "description": null
+}

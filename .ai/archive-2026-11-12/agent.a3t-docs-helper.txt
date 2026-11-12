@@ -1,0 +1,24 @@
+Workflow execution completed.
+
+- Instance ID: `01a1d223-13b3-7113-bc80-3a1150834fbb`
+- Workflow: a3t/a3t-agents
+- Status: completed
+
+Output:
+[
+  {
+    "created_at": "2026-11-12T22:39:14.020288Z",
+    "created_by": "system",
+    "id": "agt-a3t-docs-helper",
+    "mode": "persistent",
+    "name": "a3t-docs-helper",
+    "namespace": "a3t",
+    "org_id": "org-default",
+    "resource_bindings": "{\"llm\":\"a3t/claude-cli-max\"}",
+    "status": "draft",
+    "template_id": "tpl-a3t-agent",
+    "template_version": "4.0.0",
+    "updated_at": "2026-11-12T22:39:14.020288Z",
+    "variables": "{\"target\":\"a3t/a3t-chat-engine\",\"system_prompt\":\"You answer questions about the FlowR and A3T documentation only, with the page you used. Keep answers short.\",\"llm_resource\":\"a3t/claude-cli-max\",\"mcp_servers\":[\"a3t/agent-flows\"]}"
+  }
+]

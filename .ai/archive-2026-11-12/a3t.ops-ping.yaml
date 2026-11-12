@@ -1,0 +1,10 @@
+document:
+  dsl: "1.0.0"
+  namespace: a3t
+  name: ops-ping
+  version: "1.0.0"
+do:
+  - pong:
+      set:
+        pong: true
+
