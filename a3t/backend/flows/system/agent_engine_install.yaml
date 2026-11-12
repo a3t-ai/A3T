@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: system
   name: agent-engine-install
-  version: '1.0.0'
+  version: '1.0.1'
   metadata:
     description: >
       Upgrades an installed platform to the core agent (system/agent-engine 2.1+)
@@ -48,4 +48,4 @@ do:
         operation: list_tables
         _resource: a3t/a3t-platform-db
       output:
-        as: '${ {tables: ((if type == "array" then . else (.tables // .) end) | map(select(. == "a3t_agent_turns")))} }'
+        as: '${ {tables: ((if type == "array" then . else (.tables // .data // []) end) | map(if type == "object" then (.name // .table // "") else . end) | map(select(. == "a3t_agent_turns")))} }'

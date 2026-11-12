@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: system
   name: agent-control-install
-  version: '1.0.0'
+  version: '1.0.1'
   metadata:
     description: >
       Creates the tables of the agents control plane (a3t/a3t-agent-control) if they
@@ -58,4 +58,4 @@ do:
         operation: list_tables
         _resource: a3t/a3t-platform-db
       output:
-        as: '${ {tables: ((if type == "array" then . else (.tables // .) end) | map(select(. == "agent_relations" or . == "agent_shares")))} }'
+        as: '${ {tables: ((if type == "array" then . else (.tables // .data // []) end) | map(if type == "object" then (.name // .table // "") else . end) | map(select(. == "agent_relations" or . == "agent_shares")))} }'
