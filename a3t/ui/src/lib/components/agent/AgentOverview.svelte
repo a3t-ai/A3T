@@ -5,6 +5,7 @@
   import { factsOf, lineageOf, envOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
   import { flagsOf } from './agentRisk';
+  import AgentEndpoints from './AgentEndpoints.svelte';
 
   let { agent, templates, allAgents, live, me, llmLabel, ongo, onstudio, oncode, onlifecycle }: {
     agent: AgentRec & { description?: string; created_by?: string };
@@ -43,6 +44,8 @@
       <span class="owner">{agent.created_by ? (agent.created_by === me ? 'owned by you' : `owner ${agent.created_by}`) : 'no owner'}</span>
     </div>
   </div>
+
+  <AgentEndpoints id={agent.id} />
 
   <div class="card">
     <div class="card-head"><h3>Needs attention</h3>

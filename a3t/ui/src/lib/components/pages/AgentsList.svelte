@@ -10,6 +10,10 @@
   import AgentReleases from '$lib/components/agent/AgentReleases.svelte';
   import AgentAudit from '$lib/components/agent/AgentAudit.svelte';
   import AgentSettings from '$lib/components/agent/AgentSettings.svelte';
+  import AgentHooks from '$lib/components/agent/AgentHooks.svelte';
+  import AgentLineage from '$lib/components/agent/AgentLineage.svelte';
+  import AgentSharing from '$lib/components/agent/AgentSharing.svelte';
+  import { control } from '$lib/components/agent/controlPlane';
   import { liveFor } from '$lib/components/agent/agentLive.svelte';
   import '$lib/components/agent/agent.css';
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
@@ -158,7 +162,10 @@
     { id: 'review', label: 'Review', hint: 'Check it, then create it. It is not deployed until you deploy it.' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    overview: 'What it is, who owns it, what needs attention',
+    overview: 'What it is, how to call it, what needs attention',
+    hooks: 'Every phase of a turn, and the flows that run there: core, template, this agent',
+    lineage: 'Where it came from, what came from it, and what flows back',
+    sharing: 'Who can see it, and what each namespace may do with it',
     access: 'Everything it can reach: identity, model, tools, data, memory',
     exposure: 'How it exposes itself (REST, MCP, A2A) and who has called it',
     controls: 'Stop it, and what governs it: hooks, policies, approvals',
@@ -173,6 +180,9 @@
   /// how to stop it, what it did, where it runs.
   const treeNodes = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
+    { id: 'hooks', label: 'Hooks', icon: '<path d="M5 2v6a3 3 0 006 0V5"/><path d="M9 7l2-2 2 2"/><circle cx="5" cy="13" r="1.6"/>' },
+    { id: 'lineage', label: 'Lineage', icon: '<circle cx="8" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="13" r="1.6"/><path d="M8 4.6V8M8 8l-4 3.4M8 8l4 3.4"/>' },
+    { id: 'sharing', label: 'Sharing', icon: '<circle cx="12" cy="4" r="2"/><circle cx="4" cy="8" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.8 7l4.4-2M5.8 9l4.4 2"/>' },
     { id: 'access', label: 'Access', icon: '<circle cx="5.5" cy="8" r="3"/><path d="M8.5 8H15M12.5 8v3M14.5 8v2"/>' },
     { id: 'exposure', label: 'Exposure', icon: '<circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13"/>' },
     { id: 'controls', label: 'Controls', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
@@ -360,6 +370,8 @@
       variables: JSON.stringify(vars),
     }, vars.target || 'a3t/a3t-chat-agent', vars.ep_path);
     if (!r.ok && !String(r.error ?? '').startsWith('Agent created')) return r.error ?? 'It was not made.';
+    // Where it came from, for Lineage (the control plane's agent_relations).
+    await control.relate(id, { kind: 'agent', id: agent.id, version: agent.template_version }, makeKind);
     makeKind = null;
     await Promise.all([loadAgents(), loadTriggerOptions()]);
     selectAgent(id);
@@ -742,6 +754,12 @@
             {#if propNode === 'overview'}
               <AgentOverview {agent} {templates} {allAgents} live={live!} me={$currentUser?.id ?? ''} {llmLabel}
                 ongo={(t) => (propNode = t)} onstudio={studio} oncode={openCode} onlifecycle={lifecycle} />
+            {:else if propNode === 'hooks'}
+              <AgentHooks {agent} {templates} />
+            {:else if propNode === 'lineage'}
+              <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle} />
+            {:else if propNode === 'sharing'}
+              <AgentSharing {agent} canEdit={$canEditAgent} />
             {:else if propNode === 'access'}
               <AgentAccess {agent} {templates} live={live!} {bindings} {llmLabel} canEdit={$canEditAgent} ongo={(t) => (propNode = t)}>
                 {#snippet editor()}
