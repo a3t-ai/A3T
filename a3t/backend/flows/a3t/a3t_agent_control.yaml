@@ -1,0 +1,595 @@
+document:
+  dsl: '1.0.3'
+  namespace: a3t
+  name: a3t-agent-control
+  version: '1.0.0'
+  metadata:
+    description: >
+      The agents control plane. One flow, one action per call (input.action):
+      create (from a template or an agent; mode template | inherit | clone), get
+      (record, relation, endpoints, shares), lineage (ancestors and descendants),
+      relate (record where an agent came from, e.g. after POST /agents/{id}/fork),
+      compare (can a fork merge back?), merge (a fork's procedures into its source,
+      through ADB), evolve (a fork that can't merge becomes its own agent), shares,
+      share, unshare, shared_with (agents shared with a namespace, and public ones).
+      Memory copies with history (fork, branch, promote) stay FlowR's REST routes
+      under /agents/{id}; this flow records the relation. See
+      .ai/A3T_AGENTS_API_PLAN.md.
+      Input: { action, org_id, user_id?, ... }. Output: { ok, ... }.
+
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
+    durability: transient
+
+do:
+  - setup:
+      set:
+        _in: '${ . }'
+        _org: '${ .org_id // "org-default" }'
+        _who: '${ .user_id // (($context._principal // {}).user // "") | tostring }'
+        _now: '${ now | todateiso8601 }'
+      export:
+        as: '${ $context + . }'
+
+  - route:
+      switch:
+        - create: { when: '${ $context._in.action == "create" }', then: create }
+        - get: { when: '${ $context._in.action == "get" }', then: get }
+        - lineage: { when: '${ $context._in.action == "lineage" }', then: lineage }
+        - relate: { when: '${ $context._in.action == "relate" }', then: relate }
+        - compare: { when: '${ $context._in.action == "compare" or $context._in.action == "merge" }', then: compare }
+        - evolve: { when: '${ $context._in.action == "evolve" }', then: evolve }
+        - shares: { when: '${ $context._in.action == "shares" }', then: shares }
+        - share: { when: '${ $context._in.action == "share" }', then: share }
+        - unshare: { when: '${ $context._in.action == "unshare" }', then: unshare }
+        - shared_with: { when: '${ $context._in.action == "shared_with" }', then: shared_with }
+        - unknown: { then: unknown }
+
+  - unknown:
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Unknown action
+          detail: '${ "a3t-agent-control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare or shared_with." }'
+
+  # ═══ create ════════════════════════════════════════════════════════════════
+  # { action: create, from: {kind: template|agent, id, version?}, mode?: template|inherit|clone,
+  #   name, project?, values?: {system_prompt, llm_resource, mcp_servers, enabled_tools, ...},
+  #   agent_mode?: persistent|ephemeral|reactive, id? }
+  - create:
+      set:
+        _from: '${ $context._in.from // {} }'
+        _id: '${ $context._in.id // ("agt-" + ((now * 1000000 | floor) | tostring)) }'
+        _rel: '${ $context._in.mode // (if (($context._in.from // {}).kind // "") == "template" then "template" else "inherit" end) }'
+      export:
+        as: '${ $context + . }'
+  - create_check:
+      if: '${ ($context._from.kind // "") as $k | ($k != "template" and $k != "agent") or (($context._from.id // "") == "") or (($context._in.name // "") == "") or (["template", "inherit", "clone"] | index($context._rel)) == null }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't create the agent
+          detail: 'create needs from: {kind: template | agent, id}, a name, and mode template | inherit | clone. A fork with memory is POST /agents/{id}/fork, then relate.'
+  - create_source_template:
+      if: '${ $context._from.kind == "template" }'
+      call: lancedb
+      with:
+        operation: query
+        table: template_registry
+        filter: '${ "id = ''" + $context._from.id + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_src: ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null)} }'
+  - create_source_agent:
+      if: '${ $context._from.kind == "agent" }'
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "id = ''" + $context._from.id + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_src: ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null)} }'
+  - create_found:
+      if: '${ $context._src == null }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 404
+          title: Source not found
+          detail: '${ "No " + $context._from.kind + " " + $context._from.id + " in this org." }'
+  - create_row:
+      set:
+        _row: >-
+          ${ ($context._src) as $s
+          | (if $context._from.kind == "agent" then (($s.variables // "{}") | try fromjson catch {} | del(.memory_namespace)) else {} end) as $base
+          | {
+              id: $context._id,
+              org_id: $context._org,
+              name: $context._in.name,
+              template_id: (if $context._from.kind == "template" then $s.id else ($s.template_id // "") end),
+              template_version: (($context._from.version // (if $context._from.kind == "template" then $s.version else $s.template_version end)) // "" | tostring),
+              mode: ($context._in.agent_mode // (if $context._from.kind == "agent" then $s.mode else null end) // "persistent"),
+              variables: ($base * ($context._in.values // {}) | tojson),
+              resource_bindings: (if $context._from.kind == "agent" then ($s.resource_bindings // "{}") else (($context._in.resource_bindings // {}) | tojson) end),
+              namespace: ($context._in.project // (if $context._from.kind == "agent" then $s.namespace else null end) // "default"),
+              status: "draft",
+              created_by: $context._who,
+              created_at: $context._now,
+              updated_at: $context._now
+            } }
+      export:
+        as: '${ $context + . }'
+  - create_insert:
+      call: lancedb
+      with:
+        operation: insert
+        table: agent_configs
+        records:
+          - '${ $context._row }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+  - create_relation:
+      call: lancedb
+      with:
+        operation: insert
+        table: agent_relations
+        records:
+          - id: '${ "rel-" + $context._id }'
+            agent_id: '${ $context._id }'
+            parent_kind: '${ $context._from.kind }'
+            parent_id: '${ $context._from.id }'
+            parent_version: '${ $context._row.template_version }'
+            relation: '${ $context._rel }'
+            created_by: '${ $context._who }'
+            created_at: '${ $context._now }'
+            updated_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+  - create_event:
+      call: lancedb
+      with:
+        operation: insert
+        table: agent_events
+        records:
+          - id: '${ $context._id + "-evt-created" }'
+            agent_config_id: '${ $context._id }'
+            event_type: created
+            payload: '${ {from: $context._from, relation: $context._rel} | tojson }'
+            created_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+  - create_done:
+      set:
+        ok: true
+        agent: '${ $context._row | del(.variables, .resource_bindings) }'
+        relation: '${ {kind: $context._rel, parent: $context._from} }'
+        endpoints: >-
+          ${ {
+              control: ("/agents/" + $context._id),
+              data: {chat: "/chat", session_id: ($context._id + ":<session>"), stream: "/chat/stream/<session_id>"}
+            } }
+      then: end
+
+  # ═══ get ═══════════════════════════════════════════════════════════════════
+  # { action: get, id }
+  - get:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "id = ''" + ($context._in.id // "") + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_row: ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null)} }'
+      metadata:
+        a3t:
+          policy:
+            op: read
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+  - get_found:
+      if: '${ $context._row == null }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 404
+          title: Agent not found
+          detail: '${ "No agent " + ($context._in.id // "") + "." }'
+  - get_relation:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_relations
+        filter: '${ "agent_id = ''" + $context._in.id + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_relrow: ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null)} }'
+  - get_shares:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_shares
+        filter: '${ "agent_id = ''" + $context._in.id + "''" }'
+        limit: 200
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_shares: (if type == "array" then . else (.rows // .data // []) end)} }'
+  - get_done:
+      set:
+        ok: true
+        agent: '${ $context._row + {variables: (($context._row.variables // "{}") | try fromjson catch {}), resource_bindings: (($context._row.resource_bindings // "{}") | try fromjson catch {})} }'
+        relation: '${ if $context._relrow == null then null else {kind: $context._relrow.relation, parent: {kind: $context._relrow.parent_kind, id: $context._relrow.parent_id, version: $context._relrow.parent_version}} end }'
+        visibility: '${ if ($context._shares | map(.target) | index("*")) != null then "public" elif ($context._shares | length) > 0 then "namespaces" else "private" end }'
+        shares: '${ $context._shares }'
+        endpoints: >-
+          ${ {
+              control: ("/agents/" + $context._in.id),
+              memory: ("/agents/" + $context._in.id + "/memory"),
+              data: {chat: "/chat", session_id: ($context._in.id + ":<session>"), stream: "/chat/stream/<session_id>"}
+            } }
+      then: end
+
+  # ═══ lineage ═══════════════════════════════════════════════════════════════
+  # { action: lineage, id }. Ancestors up to 5 levels, and direct descendants.
+  - lineage:
+      set:
+        _up: []
+        _cur: '${ $context._in.id // "" }'
+      export:
+        as: '${ $context + . }'
+  - lineage_up:
+      for:
+        each: _step
+        in: '${ [1, 2, 3, 4, 5] }'
+        do:
+          - up_one:
+              if: '${ $context._cur != "" }'
+              call: lancedb
+              with:
+                operation: query
+                table: agent_relations
+                filter: '${ "agent_id = ''" + $context._cur + "''" }'
+                limit: 1
+                _resource: a3t/a3t-platform-db
+              export:
+                as: >-
+                  ${ ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null) as $r
+                  | if $r == null then $context + {_cur: ""}
+                    else $context + {
+                      _up: ($context._up + [{kind: $r.parent_kind, id: $r.parent_id, version: $r.parent_version, relation: $r.relation}]),
+                      _cur: (if $r.parent_kind == "agent" then $r.parent_id else "" end)
+                    } end }
+  - lineage_down:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_relations
+        filter: '${ "parent_id = ''" + ($context._in.id // "") + "''" }'
+        limit: 200
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_down: ((if type == "array" then . else (.rows // .data // []) end) | map({id: .agent_id, relation: .relation, since: .created_at}))} }'
+  - lineage_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        ancestors: '${ $context._up }'
+        descendants: '${ $context._down }'
+      then: end
+
+  # ═══ relate ════════════════════════════════════════════════════════════════
+  # { action: relate, id, parent: {kind: agent|template, id, version?}, relation: fork|branch|clone|inherit|template }
+  # For agents FlowR made (POST /agents/{id}/fork, branch promote): record where they came from.
+  - relate:
+      if: '${ ((["fork", "branch", "clone", "inherit", "template"] | index($context._in.relation // "")) == null) or (($context._in.id // "") == "") or ((($context._in.parent // {}).id // "") == "") }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't record the relation
+          detail: 'relate needs id, parent: {kind, id} and relation fork | branch | clone | inherit | template.'
+  - relate_insert:
+      call: lancedb
+      with:
+        operation: insert
+        table: agent_relations
+        records:
+          - id: '${ "rel-" + $context._in.id }'
+            agent_id: '${ $context._in.id }'
+            parent_kind: '${ $context._in.parent.kind // "agent" }'
+            parent_id: '${ $context._in.parent.id }'
+            parent_version: '${ ($context._in.parent.version // "") | tostring }'
+            relation: '${ $context._in.relation }'
+            created_by: '${ $context._who }'
+            created_at: '${ $context._now }'
+            updated_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+  - relate_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        relation: '${ $context._in.relation }'
+      then: end
+
+  # ═══ compare / merge ═══════════════════════════════════════════════════════
+  # { action: compare | merge, id (the fork) }. A fork can merge back when only its
+  # procedural memory differs: same template, version, instructions, model, tools.
+  # merge then copies its procedures into the source's memory through ADB, which
+  # sequences each write; episodes and facts stay with the fork.
+  - compare:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_relations
+        filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_relrow: ((if type == "array" then . else (.rows // .data // []) end) | .[0] // null)} }'
+  - compare_has_parent:
+      if: '${ $context._relrow == null or $context._relrow.parent_kind != "agent" }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 409
+          title: Nothing to merge into
+          detail: '${ ($context._in.id // "") + " was not made from another agent, so it has nothing to merge back into." }'
+  - compare_rows:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "id = ''" + $context._in.id + "'' OR id = ''" + $context._relrow.parent_id + "''" }'
+        limit: 2
+        _resource: a3t/a3t-platform-db
+      export:
+        as: >-
+          ${ (if type == "array" then . else (.rows // .data // []) end) as $r
+          | $context + {
+              _mine: ($r | map(select(.id == $context._in.id)) | .[0] // null),
+              _theirs: ($r | map(select(.id == $context._relrow.parent_id)) | .[0] // null)
+            } }
+  - compare_diff:
+      set:
+        _changed: >-
+          ${ def vars: ((.variables // "{}") | try fromjson catch {});
+          ($context._mine // {}) as $a | ($context._theirs // {}) as $b
+          | ($a | vars) as $va | ($b | vars) as $vb
+          | (["template_id", "template_version", "mode"] | map(select(($a[.] // "") != ($b[.] // ""))))
+            + ((($va | keys) + ($vb | keys)) | unique | map(select(. != "memory_namespace")) | map(select(($va[.] // null) != ($vb[.] // null))) | map("values." + .)) }
+        _src_ns: '${ (($context._theirs // {}).namespace // "default") + "--" + $context._relrow.parent_id }'
+        _fork_ns: '${ (($context._mine // {}).namespace // "default") + "--" + $context._in.id }'
+      export:
+        as: '${ $context + . }'
+  - compare_done:
+      if: '${ $context._in.action == "compare" }'
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        source: '${ $context._relrow.parent_id }'
+        mergeable: '${ ($context._changed | length) == 0 }'
+        changed: '${ $context._changed }'
+        carries: procedural
+        next: '${ if ($context._changed | length) == 0 then "merge" else "evolve" end }'
+      then: end
+  - merge_check:
+      if: '${ ($context._changed | length) > 0 }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 409
+          title: Can't merge
+          detail: '${ "Only a fork whose procedures alone changed can merge back. Changed: " + ($context._changed | join(", ")) + ". Evolve it into its own agent instead." }'
+  - merge_read:
+      call: adb
+      with:
+        query: '${ "RECALL FROM PROCEDURAL ALL NAMESPACE \"" + $context._fork_ns + "\" LIMIT 1000" }'
+        _resource: '${ $context._in.memory_resource // "a3t/adb" }'
+      export:
+        as: '${ $context + {_procs: ((.data.records // .data.data.records // .records // []) | map(.data) | map(select((.kind // "") != "tool")) | map(del(.pattern_id, .severity, .confidence, .source, .success_count, .failure_count, .variables, .metadata, .version))), merged: 0, merge_failed: []} }'
+  - merge_write:
+      for:
+        each: _p
+        in: '${ $context._procs }'
+        do:
+          - merge_one:
+              try:
+                do:
+                  - store_proc:
+                      call: adb
+                      with:
+                        query: >-
+                          ${ def q: "\"" + (if type == "string" then . else tojson end | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\""; def v: if type == "array" then "[" + (map(q) | join(", ")) + "]" else q end;
+                          "STORE INTO PROCEDURAL (" + ($_p | to_entries | map(select(.value != null)) | map(.key + " = " + (.value | v)) | join(", "))
+                          + ") NAMESPACE " + ($context._src_ns | q) }
+                        _resource: '${ $context._in.memory_resource // "a3t/adb" }'
+                      export:
+                        as: '${ $context + {merged: ($context.merged + 1)} }'
+                catch:
+                  do:
+                    - update_proc:
+                        if: '${ (($context.error.detail // "") + ($context.error.title // "")) | test("key_exists") }'
+                        try:
+                          do:
+                            - update_one:
+                                call: adb
+                                with:
+                                  query: >-
+                                    ${ def q: "\"" + (if type == "string" then . else tojson end | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\""; def v: if type == "array" then "[" + (map(q) | join(", ")) + "]" else q end;
+                                    "UPDATE INTO PROCEDURAL WHERE key = " + ($_p.key | q) + " ("
+                                    + ($_p | to_entries | map(select(.key != "key" and .value != null)) | map(.key + " = " + (.value | v)) | join(", "))
+                                    + ") NAMESPACE " + ($context._src_ns | q) }
+                                  _resource: '${ $context._in.memory_resource // "a3t/adb" }'
+                                export:
+                                  as: '${ $context + {merged: ($context.merged + 1)} }'
+                          catch:
+                            do:
+                              - update_failed:
+                                  set:
+                                    merge_failed: '${ $context.merge_failed + [{key: ($_p.key // ""), error: ($context.error.detail // $context.error.title // "update failed")}] }'
+                                  export:
+                                    as: '${ $context + . }'
+                    - store_failed:
+                        if: '${ ((($context.error.detail // "") + ($context.error.title // "")) | test("key_exists")) | not }'
+                        set:
+                          merge_failed: '${ $context.merge_failed + [{key: ($_p.key // ""), error: ($context.error.detail // $context.error.title // "store failed")}] }'
+                        export:
+                          as: '${ $context + . }'
+  - merge_event:
+      call: lancedb
+      with:
+        operation: insert
+        table: agent_events
+        records:
+          - id: '${ $context._relrow.parent_id + "-evt-merge-" + $context._in.id + "-" + ((now * 1000 | floor) | tostring) }'
+            agent_config_id: '${ $context._relrow.parent_id }'
+            event_type: merged
+            payload: '${ {from: $context._in.id, procedures: $context.merged, failed: ($context.merge_failed | length)} | tojson }'
+            created_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+  - merge_done:
+      set:
+        ok: '${ ($context.merge_failed | length) == 0 }'
+        id: '${ $context._in.id }'
+        into: '${ $context._relrow.parent_id }'
+        procedures: '${ $context.merged }'
+        failed: '${ $context.merge_failed }'
+      then: end
+
+  # ═══ evolve ════════════════════════════════════════════════════════════════
+  # { action: evolve, id }. The fork keeps its parent as ancestor, as relation "evolved".
+  - evolve:
+      call: lancedb
+      with:
+        operation: update
+        table: agent_relations
+        filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+        values:
+          relation: evolved
+          updated_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+  - evolve_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        relation: evolved
+      then: end
+
+  # ═══ sharing ═══════════════════════════════════════════════════════════════
+  # shares { id } · share { id, target: <namespace> | "*", rights?: {call, inherit, fork, merge_back} }
+  # unshare { id, target } · shared_with { namespace }: agents shared with it, and public ones.
+  - shares:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_shares
+        filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+        limit: 200
+        _resource: a3t/a3t-platform-db
+      output:
+        as: '${ {ok: true, id: $context._in.id, shares: (if type == "array" then . else (.rows // .data // []) end)} }'
+      then: end
+
+  - share:
+      if: '${ (($context._in.id // "") == "") or (($context._in.target // "") == "") }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't share
+          detail: 'share needs id and target: a namespace, or "*" for public.'
+  - share_replace:
+      call: lancedb
+      with:
+        operation: delete
+        table: agent_shares
+        filter: '${ "id = ''" + "shr-" + $context._in.id + "-" + $context._in.target + "''" }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+  - share_insert:
+      call: lancedb
+      with:
+        operation: insert
+        table: agent_shares
+        records:
+          - id: '${ "shr-" + $context._in.id + "-" + $context._in.target }'
+            agent_id: '${ $context._in.id }'
+            target: '${ $context._in.target }'
+            can_call: '${ (($context._in.rights // {}).call // true) | tostring }'
+            can_inherit: '${ (($context._in.rights // {}).inherit // false) | tostring }'
+            can_fork: '${ (($context._in.rights // {}).fork // false) | tostring }'
+            can_merge_back: '${ (($context._in.rights // {}).merge_back // false) | tostring }'
+            granted_by: '${ $context._who }'
+            granted_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+  - share_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        target: '${ $context._in.target }'
+      then: end
+
+  - unshare:
+      call: lancedb
+      with:
+        operation: delete
+        table: agent_shares
+        filter: '${ "id = ''" + "shr-" + ($context._in.id // "") + "-" + ($context._in.target // "") + "''" }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+  - unshare_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        target: '${ $context._in.target }'
+      then: end
+
+  - shared_with:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_shares
+        filter: '${ "target = ''" + ($context._in.namespace // "") + "'' OR target = ''*''" }'
+        limit: 500
+        _resource: a3t/a3t-platform-db
+      output:
+        as: '${ {ok: true, namespace: $context._in.namespace, shares: (if type == "array" then . else (.rows // .data // []) end)} }'
+      then: end

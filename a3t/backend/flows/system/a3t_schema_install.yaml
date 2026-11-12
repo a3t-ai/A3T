@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: system
   name: a3t-schema-install
-  version: 1.1.0
+  version: 1.2.0
 metadata:
   a3t:
     extends: system/a3t-base@1.0.0
@@ -304,6 +304,43 @@ do:
         degraded: string
         duration_ms: string
       _resource: a3t/a3t-platform-db
+# The agents control plane (a3t/a3t-agent-control): where each agent came from, and who it is shared with.
+- create-agent-relations:
+    call: lancedb
+    with:
+      operation: create_table
+      table: agent_relations
+      mode: create_if_not_exists
+      schema:
+        id: string
+        agent_id: string
+        parent_kind: string
+        parent_id: string
+        parent_version: string
+        relation: string
+        created_by: string
+        created_at: string
+        updated_at: string
+      _resource: a3t/a3t-platform-db
+
+- create-agent-shares:
+    call: lancedb
+    with:
+      operation: create_table
+      table: agent_shares
+      mode: create_if_not_exists
+      schema:
+        id: string
+        agent_id: string
+        target: string
+        can_call: string
+        can_inherit: string
+        can_fork: string
+        can_merge_back: string
+        granted_by: string
+        granted_at: string
+      _resource: a3t/a3t-platform-db
+
 - create-early-access:
     call: lancedb
     with:
