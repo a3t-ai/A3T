@@ -187,10 +187,15 @@
   </div>
 
   <div class="next">
-    <button class="card go" onclick={() => ongo('build')}><b>Build on it →</b><span class="dim">Its instructions, model, tools and hooks.</span></button>
-    <button class="card go" onclick={() => ongo('secure')}><b>Secure it →</b><span class="dim">Its keys, who it is shared with, controls and audit.</span></button>
-    <div class="card go"><b>Make another from it</b><span class="dim">
-      <button class="link" onclick={onstudio}>Test in Studio</button> · <button class="link" onclick={() => onlifecycle('clone')}>Clone</button> · <button class="link" onclick={() => onlifecycle('fork')}>Fork</button> · <button class="link" onclick={() => onlifecycle('branch')}>Branch its memory</button></span></div>
+    <div class="card go"><button class="ttl" onclick={() => ongo('build')}>Make it work →</button>
+      <span class="dim">What it knows and can do.</span>
+      <span class="links"><button class="link" onclick={() => ongo('tools')}>Instructions &amp; model</button><button class="link" onclick={() => ongo('tools')}>Tools</button><button class="link" onclick={() => ongo('hooks')}>Hooks</button><button class="link" onclick={() => ongo('memory')}>Memory</button></span></div>
+    <div class="card go"><button class="ttl" onclick={() => ongo('secure')}>Secure it →</button>
+      <span class="dim">Who can call it and what it may do.</span>
+      <span class="links"><button class="link" onclick={() => ongo('keys')}>Keys</button><button class="link" onclick={() => ongo('sharing')}>Sharing</button><button class="link" onclick={() => ongo('controls')}>Controls</button><button class="link" onclick={() => ongo('audit')}>Audit</button></span></div>
+    <div class="card go"><button class="ttl" onclick={() => ongo('release')}>Evolve it →</button>
+      <span class="dim">New versions, and new agents from it.</span>
+      <span class="links"><button class="link" onclick={() => ongo('versions')}>Versions</button><button class="link" onclick={() => onlifecycle('branch')}>Branch its memory</button><button class="link" onclick={() => onlifecycle('fork')}>Fork</button><button class="link" onclick={() => onlifecycle('clone')}>Clone</button><button class="link" onclick={() => ongo('lineage')}>Lineage</button><button class="link" onclick={onstudio}>Studio</button></span></div>
   </div>
 </section>
 
@@ -222,6 +227,7 @@
   pre.code { margin: 0; padding-right: 80px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .next { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
   .go { display: flex; flex-direction: column; gap: 4px; text-align: left; font: inherit; }
-  button.go { cursor: pointer; }
-  button.go:hover { border-color: var(--spec); }
+  .go .ttl { border: 0; background: none; padding: 0; text-align: left; font: 600 14px var(--font-sans); color: var(--text-1); cursor: pointer; }
+  .go .ttl:hover { color: var(--spec); }
+  .go .links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; }
 </style>
