@@ -42,6 +42,8 @@ t = await tool('agent_a3t_agents', 'tool_a3t_agent_create', { org_id: 'org-defau
   resource_bindings: { llm: LLM } });
 check(`create: ${id} made by tool_a3t_agent_create`, t.status === 200 && t.body?.output?.agent?.id === id, JSON.stringify(t.body).slice(0, 300));
 console.log(`  control plane: ${URL_}/agents/${id}   data plane: ${URL_}/chat  (session ${id}:<session>)`);
+const vs = await rest('GET', `/agents/${id}/versions`);
+check('  it has its memory space: versions answer', vs.status === 200 && Array.isArray(vs.body?.versions), JSON.stringify(vs).slice(0, 300));
 
 // 3. Data plane, SSE.
 const chat = async (message, session) => {

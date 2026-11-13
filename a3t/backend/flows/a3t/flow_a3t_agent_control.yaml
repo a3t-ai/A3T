@@ -2,12 +2,13 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.1.2'
+  version: '1.2.1'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
       create (from a template or an agent; mode template | inherit | clone), get
-      (record, relation, endpoints, shares), lineage (ancestors and descendants),
+      (record, relation, endpoints, shares; create also registers its memory space,
+      forget removes it), lineage (ancestors and descendants),
       relate (record where an agent came from, e.g. after POST /agents/{id}/fork),
       compare (can a fork merge back?), merge (a fork's procedures into its source,
       through ADB), evolve (a fork that can't merge becomes its own agent), shares,
@@ -62,7 +63,7 @@ do:
           detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with, forget, turns, memory, block or unblock." }'
 
   # ═══ create ════════════════════════════════════════════════════════════════
-  # { action: create, from: {kind: template|agent, id, version?}, mode?: template|inherit|clone,
+  # { action: create, from: {kind: template|agent, id, version?}, mode?: template | inherit|clone|fork,
   #   name, project?, values?: {system_prompt, llm_resource, mcp_servers, enabled_tools, ...},
   #   agent_mode?: persistent|ephemeral|reactive, id? }
   - create:
@@ -73,13 +74,13 @@ do:
       export:
         as: '${ $context + . }'
   - create_check:
-      if: '${ ($context._from.kind // "") as $k | ($k != "template" and $k != "agent") or (($context._from.id // "") == "") or (($context._in.name // "") == "") or (["template", "inherit", "clone"] | index($context._rel)) == null }'
+      if: '${ ($context._from.kind // "") as $k | ($k != "template" and $k != "agent") or (($context._from.id // "") == "") or (($context._in.name // "") == "") or (if $context._from.kind == "agent" then ["inherit", "clone", "fork"] else ["template"] end | index($context._rel)) == null }'
       raise:
         error:
           type: https://a3t.io/errors/input
           status: 400
           title: Can't create the agent
-          detail: 'create needs from: {kind: template | agent, id}, a name, and mode template | inherit | clone. A fork with memory is POST /agents/{id}/fork, then relate.'
+          detail: 'create needs from: {kind: template | agent, id}, a name, and a mode: template (from a template), or inherit | clone | fork (from an agent). To carry its memory, branch it (POST /agents/{id}/branches) and promote the branch.'
   - create_source_template:
       if: '${ $context._from.kind == "template" }'
       call: lancedb
@@ -192,6 +193,38 @@ do:
             payload: '${ {by: $context._who, from: $context._from, relation: $context._rel} | tojson }'
             created_at: '${ $context._now }'
         _resource: a3t/a3t-platform-db
+  # Its memory space: the namespace the core keeps its memory in (its id), on the
+  # org's ADB. Registered here, FlowR's versions and memory branches work on it
+  # (/agents/{id}/versions, /branches). A failure is reported, not fatal.
+  - create_space:
+      try:
+        do:
+          - space_insert:
+              call: lancedb
+              with:
+                operation: insert
+                table: agent_memory
+                records:
+                  - agent_id: '${ $context._id }'
+                    org_id: '${ $context._org }'
+                    namespace: '${ $context._id }'
+                    updated_by: '${ $context._who }'
+                    updated_at: '${ $context._now }'
+                _resource: a3t/a3t-platform-db
+      catch:
+        do:
+          - space_failed:
+              run:
+                workflow:
+                  namespace: system
+                  name: flow_system_error_handler
+                  input:
+                    error: '${ $context.error }'
+                    flow: a3t/flow_a3t_agent_control
+                    version: 1.2.1
+                    run_id: '${ (($workflow // {}).id // "") | tostring }'
+                    principal: '${ $context._who }'
+                    step: create_space
   - create_done:
       set:
         ok: true
@@ -659,6 +692,21 @@ do:
         table: agent_shares
         filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
         _resource: a3t/a3t-platform-db
+  - forget_space:
+      try:
+        do:
+          - space_delete:
+              call: lancedb
+              with:
+                operation: delete
+                table: agent_memory
+                filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+                _resource: a3t/a3t-platform-db
+      catch:
+        do:
+          - no_space_row:
+              set:
+                _none: true
   - forget_done:
       set:
         ok: true
@@ -862,7 +910,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.1.2
+                    version: 1.2.1
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: note_event

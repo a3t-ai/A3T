@@ -40,6 +40,9 @@ spec:
               valueFrom: { secretKeyRef: { name: adb-pool-gateway, key: token } }
             # Registry and platform tables on ADB (decision rows go to gateway_decisions).
             - { name: FLOWR_REGISTRY_ADB, value: "http://adb.a3t.svc.cluster.local:3000" }
+            # The org memory resource for agent spaces (versions, memory branches): the
+            # same ADB resource the core agent keeps memory in.
+            - { name: A3T_ADB_RESOURCE, value: "a3t/adb" }
             - { name: ADB_AUTH_URLS, value: "http://adb.a3t.svc.cluster.local:3000,http://adb.a3t.svc.cluster.local:3001,http://adb.a3t:3000,http://adb.a3t:3001,http://adb:3000,http://adb:3001" }
             - name: ADB_AUTH_TOKEN
               valueFrom: { secretKeyRef: { name: adb-auth, key: token } }
