@@ -18,6 +18,8 @@
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import { toYaml, fromYaml, BODY_OF, targetLabel, type StoredTarget, type SourceKind } from '$lib/components/triggers/triggerSpec';
   import { agentTool, getAccessToken } from '$lib/services/api';
+  import '$lib/components/agent/agent.css';
+  import { copy, endpointUrl } from '$lib/components/agent/agentApi';
 
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
@@ -76,88 +78,88 @@
   // ── Test state ──
   let testPayload = $state('{"message": "Hello from test!"}');
   let testRunning = $state(false);
-  let testResult = $state<any>(null);
   let testError = $state('');
-  let showOutput = $state(false);
+
+  /// The runs the last firing started, each followed to its end.
+  type TestRun = { target: string; instance_id: string; status: string; output?: unknown; error?: string; duration_ms?: number };
+  let testRuns = $state<TestRun[]>([]);
+  /// What the platform answered when nothing ran to follow (a URL target, say).
+  let testReply = $state<any>(null);
 
   async function runTest() {
     if (formType !== 'webhook' || !formPath) return;
-    testRunning = true; testResult = null; testError = ''; showOutput = true;
+    testRunning = true; testRuns = []; testReply = null; testError = '';
 
-    // Step 1: save trigger first if it hasn't been saved
+    // A new trigger is saved first; edits after that save to it.
     if (!editingTrigger) {
       await saveTrigger(true);
       if (saveError) { testError = `Not saved: ${saveError}`; testRunning = false; return; }
-      // The trigger just made: from now on, edits save to it.
       const found = triggers.find(t => t.name === formName && (t.namespace || 'default') === (formNs || 'default'));
       if (found) editingTrigger = found;
     }
 
-    // Step 2: fire the webhook
+    let payload: any;
+    try { payload = JSON.parse(testPayload); } catch { testError = 'The body is not JSON.'; testRunning = false; return; }
     try {
-      let payload: any;
-      try { payload = JSON.parse(testPayload); } catch { testError = 'Invalid JSON payload'; testRunning = false; return; }
-
-      const base = API_BASE;
       const path = formPath.startsWith('/') ? formPath : '/' + formPath;
-      const webhookRes = await fetch(`${base}/webhook${path}`, {
-        method: 'POST',
+      const res = await fetch(`${API_BASE}/webhook${path}`, {
+        method: formMethod || 'POST',
         // As you: an agent's webhook takes no call without a token.
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAccessToken() ?? ''}` },
         body: JSON.stringify(payload),
       });
-      const webhookData = await webhookRes.json();
-
-      if (!webhookRes.ok || webhookData.error) {
-        // A mapping that fails, a target that refuses: say which and why.
-        const why = (webhookData.failed ?? []).map((f: any) => f.error).join('\n');
-        testError = why ? `Nothing ran — ${why}` : (webhookData.error ?? `HTTP ${webhookRes.status}`);
-        testRunning = false;
-        return;
+      const reply = await res.json().catch(() => ({}));
+      // A mapping that fails, a target that refuses: say which and why.
+      const failed = (reply.failed ?? []).map((f: any) => f.error);
+      if (!res.ok || reply.error) {
+        testError = failed.length ? `Nothing ran — ${failed.join('; ')}` : (reply.error === 'paused' ? 'It is paused: nothing ran.' : reply.error ?? `HTTP ${res.status}`);
+        testRunning = false; return;
       }
-
-      if (!webhookData.executions?.length) {
-        // Nothing to follow: show what the platform answered (a paused target, a URL target).
-        testError = webhookData.delivered ? '' : 'It fired, but nothing ran: no target took it.';
-        testResult = { trigger: webhookData };
-        testRunning = false;
-        return;
+      if (failed.length) testError = `Some targets failed — ${failed.join('; ')}`;
+      testRuns = (reply.executions ?? []).map((e: any) => ({ target: e.target, instance_id: e.instance_id, status: 'running' }));
+      if (!testRuns.length) {
+        testReply = reply;
+        if (!reply.delivered) testError = 'It fired, but nothing ran: no target took it.';
+        testRunning = false; return;
       }
-
-      // Step 3: poll for execution result
-      const instanceId = webhookData.executions[0].instance_id;
-      testResult = { phase: 'running', instanceId, trigger: webhookData };
-
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        const statusRes = await mcpCall('get_execution_status', { instance_id: instanceId });
-        if (!statusRes.ok) continue;
-        const d = typeof statusRes.data === 'string' ? JSON.parse(statusRes.data) : statusRes.data;
-        if (d.status === 'completed' || d.status === 'Completed') {
-          testResult = { phase: 'completed', instanceId, duration: d.duration_us, output: d.output, trigger: webhookData };
-          testRunning = false;
-          return;
-        }
-        if (d.status === 'failed' || d.status === 'Failed') {
-          testResult = { phase: 'failed', instanceId, trigger: webhookData };
-          testError = d.error ?? 'Execution failed';
-          testRunning = false;
-          return;
-        }
-        testResult = { phase: 'running', instanceId, poll: i + 1, trigger: webhookData };
+      // Follow each run to its end (up to 60 s).
+      for (let i = 0; i < 60 && testRuns.some((r) => r.status === 'running'); i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        await Promise.all(testRuns.map(async (r, k) => {
+          if (r.status !== 'running') return;
+          const st = await mcpCall('get_execution_status', { instance_id: r.instance_id });
+          if (!st.ok) return;
+          const d: any = typeof st.data === 'string' ? JSON.parse(st.data) : st.data;
+          const status = String(d?.status ?? '').toLowerCase();
+          if (status === 'completed' || status === 'failed') {
+            testRuns[k] = { ...r, status, output: d.output, error: status === 'failed' ? (d.error ?? 'It failed.') : undefined,
+              duration_ms: d.duration_us != null ? Math.round(d.duration_us / 1000) : undefined };
+          }
+        }));
       }
-      testError = 'Execution timed out (30s)';
-      testRunning = false;
+      testRuns = testRuns.map((r) => (r.status === 'running' ? { ...r, error: 'Still running after 60 s: see Executions.' } : r));
     } catch (e) {
       testError = String(e);
-      testRunning = false;
     }
+    testRunning = false;
   }
 
-  // ── Resize state ──
-  let outputHeight = $state(200);
-  let draggingBottom = $state(false);
-  let editorContainer: HTMLDivElement;
+  // ── What the tabs show ──
+  const SOURCES: SourceKind[] = ['webhook', 'cron', 'adb_topic', 'event'];
+  const SOURCE_NAME: Record<SourceKind, string> = { webhook: 'Webhook', cron: 'Schedule', adb_topic: 'ADB topic', event: 'Platform event' };
+  /// The event each source makes — what the mappings read.
+  const EVENT_SHAPE: Record<SourceKind, string> = {
+    webhook: `{\n  "body":    <the JSON the caller POSTs>,\n  "message": "<the trigger's message, or the body as text>",\n  "source":  "webhook",\n  "trigger": "<this trigger's name>",\n  "time":    "2026-11-13T17:42:00Z"\n}`,
+    cron: `{\n  "body":    { "trigger": "cron", "trigger_id": "…", "fired_at": "…", "minute": "2026-11-13T17:42" },\n  "message": "<its message>",\n  "source":  "cron",\n  "trigger": "<this trigger's name>",\n  "time":    "…"\n}`,
+    adb_topic: `{\n  "body":    { <the message's fields>, "_topic": "orders", "_offset": 1042 },\n  "message": "<the message as text>",\n  "source":  "adb_topic",\n  "trigger": "<this trigger's name>",\n  "time":    "…"\n}`,
+    event: `{\n  "body":    { "specversion": "1.0", "id": "…", "type": "<event type>", "source": "…", "data": { … } },\n  "message": "…",\n  "source":  "event",\n  "trigger": "<this trigger's name>",\n  "time":    "…"\n}`,
+  };
+  const firesOn = $derived(formType === 'webhook' ? (formPath ? `${formMethod} /webhook${formPath.startsWith('/') ? formPath : '/' + formPath}` : '')
+    : formType === 'cron' ? formCron : formType === 'adb_topic' ? (formTopic ? `${formTopicRes || '?'} · ${formTopic}` : '') : formEventSource);
+  const mappedCount = $derived(formTargets.filter((t) => t.input_mapping || t.message || t.conversation).length);
+  let copiedUrl = $state(false);
+  async function cpUrl() { if (await copy(endpointUrl(formPath))) { copiedUrl = true; setTimeout(() => (copiedUrl = false), 1500); } }
+
 
   // ── Load ──
   async function loadTriggers() {
@@ -331,20 +333,6 @@
   async function deleteTrigger(t: Trigger) { await mcpCall('delete_trigger', { id: t.id }); deleteTarget = null; await loadTriggers(); bumpItems(); }
   async function toggleEnabled(t: Trigger) { await mcpCall(t.enabled ? 'pause_trigger' : 'enable_trigger', { id: t.id }); await loadTriggers(); bumpItems(); }
 
-  // ── Output panel resize (height) ──
-  function onBottomDragStart(e: MouseEvent) {
-    draggingBottom = true; e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      if (!editorContainer) return;
-      const rect = editorContainer.getBoundingClientRect();
-      const fromBottom = rect.bottom - ev.clientY;
-      outputHeight = Math.max(80, Math.min(500, fromBottom));
-    };
-    const onUp = () => { draggingBottom = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
-  }
-
-
   function typeIcon(t: string) { return t === 'webhook' ? 'W' : t === 'cron' ? 'C' : t === 'event' ? 'E' : t === 'adb_topic' ? 'T' : '?'; }
   function typeStyle(t: string) {
     return t === 'webhook' ? 'background: var(--runtime-bg, #e6f4ef); color: var(--runtime, #1a7158);'
@@ -446,152 +434,151 @@
   <PropertiesTree icon={(formName || 'NT').slice(0, 2).toUpperCase()} color="#1a7158"
     name={formName || 'New trigger'} meta={`${formType} · ${formNs || '—'}`} nodes={[]}
     steps={trgSteps} wizard={!editingTrigger} activeNode={step}
-    onselect={(id) => { step = id; if (id === 'test') showOutput = true; }} />
-  <div class="panel-col te trg-ui" bind:this={editorContainer}>
-    <!-- As an agent's details: the pane scrolls; the page inside is --detail-w wide. -->
+    onselect={(id) => (step = id)} />
+  <div class="panel-col te trg-ui">
+    <!-- As an agent's details: the pane scrolls; the page inside is --detail-w wide,
+         each tab a set of numbered cards (agent.css, .agt). -->
     <div class="panel-content">
     <div class="pf wide">
-    {#if saveError}<div class="te-error" role="alert">Could not save: {saveError}</div>{/if}
-    <!-- Details / Source -->
-    {#if step === 'details' || step === 'source'}
-    <div class="te-form">
-      <WizardHead step={trgSteps.find((x) => x.id === step)} />
-      <div class="tf-row-top">
-        {#if step === 'details'}
-        <div class="tf-col">
-          <div class="tf-row2">
-            <label><span>Name</span><input type="text" bind:value={formName} placeholder="my-webhook" /></label>
-            <label><span>Namespace</span>
-              <select bind:value={formNs}>
-                {#each [...new Set([formNs, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}
-              </select>
-            </label>
-          </div>
-          <label class="tf-full"><span>Description</span><input type="text" bind:value={formDesc} placeholder="What this trigger does" /></label>
-          <label class="tf-check"><input type="checkbox" bind:checked={formEnabled} /> Enabled</label>
+    <WizardHead step={trgSteps.find((x) => x.id === step)} />
+    <section class="agt">
+    {#if saveError}<div class="note bad" role="alert">Could not save: {saveError}</div>{/if}
+
+    {#if step === 'details'}
+      <div class="card">
+        <div class="card-head"><h3>1 · Trigger</h3><span>its name, the project it belongs to, what it is for</span></div>
+        <div class="fields">
+          <label class="fld">Name<input type="text" bind:value={formName} placeholder="refunds" /></label>
+          <label class="fld">Project
+            <select bind:value={formNs}>
+              {#each [...new Set([formNs, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}
+            </select></label>
+          <label class="fld full">Description<input type="text" bind:value={formDesc} placeholder="What it is for, e.g. refund requests from the shop" /></label>
         </div>
-        {:else}
-        <div class="tf-col">
-          <div class="tf-type-tabs">
-            <button class="tf-type" class:active={formType === 'webhook'} onclick={() => formType = 'webhook'}>
-              <span class="tf-ti" style="background:var(--runtime-bg);color:var(--runtime);">W</span> Webhook
-            </button>
-            <button class="tf-type" class:active={formType === 'cron'} onclick={() => formType = 'cron'}>
-              <span class="tf-ti" style="background:var(--control-bg);color:var(--control);">C</span> Cron
-            </button>
-            <button class="tf-type" class:active={formType === 'adb_topic'} onclick={() => formType = 'adb_topic'}>
-              <span class="tf-ti" style="background:var(--spec-bg);color:var(--spec);">T</span> ADB topic
-            </button>
-            <button class="tf-type" class:active={formType === 'event'} onclick={() => formType = 'event'}>
-              <span class="tf-ti" style="background:var(--signal-bg);color:var(--signal);">E</span> Event
-            </button>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>2 · Status</h3><span>whether it fires, on what, and where it sends</span></div>
+        <ul class="rows">
+          <li><span class="lbl">State</span>
+            <span class="val"><span class="dot" class:ok={formEnabled}></span> {formEnabled ? 'Active' : 'Paused'}</span>
+            <button class="btn2" onclick={() => (formEnabled = !formEnabled)}>{formEnabled ? 'Pause' : 'Resume'}</button>
+            <span class="sub">{formEnabled ? 'It fires on every event below.' : 'Paused: calls are answered "paused" and nothing runs.'}{editingTrigger ? ' Saved with Save.' : ''}</span></li>
+          <li><span class="lbl">Fires on</span>
+            <span class="val mono">{firesOn || '—'}</span>
+            <button class="btn2" onclick={() => (step = 'source')}>Change</button>
+            <span class="sub">{SOURCE_NAME[formType]}</span></li>
+          <li><span class="lbl">Sends to</span>
+            <span class="val">{formTargets.length ? formTargets.map(targetLabel).join(', ') : 'nothing yet'}</span>
+            <button class="btn2" onclick={() => (step = 'destinations')}>Change</button>
+            <span class="sub">{formTargets.length} target{formTargets.length === 1 ? '' : 's'}{mappedCount ? `, ${mappedCount} with a mapping` : ''}</span></li>
+        </ul>
+      </div>
+    {/if}
+
+    {#if step === 'source'}
+      <div class="card">
+        <div class="card-head"><h3>1 · What fires it</h3><span>one source per trigger</span></div>
+        <div class="seg src" role="tablist">
+          {#each SOURCES as s (s)}<button role="tab" class:on={formType === s} aria-selected={formType === s} onclick={() => (formType = s)}>{SOURCE_NAME[s]}</button>{/each}
+        </div>
+        {#if formType === 'webhook'}
+          <div class="fields">
+            <label class="fld">Path<input type="text" class="mono" bind:value={formPath} placeholder="/shop/refund" /></label>
+            <label class="fld">Method<select bind:value={formMethod}><option>POST</option><option>PUT</option><option>GET</option></select></label>
           </div>
-          {#if formType === 'webhook'}
-            <div class="tf-row2">
-              <label><span>Path</span><input type="text" bind:value={formPath} placeholder="/agent" /></label>
-              <label><span>Method</span><select bind:value={formMethod}><option>POST</option><option>GET</option><option>PUT</option></select></label>
-            </div>
-            {#if formPath}
-              <div class="tf-ep"><span class="tf-ep-l">Endpoint</span><code>{formMethod} /webhook{formPath.startsWith('/') ? formPath : '/' + formPath}</code></div>
-            {/if}
-          {:else if formType === 'cron'}
-            <div class="tf-row2">
-              <label><span>Expression</span><input type="text" bind:value={formCron} placeholder="*/5 * * * *" /></label>
-              <label><span>Timezone</span><input type="text" bind:value={formTimezone} placeholder="UTC" /></label>
-            </div>
-          {:else if formType === 'adb_topic'}
-            <div class="tf-row2">
-              <label><span>ADB resource</span><input type="text" bind:value={formTopicRes} placeholder="a3t/adb" /></label>
-              <label><span>Topic</span><input type="text" bind:value={formTopic} placeholder="orders" /></label>
-            </div>
-            <label class="tf-full"><span>Only messages where (optional)</span><input type="text" class="mono" bind:value={formTopicFilter} placeholder={'{"kind": "refund"}'} /></label>
-            <div class="tf-note">Fires once per message published to the topic, on every FlowR, one run per message. <b>Kafka, Postgres and Pulsar</b> come in this way: ADB connects to them and publishes their events to a topic, which a trigger like this one starts flows and agents from. The ADB connectors are requested from ADB (parked).</div>
-          {:else if formType === 'event'}
-            <label class="tf-full"><span>Source</span><input type="text" bind:value={formEventSource} placeholder="system.workflow.completed" /></label>
+          {#if formPath}
+            <div class="ep"><span class="verb">{formMethod}</span><span class="path">{endpointUrl(formPath)}</span>
+              <button class="btn2" onclick={() => cpUrl()}>{copiedUrl ? 'Copied' : 'Copy'}</button></div>
+            <p class="dim">Callers POST JSON here with a token: <span class="mono">Authorization: Bearer &lt;token&gt;</span>.</p>
           {/if}
-          <div class="tf-note">Its targets' expressions read <span class="mono">.body</span>: {BODY_OF[formType]}.</div>
-        </div>
+        {:else if formType === 'cron'}
+          <div class="fields">
+            <label class="fld">Schedule <small>cron: minute hour day month weekday</small><input type="text" class="mono" bind:value={formCron} placeholder="*/5 * * * *" /></label>
+            <label class="fld">Timezone<input type="text" bind:value={formTimezone} placeholder="UTC" /></label>
+            <label class="fld full">Message <small>optional; what .message holds</small><input type="text" bind:value={formCronMsg} placeholder="nightly report" /></label>
+          </div>
+          <p class="dim">Once per matching minute, however many FlowRs run it.</p>
+        {:else if formType === 'adb_topic'}
+          <div class="fields">
+            <label class="fld">ADB resource<input type="text" class="mono" bind:value={formTopicRes} placeholder="a3t/adb" /></label>
+            <label class="fld">Topic<input type="text" class="mono" bind:value={formTopic} placeholder="orders" /></label>
+            <label class="fld full">Only messages where <small>optional; a JSON match</small><input type="text" class="mono" bind:value={formTopicFilter} placeholder={'{"kind": "refund"}'} /></label>
+          </div>
+          <div class="note">Once per message published to the topic, one run per message. <b>Kafka, Postgres and Pulsar</b> will arrive this way: listeners (FlowR plugins) publish their events to an ADB topic, and a trigger like this one starts flows and agents from it. Planned, not built yet.</div>
+        {:else}
+          <div class="fields">
+            <label class="fld full">Event type<input type="text" class="mono" bind:value={formEventSource} placeholder="system.workflow.completed" /></label>
+          </div>
+          <p class="dim">The platform's own events, e.g. a flow completing.</p>
         {/if}
       </div>
-    </div>
+      <div class="card">
+        <div class="card-head"><h3>2 · What the event holds</h3><span>what every mapping in Send reads</span></div>
+        <pre class="code">{EVENT_SHAPE[formType]}</pre>
+      </div>
     {/if}
 
     {#if step === 'destinations'}
-      <div class="te-form">
-        <WizardHead step={trgSteps.find((x) => x.id === step)} />
-        <TriggerTargets bind:targets={formTargets} flows={flowOptions} agents={agentOptions} source={formType} trigger={formName} />
-      </div>
+      <TriggerTargets bind:targets={formTargets} flows={flowOptions} agents={agentOptions} source={formType} trigger={formName} />
     {/if}
 
     {#if step === 'yaml'}
-      <div class="te-form">
-        <WizardHead step={trgSteps.find((x) => x.id === step)} />
-        <div class="te-yaml">{#key yamlRev}
-          <FlowEditorPane part="main" initialYaml={yamlDraft} onchange={applyYaml}>
-            {#snippet toolbar()}<span class="grow"></span><span class="ver mono">{formNs || 'default'}/{formName || 'new trigger'}</span>
-              {#if editingTrigger}<button class="link" onclick={() => openInStudio('trigger', editingTrigger!.namespace || 'default', editingTrigger!.name, editingTrigger!.id)}>Edit in Studio →</button>{/if}{/snippet}
-          </FlowEditorPane>
-        {/key}</div>
-        {#if yamlIssues.length}<ul class="te-issues">{#each yamlIssues as i (i)}<li>{i}</li>{/each}</ul>{/if}
-      </div>
+      <div class="te-yaml">{#key yamlRev}
+        <FlowEditorPane part="main" initialYaml={yamlDraft} onchange={applyYaml}>
+          {#snippet toolbar()}<span class="grow"></span><span class="ver mono">{formNs || 'default'}/{formName || 'new trigger'}</span>
+            {#if editingTrigger}<button class="link" onclick={() => openInStudio('trigger', editingTrigger!.namespace || 'default', editingTrigger!.name, editingTrigger!.id)}>Edit in Studio →</button>{/if}{/snippet}
+        </FlowEditorPane>
+      {/key}</div>
+      {#if yamlIssues.length}<div class="note bad"><b>Not applied yet:</b><ul class="notes">{#each yamlIssues as i (i)}<li>{i}</li>{/each}</ul></div>{/if}
     {/if}
 
     {#if step === 'test'}
-      <div class="te-form">
-        <WizardHead step={trgSteps.find((x) => x.id === step)} />
-        {#if formType === 'webhook'}
-          <p class="tf-note">Fires <span class="mono">{formMethod} /webhook{formPath.startsWith('/') ? formPath : '/' + formPath}</span> with this body, as you{editingTrigger ? '' : ' (it is saved first)'}; each target runs with the input its mapping makes.</p>
-          <div class="row"><button class="btn2 primary" onclick={runTest} disabled={testRunning || !formTargets.length}>{testRunning ? 'Firing…' : 'Fire it'}</button>
-            {#if testResult?.trigger?.executions?.length}<span class="dim">{testResult.trigger.executions.length} run{testResult.trigger.executions.length === 1 ? '' : 's'} started</span>{/if}</div>
-        {:else}
-          <p class="tf-note">{formType === 'cron' ? 'A schedule fires on its own, each minute its expression matches, once saved and enabled.' : formType === 'adb_topic' ? 'It fires on each message published to its topic, once saved and enabled.' : 'It fires on each matching platform event, once saved and enabled.'} Its runs show in Executions.</p>
-        {/if}
-      </div>
+      {#if formType === 'webhook'}
+        <div class="card">
+          <div class="card-head"><h3>1 · Fire it</h3><span>as you, with this body{editingTrigger ? '' : ' — it is saved first'}</span></div>
+          {#if formPath}<div class="ep"><span class="verb">{formMethod}</span><span class="path">{endpointUrl(formPath)}</span></div>{/if}
+          <label class="fld">Body <small>JSON; it is <span class="mono">.body</span> in the mappings</small>
+            <textarea rows="5" bind:value={testPayload} spellcheck="false"></textarea></label>
+          <div class="acts">
+            <button class="btn2 primary" onclick={runTest} disabled={testRunning || !formTargets.length || !formPath}>{testRunning ? 'Firing…' : 'Fire it'}</button>
+            {#if !formTargets.length}<span class="dim">Add a target in Send first.</span>{/if}
+          </div>
+          {#if testError}<div class="note bad">{testError}</div>{/if}
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>2 · What ran</h3><span>{testRuns.length ? `${testRuns.length} run${testRuns.length === 1 ? '' : 's'} started` : 'each target\'s run, with what it got and gave'}</span></div>
+          {#if testRuns.length}
+            <ul class="tl">
+              {#each testRuns as r (r.instance_id)}
+                <li class="ev" class:err={r.status === 'failed'}>
+                  <span class="ic"><span class="dot" class:ok={r.status === 'completed'} class:err={r.status === 'failed'} class:warn={r.status === 'running'}></span></span>
+                  <div>
+                    <div class="t">{r.target.replace(/^workflow:/, 'flow ').replace(/^a3t_agent:/, 'agent ')}</div>
+                    <div class="m mono">{r.instance_id}{r.duration_ms != null ? ` · ${r.duration_ms} ms` : ''}</div>
+                    {#if r.error}<div class="m err">{r.error}</div>{/if}
+                    {#if r.output !== undefined}<pre class="code out">{JSON.stringify(r.output, null, 2)}</pre>{/if}
+                  </div>
+                  <span class="tag" class:prod={r.status === 'completed'}>{r.status}</span>
+                </li>
+              {/each}
+            </ul>
+          {:else if testReply}
+            <pre class="code out">{JSON.stringify(testReply, null, 2)}</pre>
+          {:else}
+            <p class="empty">Nothing fired yet.</p>
+          {/if}
+        </div>
+      {:else}
+        <div class="card">
+          <div class="card-head"><h3>Test</h3><span>{SOURCE_NAME[formType]}</span></div>
+          <p class="dim">{formType === 'cron' ? 'A schedule fires on its own, each minute it matches, once saved and active.' : formType === 'adb_topic' ? 'It fires on each message published to its topic, once saved and active.' : 'It fires on each matching platform event, once saved and active.'} Its runs show in Executions.</p>
+        </div>
+      {/if}
     {/if}
-
+    </section>
     </div>
     </div>
-    <!-- Output panel -->
-    {#if step === 'test' && formType === 'webhook'}
-      <div class="te-bottom-divider" class:dragging-bottom={draggingBottom} onmousedown={onBottomDragStart} role="separator"></div>
-      <div class="te-output" style="height: {Math.max(outputHeight, 260)}px;">
-        <div class="te-out-header">
-          <span class="te-out-title">Test</span>
-          {#if testResult?.phase === 'completed'}<span class="te-out-badge ok">completed</span>{/if}
-          {#if testResult?.phase === 'failed'}<span class="te-out-badge err">failed</span>{/if}
-          {#if testResult?.phase === 'running'}<span class="te-out-badge run">running ({testResult.poll ?? 0}s)</span>{/if}
-          {#if testResult?.instanceId}<span class="te-out-id">{testResult.instanceId}</span>{/if}
-          <span style="flex:1"></span>
-
-        </div>
-        <div class="te-out-split">
-          <!-- INPUT -->
-          <div class="te-out-pane">
-            <div class="te-out-pane-label">BODY IT POSTS</div>
-            <textarea class="te-out-editor" bind:value={testPayload} placeholder='&#123;"message": "Hello"&#125;' spellcheck="false"></textarea>
-          </div>
-          <!-- OUTPUT -->
-          <div class="te-out-pane">
-            <div class="te-out-pane-label">OUTPUT</div>
-            <div class="te-out-pane-body">
-              {#if testError}
-                <div class="te-out-err">{testError}</div>
-              {/if}
-              {#if testResult?.output}
-                <pre class="te-out-json">{JSON.stringify(testResult.output, null, 2)}</pre>
-              {:else if testResult?.trigger}
-                <pre class="te-out-json">{JSON.stringify(testResult.trigger, null, 2)}</pre>
-              {:else if testRunning}
-                <div class="te-out-empty">Waiting for result...</div>
-              {:else}
-                <div class="te-out-empty">Click Test to fire the trigger</div>
-              {/if}
-            </div>
-          </div>
-        </div>
-      </div>
-    {/if}
-    <WizardNav steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }}
+    <WizardNav steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => (step = id)}
       final={() => saveTrigger()} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
   </div>
   </div>
@@ -603,7 +590,6 @@
   onconfirm={() => deleteTrigger(deleteTarget!)} oncancel={() => deleteTarget = null} />
 
 <style>
-  .tf-note .link { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font: inherit; }
   .trg-how { margin: 16px 0 20px; }
   .grow { flex: 1 1 auto; }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
@@ -614,11 +600,6 @@
   .te-yaml .link { border: 0; background: none; padding: 0 8px; color: var(--spec); cursor: pointer; font: 500 12.5px var(--font-sans); white-space: nowrap; flex: 0 0 auto; }
   .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
   .panel-col { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
-  .te-issues { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--err); }
-  .tf-note { font-size: 12.5px; color: var(--text-3); line-height: 1.55; margin: 6px 0 0; }
-  .te-form .row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-  .te-form .dim { font-size: 12.5px; color: var(--text-3); }
-  .te-form .mono, .tf-note .mono { font-family: var(--font-mono); font-size: 0.92em; }
   /* ═══ LIST VIEW ═══ */
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
@@ -651,123 +632,29 @@
 
   /* ═══ EDITOR (inside SlidePanel) ═══ */
   .te { display: flex; flex-direction: column; height: 100%; }
-  .te-note { padding: 10px 16px; font-size: 12.5px; color: var(--text-3); background: var(--bg-subtle); border-top: 1px solid var(--border); }
 
   /* TOP: form — two columns side by side */
-  .te-form { display: flex; flex-direction: column; }
   .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
   .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
   @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
-  .tf-row-top { display: block; max-width: 640px; }
-  .tf-col { display: flex; flex-direction: column; gap: 14px; }
 
-  .tf-section-first { font-size: 9px; font-weight: 700; color: var(--text-3); letter-spacing: 0.06em; margin-bottom: 6px; }
 
-  .te-form label { display: flex; flex-direction: column; gap: 5px; }
-  .te-form label > span { font-size: 12px; color: var(--text-3); }
-  .te-form input, .te-form select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, var(--bg-surface)); color: var(--text-1); font-size: 13px; font-family: var(--font-sans); outline: none; }
-  .te-form input:focus, .te-form select:focus { border-color: var(--spec); }
 
-  .tf-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .tf-full { margin: 0; }
 
-  .tf-type-tabs { display: flex; gap: 8px; }
-  .tf-type { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--r-sm, 6px); background: var(--bg-surface); color: var(--text-2); font-size: 13px; font-weight: 500; cursor: pointer; }
-  .tf-type.active { border-color: var(--spec); background: var(--spec-bg); color: var(--spec-ink); }
-  .tf-ti { width: 16px; height: 16px; border-radius: 3px; display: grid; place-items: center; font-size: 8px; font-weight: 700; font-family: var(--font-mono); }
 
-  .tf-ep { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--r-sm, 6px); padding: 10px 12px; }
-  .tf-ep-l { font-size: 10.5px; font-weight: 600; color: var(--text-4); text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
-  .tf-ep code { font-family: var(--font-mono); font-size: 12.5px; color: var(--runtime); }
 
-  .tf-check { flex-direction: row !important; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
-  .tf-check input { accent-color: var(--spec); }
 
-  .te-error { margin: 8px 12px 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--err-bg, #fde8e8); color: var(--err, #b42318); font-size: 12px; }
 
   /* Connected targets bar */
-  .te-targets-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); flex-wrap: wrap; flex-shrink: 0; }
-  .te-tb-label { font-size: 10px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
-  .te-tb-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 8px; background: var(--spec-bg); border: 1px solid var(--spec-bg); border-radius: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--spec-ink); font-weight: 550; }
-  .te-tb-rm { width: 16px; height: 16px; border: none; border-radius: 3px; background: none; color: var(--text-4); cursor: pointer; display: grid; place-items: center; flex-shrink: 0; }
-  .te-tb-rm:hover { color: var(--err); background: var(--err-bg); }
 
   /* BOTTOM: canvas + divider + flow list */
-  .te-bottom { flex: 1; display: grid; overflow: hidden; min-height: 0; }
-  .te-bottom.dragging-side { user-select: none; cursor: col-resize; }
 
   /* Side divider */
-  .te-side-divider { width: 5px; cursor: col-resize; background: var(--border); transition: background 0.15s; }
-  .te-side-divider:hover, .te-bottom.dragging-side .te-side-divider { background: var(--spec, #5530a8); }
 
   /* Bottom divider */
-  .te-bottom-divider { height: 5px; cursor: row-resize; background: var(--border); transition: background 0.15s; flex-shrink: 0; }
-  .te-bottom-divider:hover, .te-bottom-divider.dragging-bottom { background: var(--spec, #5530a8); }
 
   /* Canvas */
-  .te-canvas { position: relative; overflow: hidden; }
-  .te-canvas-hint { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--text-4); background: var(--bg-surface); padding: 6px 14px; border-radius: 6px; border: 1px dashed var(--border); pointer-events: none; z-index: 5; }
 
-  /* Flow/Agent list */
-  .te-flowlist { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-surface); }
-  .te-fl-header { padding: 6px 8px; border-bottom: 1px solid var(--border); }
-  .te-fl-tabs { display: flex; gap: 2px; margin-bottom: 4px; }
-  .te-fl-tab { padding: 3px 8px; border: none; border-radius: 4px; background: none; color: var(--text-4); font-size: 10px; font-weight: 550; cursor: pointer; }
-  .te-fl-tab.active { background: var(--bg-subtle); color: var(--text-1); }
-  .te-fl-search { display: flex; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-page); }
-  .te-fl-search input { border: none; background: none; flex: 1; font-size: 11px; outline: none; color: var(--text-1); padding: 0; }
-  .te-fl-list { flex: 1; overflow-y: auto; }
-  .te-fl-item { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-bottom: 1px solid var(--border); cursor: grab; transition: background 0.1s; }
-  .te-fl-item:hover { background: var(--bg-subtle); }
-  .te-fl-item.connected { background: var(--runtime-bg); cursor: default; }
-  .te-fl-item:active:not(.connected) { cursor: grabbing; }
-  .te-fl-drag { width: 14px; flex-shrink: 0; color: var(--text-5); display: grid; place-items: center; }
-  .te-fl-icon { width: 20px; height: 20px; border-radius: 4px; display: grid; place-items: center; font-size: 9px; font-weight: 700; font-family: var(--font-mono); flex-shrink: 0; background: var(--spec-bg); color: var(--spec-ink); }
-  .te-fl-icon.agent { background: var(--signal-bg); color: var(--signal); }
-  .te-fl-info { flex: 1; min-width: 0; }
-  .te-fl-name { font-family: var(--font-mono); font-size: 11px; font-weight: 550; color: var(--text-1); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .te-fl-ns { font-size: 9px; color: var(--text-4); }
-  .te-fl-linked { font-size: 8px; color: var(--runtime); font-weight: 600; text-transform: uppercase; flex-shrink: 0; }
-  .te-fl-empty { padding: 20px; text-align: center; color: var(--text-4); font-size: 11px; }
-
-  /* Test button (floating on canvas) */
-  .te-test-btn {
-    position: absolute; top: 12px; right: 12px; z-index: 5;
-    display: flex; align-items: center; gap: 5px;
-    padding: 7px 16px; border: 1px solid var(--runtime); border-radius: 6px;
-    background: var(--runtime); color: white; font-size: 12px; font-weight: 600;
-    cursor: pointer; box-shadow: 0 2px 8px rgba(26,113,88,0.25); transition: all 0.12s;
-  }
-  .te-test-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
-  .te-test-btn:disabled { opacity: 0.6; cursor: default; }
-  .te-test-btn.running { background: var(--control); border-color: var(--control); }
-  .te-test-spin { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Output panel (bottom) */
-  .te-output { flex-shrink: 0; background: var(--bg-surface); display: flex; flex-direction: column; overflow: hidden; }
-
-  .te-out-header { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .te-out-title { font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
-  .te-out-badge { font-size: 9px; font-family: var(--font-mono); padding: 1px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase; }
-  .te-out-badge.ok { background: var(--runtime-bg); color: var(--runtime); }
-  .te-out-badge.err { background: var(--err-bg, #fde8e8); color: var(--err, #dc2626); }
-  .te-out-badge.run { background: var(--control-bg); color: var(--control); }
-  .te-out-id { font-family: var(--font-mono); font-size: 9px; color: var(--text-4); }
-  .te-out-close { width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-surface); color: var(--text-4); cursor: pointer; display: grid; place-items: center; flex-shrink: 0; }
-  .te-out-close:hover { background: var(--bg-subtle); color: var(--text-1); }
-
-  /* Split: input | output */
-  .te-out-split { flex: 1; display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; }
-  .te-out-pane { display: flex; flex-direction: column; overflow: hidden; }
-  .te-out-pane:first-child { border-right: 1px solid var(--border); }
-  .te-out-pane-label { font-size: 9px; font-weight: 700; color: var(--text-4); text-transform: uppercase; letter-spacing: 0.05em; padding: 5px 10px; background: var(--bg-subtle); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .te-out-editor {
-    flex: 1; padding: 8px 10px; border: none; background: var(--bg-page); color: var(--text-1);
-    font-family: var(--font-mono); font-size: 11px; resize: none; outline: none;
-  }
-  .te-out-pane-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
-  .te-out-err { color: var(--err); font-size: 11px; font-family: var(--font-mono); padding: 6px 8px; background: var(--err-bg, #fde8e8); border-radius: 4px; margin-bottom: 6px; }
-  .te-out-json { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); background: var(--bg-page); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin: 0; white-space: pre-wrap; word-break: break-word; }
-  .te-out-empty { font-size: 12px; color: var(--text-4); text-align: center; padding: 20px; }
 </style>
