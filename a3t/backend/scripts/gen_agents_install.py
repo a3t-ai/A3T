@@ -87,7 +87,7 @@ flow = f"""document:
   dsl: '1.0.3'
   namespace: system
   name: flow_system_agents_install
-  version: '1.0.0'
+  version: '1.0.1'
   metadata:
     description: >
       Creates or updates the A3T agents (plan "A3T control plane as A3T agents"):
@@ -121,6 +121,12 @@ do:
         each: _a
         in: '${{ $context._specs }}'
         do:
+          # A loop's item isn't in scope inside run: workflow inputs: keep it in the context.
+          - pick:
+              set:
+                _cur: '${{ $_a }}'
+              export:
+                as: '${{ $context + . }}'
           - one:
               try:
                 do:
@@ -129,7 +135,7 @@ do:
                       with:
                         operation: query
                         table: agent_configs
-                        filter: '${{ "id = ''" + $_a.id + "''" }}'
+                        filter: '${{ "id = ''" + $context._cur.id + "''" }}'
                         limit: 1
                         _resource: a3t/a3t-platform-db
                       export:
@@ -144,33 +150,33 @@ do:
                             action: create
                             org_id: '${{ $context._org }}'
                             user_id: '${{ $context._who }}'
-                            id: '${{ $_a.id }}'
-                            name: '${{ $_a.name }}'
-                            project: '${{ $_a.project }}'
+                            id: '${{ $context._cur.id }}'
+                            name: '${{ $context._cur.name }}'
+                            project: '${{ $context._cur.project }}'
                             agent_mode: session
-                            from: '${{ {{kind: "template", id: $_a.template}} }}'
-                            values: '${{ $_a.values }}'
-                            resource_bindings: '${{ {{llm: $_a.values.llm_resource}} }}'
+                            from: '${{ {{kind: "template", id: $context._cur.template}} }}'
+                            values: '${{ $context._cur.values }}'
+                            resource_bindings: '${{ {{llm: $context._cur.values.llm_resource}} }}'
                       export:
-                        as: '${{ $context + {{created: ($context.created + [$_a.id])}} }}'
+                        as: '${{ $context + {{created: ($context.created + [$context._cur.id])}} }}'
                   - refresh:
                       if: '${{ $context._row != null }}'
                       call: lancedb
                       with:
                         operation: update
                         table: agent_configs
-                        filter: '${{ "id = ''" + $_a.id + "''" }}'
+                        filter: '${{ "id = ''" + $context._cur.id + "''" }}'
                         values:
-                          template_id: '${{ $_a.template }}'
-                          variables: '${{ ((($context._row.variables // "{{}}") | try fromjson catch {{}}) * $_a.values) | tojson }}'
-                          resource_bindings: '${{ {{llm: $_a.values.llm_resource}} | tojson }}'
-                          namespace: '${{ $_a.project }}'
+                          template_id: '${{ $context._cur.template }}'
+                          variables: '${{ ((($context._row.variables // "{{}}") | try fromjson catch {{}}) * $context._cur.values) | tojson }}'
+                          resource_bindings: '${{ {{llm: $context._cur.values.llm_resource}} | tojson }}'
+                          namespace: '${{ $context._cur.project }}'
                           updated_at: '${{ $context._now }}'
                         _resource: a3t/a3t-platform-db
                       export:
-                        as: '${{ $context + {{updated: ($context.updated + [$_a.id])}} }}'
+                        as: '${{ $context + {{updated: ($context.updated + [$context._cur.id])}} }}'
                   - inherit:
-                      if: '${{ $_a.inherit }}'
+                      if: '${{ $context._cur.inherit }}'
                       run:
                         workflow:
                           namespace: a3t
@@ -179,11 +185,11 @@ do:
                             action: relate
                             org_id: '${{ $context._org }}'
                             user_id: '${{ $context._who }}'
-                            id: '${{ $_a.id }}'
+                            id: '${{ $context._cur.id }}'
                             parent: '${{ {{kind: "agent", id: "agent_system_core"}} }}'
                             relation: inherit
                   - share:
-                      if: '${{ $_a.share }}'
+                      if: '${{ $context._cur.share }}'
                       run:
                         workflow:
                           namespace: a3t
@@ -192,14 +198,14 @@ do:
                             action: share
                             org_id: '${{ $context._org }}'
                             user_id: '${{ $context._who }}'
-                            id: '${{ $_a.id }}'
+                            id: '${{ $context._cur.id }}'
                             target: '*'
                             rights: '${{ {{call: true, inherit: false, fork: false, merge_back: false}} }}'
                 catch:
                   do:
                     - failed_one:
                         set:
-                          failed: '${{ $context.failed + [{{id: $_a.id, error: ($context.error.detail // $context.error.title // "failed")}}] }}'
+                          failed: '${{ $context.failed + [{{id: $context._cur.id, error: ($context.error.detail // $context.error.title // "failed")}}] }}'
                         export:
                           as: '${{ $context + . }}'
 
