@@ -1258,6 +1258,7 @@ pub async fn probe(storage: &dyn StorageBackend, id: &str) -> Result<Value, Stri
                     d.kind == "flow" && format!("{namespace}/{name}") == d.target
                 }
                 flowr_ce_agents::TriggerTarget::Agent { agent_id } => d.kind == "agent" && *agent_id == d.target,
+                flowr_ce_agents::TriggerTarget::A3tAgent { agent_id, .. } => d.kind == "agent" && *agent_id == d.target,
                 _ => false,
             }) || (d.kind == "agent" && t.name.starts_with(&d.target))
         })

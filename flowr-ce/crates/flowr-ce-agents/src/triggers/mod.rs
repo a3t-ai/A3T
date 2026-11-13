@@ -112,6 +112,7 @@ impl TriggerManager {
             TriggerTarget::Agent { agent_id } => format!("agent:{}", agent_id),
             TriggerTarget::Workflow { namespace, name, .. } => format!("workflow:{}/{}", namespace, name),
             TriggerTarget::Webhook { url, .. } => format!("webhook:{}", url),
+            TriggerTarget::A3tAgent { agent_id, .. } => format!("a3t_agent:{}", agent_id),
         };
 
         trigger.targets.push(target);
@@ -131,6 +132,7 @@ impl TriggerManager {
                 TriggerTarget::Agent { agent_id } => agent_id != target_id,
                 TriggerTarget::Workflow { name, .. } => name != target_id,
                 TriggerTarget::Webhook { url, .. } => url != target_id,
+                TriggerTarget::A3tAgent { agent_id, .. } => agent_id != target_id,
             }
         });
 
@@ -386,6 +388,35 @@ impl TriggerManager {
     ) -> TriggerDeliveryResult {
         let mut delivered = Vec::new();
         let mut failed = Vec::new();
+        let mut executions = Vec::new();
+        // What a target's expressions read: the payload and where it came from.
+        let event = json!({
+            "body": context.clone().unwrap_or(Value::Null),
+            "message": content,
+            "source": source,
+            "trigger": trigger_name,
+            "time": chrono::Utc::now().to_rfc3339(),
+        });
+        let text = |v: Value| match v { Value::String(s) => s, Value::Null => String::new(), other => other.to_string() };
+        // One run per firing and target, however many FlowRs deliver it (CA-2,
+        // CA-10): a cron tick's minute, a topic message's offset. A mapped input or
+        // an agent's message no longer carries those fields, so the key goes along
+        // as `_dedupe` (the run starter takes it as the run's dedupe key).
+        let ctx = context.clone().unwrap_or(Value::Null);
+        let firing = if ctx.get("trigger").and_then(|v| v.as_str()) == Some("cron") {
+            ctx.get("minute").and_then(|v| v.as_str()).map(|m| format!("cron:{trigger_id}:{m}"))
+        } else {
+            match (ctx.get("_topic").and_then(|v| v.as_str()), ctx.get("_offset").and_then(|v| v.as_u64())) {
+                (Some(t), Some(o)) => Some(format!("topic:{t}:{o}")),
+                _ => None,
+            }
+        };
+        let with_dedupe = |mut input: Value, target: &str| {
+            if let (Some(f), Some(m)) = (&firing, input.as_object_mut()) {
+                m.insert("_dedupe".into(), json!(format!("{f}:{target}")));
+            }
+            input
+        };
 
         for target in targets {
             match target {
@@ -401,12 +432,52 @@ impl TriggerManager {
                         }
                     }
                 }
+                TriggerTarget::A3tAgent { agent_id, message, conversation } => {
+                    let msg = match message.as_deref().filter(|m| !m.trim().is_empty()) {
+                        Some(expr) => workflow_executor.map(expr, &event).map(text),
+                        None => Ok(content.to_string()),
+                    };
+                    let conv = match conversation.as_deref().filter(|c| !c.trim().is_empty()) {
+                        Some(expr) => workflow_executor.map(expr, &event).map(text),
+                        None => Ok(format!("trigger-{trigger_name}")),
+                    };
+                    let (msg, conv) = match (msg, conv) {
+                        (Ok(m), Ok(c)) => (m, c),
+                        (Err(e), _) | (_, Err(e)) => {
+                            failed.push(format!("a3t_agent:{} (mapping: {})", agent_id, e));
+                            continue;
+                        }
+                    };
+                    let input = with_dedupe(json!({ "message": msg, "session_id": format!("{}:{}", agent_id, if conv.is_empty() { format!("trigger-{trigger_name}") } else { conv }) }), &format!("agent:{agent_id}"));
+                    match workflow_executor.execute_workflow("a3t", "tmpl_a3t_agent", input).await {
+                        Ok(instance_id) => {
+                            info!(trigger = %trigger_id, agent = %agent_id, instance = %instance_id, "Delivered to A3T agent");
+                            delivered.push(format!("a3t_agent:{} ({})", agent_id, instance_id));
+                            executions.push(TriggerExecution { target: format!("a3t_agent:{agent_id}"), instance_id });
+                        }
+                        Err(e) => {
+                            warn!(trigger = %trigger_id, agent = %agent_id, error = %e, "Failed to deliver to A3T agent");
+                            failed.push(format!("a3t_agent:{} ({})", agent_id, e));
+                        }
+                    }
+                }
                 TriggerTarget::Workflow { namespace, name, input_mapping } => {
-                    let input = context.clone().unwrap_or(json!({ "message": content }));
+                    let input = match input_mapping.as_deref().filter(|m| !m.trim().is_empty()) {
+                        Some(expr) => match workflow_executor.map(expr, &event) {
+                            Ok(v) => with_dedupe(if v.is_object() { v } else { json!({ "value": v }) }, &format!("{namespace}/{name}")),
+                            Err(e) => {
+                                warn!(trigger = %trigger_id, workflow = %name, error = %e, "input mapping failed");
+                                failed.push(format!("workflow:{}/{} (mapping: {})", namespace, name, e));
+                                continue;
+                            }
+                        },
+                        None => context.clone().unwrap_or(json!({ "message": content })),
+                    };
                     match workflow_executor.execute_workflow(namespace, name, input).await {
                         Ok(instance_id) => {
                             info!(trigger = %trigger_id, workflow = %name, instance = %instance_id, "Delivered to workflow");
                             delivered.push(format!("workflow:{}/{} ({})", namespace, name, instance_id));
+                            executions.push(TriggerExecution { target: format!("workflow:{namespace}/{name}"), instance_id });
                         }
                         Err(e) => {
                             warn!(trigger = %trigger_id, workflow = %name, error = %e, "Failed to execute workflow");
@@ -460,6 +531,7 @@ impl TriggerManager {
             trigger_name: trigger_name.to_string(),
             delivered_to: delivered,
             failed,
+            executions,
         }
     }
 
@@ -618,6 +690,12 @@ pub trait WorkflowExecutor: Send + Sync {
         name: &str,
         input: Value,
     ) -> anyhow::Result<String>;
+
+    /// Evaluate a target's jq expression (`input_mapping`, an agent's `message`…)
+    /// over the event. Without an evaluator, the event as it is.
+    fn map(&self, _expr: &str, event: &Value) -> anyhow::Result<Value> {
+        Ok(event.clone())
+    }
 }
 
 // =============================================================================

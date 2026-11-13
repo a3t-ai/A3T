@@ -109,8 +109,22 @@ pub enum TriggerTarget {
     Workflow {
         namespace: String,
         name: String,
+        /// A jq expression over the event — `{body, message, source, trigger, time}`
+        /// — whose result is the flow's input. None: the event's body as before.
         #[serde(default)]
         input_mapping: Option<String>,
+    },
+    /// Send a message to an A3T agent (a turn of `a3t/tmpl_a3t_agent`, in the
+    /// conversation `<agent_id>:<conversation>`). `message` and `conversation` are
+    /// jq expressions over the event; by default the trigger's message text and
+    /// `trigger-<trigger name>`.
+    #[serde(rename = "a3t_agent")]
+    A3tAgent {
+        agent_id: String,
+        #[serde(default)]
+        message: Option<String>,
+        #[serde(default)]
+        conversation: Option<String>,
     },
     /// Forward to an external webhook URL
     Webhook {
@@ -142,4 +156,15 @@ pub struct TriggerDeliveryResult {
     pub trigger_name: String,
     pub delivered_to: Vec<String>,
     pub failed: Vec<String>,
+    /// The runs this firing started (a flow or an A3T agent's turn), so a caller
+    /// can follow each one.
+    #[serde(default)]
+    pub executions: Vec<TriggerExecution>,
+}
+
+/// A run a trigger started: which target, and its instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerExecution {
+    pub target: String,
+    pub instance_id: String,
 }

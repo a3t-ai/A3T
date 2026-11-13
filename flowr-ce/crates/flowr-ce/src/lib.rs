@@ -281,6 +281,12 @@ pub async fn restore_triggers(storage: &Arc<dyn StorageBackend>) {
     }
     runtime_trigger(storage).await;
     topic_triggers::spawn(Arc::clone(storage));
+    // CA-9: cron triggers fire. Every FlowR runs the scheduler; each tick starts
+    // one run per target (the dedupe key above), however many deliver it.
+    flowr_ce_agents::trigger_manager().start_cron_scheduler(
+        Arc::new(TriggerAgentAdapter),
+        Arc::new(TriggerWorkflowAdapter { principal: None, blocked: Default::default() }),
+    );
     // Shared triggers: another FlowR may change them; follow (the trigger store
     // reloads the set from the shared state on every read).
     if std::env::var("FLOWR_REGISTRY_ADB").map(|u| !u.is_empty()).unwrap_or(false) && shared_state_all() {
@@ -689,6 +695,7 @@ async fn submit_input_handler(
 // --- Webhook handler ---
 
 async fn webhook_handler(
+    State(state): State<Arc<AppState>>,
     path: Option<axum::extract::Path<String>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     // Attached by the auth middleware when the webhook carried a valid token
@@ -703,6 +710,13 @@ async fn webhook_handler(
         .or_else(|| body.get("_trigger_path").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .unwrap_or_else(|| "/webhook".to_string());
     info!(path = %trigger_path, "Webhook received");
+
+    // The trigger set as it is now, not as this FlowR last loaded it: a trigger
+    // created or changed on another FlowR fires here at once (reading through the
+    // store reloads the shared set; a single-node store just answers).
+    if let Err(e) = state.storage.triggers().list(None).await {
+        warn!(error = %e, "webhook: trigger reload failed; matching the last loaded set");
+    }
 
     let agent_delivered: Vec<String> = Vec::new();
 
@@ -734,8 +748,21 @@ async fn webhook_handler(
             return (status, Json(body)).into_response();
         }
     }
-    Json(json!({"delivered": total.len(), "targets": total, "path": trigger_path,
-                "paused": blocked.iter().map(|b| b.deployment.clone()).collect::<Vec<_>>()})).into_response()
+    // The runs it started, to follow; and what failed (a mapping error, a target
+    // that refused), named by trigger, so a caller sees why nothing ran.
+    let executions: Vec<Value> = trigger_results.iter()
+        .flat_map(|r| r.executions.iter().map(move |e| json!({"trigger": r.trigger_name, "target": e.target, "instance_id": e.instance_id})))
+        .collect();
+    let failed: Vec<Value> = trigger_results.iter()
+        .flat_map(|r| r.failed.iter().map(move |f| json!({"trigger": r.trigger_name, "error": f})))
+        .collect();
+    let paused: Vec<String> = blocked.iter().map(|b| b.deployment.clone()).collect();
+    if total.is_empty() && !failed.is_empty() {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "nothing delivered", "failed": failed,
+            "path": trigger_path, "paused": paused}))).into_response();
+    }
+    Json(json!({"delivered": total.len(), "targets": total, "executions": executions, "failed": failed,
+                "path": trigger_path, "paused": paused})).into_response()
 }
 
 // --- Trigger handlers ---
@@ -829,6 +856,15 @@ struct TriggerWorkflowAdapter {
 
 #[async_trait::async_trait]
 impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
+    /// A target's jq expression over the trigger's event (input mapping, an
+    /// agent's message or conversation), with FlowR's expression engine.
+    fn map(&self, expr: &str, event: &Value) -> anyhow::Result<Value> {
+        static ENGINE: std::sync::OnceLock<flowr_expr::ExpressionEngine> = std::sync::OnceLock::new();
+        ENGINE.get_or_init(flowr_expr::ExpressionEngine::new)
+            .eval(event, expr, &flowr_expr::Scope::new())
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     async fn execute_workflow(&self, namespace: &str, name: &str, input: Value) -> anyhow::Result<String> {
         let storage = GLOBAL_STORAGE.get()
             .ok_or_else(|| anyhow::anyhow!("Storage not initialized"))?;
@@ -877,8 +913,14 @@ impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
         let engine = storage.engine();
         if let Some(engine) = &engine {
             let mut run = flowr_ce_storage::engine_adapters::new_run(&request);
+            // A trigger that names its firing (`_dedupe`: a mapped input, an agent
+            // target) gets that as the run's dedupe key.
+            if let Some(key) = request.input.get("_dedupe").and_then(|v| v.as_str()) {
+                run.dedupe_key = Some(key.to_string());
+                run.trigger = key.split(':').take(2).collect::<Vec<_>>().join(":");
+            }
             // One run per cron tick and target, however often the tick is delivered.
-            if request.input.get("trigger").and_then(|t| t.as_str()) == Some("cron") {
+            else if request.input.get("trigger").and_then(|t| t.as_str()) == Some("cron") {
                 if let (Some(id), Some(minute)) = (
                     request.input.get("trigger_id").and_then(|v| v.as_str()),
                     request.input.get("minute").and_then(|v| v.as_str()),

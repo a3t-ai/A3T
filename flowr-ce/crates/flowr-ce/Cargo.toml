@@ -20,6 +20,7 @@ path = "src/main.rs"
 # CNCF SWF crates
 swf-parser.workspace = true
 swf-runtime.workspace = true
+flowr-expr.workspace = true
 
 # Shared crates
 flowr-core.workspace = true
