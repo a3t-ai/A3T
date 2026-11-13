@@ -697,7 +697,7 @@ export interface WorkflowGraph {
     hasExtensions: boolean;
     extensionCount: number;
     taskCount: number;
-    format: 'flowr' | 'cncf-dsl' | 'trigger' | 'unknown';
+    format: 'flowr' | 'cncf-dsl' | 'trigger' | 'canvas' | 'unknown';
   };
 }
 
@@ -737,6 +737,58 @@ export function isTriggerYaml(parsed: any): boolean {
 }
 
 const short = (v: unknown, n = 44) => { const t = String(v ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+
+/** A canvas (CanvasSpec): one flow's deployment — flowRef, placement, lifecycle. */
+export function isCanvasYaml(parsed: any): boolean {
+  return !!parsed && typeof parsed === 'object' && 'flowRef' in parsed && !!parsed.placement && !!parsed.lifecycle;
+}
+
+/**
+ * A canvas as a graph, with the flow nodes: the canvas, where it loads (a shared
+ * pool or a sandbox, with the labels or the pinned runtime), the flow and how it
+ * runs, then a column per resource it depends on.
+ */
+function parseCanvasToGraph(parsed: any): WorkflowGraph {
+  const g = new GraphBuilder();
+  const p = parsed.placement ?? {}, l = parsed.lifecycle ?? {}, sc = l.scaling ?? {};
+  const deps: string[] = (parsed.health?.dependsOn ?? []).map((d: any) => d?.resource).filter(Boolean);
+  const onDown = parsed.health?.onDependencyDown ?? 'queue';
+  const sel = Object.entries(p.runtimeSelector ?? {}).map(([k, v]) => `${k}=${v}`).join(', ');
+  const cols = Math.max(1, deps.length);
+  const cx = 300 + ((cols - 1) * COL_W) / 2;
+  const flow = String(parsed.flowRef || '');
+
+  const startId = g.id('start');
+  g.node(startId, 'flowMarker', cx - 20, 10, { label: flow.split('/').pop() || 'canvas', marker: 'start' });
+  const placeId = g.id('place');
+  const y1 = 80;
+  g.node(placeId, 'step', cx - NODE_W / 2, y1, {
+    label: p.mode === 'isolated' ? 'isolated sandbox' : 'shared runtime pool', callType: 'run:container',
+    server: p.runtime ? `pinned ${p.runtime}` : sel ? `labels ${sel}` : 'the default runtime',
+  });
+  g.edge(startId, placeId, { animated: true });
+  const flowId = g.id('flow');
+  const y2 = y1 + NODE_H + GAP_V;
+  g.node(flowId, 'step', cx - NODE_W / 2, y2, {
+    label: flow ? flow.split('/').pop() : '(no flow)', callType: 'run:workflow',
+    server: `${l.state ?? 'running'} · ${l.session ?? 'ephemeral'} · ${sc.min ?? 1}–${sc.max ?? 1}`,
+  });
+  g.edge(placeId, flowId, { animated: true, label: 'loads' });
+  const y3 = y2 + NODE_H + GAP_V;
+  deps.forEach((d, i) => {
+    const id = g.id('dep');
+    const n = d.toLowerCase();
+    const callType = /llm|claude|gpt|model|austra/.test(n) ? 'call:llm' : /mcp/.test(n) ? 'call:mcp' : /adb|lance|db|memory/.test(n) ? 'call:adb' : 'call:http';
+    g.node(id, 'step', 300 + i * COL_W - NODE_W / 2, y3, { label: d.split('/').pop(), callType, server: `${d} · if down: ${onDown}` });
+    g.edge(flowId, id, { label: 'depends on' });
+  });
+
+  return {
+    nodes: g.nodes, edges: g.edges,
+    meta: { name: flow, namespace: flow.split('/')[0] || 'default', version: '', description: parsed.description,
+      hasExtensions: false, extensionCount: 0, taskCount: deps.length, format: 'canvas' },
+  };
+}
 
 /**
  * A trigger as a graph, with the flow nodes: its name, what fires it (a listen
@@ -796,6 +848,7 @@ export function parseWorkflowToGraph(parsed: any): WorkflowGraph {
 
   if (!parsed || typeof parsed !== 'object') return empty;
   if (isTriggerYaml(parsed)) return parseTriggerToGraph(parsed);
+  if (isCanvasYaml(parsed)) return parseCanvasToGraph(parsed);
 
   // Extensions from use block
   const extensions = parsed.use?.extensions ?? [];

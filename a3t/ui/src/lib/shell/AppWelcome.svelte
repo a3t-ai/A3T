@@ -3,6 +3,7 @@
   /// where to start.
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
   import TriggersGuide from '$lib/components/triggers/TriggersGuide.svelte';
+  import CanvasGuide from '$lib/components/canvas/CanvasGuide.svelte';
   import { contextLabel } from '$lib/stores/apps.svelte.ts';
 
   type Accent = 'spec' | 'runtime' | 'control' | 'ephemeral';
@@ -19,9 +20,9 @@
     agents: { headline: 'Agents over an API.', highlight: 'agent', accent: 'runtime',
       subtitle: 'Made from a template, or cloned, forked or branched from another agent.',
       description: 'Each agent has a data plane (chat, streamed) for the apps that call it and a control plane for its config, runtime and memory — its own figures, history, versions and branches.' },
-    canvas: { headline: 'Deploy a flow as a Canvas.', highlight: 'Canvas', accent: 'control',
-      subtitle: 'A canvas is one flow\'s deployment: where it loads, how it scales, what it depends on.',
-      description: 'Pick the flow, set placement, lifecycle and health. The canvas resolves to a runtime pool; Deploy puts it there.' },
+    canvas: { headline: 'Deploy a flow with a canvas.', highlight: 'canvas', accent: 'control',
+      subtitle: 'A canvas is one flow\'s deployment file: where it loads, how it runs, what it depends on.',
+      description: 'It is YAML next to its flow. Here you see which runtime takes it, deploy it, and watch it run.' },
     triggers: { headline: 'Start flows and agents from events.', highlight: 'events', accent: 'runtime',
       subtitle: 'A webhook call, a schedule, a message on an ADB topic or a platform event — each firing goes to the flows and agents you name, with the input you map.',
       description: 'A trigger is YAML: what fires it, and where each firing goes. Write it here or in the Studio; pause or rewire it without changing the flow.' },
@@ -49,7 +50,7 @@
 <div class="aw">
   <PageBanner headline={b.headline} highlightWord={b.highlight} subtitle={b.subtitle} description={b.description} accent={b.accent} />
   <!-- An app with a concept to learn before its first item shows it here. -->
-  {#if appType === 'triggers'}<TriggersGuide />{/if}
+  {#if appType === 'triggers'}<TriggersGuide />{:else if appType === 'canvas'}<CanvasGuide />{/if}
 
   <div class="aw-start">
     <span>Pick from {what} in Items to open it here, or ask in Chat.</span>

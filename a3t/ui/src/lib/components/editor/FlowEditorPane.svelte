@@ -23,7 +23,7 @@
   import GraphFollow from './GraphFollow.svelte';
   import SchemaForm from './SchemaForm.svelte';
   import AgentTemplateEditor from './AgentTemplateEditor.svelte';
-  import { parseWorkflowToGraph, isAgentTemplateYaml, isTriggerYaml } from './workflowParser';
+  import { parseWorkflowToGraph, isAgentTemplateYaml, isTriggerYaml, isCanvasYaml } from './workflowParser';
   import { runsApi, type Breakpoint, type DebugCommand } from '$lib/services/api';
   import { lineOfStep, stepLines } from '$lib/studio-core/flow/model';
   import type { FlowDebug } from '$lib/components/run/debugState.svelte.ts';
@@ -204,6 +204,10 @@
   let isAgentTemplate = $derived(isAgentTemplateYaml(parsed));
   /// A trigger (on / send): the same graph and code, without the flow's schema.
   let isTrigger = $derived(isTriggerYaml(parsed));
+  /// A canvas (CanvasSpec): the same graph and code, without the flow's schema.
+  let isCanvas = $derived(isCanvasYaml(parsed));
+  /// Not a flow: no CNCF outline, completion, palette or connecting on it.
+  let notFlow = $derived(isTrigger || isCanvas);
 
   // For agent templates, pass parsed CNCF YAML directly to the form editor
   // No CRD conversion — the form editor reads CNCF YAML natively now
@@ -256,7 +260,7 @@
   // ── Graph: unified CNCF workflow parser (handles both agents + regular flows) ──
   let baseGraph = $derived.by(() => {
     if (!parsed) return null;
-    const hasWorkflow = parsed.steps || parsed.do || isAgentTemplate || isTrigger;
+    const hasWorkflow = parsed.steps || parsed.do || isAgentTemplate || notFlow;
     if (!hasWorkflow) return null;
     return parseWorkflowToGraph(parsed);
   });
@@ -421,7 +425,7 @@
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   }
   /// The schema's problems, marked on their lines in the text.
-  const schemaProblems = $derived(!isTrigger && (leftMode === 'code' || soloMode === 'code') ? outline(yamlSource).problems : []);
+  const schemaProblems = $derived(!notFlow && (leftMode === 'code' || soloMode === 'code') ? outline(yamlSource).problems : []);
   const codeIssues = $derived(schemaProblems.filter((p) => p.line).map((p) => ({ line: p.line!, level: p.level, message: p.message })));
   const issueCount = $derived(schemaProblems.length);
   // A problem picked elsewhere (the Problems panel): show its line.
@@ -493,13 +497,13 @@
 </script>
 
 {#snippet graphView(showMiniMap: boolean)}
-  {#if palette && !readOnly && !isAgentTemplate && !isTrigger}<GraphPalette yaml={yamlSource} onadd={addFromPalette} />{/if}
+  {#if palette && !readOnly && !isAgentTemplate && !notFlow}<GraphPalette yaml={yamlSource} onadd={addFromPalette} />{/if}
   {#if nodes.length > 0}
     {#if baseGraph?.meta}
       <div class="wf-meta-bar">
-        <span class="wf-meta-format">{isTrigger ? 'Trigger' : baseGraph.meta.format === 'cncf-dsl' ? 'CNCF DSL' : 'FlowR'}</span>
+        <span class="wf-meta-format">{isTrigger ? 'Trigger' : isCanvas ? 'Canvas' : baseGraph.meta.format === 'cncf-dsl' ? 'CNCF DSL' : 'FlowR'}</span>
         {#if baseGraph.meta.dsl}<span class="wf-meta-tag">v{baseGraph.meta.dsl}</span>{/if}
-        <span class="wf-meta-tag">{baseGraph.meta.taskCount} {isTrigger ? (baseGraph.meta.taskCount === 1 ? 'target' : 'targets') : 'tasks'}</span>
+        <span class="wf-meta-tag">{baseGraph.meta.taskCount} {isTrigger ? (baseGraph.meta.taskCount === 1 ? 'target' : 'targets') : isCanvas ? (baseGraph.meta.taskCount === 1 ? 'dependency' : 'dependencies') : 'tasks'}</span>
         {#if baseGraph.meta.hasExtensions}<span class="wf-meta-tag ext">{baseGraph.meta.extensionCount} ext</span>{/if}
       </div>
     {/if}
@@ -507,7 +511,7 @@
     <SvelteFlow nodes={shownNodes} {edges} {nodeTypes} fitView onnodeclick={handleNodeClick}
       onnodecontextmenu={({ event, node }) => openMenu(event, node)} onpanecontextmenu={({ event }) => openMenu(event)}
       onconnect={(c) => onConnect(c)}
-      nodesDraggable={!readOnly} nodesConnectable={!readOnly && !isTrigger} elementsSelectable={!readOnly}>
+      nodesDraggable={!readOnly} nodesConnectable={!readOnly && !notFlow} elementsSelectable={!readOnly}>
       <Background />
       <Controls />
       {#if showMiniMap}<MiniMap />{/if}
@@ -530,16 +534,16 @@
 {#snippet codeView()}
   <!-- The text, with the CNCF DSL outline beside it: the whole schema at each
        place, what the flow sets in full, its problems marked in both. -->
-  <div class="code-split" class:no-outline={!showOutline || isTrigger} class:dragging={outlineDrag} bind:this={codeSplit} style="grid-template-columns: {showOutline && !isTrigger ? `${outlinePct}% 5px 1fr` : '1fr'}">
-    {#if showOutline && !isTrigger}
+  <div class="code-split" class:no-outline={!showOutline || notFlow} class:dragging={outlineDrag} bind:this={codeSplit} style="grid-template-columns: {showOutline && !notFlow ? `${outlinePct}% 5px 1fr` : '1fr'}">
+    {#if showOutline && !notFlow}
       <div class="code-outline">
         <SchemaOutline text={yamlSource} onchange={onCodeChange} {readOnly} onreveal={(line) => (reveal = { line, n: ++revealN })} />
       </div>
       <div class="code-div" role="separator" onmousedown={onOutlineDrag}></div>
     {/if}
     <div class="code-text">
-      {#if !isTrigger}<button class="outline-tg" onclick={() => (showOutline = !showOutline)} title={showOutline ? 'Hide the CNCF DSL outline' : 'Show the CNCF DSL outline'}>{showOutline ? '◧' : '◨'} Schema{#if !showOutline && issueCount} <b>{issueCount}</b>{/if}</button>{/if}
-      <YamlEditor value={yamlSource} onchange={onCodeChange} {readOnly} {reveal} issues={codeIssues} complete={isTrigger ? undefined : completeAt}
+      {#if !notFlow}<button class="outline-tg" onclick={() => (showOutline = !showOutline)} title={showOutline ? 'Hide the CNCF DSL outline' : 'Show the CNCF DSL outline'}>{showOutline ? '◧' : '◨'} Schema{#if !showOutline && issueCount} <b>{issueCount}</b>{/if}</button>{/if}
+      <YamlEditor value={yamlSource} onchange={onCodeChange} {readOnly} {reveal} issues={codeIssues} complete={notFlow ? undefined : completeAt}
         marks={codeMarks} ongutter={onGutter} oncontext={debug ? onCodeContext : undefined} />
     </div>
   </div>

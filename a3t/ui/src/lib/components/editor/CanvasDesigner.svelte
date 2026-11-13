@@ -1,541 +1,447 @@
 <script lang="ts">
-  import { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  /// A canvas: one flow's deployment — where it loads, how it runs, what it
+  /// depends on — in the agents' and triggers' frame: header and steps
+  /// (PropertiesTree), each step a page of numbered cards (.agt); the YAML in the
+  /// flow designer (Graph | Code); Deploy and its live state last. Embedded (the
+  /// chat pane) shows the sections one under another, saved through the caller.
+  import type { WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
+  import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
+  import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
+  import '$lib/components/agent/agent.css';
+  import '$lib/components/triggers/triggers.css';
   import { getProject } from '$lib/stores/context.svelte.ts';
-  // Canvas editor — a canvas is ONE flow's DEPLOYMENT metadata (not a multi-agent
-  // graph). See .ai/A3T_CANVAS_SPEC.md §3. It emits the a3t.io/v1alpha1 CanvasSpec:
-  //   { flowRef, placement{mode,runtimeSelector,namespace}, lifecycle{state,scaling,restart}, health{dependsOn,onDependencyDown} }
-  // which the backend deserializes (flowr-types::canvas::CanvasSpec) for
-  // placement/deploy. Live placement preview replicates select_runtime() so you
-  // see which runtime pool this canvas resolves to before saving.
-  import SlideEditor from '$lib/components/shared/SlideEditor.svelte';
-  import { openInStudio } from '$lib/stores/panels.svelte.ts';
+  import { openInStudio, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
-  import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
-  import CanvasDiagram from '$lib/components/editor/CanvasDiagram.svelte';
-  import { canvasApi, mcpCall } from '$lib/services/api';
+  import { canvasApi, mcpCall, opsApi } from '$lib/services/api';
+  import { untrack } from 'svelte';
   import * as YAML from 'yaml';
+  import { fullSpec, specYaml, selectorText, textSelector, verdicts, placedOn, problems as problemsOf, around, servingLabel, triggerLabel,
+    type CanvasSpec, type Around, type OnDown } from '$lib/components/canvas/canvasModel';
 
   let { open = false, canvas = null, onclose, onsaved, embedded = false, readonly = false, onsavespec }:
     {
       open?: boolean; canvas?: any; onclose: () => void; onsaved?: () => void;
-      /// Render inline (e.g. the chat side pane) instead of as a slide-in panel.
+      /// Inline (the chat pane) instead of a slide-in panel.
       embedded?: boolean;
-      /// View only — for a shared preset, which is not edited in place. The
-      /// Script and Form views still show everything; nothing can be changed.
+      /// View only — a shared preset is copied, not edited in place.
       readonly?: boolean;
-      /// Save through the caller instead of the canvas registry API. The chat
-      /// pane uses this to save via `update_canvas`, the same Cedar-gated tool
-      /// the agent uses.
+      /// Save through the caller (the chat pane: update_canvas, Cedar-gated).
       onsavespec?: (spec: any) => Promise<{ ok: boolean; error?: string }>;
     } = $props();
 
-  // Single "Designer" node — the whole editor is the split-pane designer
-  // (config/code on the left, form + AI on the right), mirroring the flow/agent editor.
-  const SECTIONS = [
-    { id: 'designer', label: 'Designer', icon: '<rect x="1" y="1" width="5" height="5" rx="1"/><rect x="10" y="10" width="5" height="5" rx="1"/><path d="M6 3.5h4M8 3.5v9"/>' },
-  ];
-  const ON_DEP_DOWN = ['queue', 'cordon', 'circuit-break', 'fail'];
-
-  // ── Split-pane designer state (left: config/code · right: form) ──
-  let leftMode = $state<'code' | 'preview'>('code');
-  let splitPercent = $state(50);
-  let dragging = $state(false);
-  let splitContainer: HTMLDivElement;
-
-  function onDragStart(e: MouseEvent) {
-    dragging = true; e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      if (!splitContainer) return;
-      const rect = splitContainer.getBoundingClientRect();
-      splitPercent = Math.max(25, Math.min(75, ((ev.clientX - rect.left) / rect.width) * 100));
-    };
-    const onUp = () => { dragging = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }
-
-  /// The form in four steps (the code / preview pane stays beside it): which flow,
-  /// where it loads, how it runs, what it depends on. Embedded (the chat pane)
-  /// shows them all at once.
-  let activeSection = $state('flow');
-  const canvasSteps = $derived.by((): WizardStep[] => [
-    { id: 'flow', icon: '<circle cx="3" cy="8" r="2"/><circle cx="13" cy="8" r="2"/><path d="M5 8h6"/>', label: 'Flow', hint: 'The flow this canvas deploys', ok: !!name.trim() && !!flowRef, need: !name.trim() ? 'Name the canvas.' : 'Pick the flow it deploys.' },
-    { id: 'placement', icon: '<rect x="1" y="3" width="14" height="10" rx="1.5"/><path d="M1 7h14"/>', label: 'Placement', hint: 'Which runtime it loads on' },
-    { id: 'lifecycle', icon: '<path d="M13.5 8A5.5 5.5 0 113 4.5"/><path d="M3 1.5v3h3"/>', label: 'Lifecycle', hint: 'State, session, scaling, restarts' },
-    { id: 'health', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>', label: 'Health', hint: 'Resources it depends on', optional: true },
-  ]);
-  const showStep = (id: string) => embedded || activeSection === id;
+  // ── The canvas being edited ──
+  /// A canvas made in this editor: kept here, not written into the prop, so a
+  /// save (Deploy saves first) does not re-open the editor.
+  let created = $state<any>(null);
+  const cur = $derived(canvas ?? created);
   let name = $state('');
-  // A new canvas belongs to the selected project.
   let namespace = $state(getProject() || 'default');
-  let description = $state('');
+  let spec = $state<CanvasSpec>(fullSpec());
+  /// The runtime labels as typed ("class=gpu, tier=prod"); the spec follows it.
+  let selText = $state('');
+  $effect(() => { const t = selText; untrack(() => { spec.placement.runtimeSelector = textSelector(t); }); });
+  let saved = $state('');
+  const dirty = $derived(JSON.stringify(spec) !== saved);
 
-  // §3 CanvasSpec, held as flat form state.
-  let flowRef = $state('');                 // namespace/name of the flow this canvas deploys
-  let mode = $state<'shared' | 'isolated'>('shared');
-  let selectorText = $state('');            // placement.runtimeSelector as "class=gpu, tier=prod"
-  let placeNamespace = $state('');          // placement.namespace (empty = flow's ns)
-  let lifeState = $state<'running' | 'paused'>('running');
-  let session = $state<'ephemeral' | 'persistent'>('ephemeral');
-  let scMin = $state(1); let scMax = $state(1);
-  let scMetric = $state(''); let scTarget = $state<number | ''>('');
-  let rsPolicy = $state('on-failure'); let rsBackoff = $state('exponential'); let rsMax = $state(5);
-  let onDepDown = $state('queue');
-  let dependsOn = $state<string[]>([]);     // resource refs (namespace/name)
-  let depInput = $state('');
-  // Optional fields with no dedicated form control — held so a code-pane edit
-  // survives the form round-trip and stays in the full spec.
-  let tolerations = $state<any[]>([]);      // placement.tolerations
-  let circuit = $state<any>(null);          // health.circuit
-  let agentRef = $state('');                // set when cloned from a preset for an agent
-  let pinRuntime = $state('');              // placement.runtime — a runtime chosen by name
-  let shared = $state(true);                // a shared preset (true) vs someone's own copy
-  // The published schema (single source of truth), fetched on open — the editor
-  // scaffolds the full spec and can point authors at it for verification.
-  let schema = $state<any>(null);
-
-  let flows = $state<{ ref: string; label: string }[]>([]);
+  let flows = $state<string[]>([]);
   let runtimes = $state<any[]>([]);
+  let resources = $state<{ ref: string; type: string }[]>([]);
+  let ctx = $state<Around>({ flowExists: null, triggers: [], calls: [], live: null });
   let saving = $state(false);
   let msg = $state('');
 
-  // Embedded instances are mounted per canvas (the pane keys them), so they
-  // initialise once on mount; the slide-in panel initialises each time it opens.
-  // …and again when it is pointed at another canvas while open.
-  $effect(() => { void canvas; if (open || embedded) void init(); });
+  let step = $state('details');
+  const ON_DOWN: { v: OnDown; t: string }[] = [
+    { v: 'queue', t: 'hold new runs until it is back' },
+    { v: 'cordon', t: 'take no new runs here; runs elsewhere go on' },
+    { v: 'circuit-break', t: 'fail fast for a while, then try again' },
+    { v: 'fail', t: 'fail the runs that need it' },
+  ];
 
+  $effect(() => { void canvas; if (open || embedded) untrack(() => void init()); });
   async function init() {
-    msg = ''; activeSection = 'flow'; depInput = ''; leftMode = 'code';
-    const [rt, sch] = await Promise.all([canvasApi.runtimes(), canvasApi.schema()]);
+    msg = ''; step = 'details';
+    const [rt, rs] = await Promise.all([canvasApi.runtimes(), canvasApi.resources()]);
     runtimes = rt.ok ? (rt.data?.runtimes ?? []) : [];
-    schema = sch.ok ? sch.data : null;
-    // Flows come from the workflow store (list_flows), not the resource registry.
-    const seen = new Set<string>(); const acc: { ref: string; label: string }[] = [];
-    for (const ns of ['a3t', 'default', 'system']) {
+    const rows: any[] = rs.ok ? (Array.isArray(rs.data) ? rs.data : (rs.data?.resources ?? [])) : [];
+    resources = rows.filter((r) => !['canvas', 'runtime', 'workflow', 'cedar'].includes(String(r.type ?? r.type_ref ?? '').toLowerCase()))
+      .map((r) => ({ ref: `${r.namespace}/${r.name}`, type: String(r.type ?? r.type_ref ?? '') })).sort((a, b) => a.ref.localeCompare(b.ref));
+    const seen = new Set<string>();
+    for (const ns of ['a3t', 'default', 'system', namespace]) {
       const f = await mcpCall('list_flows', { namespace: ns });
-      for (const w of (f.data?.workflows ?? (Array.isArray(f.data) ? f.data : []))) {
-        const ref = `${w.namespace ?? ns}/${w.name}`;
-        if (!seen.has(ref)) { seen.add(ref); acc.push({ ref, label: ref }); }
-      }
+      for (const w of (f.data?.workflows ?? (Array.isArray(f.data) ? f.data : []))) seen.add(`${w.namespace ?? ns}/${w.name}`);
     }
-    flows = acc;
+    flows = [...seen].sort();
+    created = null;
+    name = canvas?.name ?? ''; namespace = canvas?.namespace ?? (getProject() || 'default');
+    spec = fullSpec(canvas?.config ?? {});
+    selText = selectorText(spec.placement.runtimeSelector);
+    saved = JSON.stringify(spec);
+  }
+  // What is around it follows the flow.
+  $effect(() => { const f = spec.flowRef, a = spec.agentRef; if (open || embedded) void refreshAround(f, a); });
+  async function refreshAround(f = spec.flowRef, a = spec.agentRef) { ctx = await around(f, a); }
 
-    if (canvas) {
-      name = canvas.name; namespace = canvas.namespace ?? 'default';
-      applySpecToForm(canvas.config ?? {});
-    } else {
-      name = ''; namespace = 'default';
-      applySpecToForm({});
-    }
-    specRev++;   // the form now holds the saved canvas
+  const placed = $derived(placedOn(spec, runtimes));
+  const verdictList = $derived(verdicts(spec, runtimes));
+  const pinKnown = $derived(!spec.placement.runtime || runtimes.some((r) => r.name === spec.placement.runtime));
+  const problems = $derived(problemsOf(spec, { requireFlow: !embedded, flowExists: ctx.flowExists, runtimes, pinKnown }));
+  const resourceKnown = (ref: string) => resources.some((r) => r.ref === ref);
+
+  const steps = $derived.by((): WizardStep[] => [
+    { id: 'details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', label: 'Details', hint: 'The canvas, the flow it deploys, and how it stands', ok: !!name.trim() && !!spec.flowRef && ctx.flowExists !== false, need: !name.trim() ? 'Name the canvas.' : 'Pick a flow that exists.' },
+    { id: 'placement', icon: '<rect x="1" y="3" width="14" height="10" rx="1.5"/><path d="M1 7h14"/>', label: 'Placement', hint: 'Where it loads: a shared runtime pool or its own sandbox, and which runtime takes it', ok: !runtimes.length || !!placed, need: 'No runtime takes it yet.' },
+    { id: 'lifecycle', icon: '<path d="M13.5 8A5.5 5.5 0 113 4.5"/><path d="M3 1.5v3h3"/>', label: 'Lifecycle', hint: 'How it runs: state, session, scaling and restarts', ok: spec.lifecycle.scaling.max >= spec.lifecycle.scaling.min, need: 'Scaling max must be at least min.' },
+    { id: 'deps', icon: '<circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="8" cy="12" r="2"/><path d="M5.5 5.5L7 10.5M10.5 5.5L9 10.5"/>', label: 'Dependencies', hint: 'What feeds it, what it calls, what it depends on — and what happens when one is down', optional: true },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'YAML', hint: 'The canvas as code: a graph of where it loads and what it depends on, and the YAML the Studio edits' },
+    { id: 'deploy', icon: '<path d="M8 1v9M4 6l4 4 4-4"/><path d="M2 14h12"/>', label: 'Deploy', hint: 'Put it on its runtime, and see how it is running', optional: true },
+  ]);
+
+  // ── YAML: the form and the text are one canvas ──
+  let yamlDraft = $state('');
+  let yamlRev = $state(0);
+  let yamlErr = $state('');
+  $effect(() => { if (step === 'yaml') untrack(() => { yamlDraft = specYaml(spec); yamlRev++; yamlErr = ''; }); });
+  function applyYaml(text: string) {
+    yamlDraft = text;
+    let d: any;
+    try { d = YAML.parse(text); } catch (e) { yamlErr = `Not YAML: ${(e as Error).message}`; return; }
+    if (!d || typeof d !== 'object') { yamlErr = 'Empty.'; return; }
+    yamlErr = '';
+    spec = fullSpec(d);
+    selText = selectorText(spec.placement.runtimeSelector);
   }
 
-  function selectorToText(sel?: Record<string, string>): string {
-    return sel ? Object.entries(sel).map(([k, v]) => `${k}=${v}`).join(', ') : '';
-  }
-  function textToSelector(t: string): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const p of t.split(',').map((s) => s.trim()).filter(Boolean)) {
-      const [k, v] = p.split('=').map((s) => s.trim());
-      if (k && v) out[k] = v;
-    }
-    return out;
-  }
-
-  function addDep() {
-    const r = depInput.trim();
-    if (r && r.includes('/') && !dependsOn.includes(r)) { dependsOn = [...dependsOn, r]; depInput = ''; }
-  }
-  function removeDep(r: string) { dependsOn = dependsOn.filter((d) => d !== r); }
-
-  // The §3 CanvasSpec this form produces (stored as the canvas resource config).
-  const spec = $derived(buildSpec());
-
-  // The chat's context: this canvas, the section on screen, and its spec as
-  // edited. Not when embedded in the chat's own editing pane, which reports
-  // for itself — only the app's item view describes the app's item.
+  // The chat's context: this canvas, the step on screen, its spec as edited.
   let specRev = $state(0);
   if (!embedded) trackActiveItem(() => open ? {
-    kind: 'canvas', namespace, name: name || 'new canvas', id: canvas ? undefined : '(new)',
-    section: activeSection, text: JSON.stringify(spec, null, 2), rev: specRev,
-    // The agent's edits (propose_edit) arrive as a whole spec; the Config pane's
-    // own path turns text into the form (JSON is YAML).
-    applyEdit: readonly ? undefined : (t: string) => onCodeChange(t),
+    kind: 'canvas', namespace, name: name || 'new canvas', id: cur ? undefined : '(new)',
+    section: step, text: JSON.stringify(spec, null, 2), rev: specRev,
+    applyEdit: readonly ? undefined : (t: string) => applyYaml(t),
   } : null);
-  // The COMPLETE CanvasSpec — every field present (defaults materialized), with
-  // `null`/`[]` where an optional field is not configured. This full skeleton is
-  // what the code pane shows and what `save` persists, so each stored canvas is
-  // self-documenting and Cedar sees every attribute. Mirrors flowr-types::CanvasSpec.
-  function buildSpec() {
-    return {
-      flowRef,
-      description,
-      agentRef,
-      // Carried through so saving from this editor never silently turns a
-      // user's copy back into a protected shared preset, or vice versa.
-      shared,
-      placement: {
-        mode,
-        runtimeSelector: textToSelector(selectorText),
-        namespace: placeNamespace,
-        tolerations,
-        // The pin must round-trip: dropping it here would erase a runtime the
-        // user picked the moment they saved anything else.
-        runtime: pinRuntime || null,
-      },
-      lifecycle: {
-        state: lifeState,
-        session,
-        scaling: {
-          min: Number(scMin),
-          max: Number(scMax),
-          metric: scMetric || null,
-          target: scTarget !== '' ? Number(scTarget) : null,
-        },
-        restart: { policy: rsPolicy, backoff: rsBackoff, maxRetries: Number(rsMax) },
-      },
-      health: {
-        dependsOn: dependsOn.map((resource) => ({ resource })),
-        onDependencyDown: onDepDown,
-        circuit,
-      },
-    };
+
+  // ── Dependencies ──
+  let depPick = $state('');
+  function addDep() {
+    const r = depPick.trim();
+    if (r && r.includes('/') && !spec.health.dependsOn.some((d) => d.resource === r)) spec.health.dependsOn = [...spec.health.dependsOn, { resource: r }];
+    depPick = '';
   }
+  const removeDep = (r: string) => (spec.health.dependsOn = spec.health.dependsOn.filter((d) => d.resource !== r));
 
-  // ── Two-way sync: the config/code editor (left) ⇄ the form (right) ──
-  // The form is the source of truth. `yamlSource` is regenerated from the form,
-  // except when the current code already parses to the same spec — that guard
-  // means typing in the code editor updates the form WITHOUT reformatting the
-  // text under the cursor (the classic FlowEditorPane round-trip).
-  let yamlSource = $state('');
-  $effect(() => {
-    const s = spec; // track form changes
-    let cur: any = null;
-    try { cur = YAML.parse(yamlSource); } catch { cur = undefined; }
-    if (JSON.stringify(cur) === JSON.stringify(s)) return; // code already matches the form
-    yamlSource = renderYaml(s);
-  });
-
-  // Render the full spec as a self-documenting YAML doc: a header pointing at the
-  // published schema + short comments on each section. Comments don't affect the
-  // round-trip (parse strips them), so the guard above still holds.
-  function renderYaml(s: any): string {
-    const doc = new YAML.Document(s);
-    doc.commentBefore =
-      ` a3t.io/v1alpha1 · CanvasSpec — full spec (unset optional fields shown as null/[]).\n` +
-      ` Schema: GET /canvas/schema · every key is present so you can see what's configurable.`;
-    const comment = (key: string, text: string) => {
-      const node: any = doc.get(key, true);
-      if (node) node.commentBefore = ' ' + text;
-    };
-    comment('placement', 'where the flow loads: shared pool or its own isolated sandbox');
-    comment('lifecycle', 'how it runs: state (running|paused=hibernate), session (ephemeral|persistent), scaling, restart');
-    comment('health', 'dependent resources to watch + what to do when one is down');
-    return String(doc);
-  }
-
-  function onCodeChange(val: string) {
-    yamlSource = val;
-    let d: any;
-    try { d = YAML.parse(val); } catch { return; } // hold last good form on invalid YAML
-    if (d && typeof d === 'object') applySpecToForm(d);
-  }
-
-  // Populate the form state from a CanvasSpec object (code → form, and on load).
-  function applySpecToForm(c: any) {
-    flowRef = c.flowRef ?? '';
-    description = c.description ?? '';
-    agentRef = c.agentRef ?? '';
-    const p = c.placement ?? {}, l = c.lifecycle ?? {}, h = c.health ?? {};
-    mode = p.mode ?? 'shared';
-    selectorText = selectorToText(p.runtimeSelector);
-    placeNamespace = p.namespace ?? '';
-    lifeState = l.state ?? 'running';
-    session = l.session ?? 'ephemeral';
-    const sc = l.scaling ?? {}; scMin = sc.min ?? 1; scMax = sc.max ?? 1;
-    scMetric = sc.metric ?? ''; scTarget = sc.target ?? '';
-    const rs = l.restart ?? {}; rsPolicy = rs.policy ?? 'on-failure'; rsBackoff = rs.backoff ?? 'exponential'; rsMax = rs.maxRetries ?? 5;
-    onDepDown = h.onDependencyDown ?? 'queue';
-    dependsOn = Array.isArray(h.dependsOn) ? h.dependsOn.map((d: any) => d.resource).filter(Boolean) : [];
-    tolerations = Array.isArray(p.tolerations) ? p.tolerations : [];
-    pinRuntime = p.runtime ?? '';
-    shared = c.shared ?? true;
-    circuit = h.circuit ?? null;
-  }
-
-  // Client-side mirror of flowr-types::canvas::select_runtime for a live preview.
-  const placedRuntime = $derived.by(() => {
-    const sel = textToSelector(selectorText);
-    const ns = placeNamespace.trim();
-    const nsOk = (r: any) => !ns || r.namespace === ns;
-    const pool = runtimes.filter(nsOk);
-    const labelsOk = (r: any) => Object.entries(sel).every(([k, v]) => (r.labels ?? {})[k] === v);
-    // A pin names the pool, but must still satisfy the selector — same rule as
-    // the server, so the preview never promises a placement deploy would refuse.
-    if (pinRuntime) return pool.find((r) => r.name === pinRuntime && labelsOk(r)) ?? null;
-    if (Object.keys(sel).length === 0) return pool.find((r) => r.default) ?? pool[0] ?? null;
-    return pool.find((r) => Object.entries(sel).every(([k, v]) => (r.labels ?? {})[k] === v)) ?? null;
-  });
-
-  // Local validation mirroring CanvasSpec::validate.
-  const problems = $derived.by(() => {
-    const e: string[] = [];
-    // A clone may be saved before it is bound to a flow, so the flow is only
-    // required on the Canvas page, where every canvas is created for a flow.
-    if (!flowRef && !embedded) e.push('Flow is required');
-    else if (flowRef && !flowRef.includes('/')) e.push("Flow must be 'namespace/name'");
-    if (Number(scMax) < Number(scMin)) e.push('scaling max must be ≥ min');
-    for (const d of dependsOn) if (!d.includes('/')) e.push(`dependsOn '${d}' must be 'namespace/name'`);
-    return e;
-  });
-
-  async function save() {
-    if (!name.trim()) { msg = 'Name is required'; return; }
-    if (problems.length) { msg = problems[0]; return; }
+  // ── Save ──
+  async function save(stay = false): Promise<boolean> {
+    if (!name.trim()) { msg = 'Name the canvas.'; step = 'details'; return false; }
+    const blocking = problems.filter((p) => !/No runtime takes it/.test(p));
+    if (blocking.length) { msg = blocking[0]; return false; }
     saving = true; msg = '';
-    const body = buildSpec();
+    const body = JSON.parse(JSON.stringify(spec));
+    let ok = false;
     if (onsavespec) {
-      const r = await onsavespec(body);
-      saving = false;
-      msg = r.ok ? 'Saved' : (r.error || 'Save failed');
-      if (r.ok) onsaved?.();
-      return;
+      const r = await onsavespec(body); ok = r.ok; if (!ok) msg = r.error || 'Not saved.';
+    } else {
+      const res = cur ? await canvasApi.update(namespace, name.trim(), body) : await canvasApi.create(namespace, name.trim(), body);
+      ok = res.ok; if (!ok) msg = res.error || `Not saved (HTTP ${res.status}).`;
+      if (ok && !cur) created = { name: name.trim(), namespace, config: body };
     }
-    const res = canvas ? await canvasApi.update(namespace, name.trim(), body) : await canvasApi.create(namespace, name.trim(), body);
     saving = false;
-    if (res.ok) { specRev++; onsaved?.(); onclose(); } else msg = res.error || `Save failed (HTTP ${res.status})`;
+    if (ok) { saved = JSON.stringify(spec); specRev++; onsaved?.(); if (!stay && !embedded) onclose(); }
+    return ok;
   }
+
+  // ── Deploy and live ──
+  let deploying = $state(false);
+  let deployMsg = $state('');
+  let acting = $state('');
+  async function deploy() {
+    deployMsg = '';
+    if (dirty || !cur) { if (!(await save(true))) return; }
+    const [ns, nm] = spec.flowRef.split('/');
+    if (!ns || !nm) { deployMsg = 'Pick the flow first.'; return; }
+    deploying = true;
+    const res = spec.agentRef ? await canvasApi.deployResource(namespace, name) : await canvasApi.deploy(ns, nm);
+    deploying = false;
+    if (res.ok && res.data?.deployed !== false) {
+      deployMsg = res.data?.edition === 'ee' ? `Deployed: ${res.data?.placedRuntime ? `on ${res.data.placedRuntime}` : 'sandbox created'}.` : `Placed on ${res.data?.placedRuntime ?? placed?.name ?? 'its runtime'}.`;
+      setTimeout(() => void refreshAround(), 1500);
+    } else deployMsg = `Not deployed: ${res.data?.error ?? res.error ?? 'refused'}`;
+  }
+  const depId = $derived(ctx.live?.deployment?.id ?? ctx.live?.id ?? '');
+  async function act(a: 'pause' | 'resume' | 'restart' | 'undeploy') {
+    if (!depId) return;
+    if (a === 'undeploy' && !confirm(`Undeploy ${spec.flowRef}? Its runs stop and it leaves ${ctx.live?.deployment?.runtime ?? 'its runtime'}.`)) return;
+    acting = a;
+    const r = await opsApi.deployment(depId, a);
+    acting = '';
+    const DONE = { pause: 'Paused.', resume: 'Resumed.', restart: 'Restarted.', undeploy: 'Undeployed.' };
+    deployMsg = r.ok ? DONE[a] : `Not ${a}d: ${r.error ?? 'refused'}`;
+    await refreshAround();
+  }
+
+  const liveState = $derived(ctx.live?.serving as string | undefined);
+  const howRuns = $derived(`${spec.lifecycle.state} · ${spec.lifecycle.session} · ${spec.lifecycle.scaling.min}–${spec.lifecycle.scaling.max} ${spec.lifecycle.scaling.max === 1 ? 'instance' : 'instances'}`);
 </script>
 
-{#snippet body()}
-  {#if msg}<div class="cd-error">{msg}</div>{/if}
+{#snippet details()}
+  <div class="card">
+    <div class="card-head"><h3>1 · Canvas</h3><span>its name, the project it belongs to, what it is for</span></div>
+    <div class="fields">
+      <label class="fld">Name<input bind:value={name} placeholder="orders-canvas" readonly={!!cur} /></label>
+      <label class="fld">Project<input bind:value={namespace} readonly={!!cur} /></label>
+      <label class="fld full">Description<input bind:value={spec.description} placeholder="What it deploys and why, e.g. refunds, kept warm for the shop" /></label>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>2 · The flow it deploys</h3><span>one canvas, one flow</span></div>
+    <div class="fields">
+      <label class="fld full">Flow
+        <select bind:value={spec.flowRef}>
+          <option value="">— pick the flow —</option>
+          {#if spec.flowRef && !flows.includes(spec.flowRef)}<option value={spec.flowRef}>{spec.flowRef}</option>{/if}
+          {#each flows as f (f)}<option value={f}>{f}</option>{/each}
+        </select></label>
+    </div>
+    {#if spec.flowRef && ctx.flowExists === false}<div class="note bad">The flow <span class="mono">{spec.flowRef}</span> does not exist (any more). Pick the one it should deploy.</div>
+    {:else if spec.flowRef}<div class="acts"><button class="link" onclick={() => openInStudio('flow', spec.flowRef.split('/')[0], spec.flowRef.split('/').slice(1).join('/'))}>Open the flow in Studio →</button>
+      {#if spec.agentRef}<span class="dim">for agent <span class="mono">{spec.agentRef}</span></span>{/if}</div>{/if}
+  </div>
+{/snippet}
 
-  <div class="cd-split" class:dragging bind:this={splitContainer} style="grid-template-columns: {splitPercent}% 6px 1fr;">
-    <!-- LEFT: config (code) or placement preview -->
-    <div class="cd-pane">
-      <div class="cd-toolbar">
-        <div class="cd-tabs">
-          <button class="cd-tab" class:active={leftMode === 'code'} onclick={() => (leftMode = 'code')}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3L1 8l4 5M11 3l4 5-4 5"/></svg>
-            Config
-          </button>
-          <button class="cd-tab" class:active={leftMode === 'preview'} onclick={() => (leftMode = 'preview')}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="5" height="5" rx="1"/><rect x="10" y="10" width="5" height="5" rx="1"/><path d="M6 3.5h4M8 3.5v9"/></svg>
-            Preview
-          </button>
-        </div>
-        <span class="cd-crd">a3t.io/v1alpha1 · Canvas</span>
+{#snippet status()}
+  <div class="card">
+    <div class="card-head"><h3>3 · Status</h3><span>where it lands, how it runs, what it needs, whether it is live</span></div>
+    <ul class="rows">
+      <li><span class="lbl">Runs on</span>
+        <span class="val">{#if placed}<span class="dot ok"></span> {placed.name} <span class="dim">· {spec.placement.mode === 'isolated' ? 'its own sandbox' : 'shared pool'}</span>{:else if runtimes.length}<span class="dot err"></span> No runtime takes it{:else}—{/if}</span>
+        <button class="btn2" onclick={() => (step = 'placement')}>Change</button>
+        <span class="sub">{spec.placement.runtime ? `pinned to ${spec.placement.runtime}` : selText ? `runtimes labelled ${selText}` : 'the default runtime'}</span></li>
+      <li><span class="lbl">How it runs</span><span class="val">{howRuns}</span>
+        <button class="btn2" onclick={() => (step = 'lifecycle')}>Change</button>
+        <span class="sub">restarts {spec.lifecycle.restart.policy}, {spec.lifecycle.restart.backoff} backoff, up to {spec.lifecycle.restart.maxRetries}</span></li>
+      <li><span class="lbl">Depends on</span>
+        <span class="val">{spec.health.dependsOn.length ? spec.health.dependsOn.map((d) => d.resource).join(', ') : ctx.calls.length ? `what its flow calls: ${ctx.calls.join(', ')}` : 'nothing declared'}</span>
+        <button class="btn2" onclick={() => (step = 'deps')}>Change</button>
+        <span class="sub">{ctx.triggers.length} trigger{ctx.triggers.length === 1 ? '' : 's'} feed it · if one is down: {spec.health.onDependencyDown}</span></li>
+      <li><span class="lbl">Live</span>
+        <span class="val"><span class="dot" class:ok={liveState === 'serving'} class:warn={liveState && liveState !== 'serving'}></span> {servingLabel(liveState)}{ctx.live?.deployment?.runtime ? ` on ${ctx.live.deployment.runtime}` : ''}</span>
+        <button class="btn2" onclick={() => (step = 'deploy')}>{ctx.live ? 'Manage' : 'Deploy'}</button>
+        {#if ctx.live?.deployment?.pauseReason}<span class="sub">“{ctx.live.deployment.pauseReason}”</span>{/if}</li>
+    </ul>
+  </div>
+{/snippet}
+
+{#snippet placement()}
+  <div class="card">
+    <div class="card-head"><h3>1 · Where it loads</h3><span>a shared runtime pool, or a sandbox of its own</span></div>
+    <div class="seg src" role="tablist">
+      <button role="tab" class:on={spec.placement.mode === 'shared'} aria-selected={spec.placement.mode === 'shared'} onclick={() => (spec.placement.mode = 'shared')}>Shared pool</button>
+      <button role="tab" class:on={spec.placement.mode === 'isolated'} aria-selected={spec.placement.mode === 'isolated'} onclick={() => (spec.placement.mode = 'isolated')}>Isolated sandbox</button>
+    </div>
+    <p class="dim">{spec.placement.mode === 'isolated' ? 'Its own sandbox (EE: a dedicated pod): nothing else runs beside it. For untrusted code, noisy work, or data that must stay apart.' : 'Loaded into a runtime pool with other flows: cheapest and quickest to start. Right for most flows.'}</p>
+    <div class="fields">
+      <label class="fld">Runtime labels <small>key=value, comma-separated; empty: the default runtime</small><input class="mono" bind:value={selText} placeholder="class=gpu, tier=prod" /></label>
+      <label class="fld">Namespace <small>empty: the runtime's own</small><input bind:value={spec.placement.namespace} placeholder="a3t" /></label>
+      <label class="fld full">Pinned runtime <small>one runtime by name; it must still match the labels</small>
+        <select value={spec.placement.runtime ?? ''} onchange={(e) => (spec.placement.runtime = e.currentTarget.value || null)}>
+          <option value="">— none: pick by labels —</option>
+          {#if spec.placement.runtime && !pinKnown}<option value={spec.placement.runtime}>{spec.placement.runtime} (not registered)</option>{/if}
+          {#each runtimes as r (r.namespace + '/' + r.name)}<option value={r.name}>{r.name}</option>{/each}
+        </select></label>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>2 · Where it lands</h3><span>each registered runtime, and whether it takes this canvas</span></div>
+    {#if placed}<p class="ok">It lands on <b>{placed.name}</b>.</p>{:else if runtimes.length}<div class="note bad">No runtime takes it. Change the labels, the namespace or the pin — or register a runtime with these labels in Runtime.</div>{/if}
+    <ul class="rows">
+      {#each verdictList as v (v.rt.namespace + '/' + v.rt.name)}
+        <li><span class="lbl">{v.rt.name}</span>
+          <span class="val mono">{selectorText(v.rt.labels) || 'no labels'} · {v.rt.namespace}{v.rt.default ? ' · default' : ''}</span>
+          <span class="tag" class:prod={v.ok && placed?.name === v.rt.name}>{v.ok ? (placed?.name === v.rt.name ? 'takes it' : 'would take it') : 'no'}</span>
+          {#if !v.ok}<span class="sub">{v.why}</span>{/if}</li>
+      {:else}<li><span class="dim">No runtime registered yet.</span><span></span><button class="btn2" onclick={() => navigateTo('runtime', 'Runtime')}>Runtime →</button></li>{/each}
+    </ul>
+  </div>
+{/snippet}
+
+{#snippet lifecycle()}
+  <div class="card">
+    <div class="card-head"><h3>1 · State and session</h3><span>whether it takes work, and whether it remembers between runs</span></div>
+    <div class="row">
+      <div class="seg src" role="tablist">
+        <button role="tab" class:on={spec.lifecycle.state === 'running'} onclick={() => (spec.lifecycle.state = 'running')}>Running</button>
+        <button role="tab" class:on={spec.lifecycle.state === 'paused'} onclick={() => (spec.lifecycle.state = 'paused')}>Paused (hibernate)</button>
       </div>
-      <div class="cd-pane-body">
-        {#if leftMode === 'code'}
-          <YamlEditor value={yamlSource} onchange={onCodeChange} readOnly={readonly} />
-        {:else}
-          <!-- The canvas as a logical system: triggers → runtime → container →
-               flow/agent → what it uses, plus where else it could (not) go. -->
-          <CanvasDiagram
-            {flowRef} {agentRef} {mode} {placeNamespace} {pinRuntime} {runtimes}
-            selector={textToSelector(selectorText)} {lifeState} {session}
-            scMin={Number(scMin)} scMax={Number(scMax)} {dependsOn} {problems} />
-        {/if}
+      <div class="seg src" role="tablist">
+        <button role="tab" class:on={spec.lifecycle.session === 'ephemeral'} onclick={() => (spec.lifecycle.session = 'ephemeral')}>Ephemeral</button>
+        <button role="tab" class:on={spec.lifecycle.session === 'persistent'} onclick={() => (spec.lifecycle.session = 'persistent')}>Persistent</button>
       </div>
     </div>
-
-    <!-- Drag handle -->
-    <div class="cd-divider" onmousedown={onDragStart} role="separator" aria-orientation="vertical"></div>
-
-    <!-- RIGHT: the config form. The assistant is the app's Chat. -->
-    <div class="cd-pane">
-      <div class="cd-toolbar">
-        <div class="cd-tabs">
-          <span class="cd-tab active">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>
-            Form
-          </span>
-        </div>
-      </div>
-      <div class="cd-pane-body">
-          <fieldset class="cd-fieldset" disabled={readonly}>
-          <div class="cd-formcol">
-            {#if showStep('flow')}
-            <div class="cd-sub">Canvas — the flow this deploys</div>
-            <label class="cf-field"><span>Name</span><input bind:value={name} placeholder="orders-canvas" readonly={!!canvas} /></label>
-            <label class="cf-field"><span>Namespace</span><input bind:value={namespace} readonly={!!canvas} /></label>
-            <label class="cf-field"><span>Flow (flowRef)</span>
-              <select bind:value={flowRef}>
-                <option value="">— select the flow this canvas deploys —</option>
-                {#if flowRef && !flows.some((f) => f.ref === flowRef)}<option value={flowRef}>{flowRef}</option>{/if}
-                {#each flows as f}<option value={f.ref}>{f.label}</option>{/each}
-              </select>
-            </label>
-            <label class="cf-field"><span>Description</span><input bind:value={description} placeholder="what this canvas deploys" /></label>
-            {/if}
-
-            {#if showStep('placement')}
-            <div class="cd-sub">Placement — where the flow loads</div>
-            <label class="cf-field"><span>Isolation mode</span>
-              <select bind:value={mode}><option value="shared">shared — into a runtime pool</option><option value="isolated">isolated — dedicated sandbox</option></select>
-            </label>
-            <label class="cf-field"><span>Runtime selector (labels)</span><input bind:value={selectorText} placeholder="class=gpu, tier=prod" /></label>
-            <label class="cf-field"><span>Namespace override</span><input bind:value={placeNamespace} placeholder="(flow's namespace)" /></label>
-            <label class="cf-field"><span>Pinned runtime</span>
-              <select bind:value={pinRuntime}>
-                <option value="">— none: select by labels —</option>
-                {#if pinRuntime && !runtimes.some((r) => r.name === pinRuntime)}<option value={pinRuntime}>{pinRuntime} (not registered)</option>{/if}
-                {#each runtimes as r}<option value={r.name}>{r.name}</option>{/each}
-              </select>
-            </label>
-            {/if}
-
-            {#if showStep('lifecycle')}
-            <div class="cd-sub">Lifecycle — how it runs</div>
-            <div class="cf-grid">
-              <label class="cf-field"><span>State</span>
-                <select bind:value={lifeState}><option value="running">running</option><option value="paused">paused (hibernate)</option></select>
-              </label>
-              <label class="cf-field"><span>Session</span>
-                <select bind:value={session}>
-                  <option value="ephemeral">ephemeral — no carried state</option>
-                  <option value="persistent">persistent — checkpoint &amp; resume</option>
-                </select>
-              </label>
-            </div>
-            <div class="cf-grid">
-              <label class="cf-field"><span>Scale min</span><input type="number" min="0" bind:value={scMin} /></label>
-              <label class="cf-field"><span>Scale max</span><input type="number" min="0" bind:value={scMax} /></label>
-            </div>
-            <div class="cf-grid">
-              <label class="cf-field"><span>Scale metric</span><input bind:value={scMetric} placeholder="queue_depth" /></label>
-              <label class="cf-field"><span>Target</span><input type="number" min="0" bind:value={scTarget} placeholder="20" /></label>
-            </div>
-            <div class="cf-grid3">
-              <label class="cf-field"><span>Restart</span>
-                <select bind:value={rsPolicy}><option value="on-failure">on-failure</option><option value="always">always</option><option value="never">never</option></select>
-              </label>
-              <label class="cf-field"><span>Backoff</span>
-                <select bind:value={rsBackoff}><option value="exponential">exponential</option><option value="linear">linear</option><option value="fixed">fixed</option></select>
-              </label>
-              <label class="cf-field"><span>Max retries</span><input type="number" min="0" bind:value={rsMax} /></label>
-            </div>
-            {/if}
-
-            {#if showStep('health')}
-            <div class="cd-sub">Health — dependent resources to watch</div>
-            <p class="sf-note">Auto-derived from the flow's tasks (call:llm/mcp/adb) when empty. Override here.</p>
-            <div class="dep-add">
-              <input bind:value={depInput} placeholder="namespace/resource-name" onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addDep(); } }} />
-              <button class="btn sm" onclick={addDep}>Add</button>
-            </div>
-            {#each dependsOn as d}
-              <div class="dep-row"><span class="mono">{d}</span><button class="dep-x" onclick={() => removeDep(d)} aria-label="Remove">✕</button></div>
-            {/each}
-            <label class="cf-field" style="margin-top:10px;"><span>On dependency down</span>
-              <select bind:value={onDepDown}>{#each ON_DEP_DOWN as o}<option value={o}>{o}</option>{/each}</select>
-            </label>
-            {/if}
-          </div>
-          </fieldset>
-      </div>
+    <p class="dim">{spec.lifecycle.state === 'paused' ? 'Paused: deployed but asleep; calls wake it.' : 'Running: it takes work as it comes.'}
+      {spec.lifecycle.session === 'persistent' ? 'Persistent: each run checkpoints, and the next one resumes from it — for agents that remember.' : 'Ephemeral: each run starts clean.'}</p>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>2 · Scaling</h3><span>how many instances, and on what signal</span></div>
+    <div class="fields">
+      <label class="fld">At least<input type="number" min="0" bind:value={spec.lifecycle.scaling.min} /></label>
+      <label class="fld">At most<input type="number" min="0" bind:value={spec.lifecycle.scaling.max} /></label>
+      <label class="fld">Scale on <small>a metric, e.g. queue_depth; empty: CPU</small><input class="mono" value={spec.lifecycle.scaling.metric ?? ''} oninput={(e) => (spec.lifecycle.scaling.metric = e.currentTarget.value || null)} placeholder="queue_depth" /></label>
+      <label class="fld">Target per instance<input type="number" min="0" value={spec.lifecycle.scaling.target ?? ''} oninput={(e) => (spec.lifecycle.scaling.target = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))} placeholder="20" /></label>
+    </div>
+    {#if spec.lifecycle.scaling.max < spec.lifecycle.scaling.min}<p class="err">At most must be at least {spec.lifecycle.scaling.min}.</p>{/if}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>3 · Restarts</h3><span>when an instance stops</span></div>
+    <div class="fields three">
+      <label class="fld">Restart<select bind:value={spec.lifecycle.restart.policy}><option value="on-failure">on failure</option><option value="always">always</option><option value="never">never</option></select></label>
+      <label class="fld">Backoff<select bind:value={spec.lifecycle.restart.backoff}><option value="exponential">exponential</option><option value="linear">linear</option><option value="fixed">fixed</option></select></label>
+      <label class="fld">At most<input type="number" min="0" bind:value={spec.lifecycle.restart.maxRetries} /></label>
     </div>
   </div>
 {/snippet}
 
+{#snippet deps()}
+  <div class="card">
+    <div class="card-head"><h3>1 · What feeds it</h3><span>triggers that send to its flow</span></div>
+    {#if ctx.triggers.length}
+      <ul class="rows">{#each ctx.triggers as t (t.id)}<li><span class="lbl">{t.name}</span><span class="val mono">{triggerLabel(t)}</span><span class="tag" class:prod={t.enabled !== false}>{t.enabled === false ? 'paused' : 'active'}</span></li>{/each}</ul>
+    {:else}<p class="dim">No trigger sends to this flow: it runs when it is called.</p>{/if}
+    <div class="acts"><button class="link" onclick={() => navigateTo('triggers', 'Triggers')}>Triggers →</button></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>2 · What its flow calls</h3><span>read from the flow's definition</span></div>
+    {#if ctx.calls.length}<div class="chips">{#each ctx.calls as c (c)}<span class="tag">{c}</span>{/each}</div>{:else}<p class="dim">{ctx.flowExists === false ? 'Its flow does not exist.' : 'No calls to outside systems.'}</p>{/if}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>3 · Resources it depends on</h3><span>watched while it runs</span></div>
+    {#if spec.health.dependsOn.length}
+      <ul class="rows">
+        {#each spec.health.dependsOn as d (d.resource)}
+          <li><span class="lbl mono">{d.resource}</span>
+            <span class="val">{#if resourceKnown(d.resource)}<span class="dot ok"></span> registered · {resources.find((r) => r.ref === d.resource)?.type}{:else}<span class="dot err"></span> not registered{/if}</span>
+            <button class="btn2 quiet" onclick={() => removeDep(d.resource)} disabled={readonly}>Remove</button></li>
+        {/each}
+      </ul>
+    {:else}<p class="dim">None declared: FlowR watches the resources its flow calls.</p>{/if}
+    {#if !readonly}
+      <div class="row">
+        <select class="grow pick" bind:value={depPick}>
+          <option value="">— add a resource —</option>
+          {#each resources.filter((r) => !spec.health.dependsOn.some((d) => d.resource === r.ref)) as r (r.ref)}<option value={r.ref}>{r.ref} · {r.type}</option>{/each}
+        </select>
+        <button class="btn2" disabled={!depPick} onclick={addDep}>Add</button>
+      </div>
+    {/if}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>4 · When one is down</h3><span>what happens to its runs</span></div>
+    <div class="seg src" role="tablist">
+      {#each ON_DOWN as o (o.v)}<button role="tab" class:on={spec.health.onDependencyDown === o.v} onclick={() => (spec.health.onDependencyDown = o.v)}>{o.v}</button>{/each}
+    </div>
+    <p class="dim">{ON_DOWN.find((o) => o.v === spec.health.onDependencyDown)?.t}.</p>
+  </div>
+{/snippet}
+
+{#snippet yaml()}
+  <div class="te-yaml">{#key yamlRev}
+    <FlowEditorPane part="main" initialYaml={yamlDraft} onchange={readonly ? undefined : applyYaml} readOnly={readonly}>
+      {#snippet toolbar()}<span class="grow"></span><span class="ver mono">{namespace}/{name || 'new canvas'}</span>
+        {#if cur}<button class="link" onclick={() => openInStudio('canvas', cur.namespace ?? namespace, cur.name)}>Edit in Studio →</button>{/if}{/snippet}
+    </FlowEditorPane>
+  {/key}</div>
+  {#if yamlErr}<div class="note bad">{yamlErr}</div>{/if}
+{/snippet}
+
+{#snippet deployStep()}
+  <div class="card">
+    <div class="card-head"><h3>1 · Deploy</h3><span>{dirty || !cur ? 'it is saved first' : 'what it will do'}</span></div>
+    <ul class="rows">
+      <li><span class="lbl">Flow</span><span class="val mono">{spec.flowRef || '—'}</span><span></span></li>
+      <li><span class="lbl">On</span><span class="val">{placed ? placed.name : 'no runtime takes it'} · {spec.placement.mode === 'isolated' ? 'its own sandbox' : 'shared pool'}</span><span></span></li>
+      <li><span class="lbl">As</span><span class="val">{howRuns}</span><span></span></li>
+    </ul>
+    {#if problems.length}<div class="note bad"><b>Fix first:</b><ul class="notes">{#each problems as p (p)}<li>{p}</li>{/each}</ul></div>{/if}
+    <div class="acts">
+      <button class="btn2 primary" disabled={readonly || deploying || problems.length > 0} onclick={deploy}>{deploying ? 'Deploying…' : ctx.live ? 'Deploy again' : 'Deploy'}</button>
+      {#if deployMsg}<span class="dim">{deployMsg}</span>{/if}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>2 · Live</h3><span>how it is running now</span><span class="grow"></span><button class="btn2 quiet rm" onclick={() => refreshAround()}>Refresh</button></div>
+    {#if ctx.live}
+      <ul class="rows">
+        <li><span class="lbl">State</span><span class="val"><span class="dot" class:ok={liveState === 'serving'} class:warn={liveState !== 'serving'}></span> {servingLabel(liveState)}</span><span></span>
+          {#if ctx.live.deployment?.pauseReason}<span class="sub">“{ctx.live.deployment.pauseReason}”</span>{/if}</li>
+        <li><span class="lbl">Runtime</span><span class="val mono">{ctx.live.deployment?.runtime ?? '—'}</span><span></span></li>
+      </ul>
+      {#if !readonly && depId}
+        <div class="acts">
+          {#if liveState === 'paused'}<button class="btn2" disabled={!!acting} onclick={() => act('resume')}>Resume</button>{:else}<button class="btn2" disabled={!!acting} onclick={() => act('pause')}>Pause</button>{/if}
+          <button class="btn2" disabled={!!acting} onclick={() => act('restart')}>Restart</button>
+          <button class="btn2 quiet" disabled={!!acting} onclick={() => act('undeploy')}>Undeploy</button>
+          <span class="grow"></span><button class="link" onclick={() => navigateTo('runtime', 'Runtime')}>Open in Runtime →</button>
+        </div>
+      {/if}
+    {:else}<p class="empty">Not deployed.</p>{/if}
+  </div>
+{/snippet}
+
 {#if embedded}
-  <!-- Inline in the chat pane: same Script and Form views, no slide-in chrome. -->
+  <!-- The chat pane: every section, one under another; saved through the caller. -->
   <div class="cd-embedded">
     <div class="cd-embar">
-      <span class="cd-embar-note">{readonly ? "Shared preset — view only. Clone it to make your own." : (flowRef ? `Deploys ${flowRef}` : "Your copy — not bound to a flow yet")}</span>
-      {#if !readonly && onsavespec}
-        <button class="btn sm primary" onclick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
-      {/if}
+      <span class="dim">{readonly ? 'Shared preset — view only. Copy it to make your own.' : spec.flowRef ? `Deploys ${spec.flowRef}` : 'Your copy — not bound to a flow yet'}</span>
+      {#if !readonly && onsavespec}<button class="btn2 primary" onclick={() => save(true)} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>{/if}
     </div>
-    {@render body()}
+    <div class="cd-embody"><fieldset disabled={readonly}><section class="agt">
+      {#if msg}<div class="note bad">{msg}</div>{/if}
+      {@render details()}{@render placement()}{@render lifecycle()}{@render deps()}
+    </section></fieldset></div>
   </div>
 {:else}
-<SlideEditor
-  {open}
-  icon="CV"
-  color="var(--control-ink, #3a6ea5)"
-  name={name || 'New Canvas'}
-  meta={canvas ? namespace : 'a3t.io/v1alpha1 · Canvas'}
-  sections={SECTIONS}
-  steps={canvasSteps}
-  wizard={!canvas && !readonly}
-  active={activeSection}
-  onselect={(id) => (activeSection = id)}
-  onsave={readonly ? undefined : save}
-  {saving}
-  saveLabel={canvas ? 'Save canvas' : 'Create canvas'}
-  onopen={canvas ? () => openInStudio('canvas', canvas.namespace ?? namespace, canvas.name) : undefined}
-  {onclose}
->
-  {@render body()}
-</SlideEditor>
+<SlidePanel {open} {onclose} onsave={readonly ? undefined : () => save()}
+  onopenineditor={cur ? () => openInStudio('canvas', cur.namespace ?? namespace, cur.name) : undefined}>
+  <div class="panel-layout">
+    <PropertiesTree icon="CV" color="#3a6ea5" name={name || 'New canvas'} meta={`${spec.flowRef || 'no flow'} · ${namespace}`} nodes={[]}
+      {steps} wizard={!cur && !readonly} activeNode={step} onselect={(id) => (step = id)} />
+    <div class="panel-col">
+      <div class="panel-content"><div class="pf">
+        <WizardHead step={steps.find((x) => x.id === step)} />
+        <fieldset disabled={readonly}><section class="agt">
+          {#if msg}<div class="note bad" role="alert">{msg}</div>{/if}
+          {#if readonly}<div class="note">A shared preset: view only. Copy it to make a canvas of your own.</div>{/if}
+          {#if step === 'details'}{@render details()}{@render status()}
+          {:else if step === 'placement'}{@render placement()}
+          {:else if step === 'lifecycle'}{@render lifecycle()}
+          {:else if step === 'deps'}{@render deps()}
+          {:else if step === 'yaml'}{@render yaml()}
+          {:else}{@render deployStep()}{/if}
+        </section></fieldset>
+      </div></div>
+      <WizardNav {steps} active={step} wizard={!cur && !readonly} onselect={(id) => (step = id)}
+        final={readonly ? undefined : () => save()} finalLabel={cur ? 'Save' : 'Create canvas'} finalBusy={saving} busyLabel={cur ? 'Saving…' : 'Creating…'} />
+    </div>
+  </div>
+</SlidePanel>
 {/if}
 
 <style>
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+  .panel-col { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
+  fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+  .te-yaml { height: max(480px, calc(100vh - 300px)); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .te-yaml > :global(*) { flex: 1; min-height: 0; }
+  .te-yaml .ver { font-size: 12px; color: var(--text-3); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .te-yaml .link { padding: 0 8px; white-space: nowrap; flex: 0 0 auto; }
+  .fields.three { grid-template-columns: 1fr 1fr 1fr; }
+  @container details (max-width: 560px) { .fields.three { grid-template-columns: 1fr; } }
+  .pick { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 13px var(--font-sans); color: var(--text-1); min-width: 0; }
   .cd-embedded { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .cd-embedded .cd-split { flex: 1; min-height: 0; }
-  .cd-embar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-  .cd-embar-note { font-size: 11.5px; color: var(--text-3); }
-  .cd-fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-  .cd-fieldset:disabled { opacity: 0.85; }
-
-  .cd-error { position: absolute; top: 48px; right: 16px; z-index: 30; background: var(--warn-bg, #fde8e8); color: var(--warn, #d66); border: 1px solid var(--warn, #d66); border-radius: 6px; padding: 6px 12px; font-size: 12px; }
-  .sf-note { font-size: 11.5px; color: var(--text-4); margin: 4px 0 8px; }
-  .cf-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; font-size: 12px; color: var(--text-3); }
-  .cf-field input, .cf-field select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, var(--bg-surface)); color: var(--text-1); font-size: 13px; width: 100%; }
-  .cf-field input[readonly] { opacity: 0.7; }
-  .cf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .cf-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-
-  /* Split-pane designer — left config/code · right form/AI (matches the flow/agent editor) */
-  .cd-split { display: grid; height: 100%; overflow: hidden; }
-  .cd-split.dragging { user-select: none; cursor: col-resize; }
-  .cd-pane { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
-  .cd-toolbar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); background: var(--bg-surface); flex-shrink: 0; }
-  .cd-tabs { display: flex; gap: 2px; background: var(--bg-subtle); border-radius: var(--r-sm, 6px); padding: 2px; }
-  .cd-tab { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: none; border-radius: 4px; background: none; color: var(--text-3); font-size: 11px; cursor: pointer; transition: all 0.12s; }
-  .cd-tab.active { background: var(--bg-surface); color: var(--text-1); box-shadow: var(--shadow-sm); }
-  .cd-tab:hover:not(.active) { color: var(--text-2); }
-  .cd-crd { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--text-4); }
-  .cd-pane-body { flex: 1; overflow: hidden; min-height: 0; }
-  .cd-pane-body :global(.cm-editor) { height: 100%; }
-
-  .cd-divider { width: 6px; cursor: col-resize; background: var(--border); position: relative; transition: background 0.15s; }
-  .cd-divider:hover, .cd-split.dragging .cd-divider { background: var(--control-ink, #3a6ea5); }
-  .cd-divider::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 2px; height: 24px; border-radius: 1px; background: var(--text-5); transition: background 0.15s; }
-  .cd-divider:hover::after, .cd-split.dragging .cd-divider::after { background: white; }
-
-  .cd-formcol { padding: 18px 22px; overflow-y: auto; height: 100%; }
-  .cd-preview { padding: 18px 20px; overflow-y: auto; height: 100%; display: flex; flex-direction: column; gap: 12px; }
-  .cd-sub { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-4); margin: 12px 0 8px; }
-  .cd-formcol .cd-sub:first-child, .cd-preview .cd-sub:first-child { margin-top: 0; }
-
-  /* AI chat pane */
-  .cd-ai { display: flex; flex-direction: column; height: 100%; }
-  .cd-ai-messages { flex: 1; overflow-y: auto; padding: 16px; }
-  .cd-ai-msg { display: flex; gap: 10px; margin-bottom: 12px; }
-  .cd-ai-mark { width: 28px; height: 28px; border-radius: 6px; background: var(--bg-subtle); display: grid; place-items: center; font-family: var(--font-serif); font-size: 10px; font-weight: 600; color: var(--text-3); flex-shrink: 0; }
-  .cd-ai-msg p { font-size: 13px; color: var(--text-2); line-height: 1.5; margin: 0; padding-top: 4px; }
-  .cd-ai-input { padding: 10px 12px; border-top: 1px solid var(--border); background: var(--bg-surface); }
-  .cd-ai-input input { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-page); font-size: 12px; color: var(--text-1); outline: none; }
-  .cd-ai-input input:disabled { opacity: 0.5; }
-
-  .dep-add { display: flex; gap: 6px; margin-bottom: 8px; }
-  .dep-add input { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, var(--bg-surface)); color: var(--text-1); font-size: 12.5px; }
-  .btn.sm { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-2); font-size: 12px; cursor: pointer; }
-  .dep-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; font-size: 12px; }
-  .dep-x { background: none; border: none; color: var(--text-4); cursor: pointer; }
-
-  .place-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-  .place-card.matched { border-color: rgba(60,180,110,0.4); background: rgba(60,180,110,0.06); }
-  .place-card.nomatch { border-color: rgba(210,160,60,0.4); background: rgba(210,160,60,0.06); }
-  .place-line { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; margin-bottom: 4px; }
-  .pl-k { color: var(--text-4); }
-  .pl-v { color: var(--text-1); }
-  .pl-v.ok { color: #2fa46b; font-weight: 600; }
-  .pl-v.warn { color: var(--warn, #d66); font-weight: 600; }
-  .prob-box { margin-top: 10px; }
-  .prob { font-size: 11.5px; color: var(--warn, #d66); margin-bottom: 3px; }
-  .mono { font-family: var(--font-mono, monospace); }
+  .cd-embar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .cd-embody { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
 </style>

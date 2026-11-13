@@ -533,6 +533,8 @@ export const canvasApi = {
     request(`/registry/resources/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   /** List flows + agents (palette for the designer). */
   flows: () => request('/registry/resources?type=workflow', { method: 'GET' }),
+  /** Every registry resource — what a canvas can depend on. */
+  resources: () => request('/registry/resources', { method: 'GET' }),
 };
 
 // ── EE IdP administration (Keycloak) ──
