@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.4.0'
+  version: '1.5.0'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -136,6 +136,45 @@ do:
           status: 409
           title: Agent exists
           detail: '${ "An agent with id " + $context._id + " already exists." }'
+  # Its name follows the convention agent_<namespace>_<function>: "test" in
+  # project a3t is agent_a3t_test; a name that already has the prefix is kept.
+  - create_name:
+      set:
+        _name: >-
+          ${ def slug: ascii_downcase | gsub("[^a-z0-9]+"; "_") | gsub("^_+|_+$"; "");
+          (($context._in.project // (if $context._from.kind == "agent" then $context._src.namespace else null end) // "default") | tostring | slug) as $ns
+          | (($context._in.name // "") | tostring | slug) as $raw
+          | if $raw == ("agent_" + $ns) then ""
+            elif ($raw | startswith("agent_" + $ns + "_")) then $raw
+            else ($raw | sub("^agent_"; "")) as $fn | if $fn == "" then "" else "agent_" + $ns + "_" + $fn end end }
+      export:
+        as: '${ $context + . }'
+  - create_name_check:
+      if: '${ ($context._name | length) == 0 or ($context._name | length) > 96 }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't name the agent
+          detail: 'An agent needs a name of letters and digits (it becomes agent_<project>_<name>, up to 96 characters).'
+  - create_name_free:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "name = ''" + $context._name + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_taken: (((if type == "array" then . else (.rows // .data // []) end) | length) > 0)} }'
+  - create_name_unique:
+      if: '${ $context._taken }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 409
+          title: Name taken
+          detail: '${ "There is already an agent called " + $context._name + "." }'
   - create_row:
       set:
         _row: >-
@@ -144,7 +183,7 @@ do:
           | {
               id: $context._id,
               org_id: $context._org,
-              name: $context._in.name,
+              name: $context._name,
               template_id: (if $context._from.kind == "template" then $s.id else ($s.template_id // "") end),
               template_version: (($context._from.version // (if $context._from.kind == "template" then $s.version else $s.template_version end)) // "" | tostring),
               mode: ($context._in.agent_mode // (if $context._from.kind == "agent" then $s.mode else null end) // "persistent"),
@@ -228,7 +267,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.4.0
+                    version: 1.5.0
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: create_space
@@ -255,7 +294,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.4.0
+                    version: 1.5.0
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: create_key
@@ -1179,7 +1218,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.4.0
+                    version: 1.5.0
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: note_event
