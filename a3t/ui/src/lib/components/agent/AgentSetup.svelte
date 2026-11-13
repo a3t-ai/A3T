@@ -50,6 +50,40 @@
     const cur = bindings.enabled_tools ?? [];
     bindings.enabled_tools = on ? [...cur, name] : cur.filter((x) => x !== name);
   }
+  // ── Servers as folded rows: sized for ~20 servers, each with dozens of tools ──
+  const toolsOf = (v: string) => tools.find((t) => t.server === v || t.server.endsWith(`/${v}`) || v.endsWith(`/${t.server}`));
+  const isOn = (v: string) => (bindings.mcp_servers ?? []).includes(v);
+  let srvFilter = $state('');
+  let showAll = $state(false);
+  let open = $state<Record<string, boolean>>({});
+  let toolFilter = $state<Record<string, string>>({});
+  const rows = $derived.by(() => {
+    const f = srvFilter.trim().toLowerCase();
+    return mcpResources
+      // Connected servers always; the others when unfolded, searched for, or few.
+      .filter((o) => (isOn(o.value) || showAll || !!f || mcpResources.length <= 8) && (!f || o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f)))
+      .sort((a, b) => Number(isOn(b.value)) - Number(isOn(a.value)) || a.label.localeCompare(b.label));
+  });
+  const others = $derived(mcpResources.filter((o) => !isOn(o.value)).length);
+  const totalTools = $derived(tools.reduce((n, t) => n + t.tools.length, 0));
+  const pickedTools = $derived(limited ? (bindings.enabled_tools ?? []).length : totalTools);
+  /// "all 63 tools", "12 of 63 tools", or why there are none.
+  function count(v: string): string {
+    if (!isOn(v)) return 'not connected';
+    if (toolsLoading) return 'listing tools…';
+    const t = toolsOf(v);
+    if (!t) return 'tools unknown';
+    if (t.error) return 'could not list tools';
+    const n = t.tools.length;
+    if (!limited) return `all ${n} tool${n === 1 ? '' : 's'}`;
+    const k = t.tools.filter((x) => (bindings.enabled_tools ?? []).includes(x)).length;
+    return `${k} of ${n} tool${n === 1 ? '' : 's'}`;
+  }
+  function setAll(v: string, on: boolean) {
+    const names = toolsOf(v)?.tools ?? [];
+    const cur = bindings.enabled_tools ?? [];
+    bindings.enabled_tools = on ? [...new Set([...cur, ...names])] : cur.filter((x) => !names.includes(x));
+  }
   const MEMORY = [
     { v: 'persistent', t: 'Across conversations', d: 'what it learns and is told comes back in later conversations' },
     { v: 'session', t: 'One conversation', d: 'it remembers the conversation it is in, then starts fresh' },
@@ -76,30 +110,54 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h3>Tools</h3><span>the MCP servers it may call, and which of their tools</span></div>
+    <div class="card-head"><h3>Tools</h3><span>the MCP servers it may call, and which of their tools</span><span class="grow"></span>
+      <span class="sum">{(bindings.mcp_servers ?? []).length} of {mcpResources.length} servers {#if (bindings.mcp_servers ?? []).length && !toolsLoading}· {limited ? `${pickedTools} of ${totalTools}` : `all ${totalTools}`} tools{/if}</span></div>
     {#if mcpResources.length}
+      <div class="bar">
+        {#if mcpResources.length > 8}
+          <input type="search" bind:value={srvFilter} placeholder="Find a server" aria-label="Find a server" />
+        {/if}
+        {#if (bindings.mcp_servers ?? []).length}
+          <label class="ck"><input type="checkbox" checked={limited} disabled={!canEdit} onchange={(e) => setLimited(e.currentTarget.checked)} /> Only the tools ticked (otherwise every tool of the connected servers)</label>
+        {/if}
+      </div>
       <ul class="servers">
-        {#each mcpResources as o (o.value)}
-          {@const on = (bindings.mcp_servers ?? []).includes(o.value)}
-          <li><label class="ck"><input type="checkbox" checked={on} disabled={!canEdit} onchange={(e) => toggleServer(o.value, e.currentTarget.checked)} /> <span class="mono">{o.label}</span></label></li>
-        {/each}
+        {#each rows as o (o.value)}
+          {@const on = isOn(o.value)}
+          {@const t = toolsOf(o.value)}
+          {@const unfolded = on && !!open[o.value]}
+          <li class="srv" class:on>
+            <div class="row">
+              <input type="checkbox" checked={on} disabled={!canEdit} aria-label="Connect {o.label}" onchange={(e) => toggleServer(o.value, e.currentTarget.checked)} />
+              <button class="fold" disabled={!on || !t?.tools.length} aria-expanded={unfolded} onclick={() => (open[o.value] = !open[o.value])}>
+                <span class="chev" class:down={unfolded}>›</span>
+                <span class="mono name">{o.label}</span>
+                <span class="cnt" class:err={!!t?.error}>{count(o.value)}</span>
+              </button>
+            </div>
+            {#if unfolded && t}
+              <div class="inner">
+                {#if t.error}<p class="err">{t.error}</p>{/if}
+                <div class="tbar">
+                  {#if t.tools.length > 12}<input type="search" placeholder="Filter {t.tools.length} tools" bind:value={toolFilter[o.value]} aria-label="Filter tools of {o.label}" />{/if}
+                  {#if limited && canEdit}<button class="link" onclick={() => setAll(o.value, true)}>All</button><button class="link" onclick={() => setAll(o.value, false)}>None</button>{/if}
+                  {#if !limited}<span class="dim">Every tool is allowed. Tick “Only the tools ticked” to choose.</span>{/if}
+                </div>
+                <div class="tools">
+                  {#each t.tools.filter((x) => !(toolFilter[o.value] ?? '').trim() || x.toLowerCase().includes((toolFilter[o.value] ?? '').trim().toLowerCase())) as name (name)}
+                    <label class="ck tool"><input type="checkbox" disabled={!canEdit || !limited} checked={!limited || (bindings.enabled_tools ?? []).includes(name)} onchange={(e) => toggleTool(name, e.currentTarget.checked)} /> <span class="mono">{name}</span></label>
+                  {:else}<span class="dim">{t.tools.length ? 'Nothing matches.' : 'no tools listed'}</span>{/each}
+                </div>
+              </div>
+            {/if}
+          </li>
+        {:else}<li class="row dim">{srvFilter.trim() ? 'No server matches.' : 'No server connected yet.'}</li>{/each}
+        {#if mcpResources.length > 8 && !srvFilter.trim() && others > 0}
+          <li class="srv more"><button class="fold" onclick={() => (showAll = !showAll)}><span class="chev" class:down={showAll}>›</span>
+            {showAll ? 'Hide the servers not connected' : `+ ${others} more server${others === 1 ? '' : 's'} in reach — connect one`}</button></li>
+        {/if}
       </ul>
     {:else}<p class="dim">No MCP servers in reach. Add one in Resources.</p>{/if}
-    {#if (bindings.mcp_servers ?? []).length}
-      <label class="ck"><input type="checkbox" checked={limited} disabled={!canEdit} onchange={(e) => setLimited(e.currentTarget.checked)} /> Only the tools ticked below (otherwise every tool of these servers)</label>
-      {#if toolsLoading}<p class="dim">Listing their tools…</p>
-      {:else}
-        {#each tools as s (s.server)}
-          <div class="srv"><b class="mono">{s.server}</b>{#if s.error}<span class="err"> {s.error}</span>{/if}
-            <div class="tools">
-              {#each s.tools as t (t)}
-                <label class="ck tool"><input type="checkbox" disabled={!canEdit || !limited} checked={!limited || (bindings.enabled_tools ?? []).includes(t)} onchange={(e) => toggleTool(t, e.currentTarget.checked)} /> <span class="mono">{t}</span></label>
-              {:else}<span class="dim">no tools listed</span>{/each}
-            </div>
-          </div>
-        {/each}
-      {/if}
-    {/if}
   </div>
 
   <div class="card">
@@ -132,12 +190,34 @@
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .two label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
   small { font-weight: 400; color: var(--text-4); }
-  .servers { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+  .grow { flex: 1 1 auto; }
+  .sum { font: 12px var(--font-mono); color: var(--text-3); white-space: nowrap; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
+  .bar input[type='search'] { width: 220px; height: 30px; }
+  .servers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .srv { border-top: 1px solid var(--border); }
+  .srv:first-child { border-top: 0; }
+  .srv.on { background: var(--bg-surface); }
+  .more .fold { padding: 0 12px; color: var(--spec); font-size: 12.5px; }
+  li.row.dim { font-size: 12.5px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 38px; }
+  .row > input { width: auto; }
+  .fold { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; height: 38px; border: 0; background: none; padding: 0; font: inherit; color: var(--text-1); cursor: pointer; text-align: left; }
+  .fold:disabled { cursor: default; color: var(--text-3); }
+  .chev { width: 12px; color: var(--text-4); transition: transform 0.12s; display: inline-block; }
+  .chev.down { transform: rotate(90deg); }
+  .fold:disabled .chev { visibility: hidden; }
+  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cnt { margin-left: auto; font: 12px var(--font-mono); color: var(--text-3); white-space: nowrap; }
+  .cnt.err { color: var(--err); }
+  .inner { padding: 4px 12px 12px 34px; display: flex; flex-direction: column; gap: 8px; }
+  .tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .tbar input[type='search'] { width: 220px; height: 28px; }
   .ck { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }
   .ck input, .opt input { width: auto; }
-  .srv { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
-  .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px; }
+  .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 4px 12px; max-height: 320px; overflow: auto; }
   .tool { font-size: 12px; }
+  @media (max-width: 600px) { .bar input[type='search'], .tbar input[type='search'] { width: 100%; } .cnt { display: none; } }
   .mem { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
   .opt { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 400; }
   .opt.on { border-color: var(--spec); background: var(--spec-bg); }
