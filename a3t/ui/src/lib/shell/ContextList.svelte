@@ -220,7 +220,7 @@
   const NEW_LABEL: Record<string, string> = {
     chat: 'New conversation', projects: 'New project', agents: 'New agent', templates: 'New template',
     triggers: 'New trigger', resources: 'New resource', canvas: 'New canvas', runtime: 'New runtime',
-    security: 'New policy', executions: 'Run a flow',
+    security: 'New policy', executions: 'Run a flow', datarooms: 'New storage', knowledge: 'New knowledge graph',
   };
   const newLabel = $derived(NEW_LABEL[appType] ?? (spec?.source === 'flows' ? 'New flow' : ''));
   function newItem() {

@@ -123,7 +123,7 @@ export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: str
 const FILTERED: Record<string, ListKind> = {
   // Agents were stored in `a3t` by default, so they aren't platform internals:
   // they stay visible with the platform hidden, split My/Shared by creator.
-  agents: 'shared', 'memory-agents': 'shared', templates: 'shared', triggers: 'owned', executions: 'owned',
+  agents: 'shared', 'memory-agents': 'shared', storage: 'shared', 'kg-dbs': 'shared', templates: 'shared', triggers: 'owned', executions: 'owned',
 };
 
 export async function loadAppItems(source: string): Promise<AppItem[]> {
@@ -258,6 +258,26 @@ async function loadAll(source: string): Promise<AppItem[]> {
     }));
   }
 
+  if (source === 'storage') {
+    // Where files live: storage resources, by driver.
+    const nss = namespacesFor('picker');
+    const lists = await Promise.all(nss.map((ns) => within(mcpCall('list_resources', { namespace: ns })).then((r) => [ns, r] as const)));
+    const out: AppItem[] = [];
+    for (const [ns, res] of lists) {
+      if (!res?.ok) continue;
+      for (const r of rows(res.data, 'resources')) {
+        const t = String(r.type ?? '').toLowerCase();
+        if (!['s3', 'minio', 'gcs', 'azure', 'ftp'].includes(t)) continue;
+        const project = itemProject('resource', r.namespace ?? ns, r);
+        if (!inContext(project, 'shared')) continue;
+        const c = r.config ?? {};
+        out.push({ id: `${r.namespace ?? ns}~${r.name}`, label: r.name, namespace: project,
+          sub: [t === 'ftp' ? 'FTP' : t === 'gcs' ? 'Google Cloud' : t === 'azure' ? 'Azure' : t === 'minio' ? 'MinIO' : 'S3',
+                `${c.bucket ?? c.container ?? c.host ?? ''}${c.prefix ? '/' + c.prefix : ''}`].filter(Boolean).join(' · ') });
+      }
+    }
+    return out;
+  }
   if (source === 'kg-dbs') {
     // The knowledge-graph databases: LanceDB resources that are KGs (kgApi.isKg).
     const { isKg } = await import('$lib/components/knowledge/kgApi');

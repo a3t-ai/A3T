@@ -13,6 +13,8 @@
   import '$lib/components/triggers/triggers.css';
   import { resources as resourcesMcp } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { getProject, namespacesFor } from '$lib/stores/context.svelte.ts';
+  import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { kgApi } from '$lib/components/knowledge/kgApi';
   import { usedBy, type Use } from '$lib/components/resources/resourceUse';
   import { recall, runAql, isRead, type Rec } from '$lib/components/memory/aql';
@@ -28,9 +30,28 @@
 
   let shown = '';
   $effect(() => {
-    const id = getActivePanel()?.props?.selectedId as string | undefined;
-    untrack(() => { if (id && id !== shown) { shown = id; void open(id); } else if (!id) { shown = ''; db = null; } });
+    const p = getActivePanel()?.props ?? {};
+    const id = p.selectedId as string | undefined;
+    const create = p.create;
+    untrack(() => {
+      if (create && !id) { creating = true; db = null; shown = ''; nName = ''; nErr = ''; return; }
+      if (id && id !== shown) { creating = false; shown = id; void open(id); } else if (!id) { shown = ''; db = null; }
+    });
   });
+
+  // ── New knowledge graph: a LanceDB store marked kind: kg ──
+  let creating = $state(false);
+  let nName = $state('');
+  let nNs = $state(getProject() || 'a3t');
+  let nErr = $state('');
+  async function createKg() {
+    nErr = '';
+    const name = nName.trim();
+    const r = await resourcesMcp.create(name, 'lancedb', { db_path: `/data/a3t/${name}.lance`, kind: 'kg' }, nNs);
+    if (!r.ok) { nErr = r.error ?? 'Not created.'; return; }
+    creating = false; bumpItems();
+    navigateToDetail('knowledge', 'Knowledge', `${nNs}~${name}`);
+  }
   async function open(id: string) {
     const [ns, ...rest] = id.split('~'); const name = rest.join('~');
     tab = 'overview'; stats = null; rels = []; uses = null; loadErr = ''; selectedNode = null; trip = []; preds = null; aqlRes = null; buildMsg = '';
@@ -125,8 +146,28 @@
   const n = (x: any) => Number(x ?? 0).toLocaleString();
 </script>
 
-<SlidePanel open={!!db} onclose={close}>
-  {#if db}
+<SlidePanel open={!!db || creating} onclose={close}>
+  {#if creating}
+    <div class="panel-layout">
+      <PropertiesTree icon="+" color="#5530a8" name={nName || 'New knowledge graph'} meta="knowledge graph" nodes={[]} steps={[{ id: 'new', label: 'Knowledge graph', hint: 'A LanceDB store for entities, relations and their embeddings', icon: '<circle cx="8" cy="8" r="6"/>' }]} activeNode="new" onselect={() => {}} />
+      <div class="panel-col"><div class="panel-content"><div class="pf">
+        <WizardHead step={{ id: 'new', label: 'New knowledge graph', hint: 'A LanceDB store for entities, relations and their RotatE embeddings — build it from a semantic space next' }} />
+        <section class="agt">
+          <div class="card">
+            <div class="card-head"><h3>1 · Name</h3><span>flows and agents refer to it as project/name</span></div>
+            <div class="fields">
+              <label class="fld">Name<input class="mono" bind:value={nName} placeholder="support-kg" /></label>
+              <label class="fld">Project<select bind:value={nNs}>{#each [...new Set([nNs, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}</select></label>
+            </div>
+            <p class="dim">Its store: <span class="mono">/data/a3t/{nName.trim() || '<name>'}.lance</span> on FlowR.</p>
+            <div class="note warn">Today that store is on each FlowR pod (CA-38): a FlowR restart empties it, and each replica keeps its own copy. Build it again after a restart until that is moved.</div>
+          </div>
+          {#if nErr}<div class="note bad">{nErr}</div>{/if}
+          <div class="acts"><button class="btn2 primary" disabled={!/^[a-z0-9][a-z0-9-]{1,62}$/.test(nName.trim())} onclick={createKg}>Create knowledge graph</button><button class="btn2 quiet" onclick={close}>Cancel</button></div>
+        </section>
+      </div></div></div>
+    </div>
+  {:else if db}
     <div class="panel-layout">
       <PropertiesTree icon="KG" color="#5530a8" name={db.name} meta={`knowledge graph · ${db.ns}`} nodes={[]} {steps} activeNode={tab} onselect={(id) => (tab = id)} />
       <div class="panel-col"><div class="panel-content"><div class="pf" class:wide-pf={tab === 'graph'}>

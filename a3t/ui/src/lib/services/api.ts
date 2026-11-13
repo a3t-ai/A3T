@@ -537,6 +537,14 @@ export const canvasApi = {
   resources: () => request('/registry/resources', { method: 'GET' }),
 };
 
+/** Files: browse a storage resource (s3, minio, gcs, azure, ftp) — read only. */
+export const storageApi = {
+  list: (ns: string, name: string, prefix = '') =>
+    request(`/storage/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/list?prefix=${encodeURIComponent(prefix)}`, { method: 'GET' }),
+  preview: (ns: string, name: string, path: string) =>
+    request(`/storage/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/preview?path=${encodeURIComponent(path)}`, { method: 'GET' }),
+};
+
 // ── EE IdP administration (Keycloak) ──
 export interface IdpNewUser {
   username: string; email?: string; password: string; name?: string; temporary?: boolean; roles?: string[];
