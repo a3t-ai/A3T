@@ -1,8 +1,8 @@
 <script lang="ts">
-  /// Make a new agent from this one — the only two ways an agent is made from
-  /// another: a clone (independent) or a fork (keeps its link to the parent).
+  /// Make a new agent from this one: a child that inherits from it, a fork (keeps
+  /// its link to the parent), or a clone (independent).
   let { kind, name, projects, current, onmake, oncancel }: {
-    kind: 'clone' | 'fork';
+    kind: 'clone' | 'fork' | 'inherit';
     /// The agent it is made from.
     name: string;
     projects: string[];
@@ -13,7 +13,8 @@
   } = $props();
 
   // svelte-ignore state_referenced_locally — a starting value, edited from here
-  let newName = $state(`${name}-${kind === 'fork' ? 'fork' : 'copy'}`);
+  let newName = $state(`${name}-${kind === 'fork' ? 'fork' : kind === 'inherit' ? 'child' : 'copy'}`);
+  const TITLE = { clone: 'Clone', fork: 'Fork', inherit: 'Inherit from' } as const;
   // svelte-ignore state_referenced_locally
   let project = $state(current);
   let busy = $state(false);
@@ -28,9 +29,11 @@
 </script>
 
 <div class="mk-scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget && !busy) oncancel(); }}>
-  <div class="mk" role="dialog" aria-modal="true" aria-label="{kind === 'fork' ? 'Fork' : 'Clone'} {name}">
-    <h3>{kind === 'fork' ? 'Fork' : 'Clone'} <span class="mono">{name}</span></h3>
-    {#if kind === 'clone'}
+  <div class="mk" role="dialog" aria-modal="true" aria-label="{TITLE[kind]} {name}">
+    <h3>{TITLE[kind]} <span class="mono">{name}</span></h3>
+    {#if kind === 'inherit'}
+      <p>A new agent made from <span class="mono">{name}</span>, <b>listed as its child</b> in Lineage: its template, model, instructions and tools to start with.</p>
+    {:else if kind === 'clone'}
       <p>A new agent with the same template, model, instructions and tools — <b>on its own from then on</b>. Changes to either never reach the other.</p>
     {:else}
       <p>A new agent that <b>keeps its link</b> to <span class="mono">{name}</span>: it is listed as its fork in Lineage. Nothing it learns goes back.</p>
@@ -43,7 +46,7 @@
     <p class="dim">It starts with no memory, its own memory space and its own endpoint; it is not deployed. To carry what {name} remembers, branch it in Releases and promote the branch.</p>
     {#if err}<p class="err">{err}</p>{/if}
     <div class="acts">
-      <button class="btn-p" disabled={!valid || !project || busy} onclick={make}>{busy ? 'Making…' : kind === 'fork' ? 'Fork it' : 'Clone it'}</button>
+      <button class="btn-p" disabled={!valid || !project || busy} onclick={make}>{busy ? 'Making…' : kind === 'fork' ? 'Fork it' : kind === 'inherit' ? 'Make it' : 'Clone it'}</button>
       <button class="btn-s" disabled={busy} onclick={oncancel}>Cancel</button>
     </div>
   </div>

@@ -10,7 +10,7 @@
     agent: AgentRec;
     allAgents: AgentRec[];
     onopen: (id: string) => void;
-    onmake: (kind: 'clone' | 'fork' | 'branch') => void;
+    onmake: (kind: 'inherit' | 'fork' | 'branch') => void;
   } = $props();
 
   let up = $state<Ancestor[]>([]);
@@ -20,6 +20,12 @@
   let msg = $state('');
   let error = $state('');
   let loaded = $state(false);
+  /// This agent against its source, when it is a fork: can it merge back?
+  let self = $state<Compare | string | null>(null);
+  const isFork = $derived(up[0]?.relation === 'fork');
+  const canMerge = $derived(isFork && typeof self === 'object' && self !== null && self.mergeable);
+  const canEvolve = $derived(isFork && typeof self === 'object' && self !== null && !self.mergeable);
+  const why = $derived(!isFork ? 'Only a fork merges back or evolves.' : self === null ? 'Comparing it with its source…' : typeof self === 'string' ? self : '');
 
   const nameOf = (id: string) => allAgents.find((a) => a.id === id)?.name ?? id;
   const RELATION: Record<string, string> = { template: 'from template', inherit: 'inherits', clone: 'clone', fork: 'fork', branch: 'branch', evolved: 'evolved' };
@@ -31,6 +37,11 @@
     up = r.data?.ancestors ?? [];
     down = r.data?.descendants ?? [];
     loaded = true;
+    self = null;
+    if (up[0]?.relation === 'fork') {
+      const c = await control.compare(id);
+      if (agent.id === id) self = c.ok && c.data ? c.data : (c.error ?? 'compare failed');
+    }
     for (const d of down.filter((x) => x.relation === 'fork')) {
       const c = await control.compare(d.id);
       checks = { ...checks, [d.id]: c.ok && c.data ? c.data : (c.error ?? 'compare failed') };
@@ -53,14 +64,30 @@
     msg = `${nameOf(id)} is now its own agent, with ${agent.name} as its ancestor.`;
     await load(agent.id);
   }
+  async function mergeSelf() {
+    busy = agent.id; msg = ''; error = '';
+    const r = await control.merge(agent.id);
+    busy = '';
+    if (!r.ok) { error = r.error ?? 'Merge failed.'; return; }
+    msg = `${r.data?.procedures ?? 0} procedures merged into ${up[0] ? nameOf(up[0].id) : 'its source'}.`;
+  }
+  async function evolveSelf() {
+    busy = agent.id; msg = ''; error = '';
+    const r = await control.evolve(agent.id);
+    busy = '';
+    if (!r.ok) { error = r.error ?? 'It did not evolve.'; return; }
+    msg = `${agent.name} is now its own agent.`;
+    await load(agent.id);
+  }
 </script>
 
 <section class="agt">
   <div class="ways">
-    <div class="way inherit"><b>Inherit</b><span>A child. The source's hooks fire first and its updates arrive.</span><em>data goes back</em></div>
-    <div class="way fork"><b>Fork</b><span>Its own agent from here on; it remembers where it came from.</span><em>nothing goes back</em></div>
-    <div class="way merge"><b>Merge</b><span>A fork that only learned procedures: they go into the source through ADB.</span><em>procedures go back</em></div>
-    <div class="way evolve"><b>Evolve</b><span>A fork that changed more becomes a new agent, linked as a descendant.</span><em>new agent</em></div>
+    <div class="way inherit"><b>Inherit</b><span>Create a new agent from here.</span><em>new agent · child</em></div>
+    <div class="way fork"><b>Fork</b><span>Also creates a new agent.</span><em>new agent · fork</em></div>
+    <div class="way branch"><b>Branch</b><span>The same agent with a different version.</span><em>same agent</em></div>
+    <div class="way merge"><b>Merge</b><span>If it can merge without conflicts.</span><em>back to its source</em></div>
+    <div class="way evolve"><b>Evolve</b><span>It can't merge: it becomes a new agent.</span><em>new agent</em></div>
   </div>
 
   <div class="card">
@@ -124,16 +151,17 @@
           </li>
         {/each}
       </ul>
-      {#if msg}<p class="ok">{msg}</p>{/if}
     </div>
   {/if}
 
   <div class="row between">
-    <span></span>
+    <span>{#if msg}<span class="ok">{msg}</span>{/if}</span>
     <div class="acts">
-      <button class="btn2" onclick={() => onmake('branch')}>Branch</button>
+      <button class="btn2" onclick={() => onmake('inherit')}>Inherit</button>
       <button class="btn2" onclick={() => onmake('fork')}>Fork</button>
-      <button class="btn2" onclick={() => onmake('clone')}>Clone</button>
+      <button class="btn2" onclick={() => onmake('branch')}>Branch</button>
+      <button class="btn2" disabled={!canMerge || busy === agent.id} title={canMerge ? `Merge into ${up[0] ? nameOf(up[0].id) : 'its source'}` : why || 'It changed more than procedures: evolve it instead.'} onclick={() => mergeSelf()}>{busy === agent.id && canMerge ? 'Merging…' : 'Merge'}</button>
+      <button class="btn2" disabled={!canEvolve || busy === agent.id} title={canEvolve ? 'Make it its own agent' : why || 'It can merge: merge it instead.'} onclick={() => evolveSelf()}>{busy === agent.id && canEvolve ? 'Evolving…' : 'Evolve'}</button>
     </div>
   </div>
 </section>
@@ -144,12 +172,13 @@
   .node { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-ivory); }
   .node .tag { align-self: flex-start; }
   .node.me { border: 2px solid var(--spec); background: var(--signal-bg); }
-  .ways { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .ways { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 900px) { .ways { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .way { display: flex; flex-direction: column; gap: 6px; padding: 11px 12px; border: 1px solid var(--border); border-top-width: 3px; border-radius: 10px; background: var(--bg-surface); font-size: 12px; }
   .way b { font: 400 15px var(--font-serif); color: var(--text-1); }
   .way em { font: normal 11.5px var(--font-mono); color: var(--text-1); }
   .way.inherit { border-top-color: var(--spec); } .way.fork { border-top-color: var(--text-3); }
-  .way.merge { border-top-color: var(--runtime); } .way.evolve { border-top-color: var(--checkpoint); }
+  .way.branch { border-top-color: var(--signal); } .way.merge { border-top-color: var(--runtime); } .way.evolve { border-top-color: var(--checkpoint); }
   .forks { list-style: none; margin: 0; padding: 0; }
   .forks li { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--divider); }
 </style>

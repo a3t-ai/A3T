@@ -377,9 +377,9 @@
   }
 
   // ── Clone / fork: the two ways an agent is made from another ──
-  let makeKind = $state<'clone' | 'fork' | null>(null);
+  let makeKind = $state<'clone' | 'fork' | 'inherit' | null>(null);
   let branchForm = $state(false);
-  function lifecycle(kind: 'clone' | 'fork' | 'branch') {
+  function lifecycle(kind: 'clone' | 'fork' | 'inherit' | 'branch') {
     if (kind === 'branch') { branchForm = true; goTab('versions'); return; }
     makeKind = kind;
   }
@@ -395,7 +395,7 @@
     const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_create', {
       org_id: 'org-default', user_id: $currentUser?.id ?? '',
       id, name, project, from: { kind: 'agent', id: agent.id, version: agent.template_version }, mode: makeKind,
-      values: { ep_path: epPath, canvasRef: null, clonedFrom: makeKind === 'clone' ? agent.id : null, forkedFrom: makeKind === 'fork' ? agent.id : null, fromName: agent.name },
+      values: { ep_path: epPath, canvasRef: null, clonedFrom: makeKind === 'clone' ? agent.id : null, forkedFrom: makeKind === 'fork' ? agent.id : null, inheritedFrom: makeKind === 'inherit' ? agent.id : null, fromName: agent.name },
     });
     if (!r.ok) return r.error ?? 'It was not made.';
     const target = src.target || 'a3t/tmpl_a3t_agent';
