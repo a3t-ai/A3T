@@ -15,6 +15,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "ulid",
  "uuid",
 ]
@@ -39,6 +40,7 @@ dependencies = [
 name = "adb-embed"
 version = "0.1.0"
 dependencies = [
+ "adb-core",
  "fastembed",
  "half 2.7.1",
  "reqwest 0.12.28",
@@ -3525,6 +3527,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "swf-parser",
  "swf-runtime",
  "thiserror 2.0.18",

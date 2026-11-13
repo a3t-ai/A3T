@@ -46,6 +46,7 @@ arrow-ipc = "58.4.1"
 tonic = "0.14"
 serde_yaml = "0.9"
 rand = "0.8"
+sha2 = "0.10"
 
 # Inline script runtimes
 mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }

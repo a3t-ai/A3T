@@ -45,9 +45,12 @@ console.log(`  control plane: ${URL_}/agents/${id}   data plane: ${URL_}/chat  (
 const vs = await rest('GET', `/agents/${id}/versions`);
 check('  it has its memory space: versions answer', vs.status === 200 && Array.isArray(vs.body?.versions), JSON.stringify(vs).slice(0, 300));
 
-// 3. Data plane, SSE.
-const chat = async (message, session) => {
-  const r = await fetch(`${URL_}/chat`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${T}`, accept: 'text/event-stream' }, body: JSON.stringify({ session_id: `${id}:${session}`, message, namespace: 'a3t', name: 'tmpl_a3t_agent' }) });
+const KEY = t.body?.output?.key?.key;
+check(`  it comes with its first key (${t.body?.output?.key?.prefix ?? 'none'}…, shown once)`, /^a3tk_[0-9a-f]{48}$/.test(KEY ?? '') && !('hash' in (t.body?.output?.key ?? {})), JSON.stringify(t.body?.output?.key ?? null).slice(0, 200));
+
+// 3. Data plane, SSE — called as an app would: with the agent's key.
+const chat = async (message, session, token = KEY, sessionId = `${id}:${session}`) => {
+  const r = await fetch(`${URL_}/chat`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), accept: 'text/event-stream' }, body: JSON.stringify({ session_id: sessionId, message }) });
   const text = await r.text();
   const deltas = [...text.matchAll(/"delta":"((?:[^"\\]|\\.)*)"/g)].map(m => JSON.parse(`"${m[1]}"`)).join('');
   return { status: r.status, type: r.headers.get('content-type'), text, reply: deltas };
@@ -55,6 +58,30 @@ const chat = async (message, session) => {
 let c = await chat('Say hello and tell me what you are.', 's1');
 check('data plane: /chat streams (SSE) an answer', c.status === 200 && /event-stream/.test(c.type ?? '') && c.reply.length > 0, `${c.status} ${c.type} ${c.text.slice(0, 300)}`);
 console.log(`  reply: ${c.reply.slice(0, 160)}`);
+// The key reaches this agent's data plane and nothing else; no token, no call.
+let x = await chat('hi', 'k', null);
+check('  no token: refused', x.status === 401, `${x.status} ${x.text.slice(0, 200)}`);
+x = await chat('hi', 'k', KEY, 'agent_a3t_assistant:k');
+check("  the key on another agent's session: refused", x.status === 403, `${x.status} ${x.text.slice(0, 200)}`);
+x = await chat('hi', 'k', KEY, 'no-agent-session');
+check('  the key without its agent in the session: refused', x.status === 403, `${x.status} ${x.text.slice(0, 200)}`);
+const off = async (method, path) => (await fetch(`${URL_}${path}`, { method, headers: { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' }, body: method === 'GET' ? undefined : '{}' })).status;
+const offPlane = [await off('POST', '/message'), await off('GET', `/agents/${id}/keys`), await off('POST', `/agents/agent_a3t_agents/tools/tool_a3t_agent_list`)];
+check(`  the key off its data plane: refused (${offPlane.join(', ')})`, offPlane.every((s) => s === 403), offPlane.join(','));
+const wh = await fetch(`${URL_}/webhook/agent/${id}/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: `${id}:w`, message: 'hi' }) });
+check("  its webhook without a token: refused", wh.status === 401, String(wh.status));
+// Keys on its control plane: list (no secret), make another, revoke the first.
+let ks = await rest('GET', `/agents/${id}/keys`);
+check(`  keys listed: ${(ks.body?.keys ?? []).map((k) => k.name).join(', ')}`, ks.status === 200 && ks.body.keys.length === 1 && !JSON.stringify(ks.body).includes(KEY), JSON.stringify(ks).slice(0, 200));
+const k2 = await rest('POST', `/agents/${id}/keys`, { name: 'e2e-second' });
+check('  a second key made', k2.status === 201 && /^a3tk_/.test(k2.body?.key ?? ''), JSON.stringify(k2).slice(0, 200));
+const rv = await rest('DELETE', `/agents/${id}/keys/${ks.body.keys[0].id}`);
+check('  the first key revoked', rv.status === 200 && rv.body?.revoked === true, JSON.stringify(rv).slice(0, 200));
+x = await chat('hi', 'k', KEY);
+check('  the revoked key: refused at once', x.status === 401, `${x.status} ${x.text.slice(0, 200)}`);
+x = await chat('Say OK.', 'k2', k2.body?.key);
+check('  the second key still calls it', x.status === 200 && x.reply.length > 0, `${x.status} ${x.text.slice(0, 200)}`);
+const KEY2 = k2.body?.key;
 
 // 4. Change it through the control-plane agent.
 const g = await tool('agent_a3t_agents', 'tool_a3t_agent_get', { org_id: 'org-default', id });
@@ -68,7 +95,7 @@ t = await tool('agent_a3t_agents', 'tool_a3t_agent_update', { org_id: 'org-defau
 check('control plane: tool_a3t_agent_update changed its config', t.status === 200, JSON.stringify(t.body).slice(0, 300));
 const after = await tool('agent_a3t_agents', 'tool_a3t_agent_describe', { org_id: 'org-default', id });
 check('  the record says so', after.body?.output?.agent?.variables?.system_prompt?.includes('CHANGED') && after.body?.output?.agent?.status === 'live', JSON.stringify(after.body?.output?.agent).slice(0, 300));
-c = await chat('Who are you?', 's2');
+c = await chat('Who are you?', 's2', KEY2);
 check('  and the agent answers with it', c.status === 200 && /CHANGED/i.test(c.reply), c.reply.slice(0, 200));
 
 // 4b. Its history names the change, and its controls go through the control plane.
@@ -78,7 +105,7 @@ const upd = ev.find(x => x.event_type === 'updated');
 check(`history: created + updated (${(upd?.p?.changed ?? []).join(', ')})`, ev.some(x => x.event_type === 'created') && upd?.p?.changed?.includes('values.system_prompt') && !!upd?.p?.by, JSON.stringify(ev).slice(0, 300));
 t = await tool('agent_a3t_agents', 'tool_a3t_agent_block', { org_id: 'org-default', id, reason: 'e2e' });
 check('controls: tool_a3t_agent_block', t.status === 200 && t.body?.output?.status === 'blocked', JSON.stringify(t.body).slice(0, 300));
-c = await chat('Are you there?', 's3');
+c = await chat('Are you there?', 's3', KEY2);
 check('  a blocked agent refuses its data plane', !/CHANGED/i.test(c.reply) && /blocked/i.test(c.text), `${c.status} ${c.text.slice(0, 300)}`);
 const g2 = await tool('agent_a3t_agents', 'tool_a3t_agent_get', { org_id: 'org-default', id });
 const row2 = Array.isArray(g2.body?.output) ? g2.body.output[0] : g2.body?.output;

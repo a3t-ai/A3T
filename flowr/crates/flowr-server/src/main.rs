@@ -159,6 +159,8 @@ async fn main() -> anyhow::Result<()> {
     // Projects: with policy enforcing, a caller sees and changes only the
     // namespaces (projects), runs and runtimes it may — the rules of the A3T
     // project flows, enforced at every boundary.
+    // Agent keys (a3tk_…) are looked up in the platform tables, enforcing or not.
+    flowr_ce::agent_keys::install(storage.clone());
     if enforcing {
         flowr_ce::access::install(storage.clone());
         info!("namespace guard installed (projects enforced)");

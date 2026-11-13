@@ -147,6 +147,70 @@ fn unauthorized(resource_uri: &str, msg: &str) -> Response {
         .into_response()
 }
 
+/// The agent an agent's own webhook belongs to: `/webhook/agent/<id>/…`.
+fn agent_webhook(path: &str) -> Option<&str> {
+    path.strip_prefix("/webhook/agent/").and_then(|r| r.split('/').next()).filter(|s| !s.is_empty())
+}
+
+/// An agent's webhook takes no call without a token (a user's, or one of its keys).
+fn refuse_tokenless(path: &str, request: &Request) -> bool {
+    agent_webhook(path).is_some() && request.extensions().get::<flowr_policy::Principal>().is_none()
+}
+
+fn key_refused(status: StatusCode, msg: String) -> Response {
+    (status, Json(json!({ "error": msg, "code": "agent_key" }))).into_response()
+}
+
+/// A request with an agent key (`a3tk_…`, flowr_ce::agent_keys): its agent's data
+/// plane only — POST /chat (the handler checks the session), its stream, its webhook.
+async fn agent_key_gate(token: &str, request: Request, next: Next) -> Response {
+    let (principal, scope) = match flowr_ce::agent_keys::verify(token).await {
+        Ok(v) => v,
+        Err(e) => return key_refused(StatusCode::UNAUTHORIZED, format!("Agent key refused: {e}")),
+    };
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+    let reach = if let Some(sid) = path.strip_prefix("/chat/stream/") {
+        method == axum::http::Method::GET && scope.owns_session(&sid.replace("%3A", ":").replace("%3a", ":"))
+    } else if let Some(agent) = agent_webhook(&path) {
+        agent == scope.agent_id
+    } else {
+        flowr_ce::agent_keys::allowed(&method, &path)
+    };
+    if !reach {
+        return key_refused(StatusCode::FORBIDDEN, format!(
+            "this key calls agent {}'s data plane only: POST /chat with session_id \"{}:<conversation>\", or its webhook", scope.agent_id, scope.agent_id));
+    }
+    let mut request = request;
+    // Its webhook: the conversation must be its agent's (else it would run another agent).
+    if agent_webhook(&path).is_some() {
+        let (parts, body) = request.into_parts();
+        let bytes = match axum::body::to_bytes(body, 4 << 20).await {
+            Ok(b) => b,
+            Err(_) => return key_refused(StatusCode::PAYLOAD_TOO_LARGE, "body too large".into()),
+        };
+        let sid = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|v| v.get("session_id").and_then(|s| s.as_str()).map(str::to_string));
+        if !sid.as_deref().is_some_and(|s| scope.owns_session(s)) {
+            return key_refused(StatusCode::FORBIDDEN, format!("this key needs session_id \"{}:<conversation>\"", scope.agent_id));
+        }
+        request = Request::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(scope);
+    next.run(request).await
+}
+
+macro_rules! agent_key_first {
+    ($headers:expr, $request:expr, $next:expr) => {
+        if let Some(t) = extract_bearer_token(&$headers) {
+            if flowr_ce::agent_keys::is_key(&t) {
+                return agent_key_gate(&t, $request, $next).await;
+            }
+        }
+    };
+}
+
 /// JWT auth middleware — validates Bearer token on non-public paths.
 pub async fn jwt_auth_middleware(
     headers: HeaderMap,
@@ -154,6 +218,7 @@ pub async fn jwt_auth_middleware(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
+    agent_key_first!(headers, request, next);
 
     if is_public(&path) {
         // Public (e.g. webhooks are trigger-authorized), but honor a valid token
@@ -172,6 +237,9 @@ pub async fn jwt_auth_middleware(
                     request.extensions_mut().insert(principal);
                 }
             }
+        }
+        if refuse_tokenless(&path, &request) {
+            return unauthorized("", "An agent's webhook needs a token: one of its keys, or a user's.");
         }
         return next.run(request).await;
     }
@@ -398,6 +466,7 @@ pub async fn oidc_auth_middleware(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
+    agent_key_first!(headers, request, next);
     if is_public(&path) {
         // Opportunistic auth on public paths (webhooks): honor a valid token if
         // presented so the console chat runs on behalf of the real user (agent
@@ -409,6 +478,9 @@ pub async fn oidc_auth_middleware(
                     request.extensions_mut().insert(principal);
                 }
             }
+        }
+        if refuse_tokenless(&path, &request) {
+            return unauthorized("", "An agent's webhook needs a token: one of its keys, or a user's.");
         }
         return next.run(request).await;
     }
@@ -477,10 +549,15 @@ pub async fn dual_auth_middleware(headers: HeaderMap, mut request: Request, next
         false
     }
 
+    agent_key_first!(headers, request, next);
     if is_public(&path) {
         // Opportunistic on public paths (webhooks): attach a principal if either
-        // token type validates; absent/invalid → stays public.
+        // token type validates; absent/invalid → stays public — except an agent's
+        // own webhook, which needs a token.
         let _ = attach(&headers, &mut request).await;
+        if refuse_tokenless(&path, &request) {
+            return unauthorized(&resource_uri, "An agent's webhook needs a token: one of its keys, or a user's.");
+        }
         return next.run(request).await;
     }
     if extract_bearer_token(&headers).is_none() {

@@ -9,6 +9,7 @@
 pub(crate) mod server;
 pub mod access;
 pub mod tool_flows;
+pub mod agent_keys;
 pub mod agent_space;
 pub mod approval;
 pub mod token_stream;
@@ -1399,6 +1400,7 @@ async fn delete_chat_session_handler(
 async fn chat_ui_stream_handler(
     State(state): State<Arc<AppState>>,
     principal: Option<Extension<Principal>>,
+    key: Option<Extension<crate::agent_keys::KeyScope>>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
     let Some(Extension(principal)) = principal else {
@@ -1410,8 +1412,23 @@ async fn chat_ui_stream_handler(
             Json(json!({"error": "session_id is required"}))).into_response();
     };
     let message = body.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let namespace = body.get("namespace").and_then(|v| v.as_str()).unwrap_or("a3t").to_string();
-    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("tmpl_a3t_agent").to_string();
+    // An agent key (crate::agent_keys) reaches its own agent only, through the A3T
+    // agent template, with the agent's own settings: no other flow, no overrides.
+    let key = key.map(|Extension(k)| k);
+    if let Some(k) = &key {
+        if !k.owns_session(&session_id) {
+            return (StatusCode::FORBIDDEN, Json(json!({
+                "error": format!("this key calls agent {} only: use session_id \"{}:<conversation>\"", k.agent_id, k.agent_id),
+                "code": "key_scope"}))).into_response();
+        }
+    }
+    let (namespace, name) = match &key {
+        Some(_) => ("a3t".to_string(), "tmpl_a3t_agent".to_string()),
+        None => (
+            body.get("namespace").and_then(|v| v.as_str()).unwrap_or("a3t").to_string(),
+            body.get("name").and_then(|v| v.as_str()).unwrap_or("tmpl_a3t_agent").to_string(),
+        ),
+    };
 
     // Attach *before* enqueueing so nothing this run emits can be missed, and
     // take a live-only subscription: the ring still holds the previous turn
@@ -1421,8 +1438,9 @@ async fn chat_ui_stream_handler(
     let replay: Vec<crate::token_stream::StreamChunk> = Vec::new();
 
     let mut input = json!({ "message": message, "session_id": session_id });
-    for k in ["llm_resource", "enabled_tools", "mcp_servers", "context", "ui_context"] {
-        if let Some(v) = body.get(k) { input[k] = v.clone(); }
+    let passed: &[&str] = if key.is_some() { &["context"] } else { &["llm_resource", "enabled_tools", "mcp_servers", "context", "ui_context"] };
+    for k in passed {
+        if let Some(v) = body.get(*k) { input[*k] = v.clone(); }
     }
     // AC-6: a chat with an agent on a memory branch (the branch comes with each message).
     let on_branch = match flowr_mcp_core::flow_base::run_principal(&principal, &body) {

@@ -259,6 +259,9 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/runs", get(list_runs))
         .route("/agents/:agent_id/usage", get(agent_usage))
         // The control plane's tools (AT-1): an agent's tools, called directly, no model.
+        // Keys for its data plane (crate::agent_keys): list, make (shown once), revoke.
+        .route("/agents/:agent_id/keys", get(list_keys).post(create_key))
+        .route("/agents/:agent_id/keys/:key_id", delete(revoke_key))
         .route("/agents/:agent_id/tools", get(list_agent_tools))
         .route("/agents/:agent_id/tools/:tool", post(call_agent_tool))
         .route("/projects/:project/usage", get(project_usage))
@@ -539,6 +542,43 @@ async fn revert_merge(State(s): St, p: P, Path((id, merge_id)): Path<(String, St
 }
 
 /// `{new_agent: {id?, name?}}`.
+/// Whoever may change the agent (write access to its project) manages its keys.
+async fn key_owner(s: &dyn StorageBackend, principal: &Principal, id: &str) -> Result<Value, Response> {
+    let row = agent_row(s, id).await?;
+    crate::access::rest_write(principal, &project_of(&row)).await.map_err(IntoResponse::into_response)?;
+    Ok(row)
+}
+
+async fn list_keys(State(s): St, p: P, Path(id): Path<String>) -> Response {
+    both(async {
+        key_owner(s.as_ref(), &who(p), &id).await?;
+        let keys = crate::agent_keys::list(s.as_ref(), &id).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        ok(json!({ "agent_id": id, "keys": keys }))
+    }.await)
+}
+
+/// `{name?}` → the new key, shown this once.
+async fn create_key(State(s): St, p: P, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let row = key_owner(s.as_ref(), &principal, &id).await?;
+        let name = body.as_ref().map(|Json(b)| col(b, "name")).unwrap_or_default();
+        let k = crate::agent_keys::create(s.as_ref(), &row, &name, principal.id(), principal.roles())
+            .await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        Ok((StatusCode::CREATED, Json(k)).into_response())
+    }.await)
+}
+
+async fn revoke_key(State(s): St, p: P, Path((id, key_id)): Path<(String, String)>) -> Response {
+    both(async {
+        key_owner(s.as_ref(), &who(p), &id).await?;
+        match crate::agent_keys::revoke(s.as_ref(), &id, &key_id).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))? {
+            true => ok(json!({ "agent_id": id, "key": key_id, "revoked": true })),
+            false => Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no key {key_id:?}"))),
+        }
+    }.await)
+}
+
 async fn fork_agent(State(s): St, p: P, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
     let b = body.map(|Json(b)| b).unwrap_or_else(|| json!({}));
     both(copy_into_new_agent(s.as_ref(), &who(p), &id, &b, "space_clone", json!({})).await)

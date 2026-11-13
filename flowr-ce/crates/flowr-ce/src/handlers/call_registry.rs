@@ -445,6 +445,27 @@ impl TaskHandler for RegistryHandler {
                 Ok(TaskResult::new(json!({ "namespace": ns, "flows": flows, "resources": resources, "triggers": triggers,
                                            "empty": flows + resources + triggers == 0 })))
             }
+            // A key for an agent's data plane (agent_keys): `{agent_id, name?}` →
+            // `{id, name, prefix, …, key}`, the key shown this once. Needs write
+            // access to the agent's project; the key carries the caller's roles.
+            "agent_key" => {
+                let store = storage(ctx)?;
+                let agent_id = s("agent_id");
+                let rows = crate::handlers::call_lancedb::query_platform_table(store.as_ref(), "agent_configs",
+                    Some(format!("id = {}", crate::handlers::call_lancedb::sql_quote(&agent_id))), 1)
+                    .await.map_err(|e| RuntimeError::task_failed(&task.name, e))?;
+                let agent = rows.into_iter().next()
+                    .ok_or_else(|| RuntimeError::task_failed(&task.name, format!("no agent {agent_id:?}")))?;
+                let ns = agent.get("namespace").and_then(|v| v.as_str()).filter(|n| !n.is_empty()).unwrap_or("default").to_string();
+                let g = flowr_policy::namespace::namespace_guard();
+                if g.enforcing() && g.access(&ctx.principal, &ns).await < flowr_policy::namespace::NsAccess::Write {
+                    return Err(RuntimeError::task_failed(&task.name, format!("a key for {agent_id} needs write access to {ns}")));
+                }
+                crate::agent_keys::create(store.as_ref(), &agent, &s("name"), ctx.principal.id(), ctx.principal.roles())
+                    .await
+                    .map(TaskResult::new)
+                    .map_err(|e| RuntimeError::task_failed(&task.name, e))
+            }
             other => Err(RuntimeError::task_failed(&task.name, format!("unsupported registry operation: {other}"))),
         }
     }
