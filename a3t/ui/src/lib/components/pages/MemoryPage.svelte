@@ -1,84 +1,233 @@
 <script lang="ts">
-  /// Memory, by agent: every agent in view, how its memory is kept, and a way
-  /// into its Memory tab. (This page used to show made-up sample agents.) Live
-  /// memory contents need the agent-memory API — .ai/A3T_UI_LIMITATIONS.md UI-1.
-  import { onMount } from 'svelte';
-  import { execFlow } from '$lib/services/api';
-  import { navigateToDetail } from '$lib/stores/panels.svelte.ts';
-  import { inContext } from '$lib/stores/context.svelte.ts';
-  import { contextRev_ } from '$lib/stores/apps.svelte.ts';
+  /// Memory, by agent. Items lists the agents; the one picked opens here, in the
+  /// agents' frame: Overview (what it remembers, kind by kind), Memory (a bar of
+  /// the kinds across the page — pick one, filter it), AQL (read its memory with
+  /// RECALL). Read only: memory is changed through the agent's own Memory tab.
+  import { untrack } from 'svelte';
+  import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
+  import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import '$lib/components/agent/agent.css';
+  import '$lib/components/triggers/triggers.css';
+  import { mcpCall } from '$lib/services/api';
+  import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { insight } from '$lib/components/agent/controlPlane';
+  import { KINDS, recall, runAql, isRead, MEMORY_RESOURCE, type Kind, type Rec } from '$lib/components/memory/aql';
 
-  type A = { id: string; name: string; namespace: string; mode: string; status: string; mcp: string[] };
-  let agents = $state<A[]>([]);
-  let loading = $state(true);
-  let error = $state('');
+  type Agent = { id: string; name: string; namespace: string; mode: string; status: string };
+  let agent = $state<Agent | null>(null);
+  let space = $state<{ namespace: string; counts: Record<string, number>; attached: { namespace: string; entries: any[] }[] } | null>(null);
+  let spaceErr = $state('');
+  let tab = $state('overview');
 
-  async function load() {
-    loading = true; error = '';
-    const r = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
-    if (!r.ok) { error = r.error ?? 'Agents could not be listed'; loading = false; return; }
-    const rows: any[] = Array.isArray(r.data) ? r.data : (r.data?.rows ?? r.data?.output ?? []);
-    agents = rows.map((x) => {
-      let vars: any = {};
-      try { vars = typeof x.variables === 'string' ? JSON.parse(x.variables) : (x.variables ?? {}); } catch { /* none */ }
-      return { id: x.id, name: x.name ?? x.id, namespace: x.namespace ?? 'a3t', mode: x.mode ?? 'session', status: x.status ?? 'draft', mcp: vars.mcp_servers ?? [] };
-    }).filter((a) => inContext(a.namespace, 'shared'));
-    loading = false;
+  // ── The agent picked in Items ──
+  let shown = '';
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => { if (id && id !== shown) { shown = id; void open(id); } else if (!id) { shown = ''; agent = null; } });
+  });
+  async function open(id: string) {
+    tab = 'overview'; space = null; spaceErr = ''; records = []; aqlRes = null; filters = [{ field: '', value: '' }]; contains = '';
+    const l = await mcpCall('list_agents', {});
+    const rows: any[] = l.ok ? (Array.isArray(l.data) ? l.data : (l.data?.agents ?? [])) : [];
+    const r = rows.find((x) => (x.id ?? x.name) === id);
+    agent = r ? { id: r.id ?? r.name, name: r.name ?? r.id, namespace: r.namespace ?? '', mode: r.mode ?? r.agent_mode ?? 'session', status: r.status ?? '' } : { id, name: id, namespace: '', mode: '', status: '' };
+    const m = await insight.memory(id);
+    if (m.ok && m.data) space = { namespace: m.data.namespace, counts: m.data.counts ?? {}, attached: m.data.attached ?? [] };
+    else spaceErr = m.error ?? 'Its memory could not be read.';
+    if (space) { kind = 'EPISODIC'; aql = recall('EPISODIC', space.namespace, [], 50); }
   }
-  let rev = -1;
-  $effect(() => { const r = contextRev_(); if (r !== rev) { rev = r; void load(); } });
-  onMount(() => { if (rev === -1) void load(); });
+  const close = () => navigateTo('memory', 'Memory');
 
-  const memoryOf = (a: A) => a.mcp.find((m) => /memory/i.test(m)) ?? '';
-  const open = (a: A) => navigateToDetail('agents', 'Agents', a.id, { tab: 'memory' });
+  // ── Memory tab: the kind bar, filters, results ──
+  /// A kind of the agent's own space, or an attached semantic space ("space:<ns>").
+  let kind = $state<string>('EPISODIC');
+  let filters = $state<{ field: string; value: string }[]>([{ field: '', value: '' }]);
+  let contains = $state('');
+  let limit = $state(50);
+  let records = $state<Rec[]>([]);
+  let running = $state(false);
+  let err = $state('');
+  let lastAql = $state('');
+  const kindSpace = $derived(kind.startsWith('space:') ? kind.slice(6) : space?.namespace ?? '');
+  const kindType = $derived((kind.startsWith('space:') ? 'SEMANTIC' : kind) as Kind);
+  const count = (k: string) => k.startsWith('space:') ? (space?.attached.find((a) => a.namespace === k.slice(6))?.entries.length ?? 0) : (space?.counts?.[k.toLowerCase()] ?? 0);
+  const shownRecs = $derived(contains.trim() ? records.filter((r) => JSON.stringify(r.data).toLowerCase().includes(contains.trim().toLowerCase())) : records);
+
+  async function apply() {
+    if (!kindSpace) return;
+    running = true; err = '';
+    lastAql = recall(kindType, kindSpace, filters, limit);
+    const r = await runAql(lastAql);
+    running = false;
+    if (r.ok) records = [...r.records].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    else { records = []; err = r.error; }
+  }
+  function pick(k: string) { kind = k; filters = [{ field: '', value: '' }]; contains = ''; void apply(); }
+  $effect(() => { if (tab === 'memory' && agent && space && !lastAql) untrack(() => void apply()); });
+
+  // ── AQL tab ──
+  let aql = $state('');
+  let aqlRes = $state<{ records: Rec[]; ms: number | null } | null>(null);
+  let aqlErr = $state('');
+  let showRaw = $state(false);
+  async function runIt() {
+    running = true; aqlErr = '';
+    const r = await runAql(aql);
+    running = false;
+    if (r.ok) aqlRes = { records: r.records, ms: r.ms }; else { aqlRes = null; aqlErr = r.error; }
+  }
+  function toAql() { aql = lastAql || recall(kindType, kindSpace, filters, limit); tab = 'aql'; }
+
+  /// One line for a record: what it says, by kind.
+  function line(r: Rec): string {
+    const d: any = r.data;
+    if (d.subject || d.predicate) return `${d.subject ?? '?'} — ${d.predicate ?? '?'} — ${d.object ?? '?'}`;
+    if (d.role || d.content) return `${d.role ? d.role + ': ' : ''}${String(d.content ?? d.text ?? '').slice(0, 220)}`;
+    const rest = Object.entries(d).filter(([k]) => !['key', 'at', 'created_at', 'kind'].includes(k));
+    return rest.slice(0, 3).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' · ').slice(0, 220);
+  }
+  const when = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? '' : d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
+
+  const steps = [
+    { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: 'What it remembers, kind by kind, and where it is kept' },
+    { id: 'memory', label: 'Memory', icon: '<ellipse cx="8" cy="4" rx="6" ry="2"/><path d="M2 4v8c0 1.1 2.7 2 6 2s6-.9 6-2V4"/><path d="M2 8c0 1.1 2.7 2 6 2s6-.9 6-2"/>', hint: 'Pick a kind of memory, then filter what it holds' },
+    { id: 'aql', label: 'AQL', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', hint: 'Read its memory with RECALL — read only' },
+  ];
 </script>
 
-<div class="screen-header">
-  <div class="breadcrumb">Memory <span class="sep">/</span> By agent</div>
-  <h1 class="screen-title">Agent memory</h1>
-</div>
-<div class="body">
-  <div class="banner">
-    What each agent remembers — working, episodic, semantic and procedural memory, kept in ADB. Open an agent to see how its memory is set up.
-    <span class="dim">Reading the entries themselves, and what an agent learned when, needs the agent-memory API (UI-1, UI-5).</span>
-  </div>
-  {#if loading}
-    <!-- the header bar shows loading -->
-  {:else if error}<p class="err">{error}</p>
-  {:else}
-    <table class="tbl">
-      <thead><tr><th>Agent</th><th>Project</th><th>Mode</th><th>Memory service</th><th></th></tr></thead>
-      <tbody>
-        {#each agents as a (a.id)}
-          <tr onclick={() => open(a)}>
-            <td><b>{a.name}</b><div class="dim mono">{a.id}</div></td>
-            <td class="mono">{a.namespace}</td>
-            <td>{a.mode === 'persistent' ? 'persistent — across sessions' : a.mode === 'session' ? 'session — one conversation' : a.mode}</td>
-            <td>{memoryOf(a) ? `${memoryOf(a)} (ADB)` : 'working memory only'}</td>
-            <td class="go">Open memory →</td>
-          </tr>
+{#snippet recList(list: Rec[])}
+  {#if list.length}
+    <ul class="tl">
+      {#each list as r, i (r.id + i)}
+        <li class="ev">
+          <span class="ic">{i + 1}</span>
+          <details>
+            <summary class="t">{line(r) || r.key}</summary>
+            <div class="m mono">{r.key}</div>
+            <dl class="kv kvm">{#each Object.entries(r.data) as [k, v] (k)}<dt>{k}</dt><dd class="mono">{typeof v === 'string' ? v : JSON.stringify(v)}</dd>{/each}</dl>
+          </details>
+          <time>{when(r.at)}</time>
+        </li>
+      {/each}
+    </ul>
+  {:else}<p class="empty">Nothing matches.</p>{/if}
+{/snippet}
+
+<SlidePanel open={!!agent} onclose={close}>
+  {#if agent}
+    <div class="panel-layout">
+      <PropertiesTree icon={agent.name.slice(0, 2).toUpperCase()} color="#1a7158" name={agent.name} meta={`memory · ${space?.namespace ?? agent.id}`}
+        nodes={[]} {steps} activeNode={tab} onselect={(id) => (tab = id)} />
+      <div class="panel-col"><div class="panel-content"><div class="pf">
+        <WizardHead step={steps.find((s) => s.id === tab)} />
+        <section class="agt">
+        {#if spaceErr}<div class="note bad">{spaceErr}</div>{/if}
+
+        {#if tab === 'overview'}
+          <div class="card">
+            <div class="card-head"><h3>1 · Agent</h3><span>whose memory this is</span></div>
+            <ul class="rows">
+              <li><span class="lbl">Agent</span><span class="val">{agent.name} <span class="dim">· {agent.namespace}</span></span><button class="btn2" onclick={() => navigateToDetail('agents', 'Agents', agent!.id)}>Open</button></li>
+              <li><span class="lbl">Remembers</span><span class="val">{agent.mode === 'persistent' ? 'across conversations' : 'within one conversation'}</span><span></span></li>
+              <li><span class="lbl">Kept in</span><span class="val mono">{MEMORY_RESOURCE} · space {space?.namespace ?? '…'}</span><span></span></li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>2 · What it remembers</h3><span>entries of each kind, in its own space and the spaces it reads</span></div>
+            <ul class="rows">
+              {#each KINDS as k (k.k)}
+                <li><span class="lbl">{k.label}</span><span class="val">{space ? count(k.k) : '…'} <span class="dim">· {k.what}</span></span>
+                  <button class="btn2" onclick={() => { tab = 'memory'; pick(k.k); }}>Open</button></li>
+              {/each}
+              {#each space?.attached ?? [] as a (a.namespace)}
+                <li><span class="lbl mono">{a.namespace}</span><span class="val">{a.entries.length} <span class="dim">· an attached semantic space</span></span>
+                  <button class="btn2" onclick={() => { tab = 'memory'; pick(`space:${a.namespace}`); }}>Open</button></li>
+              {/each}
+            </ul>
+          </div>
+
+        {:else if tab === 'memory'}
+          <div class="kbar" role="tablist">
+            {#each KINDS as k (k.k)}
+              <button role="tab" class:on={kind === k.k} onclick={() => pick(k.k)}><b>{k.label}</b><span>{space ? count(k.k) : '…'}</span></button>
+            {/each}
+            {#each space?.attached ?? [] as a (a.namespace)}
+              <button role="tab" class:on={kind === `space:${a.namespace}`} onclick={() => pick(`space:${a.namespace}`)}><b class="mono">{a.namespace}</b><span>{a.entries.length}</span></button>
+            {/each}
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>1 · Filter</h3><span>{kind.startsWith('space:') ? 'facts in this space' : KINDS.find((k) => k.k === kind)?.what}</span></div>
+            {#each filters as f, i (i)}
+              <div class="frow">
+                <input class="mono fin" type="text" bind:value={f.field} placeholder={kindType === 'SEMANTIC' ? 'subject' : kindType === 'EPISODIC' ? 'session_id' : 'key'} />
+                <span class="dim">=</span>
+                <input class="mono fin grow" type="text" bind:value={f.value} placeholder="value" onkeydown={(e) => { if (e.key === 'Enter') apply(); }} />
+                {#if filters.length > 1}<button class="btn2 quiet" onclick={() => (filters = filters.filter((_, j) => j !== i))}>Remove</button>{/if}
+              </div>
+            {/each}
+            <div class="acts">
+              <button class="btn2 quiet" onclick={() => (filters = [...filters, { field: '', value: '' }])}>+ Field</button>
+              <label class="lim">at most <input class="fin num" type="number" min="1" max="1000" bind:value={limit} /></label>
+              <span class="grow"></span>
+              <button class="btn2 primary" disabled={running} onclick={apply}>{running ? 'Reading…' : 'Apply'}</button>
+            </div>
+            {#if lastAql}<p class="dim">As AQL: <span class="mono">{lastAql}</span> <button class="link" onclick={toAql}>Edit as AQL →</button></p>{/if}
+            {#if err}<div class="note bad">{err}</div>{/if}
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>2 · Entries</h3><span>{shownRecs.length}{contains ? ` of ${records.length}` : ''}, newest first</span><span class="grow"></span>
+              <input class="fin rm" type="search" bind:value={contains} placeholder="Find in these" /></div>
+            {@render recList(shownRecs)}
+          </div>
+
         {:else}
-          <tr><td colspan="5" class="dim">No agents in this project.</td></tr>
-        {/each}
-      </tbody>
-    </table>
+          <div class="card">
+            <div class="card-head"><h3>1 · RECALL</h3><span>Ctrl+Enter runs it · only RECALL is sent</span></div>
+            <textarea class="aql" rows="4" spellcheck="false" bind:value={aql} onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runIt(); }}></textarea>
+            <div class="acts">
+              {#each KINDS as k (k.k)}<button class="btn2 quiet" onclick={() => (aql = recall(k.k, space?.namespace ?? '', [], 50))}>{k.label}</button>{/each}
+              <span class="grow"></span>
+              <button class="btn2 primary" disabled={running || !aql.trim() || !isRead(aql)} onclick={runIt}>{running ? 'Running…' : 'Run'}</button>
+            </div>
+            {#if aql.trim() && !isRead(aql)}<div class="note warn">Only RECALL runs here. To change what it remembers, use the agent's Memory tab.</div>{/if}
+            {#if aqlErr}<div class="note bad">{aqlErr}</div>{/if}
+          </div>
+          {#if aqlRes}
+            <div class="card">
+              <div class="card-head"><h3>2 · Result</h3><span>{aqlRes.records.length} record{aqlRes.records.length === 1 ? '' : 's'}{aqlRes.ms != null ? ` · ${aqlRes.ms} ms` : ''}</span><span class="grow"></span>
+                <button class="btn2 quiet rm" onclick={() => (showRaw = !showRaw)}>{showRaw ? 'List' : 'JSON'}</button></div>
+              {#if showRaw}<pre class="code out">{JSON.stringify(aqlRes.records.map((r) => r.data), null, 2)}</pre>{:else}{@render recList(aqlRes.records)}{/if}
+            </div>
+          {/if}
+        {/if}
+        </section>
+      </div></div></div>
+    </div>
   {/if}
-</div>
+</SlidePanel>
 
 <style>
-  .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
-  .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
-  .breadcrumb .sep { color: var(--text-5, var(--text-4)); }
-  .screen-title { font-family: var(--font-serif); font-size: 26px; font-weight: 500; margin: 0; }
-  .body { padding: 24px 32px; display: flex; flex-direction: column; gap: 16px; max-width: var(--detail-w); }
-  .banner { padding: 12px 14px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font-size: 13px; color: var(--text-2); line-height: 1.55; }
-  .dim { color: var(--text-4); font-size: 12px; }
-  .mono { font-family: var(--font-mono); }
-  .err { color: var(--err); }
-  .tbl { width: 100%; border-collapse: collapse; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; }
-  .tbl th { text-align: left; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-4); padding: 10px 14px; border-bottom: 1px solid var(--border); }
-  .tbl td { padding: 10px 14px; border-top: 1px solid var(--divider, var(--border)); vertical-align: top; }
-  .tbl tbody tr { cursor: pointer; }
-  .tbl tbody tr:hover td { background: var(--bg-subtle); }
-  .go { color: var(--spec); white-space: nowrap; text-align: right; }
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+  .panel-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
+  /* The kinds across the page: each a tab with its count. */
+  .kbar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+  .kbar button { flex: 1 0 auto; min-width: 120px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); cursor: pointer; font: inherit; text-align: left; }
+  .kbar button b { font: 500 13.5px var(--font-sans); color: var(--text-1); }
+  .kbar button span { font: 600 18px var(--font-sans); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .kbar button.on { border-color: var(--text-1); box-shadow: inset 0 0 0 1px var(--text-1); }
+  .frow { display: flex; align-items: center; gap: 8px; }
+  .fin { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 13px var(--font-sans); color: var(--text-1); min-width: 0; }
+  .fin.mono { font-family: var(--font-mono); font-size: 12.5px; }
+  .fin.num { width: 76px; margin-left: 6px; }
+  .frow > .fin:first-child { flex: 0 0 34%; }
+  .frow > .fin.grow { flex: 1 1 auto; }
+  .lim { font-size: 12.5px; color: var(--text-3); text-transform: none; letter-spacing: 0; font-weight: 400; display: inline-flex; align-items: center; }
+  .aql { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 12.5px/1.6 var(--font-mono); color: var(--text-1); resize: vertical; }
+  .kvm { margin-top: 6px; grid-template-columns: 120px 1fr; font-size: 12px; }
+  details summary { cursor: pointer; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
 </style>

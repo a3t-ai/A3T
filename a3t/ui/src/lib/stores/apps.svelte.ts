@@ -59,6 +59,8 @@ export const APP_CONTEXT: Record<string, { label: string; source: string; focuse
   executions: { label: 'Executions', source: 'executions', focuses: true },
   runtime: { label: 'Hosts & Runtimes', source: 'runtimes', focuses: true },
   canvas: { label: 'Canvases', source: 'canvases', focuses: true },
+  // Memory by agent; the one picked opens its memory in Details.
+  memory: { label: 'Agents', source: 'memory-agents', focuses: true },
   // Fixed sections, like Resources' categories.
   security: { label: 'Security', source: 'security-sections', focuses: true },
   // Every Settings page is an item; the form opens in Details.

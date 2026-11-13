@@ -123,7 +123,7 @@ export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: str
 const FILTERED: Record<string, ListKind> = {
   // Agents were stored in `a3t` by default, so they aren't platform internals:
   // they stay visible with the platform hidden, split My/Shared by creator.
-  agents: 'shared', templates: 'shared', triggers: 'owned', executions: 'owned',
+  agents: 'shared', 'memory-agents': 'shared', templates: 'shared', triggers: 'owned', executions: 'owned',
 };
 
 export async function loadAppItems(source: string): Promise<AppItem[]> {
@@ -258,6 +258,13 @@ async function loadAll(source: string): Promise<AppItem[]> {
     }));
   }
 
+  if (source === 'memory-agents') {
+    // The agents, for their memory: each one's mode says how long it remembers.
+    const res = await mcpCall('list_agents', {});
+    if (!res.ok) throw new Error(res.error ?? 'list_agents failed');
+    return rows(res.data, 'agents').map((r: any) => ({ ...named(r), id: r.id ?? r.name, namespace: projectOf(r.namespace || undefined, r.created_by),
+      sub: (r.mode ?? r.agent_mode) === 'persistent' ? 'remembers across conversations' : 'remembers one conversation' }));
+  }
   if (source === 'agents') {
     const res = await mcpCall('list_agents', {});
     if (!res.ok) throw new Error(res.error ?? 'list_agents failed');
