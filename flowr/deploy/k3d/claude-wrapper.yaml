@@ -45,9 +45,10 @@ spec:
               value: "cli"
             - name: VERBOSE
               value: "true"
-            # Makes claude-cli-max agentic: attaches FlowR MCP (HTTP) and allows its tools
-            - name: A3T_MCP_URL
-              value: "http://flowr.a3t.svc.cluster.local:3002/message"
+            # Only the model: A3T's agent runtime calls the tools as the signed-in user.
+            # Answer only about A3T ("off" for a general-purpose model).
+            - name: A3T_SCOPE
+              value: "on"
           ports:
             - containerPort: 8000
               name: http

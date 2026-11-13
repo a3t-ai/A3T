@@ -1,6 +1,6 @@
-# Claude Code OpenAI-compatible wrapper
-# Wraps Claude Code CLI (via claude-agent-sdk) as an OpenAI API endpoint
-# FlowR MCP is pre-configured as a tool so the agent can manage workflows
+# Claude Code as an OpenAI-compatible model for A3T (claude-agent-sdk).
+# It is only the model: A3T's agent runtime calls the tools as the signed-in user.
+# Claude Code's own tools and any other MCP servers are off (see wrapper/src/main.py).
 
 FROM python:3.12-slim
 
@@ -28,11 +28,13 @@ WORKDIR /app
 # Install Python deps
 RUN poetry install --no-root
 
-# Workspace with MCP config — Claude CLI reads .mcp.json from cwd
-COPY workspace/ /workspace/
+# An empty working directory: no .mcp.json or CLAUDE.md is read (strict MCP, no setting sources).
+RUN mkdir -p /workspace
 
 ENV CLAUDE_CWD=/workspace
 ENV PORT=8000
+# Answer only about A3T (A3T_SCOPE=off for a general-purpose model).
+ENV A3T_SCOPE=on
 
 EXPOSE 8000
 
