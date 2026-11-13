@@ -70,7 +70,11 @@ export function begin(kind: Kind): number {
   const id = next++;
   // A read nobody asked for, with nothing user-driven in flight: track it
   // (so end() is harmless) but leave the bar alone.
-  if (kind === 'loading' && (bgDepth > 0 || (Date.now() - lastInput > USER_WINDOW && spans.size === 0 && idleTimer === null))) {
+  // A write nobody clicked for (a background sync, a note to its history) is
+  // tracked the same way: "Saved" answers the user's own Save, nothing else.
+  const userDriven = bgDepth === 0 && Date.now() - lastInput <= USER_WINDOW;
+  if ((kind === 'loading' && (bgDepth > 0 || (Date.now() - lastInput > USER_WINDOW && spans.size === 0 && idleTimer === null)))
+      || ((kind === 'saving' || kind === 'deleting') && !userDriven)) {
     background.add(id);
     setConns(1);
     return id;
@@ -151,8 +155,27 @@ export function actionKind(action: unknown): Kind {
   return 'saving';
 }
 
+/// An agent tool's verb: tool_<namespace>_<object>_<action> (tool_a3t_agent_memory_put
+/// → memory_put, tool_a3t_knowledge_stats → stats, tool_a3t_share → share).
+const TOOL_READS = /^(memory|turns|events|lineage|shares|shared_with|compare|lookup|entities|relations|neighbors|predict_head|predict_tail|score|describe|tools)$/i;
+export function toolKind(tool: string): Kind {
+  const rest = tool.replace(/^tool_[a-z0-9]+_/i, '');
+  const action = rest.includes('_') ? rest.slice(rest.indexOf('_') + 1) : rest;
+  for (const a of [action, rest]) {
+    if (/(^|_)(delete|remove|purge|forget)$/i.test(a)) return 'deleting';
+    if (/(^|_)(put|attach|detach|set|update|create)$/i.test(a)) return 'saving';
+    if (/^(train|from_semantic)$/i.test(a) || RUNS.test(a)) return 'running';
+    if (READS.test(a) || TOOL_READS.test(a)) return 'loading';
+  }
+  return 'saving';
+}
+
 export function requestKind(path: string, init: RequestInit = {}): Kind {
   const method = (init.method ?? 'GET').toUpperCase();
+  // The console's platform calls are A3T agents' tools (POST /agents/{agent}/tools/{tool}):
+  // reads among them must not end in "Saved".
+  const tool = path.match(/^\/agents\/[^/]+\/tools\/([^/?]+)/)?.[1];
+  if (tool && method === 'POST') return toolKind(decodeURIComponent(tool));
   if (path === '/message' && typeof init.body === 'string') {
     try {
       const b = JSON.parse(init.body);
