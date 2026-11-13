@@ -19,6 +19,7 @@
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
   import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
   import AgentCode from '$lib/components/agent/AgentCode.svelte';
+  import { agentName } from '$lib/components/agent/agentData';
   import AgentSetup from '$lib/components/agent/AgentSetup.svelte';
   import AgentPolicies from '$lib/components/agent/AgentPolicies.svelte';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -163,7 +164,7 @@
   // Tree nodes
   /// A new agent is made in four steps; an existing one has a tab per question.
   const agentSteps = $derived.by((): WizardStep[] => creatingNew ? [
-    { id: 'identity', label: 'Template & name', hint: 'The template it is built from, its name, and the project it lives in', ok: !!newAgent.name.trim() && !!newAgent.namespace && !!newAgent.template_id,
+    { id: 'identity', label: 'Template & name', hint: 'The template it is built from, its name, and the project it lives in', ok: !!agentName(newAgent.namespace, newAgent.name) && !!newAgent.namespace && !!newAgent.template_id,
       need: !newAgent.template_id ? 'Pick a template.' : !newAgent.name.trim() ? 'Name the agent.' : 'Pick a project.' },
     { id: 'behaviour', label: 'Model & tools', hint: 'The model it thinks with, the tools it may call, and whether it remembers' },
     { id: 'serving', label: "How it's started", hint: 'Its endpoint and the flow that serves it — the template\'s choice is filled in' },
@@ -288,7 +289,9 @@
   }
 
   async function createAgent() {
-    if (!newAgent.name || !newAgent.template_id) return;
+    if (!agentName(newAgent.namespace, newAgent.name) || !newAgent.template_id) return;
+    const full = agentName(newAgent.namespace, newAgent.name);
+    if (allAgents.some((a) => a.name === full)) { error = `There is already an agent called ${full}.`; return; }
     creating = true;
     const id = `agt-${crypto.randomUUID().slice(0, 8)}`;
     const target = newAgent.target || 'a3t/tmpl_a3t_agent';
@@ -385,7 +388,9 @@
   }
   async function makeFrom(name: string, project: string): Promise<string | null> {
     if (!agent || !makeKind) return null;
-    if (allAgents.some((a) => a.name === name && a.namespace === project)) return `There is already an agent called ${name} in ${project}.`;
+    const full = agentName(project, name);
+    if (!full) return 'Use letters or digits.';
+    if (allAgents.some((a) => a.name === full)) return `There is already an agent called ${full}.`;
     const id = `agt-${crypto.randomUUID().slice(0, 8)}`;
     const src = parseJson(agent.variables ?? '') || {};
     // Made by the control plane (agent_a3t_agents, tool_a3t_agent_create): its record
@@ -735,7 +740,8 @@
                 </select>
               </label>
               {#if newTplFacts.summary || newTplFacts.description}<p class="cf-about">{newTplFacts.summary || newTplFacts.description}</p>{/if}
-              <label class="cf-field"><span>Name</span><input type="text" bind:value={newAgent.name} placeholder="my-agent" /></label>
+              <label class="cf-field"><span>Name</span><input type="text" bind:value={newAgent.name} placeholder="support" />
+                {#if newAgent.name.trim()}<small class="cf-name">{agentName(newAgent.namespace, newAgent.name) ? `It will be named ${agentName(newAgent.namespace, newAgent.name)}` : 'Use letters or digits.'}</small>{/if}</label>
               <label class="cf-field"><span>Project</span>
                 <select bind:value={newAgent.namespace}>
                   {#each namespaceChoices(newAgent.namespace) as ns (ns)}<option value={ns}>{ns}</option>{/each}
@@ -770,7 +776,7 @@
               {:else}
               <dl class="cf-review">
                 <dt>Template</dt><dd>{templateChoices.find((t) => t.id === newAgent.template_id)?.name ?? '—'} v{newAgent.template_version}</dd>
-                <dt>Name</dt><dd class="mono">{newAgent.name || '—'}</dd>
+                <dt>Name</dt><dd class="mono">{agentName(newAgent.namespace, newAgent.name) || '—'}</dd>
                 <dt>Project</dt><dd class="mono">{newAgent.namespace}</dd>
                 <dt>Model</dt><dd class="mono">{newAgent.llm || '—'}</dd>
                 <dt>Tools</dt><dd>{newAgent.mcp_servers.length ? newAgent.mcp_servers.map((m) => m.split('/').pop()).join(', ') : 'none'}</dd>
@@ -957,6 +963,7 @@
   .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
   .panel-col { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; }
   .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .cf-name { display: block; margin-top: 4px; font: 12px var(--font-mono); color: var(--text-3); text-transform: none; letter-spacing: 0; }
   .pf-form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
   .cf-checks { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); }
   .cf-check { display: flex; align-items: center; gap: 10px; padding: 3px 0; cursor: pointer; }

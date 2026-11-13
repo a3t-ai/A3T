@@ -182,3 +182,15 @@ export const STATUS_WORDS: Record<string, string> = {
   paused: 'Paused — deployed, but not taking new work.',
   stopped: 'Stopped — not answering.',
 };
+
+/// An agent's name by the convention agent_<namespace>_<function>, as the control
+/// plane makes it (flow_a3t_agent_control create): "test" in a3t → agent_a3t_test;
+/// a name that already has the prefix is kept; '' when nothing is left to name it.
+export function agentName(namespace: string, name: string): string {
+  const slug = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const ns = slug(namespace || 'default'), raw = slug(name || '');
+  if (raw === `agent_${ns}`) return '';
+  if (raw.startsWith(`agent_${ns}_`)) return raw;
+  const fn = raw.replace(/^agent_/, '');
+  return fn ? `agent_${ns}_${fn}` : '';
+}

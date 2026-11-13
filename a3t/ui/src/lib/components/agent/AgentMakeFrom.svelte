@@ -1,6 +1,7 @@
 <script lang="ts">
   /// Make a new agent from this one: a child that inherits from it, a fork (keeps
   /// its link to the parent), or a clone (independent).
+  import { agentName } from './agentData';
   let { kind, name, projects, current, onmake, oncancel }: {
     kind: 'clone' | 'fork' | 'inherit';
     /// The agent it is made from.
@@ -13,13 +14,14 @@
   } = $props();
 
   // svelte-ignore state_referenced_locally — a starting value, edited from here
-  let newName = $state(`${name}-${kind === 'fork' ? 'fork' : kind === 'inherit' ? 'child' : 'copy'}`);
+  let newName = $state(`${name.replace(/^agent_[a-z0-9]+_/, '')}_${kind === 'fork' ? 'fork' : kind === 'inherit' ? 'child' : 'copy'}`);
   const TITLE = { clone: 'Clone', fork: 'Fork', inherit: 'Inherit from' } as const;
   // svelte-ignore state_referenced_locally
   let project = $state(current);
   let busy = $state(false);
   let err = $state('');
-  const valid = $derived(/^[a-z0-9][a-z0-9-]{1,62}$/.test(newName));
+  const full = $derived(agentName(project, newName));
+  const valid = $derived(!!full && full.length <= 96);
 
   async function make() {
     busy = true; err = '';
@@ -39,7 +41,7 @@
       <p>A new agent that <b>keeps its link</b> to <span class="mono">{name}</span>: it is listed as its fork in Lineage. Nothing it learns goes back.</p>
     {/if}
     <label>Name<input type="text" bind:value={newName} spellcheck="false" /></label>
-    {#if newName && !valid}<span class="err">Lower-case letters, digits and dashes.</span>{/if}
+    {#if newName && !valid}<span class="err">Use letters or digits.</span>{:else if full}<span class="dim mono">It will be named {full}</span>{/if}
     <label>Project
       <select bind:value={project}>{#each projects as p (p)}<option value={p}>{p}</option>{/each}</select>
     </label>
