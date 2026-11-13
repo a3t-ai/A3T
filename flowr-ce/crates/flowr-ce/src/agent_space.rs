@@ -274,10 +274,23 @@ type St = State<Arc<dyn StorageBackend>>;
 async fn readable_agent(storage: &dyn StorageBackend, principal: &Principal, id: &str) -> Result<Value, Response> {
     let row = agent_row(storage, id).await?;
     let project = project_of(&row);
-    if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await {
+    if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await
+        && !shared_for_calls(storage, id).await
+    {
         return Err(err(StatusCode::NOT_FOUND, format!("no agent {id:?}")));
     }
     Ok(row)
+}
+
+/// Whether an agent is shared with everyone with the right to call it (its
+/// `agent_shares` row for target `*` has `can_call`). The A3T agents are: every
+/// user's dash calls their tools, which then run with the caller's own rights.
+async fn shared_for_calls(storage: &dyn StorageBackend, id: &str) -> bool {
+    let filter = format!("agent_id = {} AND target = '*'", sql_quote(id));
+    match query_platform_table(storage, "agent_shares", Some(filter), 1).await {
+        Ok(rows) => rows.first().is_some_and(|r| col(r, "can_call") == "true"),
+        Err(_) => false,
+    }
 }
 
 /// AT-1: the agent's tools, as a backend or an LLM sees them.
