@@ -25,7 +25,9 @@
   const f = $derived(factsOf(agent, templates));
   const lineage = $derived(lineageOf(agent, allAgents));
   const env = $derived(envOf(agent));
-  const purpose = $derived(agent.description || f.purpose);
+  /// What it is for: its own description, else its instructions, else its template's.
+  const instructions = $derived.by(() => { try { const v = typeof agent.variables === 'string' ? JSON.parse(agent.variables || '{}') : (agent.variables ?? {}); return (v.system_prompt ?? v.instructions ?? '') as string; } catch { return ''; } });
+  const purpose = $derived(agent.description || instructions || f.purpose);
   const flags = $derived(live.loading || live.toolsLoading ? [] : flagsOf(agent, templates, live, llmLabel));
   const serious = $derived(flags.filter((x) => x.level !== 'info'));
   const notes = $derived(flags.filter((x) => x.level === 'info'));

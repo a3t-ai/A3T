@@ -69,7 +69,10 @@
   const templateChoices = $derived.by(() => {
     const nsOf = (y: string) => (y ?? '').match(/^\s+namespace:\s*['"]?([\w.-]+)/m)?.[1] ?? '';
     const best = new Map<string, { id: string; name: string; version: string; ns: string }>();
-    for (const t of templates) {
+    // Users' agents are made from user-facing templates: not the core under every
+    // agent (tmpl_system_agent_engine) nor the A3T agents' own (tmpl_a3t_service).
+    const PLATFORM_ONLY = new Set(['tmpl_system_agent_engine', 'tmpl_a3t_service']);
+    for (const t of templates.filter((x) => !PLATFORM_ONLY.has(x.id))) {
       const k = `${t.name}@${t.version}`;
       const it = { id: t.id, name: t.name, version: t.version, ns: nsOf(t.spec_yaml) };
       const cur = best.get(k);

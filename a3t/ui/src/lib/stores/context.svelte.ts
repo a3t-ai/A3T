@@ -206,7 +206,8 @@ export function namespacesFor(kind: ListKind): string[] {
   // Your projects — not ones only exposed to you (those have their own sections).
   // Your projects — not ones only exposed to you, and not ones that release to
   // others (their items are releases, in the shared sections), unless selected.
-  const user = projects.filter((p) => !p.platform && canSee(p) && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '') && !isReleaseProject(p.name)).map((p) => p.name);
+  // An archive project (`*-archive`) holds what was retired: listed only when picked.
+  const user = projects.filter((p) => !p.platform && canSee(p) && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '') && !isReleaseProject(p.name) && !p.name.endsWith('-archive')).map((p) => p.name);
   const platform = projects.filter((p) => p.platform).map((p) => p.name);
   const base = project ? [project] : user;
   const withPlatform = kind === 'picker' || (showPlatform && !project);

@@ -261,7 +261,8 @@ async function loadAll(source: string): Promise<AppItem[]> {
   if (source === 'agents') {
     const res = await mcpCall('list_agents', {});
     if (!res.ok) throw new Error(res.error ?? 'list_agents failed');
-    return rows(res.data, 'agents').map((r: any) => ({ ...named(r), namespace: projectOf(r.namespace || undefined, r.created_by) }));
+    // Keyed by the agent's id: two projects may each have an agent of the same name.
+    return rows(res.data, 'agents').map((r: any) => ({ ...named(r), id: r.id ?? r.name, namespace: projectOf(r.namespace || undefined, r.created_by) }));
   }
   if (source === 'templates') {
     const res = await mcpCall('list_agent_templates', {});
