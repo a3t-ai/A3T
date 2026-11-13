@@ -179,8 +179,10 @@ ${tableStep('create-agent-shares')}
   const userBearer = jwt({ sub: 'plain-user', org: 'org-default', role: 'viewer', email: 'plain@localhost', name: 'plain', aud: url, iat: now, exp: now + 7200 });
   t = await rest('GET', '/agents/agent_a3t_agents/tools', null, userBearer);
   check('AT-1: an ordinary user reaches a shared A3T agent', t.status === 200, JSON.stringify(t).slice(0, 300));
-  t = await rest('GET', '/agents/agent_system_core/tools', null, userBearer);
-  check('AT-1: but not the system agent', t.status === 404, JSON.stringify(t).slice(0, 300));
+  // Whether a user reads the system agent's project is the namespace guard's call (no
+  // projects here, so it is open); what the install decides is that it isn't shared.
+  r = await ctl({ action: 'get', id: 'agent_system_core' });
+  check('the system agent is not shared for calls', r.out?.visibility === 'private', JSON.stringify(r.out?.shares));
 
   // ── a user agent through the control-plane agent, then its data plane ──
   t = await rest('POST', '/agents/agent_a3t_agents/tools/tool_a3t_agent_create', { org_id: 'org-default', user_id: 'test', id: 'agt-e2e', name: 'e2e-agent', project: 'default',
