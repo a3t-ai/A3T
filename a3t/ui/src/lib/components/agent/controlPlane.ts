@@ -38,6 +38,12 @@ export interface TurnSummary { turns: number; failed: number; degraded: number; 
 export interface Turn { at: string; session_id: string; outcome: string; iterations: string; tool_calls: string; duration_ms: string; llm: string; knowledge: string; tool_hints: string; degraded: string }
 export type MemoryType = 'working' | 'episodic' | 'semantic' | 'procedural';
 
+async function tool<T = unknown>(name: string, args: Record<string, unknown>): Promise<{ ok: boolean; data?: T; error?: string }> {
+  const s = getSession();
+  const r = await agentTool('agent_a3t_agents', name, { org_id: s?.user?.org_id ?? 'org-default', user_id: s?.user?.id ?? '', ...args });
+  return r.ok ? { ok: true, data: r.data as T } : { ok: false, error: r.error };
+}
+
 /// The agent's own figures and memory, from agent_a3t_agents's tools (AT-1).
 export const insight = {
   turns: async (id: string) => {
@@ -46,8 +52,17 @@ export const insight = {
   },
   memory: async (id: string) => {
     const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_memory', { id });
-    return r.ok ? { ok: true as const, data: r.data as { namespace: string; counts: Record<MemoryType, number>; memory: Record<MemoryType, any[]> } } : { ok: false as const, error: r.error };
+    return r.ok ? { ok: true as const, data: r.data as { namespace: string; counts: Record<MemoryType, number>; memory: Record<MemoryType, any[]>; attached?: { namespace: string; entries: any[]; error?: string }[] } } : { ok: false as const, error: r.error };
   },
+  /// Edit one memory entry, in its own space or an attached one (namespace): with a
+  /// key, sets the fields given on it; without one, stores a new entry.
+  memoryPut: (id: string, type: MemoryType, data: Record<string, unknown>, key?: string | null, namespace?: string) =>
+    tool('tool_a3t_agent_memory_put', { id, type, data, ...(key ? { key } : {}), ...(namespace ? { namespace } : {}) }),
+  memoryForget: (id: string, type: MemoryType, key: string, namespace?: string) =>
+    tool('tool_a3t_agent_memory_forget', { id, type, key, ...(namespace ? { namespace } : {}) }),
+  /// A semantic space the agent also knows: the core recalls from it each turn.
+  attach: (id: string, namespace: string) => tool<{ semantic_spaces: string[] }>('tool_a3t_agent_memory_attach', { id, namespace }),
+  detach: (id: string, namespace: string) => tool<{ semantic_spaces: string[] }>('tool_a3t_agent_memory_detach', { id, namespace }),
   /// Its history (agent_events), newest first: who changed what.
   events: async (id: string) => {
     const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_events', { id });
