@@ -15,7 +15,7 @@
 
   async function load() {
     loading = true; error = '';
-    const r = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
+    const r = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     if (!r.ok) { error = r.error ?? 'Agents could not be listed'; loading = false; return; }
     const rows: any[] = Array.isArray(r.data) ? r.data : (r.data?.rows ?? r.data?.output ?? []);
     agents = rows.map((x) => {

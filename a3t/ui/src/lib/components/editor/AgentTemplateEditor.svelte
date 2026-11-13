@@ -262,7 +262,7 @@
     // The webhook must target the engine's chat WRAPPER (which assembles config), NOT the
     // template's own name — a template isn't a registered workflow, so targeting it gives
     // "Workflow not found". agent-template → SWF wrapper; everything else → native engine.
-    const wrapperName = (name === 'agent-template') ? 'a3t-chat-agent' : 'a3t-chat-engine';
+    const wrapperName = 'tmpl_a3t_agent';
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const triggerName = `${slug}-http`;
     const path = `/${slug}`;
@@ -346,7 +346,7 @@
         // always run through the engine's chat WRAPPER, which assembles a valid `config`
         // from the flat body. agent-template → the SWF wrapper; everything else → native.
         const tns = 'a3t';
-        const tname = (name === 'agent-template') ? 'a3t-chat-agent' : 'a3t-chat-engine';
+        const tname = 'tmpl_a3t_agent';
         // Carry the template's own config into the flat body so the test reflects it.
         const body: any = { ...payload };
         const llm = cfgGet('llm_resource');

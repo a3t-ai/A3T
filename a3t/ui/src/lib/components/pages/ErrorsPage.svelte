@@ -1,6 +1,6 @@
 <script lang="ts">
   // The A3T error log (UX ST-1): every failure the A3T base handled, one row
-  // each, written by system/a3t-error-handler and read through a3t-error-log.
+  // each, written by system/flow_system_error_handler and read through flow_a3t_error_log.
   // Admin and SuperAdmin depth: class, flow, step and the raw detail beside the
   // message the user was shown.
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
@@ -35,7 +35,7 @@
 
   async function load() {
     error = '';
-    const res = await execFlow('a3t-error-log', 'a3t', { action: 'list', ...(cls ? { class: cls } : {}), limit: 200 }, { silent: true });
+    const res = await execFlow('flow_a3t_error_log', 'a3t', { action: 'list', ...(cls ? { class: cls } : {}), limit: 200 }, { silent: true });
     if (!res.ok) { error = text(res.error) || 'Could not read the error log.'; return; }
     if (res.data?.ok === false) { error = text(res.data.error) || 'Refused'; return; }
     rows = res.data?.errors ?? [];
@@ -65,7 +65,7 @@
 <div class="er-page">
   <PageBanner headline="Every failure, once." highlightWord="once"
     subtitle="Errors handled by the A3T base, newest first."
-    description="Each row is one failure: its class, where it happened, the raw detail, and the message the user saw. Written by system/a3t-error-handler."
+    description="Each row is one failure: its class, where it happened, the raw detail, and the message the user saw. Written by system/flow_system_error_handler."
     accent="spec" />
 
   <div class="er-toolbar">

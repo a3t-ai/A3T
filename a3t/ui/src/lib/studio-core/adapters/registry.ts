@@ -31,19 +31,19 @@ export const removeTrigger = (id: string): Promise<Result> =>
 
 export const listTemplates = (): Promise<Result<any[]>> =>
   safely('templates', async () => {
-    const r = result(await execFlow('a3t-templates-list', 'a3t', { org_id: 'org-default' }, { silent: true }), 'templates');
+    const r = result(await execFlow('flow_a3t_templates-list', 'a3t', { org_id: 'org-default' }, { silent: true }), 'templates');
     return r.ok ? ok(rows(r.data, 'rows')) : r;
   });
 
 export const listAgents = (): Promise<Result<any[]>> =>
   safely('agents', async () => {
-    const r = result(await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true }), 'agents');
+    const r = result(await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true }), 'agents');
     return r.ok ? ok(rows(r.data, 'rows', 'output')) : r;
   });
 
 /// The server refuses while agents are built from the template.
 export const removeTemplate = (id: string): Promise<Result> =>
   safely('delete template', async () => {
-    const r = result(await execFlow('a3t-templates-delete', 'a3t', { id, org_id: 'org-default' }), 'Delete template');
+    const r = result(await execFlow('flow_a3t_templates-delete', 'a3t', { id, org_id: 'org-default' }), 'Delete template');
     return r.ok ? ok(undefined) : r;
   });

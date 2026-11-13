@@ -1,6 +1,6 @@
 <script lang="ts">
   /// Hooks: every phase of a turn is a hook, and flows attach to hooks. They pass
-  /// down the family: the core agent's (system/agent-engine) fire on every agent,
+  /// down the family: the core agent's (system/tmpl_system_agent_engine) fire on every agent,
   /// the template adds its own, and the agent adds its own; none replaces what it
   /// inherits. The template's hooks are read from its definition. Hooks don't run
   /// inside the agent call yet, and flows can't attach yet: FlowR AH-1..4
@@ -23,10 +23,10 @@
   ];
   /// What the core agent attaches (spec: .ai/CORE_AGENT_HOOKS_SPEC.md).
   const CORE: Record<string, string> = {
-    on_turn_start: 'agent-hook-turn-start',
-    before_llm: 'agent-hook-knowledge',
-    on_tool_error: 'a3t-error-handler',
-    on_turn_end: 'agent-hook-turn-log',
+    on_turn_start: 'flow_system_hook_turn_start',
+    before_llm: 'flow_system_hook_knowledge',
+    on_tool_error: 'flow_system_error_handler',
+    on_turn_end: 'flow_system_hook_turn_log',
   };
 
   /// The flows or tasks a definition's hooks run, by hook name.
@@ -63,7 +63,7 @@
       <thead>
         <tr>
           <th scope="col">Hook</th>
-          <th scope="col">system/agent-engine <span class="dim">core</span></th>
+          <th scope="col">tmpl_system_agent_engine <span class="dim">core</span></th>
           <th scope="col">{template?.name ?? 'template'} <span class="dim">template</span></th>
           <th scope="col">{agent.name} <span class="dim">this agent</span></th>
         </tr>

@@ -275,8 +275,8 @@ export const resources = {
 };
 
 // ── Projects, orgs and profiles ──
-// All three are A3T flows (a3t/backend/flows/a3t): a3t-projects, a3t-orgs
-// and a3t-profile, over platform-DB tables. The flows decide who may see and
+// All three are A3T flows (a3t/backend/flows/a3t): flow_a3t_projects, flow_a3t_orgs
+// and flow_a3t_profile, over platform-DB tables. The flows decide who may see and
 // change what, from the caller's principal — the UI only asks.
 //
 // A personal project's namespace is <profile handle>-<name>; an org's is
@@ -325,16 +325,16 @@ async function projectFlow(name: string, input: Record<string, any>): Promise<{ 
 export const projectsApi = {
   /** Projects you can see (with your role), your profile, your orgs, and every
    *  namespace that is a project (to hide the ones you can't see). */
-  list: () => projectFlow('a3t-projects', { action: 'list' }),
+  list: () => projectFlow('flow_a3t_projects', { action: 'list' }),
   create: (p: { owner_kind: 'user' | 'org'; owner: string; name: string; display_name?: string; description?: string; private?: boolean }) =>
-    projectFlow('a3t-projects', { action: 'create', ...p }),
+    projectFlow('flow_a3t_projects', { action: 'create', ...p }),
   update: (namespace: string, changes: Partial<Pick<ProjectInfo, 'display_name' | 'description' | 'private' | 'members' | 'policy'>>) =>
-    projectFlow('a3t-projects', { action: 'update', namespace, ...changes }),
-  remove: (namespace: string) => projectFlow('a3t-projects', { action: 'delete', namespace }),
+    projectFlow('flow_a3t_projects', { action: 'update', namespace, ...changes }),
+  remove: (namespace: string) => projectFlow('flow_a3t_projects', { action: 'delete', namespace }),
   /** Move a personal project to an org. `dry_run` (the default) reports what
    *  would move and what outside the project refers to it. */
   move: (namespace: string, to_org: string, dry_run = true) =>
-    projectFlow('a3t-projects', { action: 'move', namespace, to_org, dry_run }),
+    projectFlow('flow_a3t_projects', { action: 'move', namespace, to_org, dry_run }),
 };
 
 /// Who else may use a project — read, clone, run, never change. `kind` labels
@@ -346,30 +346,30 @@ export type Exposure = { audience: 'none' | 'orgs' | 'public'; orgs?: string[]; 
 /// change the target.
 export const shareApi = {
   copy: (p: { kind: 'flow' | 'resource' | 'trigger'; from: string; name?: string; id?: string; to: string }) =>
-    projectFlow('a3t-share', p),
+    projectFlow('flow_a3t_share', p),
 };
 
 /// A flow's releases: list them, and roll the active one back or forward.
 export const releasesApi = {
-  versions: (namespace: string, name: string) => projectFlow('a3t-releases', { action: 'versions', namespace, name }),
-  activate: (namespace: string, name: string, version: string) => projectFlow('a3t-releases', { action: 'activate', namespace, name, version }),
+  versions: (namespace: string, name: string) => projectFlow('flow_a3t_releases', { action: 'versions', namespace, name }),
+  activate: (namespace: string, name: string, version: string) => projectFlow('flow_a3t_releases', { action: 'activate', namespace, name, version }),
 };
 
 export const profileApi = {
-  get: () => projectFlow('a3t-profile', { action: 'get' }),
-  claim: (handle: string, email?: string, name?: string) => projectFlow('a3t-profile', { action: 'claim', handle, email, name }),
+  get: () => projectFlow('flow_a3t_profile', { action: 'get' }),
+  claim: (handle: string, email?: string, name?: string) => projectFlow('flow_a3t_profile', { action: 'claim', handle, email, name }),
 };
 
 export const orgsApi = {
-  list: () => projectFlow('a3t-orgs', { action: 'list' }),
+  list: () => projectFlow('flow_a3t_orgs', { action: 'list' }),
   /** The creator becomes the org's first admin; email/name label that row. */
   create: (org: string, display_name: string, creator?: { email?: string; name?: string }) =>
-    projectFlow('a3t-orgs', { action: 'create', org, display_name, ...creator }),
-  remove: (org: string) => projectFlow('a3t-orgs', { action: 'delete', org }),
+    projectFlow('flow_a3t_orgs', { action: 'create', org, display_name, ...creator }),
+  remove: (org: string) => projectFlow('flow_a3t_orgs', { action: 'delete', org }),
   setMember: (org: string, user: { user_id: string; email?: string; name?: string }, role: OrgRole) =>
-    projectFlow('a3t-orgs', { action: 'set_member', org, role, ...user }),
-  removeMember: (org: string, user_id: string) => projectFlow('a3t-orgs', { action: 'remove_member', org, user_id }),
-  setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('a3t-orgs', { action: 'set_runtime', org, runtime }),
+    projectFlow('flow_a3t_orgs', { action: 'set_member', org, role, ...user }),
+  removeMember: (org: string, user_id: string) => projectFlow('flow_a3t_orgs', { action: 'remove_member', org, user_id }),
+  setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('flow_a3t_orgs', { action: 'set_runtime', org, runtime }),
 };
 
 /// Everyone who can be added to an org or project: local users and, in EE, the
@@ -378,7 +378,7 @@ export type DirectoryUser = { id: string; email: string; name: string; source: '
 export async function loadDirectory(): Promise<DirectoryUser[]> {
   const out: DirectoryUser[] = [];
   try {
-    const local = await execFlow('a3t-users', 'a3t', { input: { action: 'list', org_id: 'org-default' } }, { silent: true });
+    const local = await execFlow('flow_a3t_users', 'a3t', { input: { action: 'list', org_id: 'org-default' } }, { silent: true });
     const rows = Array.isArray(local.data) ? local.data : (local.data?.rows ?? []);
     for (const u of rows) if (u?.id) out.push({ id: u.id, email: u.email ?? '', name: u.name ?? '', source: 'local' });
   } catch { /* not allowed, or no local users */ }
@@ -588,8 +588,8 @@ export async function execFlow(
   const silent = opts.silent ?? false;
 
   // Remap per-action flow names to consolidated CRUD flows
-  // e.g. "a3t-templates-list" → flow "a3t-templates" with input.action = "list"
-  const actionMatch = flowName.match(/^(a3t-(?:templates|agents|canvas|resources|users|audit))-(list|get|create|update|delete)$/);
+  // e.g. "flow_a3t_templates-list" → flow "flow_a3t_templates" with input.action = "list"
+  const actionMatch = flowName.match(/^(flow_a3t_(?:templates|agents|canvas|resources|users|audit))-(list|get|create|update|delete)$/);
   let actualFlowName = flowName;
   let actualInput = input;
   if (actionMatch) {

@@ -7,7 +7,7 @@ const stamp = () => ({ org_id: 'org-default', user_id: 'usr-superadmin', timesta
 
 export const updateAgent = (agent: any, change: Record<string, unknown>): Promise<Result> =>
   safely('save agent', async () => {
-    const r = result(await execFlow('a3t-agents-update', 'a3t', {
+    const r = result(await execFlow('flow_a3t_agents-update', 'a3t', {
       id: agent.id, ...stamp(),
       data: {
         name: agent.name, template_id: agent.template_id, template_version: agent.template_version,
@@ -21,7 +21,7 @@ export const updateAgent = (agent: any, change: Record<string, unknown>): Promis
 
 export const updateTemplate = (t: any, spec_yaml: string): Promise<Result> =>
   safely('save template', async () => {
-    const r = result(await execFlow('a3t-templates-update', 'a3t', {
+    const r = result(await execFlow('flow_a3t_templates-update', 'a3t', {
       id: t.id, ...stamp(),
       data: {
         name: t.name, version: t.version, source: t.source === 'platform' ? 'system' : t.source, spec_yaml,
@@ -34,7 +34,7 @@ export const updateTemplate = (t: any, spec_yaml: string): Promise<Result> =>
 /// Create an agent and its chat endpoint (a webhook trigger → its chat flow).
 export const createAgent = (a: { id: string; name: string; namespace: string; template_id: string; template_version: string; mode: string; resource_bindings: string; variables: string }, target: string, ep_path: string): Promise<Result> =>
   safely('create agent', async () => {
-    const r = result(await execFlow('a3t-agents-create', 'a3t', { ...stamp(), data: a }), 'Create agent');
+    const r = result(await execFlow('flow_a3t_agents-create', 'a3t', { ...stamp(), data: a }), 'Create agent');
     if (!r.ok) return r;
     const [tns, ...tname] = target.includes('/') ? target.split('/') : ['a3t', target];
     const t = result(await mcpCall('create_trigger', {
@@ -47,7 +47,7 @@ export const createAgent = (a: { id: string; name: string; namespace: string; te
 /// Delete an agent and its chat endpoint.
 export const deleteAgent = (id: string): Promise<Result> =>
   safely('delete agent', async () => {
-    const r = result(await execFlow('a3t-agents-delete', 'a3t', { id, org_id: 'org-default' }), 'Delete agent');
+    const r = result(await execFlow('flow_a3t_agents-delete', 'a3t', { id, org_id: 'org-default' }), 'Delete agent');
     if (!r.ok) return r;
     const tr = await mcpCall('list_triggers', {});
     const list = Array.isArray(tr.data) ? tr.data : tr.data?.triggers ?? [];

@@ -21,7 +21,7 @@
     return typeColors[type];
   }
 
-  // ── Graph state (loaded from a3t-knowledge / call:rotate) ──
+  // ── Graph state (loaded from flow_a3t_knowledge / call:rotate) ──
   let stats = $state<any>(null);
   let cloudPoints = $state<{ id: string; name: string; type: string; x: number; y: number; z: number }[]>([]);
   let cloudEdges = $state<{ source: number; target: number; opacity: number; relation: string }[]>([]);

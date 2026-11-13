@@ -39,7 +39,7 @@
   }
 
   // ── Request Early Access. The visitor isn't signed in, so this posts to a public
-  // webhook (/webhook/* needs no token), whose trigger runs the `a3t/a3t-early-access`
+  // webhook (/webhook/* needs no token), whose trigger runs the `a3t/flow_a3t_early_access`
   // flow with the posted body as its input. /message (execute_flow) needs a token. ──
   const EARLY_ACCESS_HOOK = '/webhook/a3t/early-access';
   let showForm = $state(false);

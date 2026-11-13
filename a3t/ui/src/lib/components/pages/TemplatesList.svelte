@@ -152,7 +152,7 @@ do:
     error = '';
     try {
       console.log('[TemplatesList] loadTemplates() called');
-      const res = await execFlow('a3t-templates-list', 'a3t', { org_id: 'org-default' });
+      const res = await execFlow('flow_a3t_templates-list', 'a3t', { org_id: 'org-default' });
       console.log('[TemplatesList] execFlow result:', res.ok, typeof res.data, Array.isArray(res.data) ? `array(${res.data.length})` : res.data);
       if (res.ok) {
         const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
@@ -229,7 +229,7 @@ do:
     deleteTarget = { id, name };
     deleteConfirmName = '';
     deleteUsers = null;
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     const all = res.ok ? (Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? [])) : [];
     deleteUsers = all.filter((a: any) => a.template_id === id);
   }
@@ -240,7 +240,7 @@ do:
 
   async function loadTemplateAgents() {
     agentsLoading = true;
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' });
     if (res.ok) {
       const allAgents = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
       templateAgents = allAgents.filter((a: any) => a.template_id === template?.id);
@@ -256,7 +256,7 @@ do:
   async function confirmDelete() {
     if (!deleteTarget || deleteConfirmName !== deleteTarget.name) return;
     deleting = true;
-    const res = await execFlow('a3t-templates-delete', 'a3t', { id: deleteTarget.id, org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_templates-delete', 'a3t', { id: deleteTarget.id, org_id: 'org-default' });
     deleting = false;
     if (res.ok) {
       selected = '';
@@ -435,7 +435,7 @@ do:
     // Create mode: persist the draft, then reopen the panel on the saved row.
     if (draftTemplate?.isNew) {
       if (!draftTemplate.name?.trim()) { saving = false; saveMsg = 'Name required'; return; }
-      const res = await execFlow('a3t-templates-create', 'a3t', {
+      const res = await execFlow('flow_a3t_templates-create', 'a3t', {
         org_id: 'org-default',
         user_id: $currentUser?.id ?? '',
         timestamp: new Date().toISOString(),
@@ -470,7 +470,7 @@ do:
         return;
       }
     }
-    const res = await execFlow('a3t-templates-update', 'a3t', {
+    const res = await execFlow('flow_a3t_templates-update', 'a3t', {
       id: template.id,
       org_id: 'org-default',
       user_id: $currentUser?.id ?? '',
@@ -511,7 +511,7 @@ do:
   async function copyTemplate(name: string, namespace: string): Promise<string | null> {
     if (!template) return 'Nothing to copy.';
     const from = `${template.namespace ?? ''}/${template.name}@${template.activeVersion ?? template.version ?? '1.0.0'}`;
-    const res = await execFlow('a3t-templates-create', 'a3t', {
+    const res = await execFlow('flow_a3t_templates-create', 'a3t', {
       org_id: 'org-default',
       user_id: $currentUser?.id ?? '',
       timestamp: new Date().toISOString(),

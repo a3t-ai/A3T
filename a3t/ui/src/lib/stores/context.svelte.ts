@@ -17,7 +17,7 @@ export type Project = {
   flows?: number;
   resources?: number;
   triggers?: number;
-  /// The project as the a3t-projects flow shows it to you (owner, members,
+  /// The project as the flow_a3t_projects flow shows it to you (owner, members,
   /// your role, …). Absent for a namespace that predates projects, such as
   /// `default`, which stays open to everyone.
   info?: ProjectInfo;
@@ -277,7 +277,7 @@ export async function loadProjects(force = false) {
   if (loaded && !force) return;
   loaded = true;
   // Namespaces and their counts from the registry; projects (who owns them, your
-  // role) from the a3t-projects flow, which leaves out the ones you can't see.
+  // role) from the flow_a3t_projects flow, which leaves out the ones you can't see.
   const [res, mine] = await Promise.all([mcpCall('list_projects', {}), projectsApi.list()]);
   const list: Project[] = res.ok ? (res.data?.projects ?? []) : [];
   const infos: ProjectInfo[] = mine.ok ? (mine.data?.projects ?? []) : [];

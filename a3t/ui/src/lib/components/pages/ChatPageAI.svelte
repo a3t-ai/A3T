@@ -295,6 +295,8 @@
           body: {
             message: text,
             session_id: serverSession(),
+            // The flow that serves chat: the A3T agent template.
+            namespace: 'a3t', name: 'tmpl_a3t_agent',
             ...(ui ? { ui_context: ui } : {}),
             ...(a?.llm ? { llm_resource: a.llm } : {}),
             // Send the tool restriction whenever the agent HAS one, including an
@@ -422,7 +424,7 @@
   });
 
   async function loadAgents() {
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     if (!res.ok) return;
     const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
     agents = (rows as any[]).map(r => ({

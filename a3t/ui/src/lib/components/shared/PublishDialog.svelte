@@ -32,7 +32,7 @@
     if (item.kind === 'template' && item.template) {
       // A template is published as a copy whose spec lives in the target project.
       const spec = item.template.spec_yaml.replace(/^(\s+namespace:\s*)['"]?[\w.-]+['"]?/m, `$1${to}`);
-      res = await execFlow('a3t-templates-create', 'a3t', {
+      res = await execFlow('flow_a3t_templates-create', 'a3t', {
         org_id: 'org-default', user_id: $currentUser?.id ?? '', timestamp: new Date().toISOString(),
         data: { id: `tpl-${to}-${item.template.name}-${Date.now().toString(36)}`, name: item.template.name, version: item.template.version,
                 // Labelled as the target exposes it: shared / training (platform) or community.

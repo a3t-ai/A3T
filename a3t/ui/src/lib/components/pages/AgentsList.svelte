@@ -95,13 +95,11 @@
       const doc = YAML.parse(specYaml) ?? {};
       const d = doc.document ?? doc;
       const name = d?.name;
-      if (name === 'agent-engine') return 'a3t/a3t-chat-engine';   // native engine wrapper
-      if (name === 'agent-template') return 'a3t/a3t-chat-agent';  // SWF template wrapper
-      // Custom template: pick the wrapper by ENGINE TYPE (native engine → engine
-      // wrapper), else the SWF wrapper. Never the template name.
-      if (/a3t:agent|agent-engine|call:\s*a3t/i.test(specYaml)) return 'a3t/a3t-chat-engine';
+      void name;
     } catch {}
-    return 'a3t/a3t-chat-agent';
+    // Every agent runs through the A3T agent template (a3t/tmpl_a3t_agent), which
+    // reads the agent's record and runs the core agent with its values.
+    return 'a3t/tmpl_a3t_agent';
   }
 
   function onTemplateChange() {
@@ -199,7 +197,7 @@
 
   async function loadAgents() {
     loading = true; error = '';
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' });
     if (res.ok) {
       allAgents = (Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? [])).map((r: any) => ({
         id: r.id, name: r.name, namespace: r.namespace ?? 'a3t',
@@ -216,7 +214,7 @@
   }
 
   async function loadTemplates() {
-    const res = await execFlow('a3t-templates-list', 'a3t', { org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_templates-list', 'a3t', { org_id: 'org-default' });
     if (res.ok) {
       templates = (Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? [])).map((r: any) => ({ id: r.id, name: r.name, version: r.version ?? '1.0.0', spec_yaml: r.spec_yaml ?? '' }));
     }
@@ -279,7 +277,7 @@
     const epPath = newAgent.ep_path || `/agent/${id}/chat`;
     const vars = { target, ep_path: epPath, mcp_servers: newAgent.mcp_servers, enabled_tools: newAgent.enabled_tools ?? null };
     const resource_bindings = JSON.stringify({ llm: newAgent.llm });
-    const res = await execFlow('a3t-agents-create', 'a3t', {
+    const res = await execFlow('flow_a3t_agents-create', 'a3t', {
       org_id: 'org-default', user_id: $currentUser?.id ?? '', timestamp: new Date().toISOString(),
       data: {
         id, name: newAgent.name, namespace: newAgent.namespace,
@@ -310,7 +308,7 @@
 
   /// Delete an agent, its endpoint and its own canvas. An error, or null.
   async function removeAgent(a: any): Promise<string | null> {
-    const res = await execFlow('a3t-agents-delete', 'a3t', { id: a.id, org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_agents-delete', 'a3t', { id: a.id, org_id: 'org-default' });
     if (!res.ok) return res.error ?? 'It was not deleted.';
     const vars = parseJson(a.variables ?? '') || {};
     const ep = vars.ep_path || `/agent/${a.id}/chat`;
@@ -368,7 +366,7 @@
       id, name, namespace: project, template_id: agent.template_id, template_version: agent.template_version,
       mode: agent.mode, resource_bindings: typeof agent.resource_bindings === 'string' ? agent.resource_bindings : JSON.stringify(agent.resource_bindings ?? {}),
       variables: JSON.stringify(vars),
-    }, vars.target || 'a3t/a3t-chat-agent', vars.ep_path);
+    }, vars.target || 'a3t/tmpl_a3t_agent', vars.ep_path);
     if (!r.ok && !String(r.error ?? '').startsWith('Agent created')) return r.error ?? 'It was not made.';
     // Where it came from, for Lineage (the control plane's agent_relations).
     await control.relate(id, { kind: 'agent', id: agent.id, version: agent.template_version }, makeKind);
@@ -534,7 +532,7 @@
     if (description) vars.description = description; else delete vars.description;
     if (bindings.environment) vars.environment = bindings.environment; else delete vars.environment;
     const name = String(bindings.name ?? '').trim() || agent.name;
-    const res = await execFlow('a3t-agents-update', 'a3t', {
+    const res = await execFlow('flow_a3t_agents-update', 'a3t', {
       id: agent.id, org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString(),
       data: {
         name, template_id: agent.template_id, template_version: agent.template_version,
@@ -568,7 +566,7 @@
   }
 
   function agentTargetFlow(): string {
-    return bindings.target || parseJson(agent?.variables)?.target || 'a3t/a3t-chat-agent';
+    return bindings.target || parseJson(agent?.variables)?.target || 'a3t/tmpl_a3t_agent';
   }
 
   function openAgentCanvas(id: string) {
@@ -605,7 +603,7 @@
     const rb = parseJson(agent.resource_bindings) || {};
     const vars = parseJson(agent.variables) || {};
     if (ref) vars.canvasRef = ref; else delete vars.canvasRef;
-    await execFlow('a3t-agents-update', 'a3t', {
+    await execFlow('flow_a3t_agents-update', 'a3t', {
       id: agent.id, org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString(),
       data: {
         name: agent.name, template_id: agent.template_id, template_version: agent.template_version,

@@ -1,4 +1,4 @@
-// The agents control plane, as the dash calls it: one flow, a3t/a3t-agent-control,
+// The agents control plane, as the dash calls it: one flow, a3t/flow_a3t_agent_control,
 // one action per call (create, get, lineage, relate, compare, merge, evolve,
 // shares, share, unshare, shared_with). Memory copies with history (fork, branch,
 // promote) stay FlowR's REST routes under /agents/{id}; the flow records where an
@@ -18,7 +18,7 @@ export interface Endpoints { control: string; memory?: string; data: { chat: str
 
 async function ctl<T>(action: string, args: Record<string, unknown> = {}): Promise<{ ok: boolean; data?: T; error?: string }> {
   const s = getSession();
-  const r = await execFlow('a3t-agent-control', 'a3t', { action, org_id: s?.user?.org_id ?? 'org-default', user_id: s?.user?.id ?? '', ...args }, { silent: true });
+  const r = await execFlow('flow_a3t_agent_control', 'a3t', { action, org_id: s?.user?.org_id ?? 'org-default', user_id: s?.user?.id ?? '', ...args }, { silent: true });
   return r.ok ? { ok: true, data: r.data as T } : { ok: false, error: r.error };
 }
 

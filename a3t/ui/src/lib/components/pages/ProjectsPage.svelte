@@ -6,7 +6,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   /// Projects: namespaces owned by you (<handle>-<name>) or by an org
   /// (<org>-<name>), who is in each, and the rules it runs under. Everything goes
-  /// through the a3t-projects / a3t-profile flows, which decide on the server who
+  /// through the flow_a3t_projects / flow_a3t_profile flows, which decide on the server who
   /// may see and change what; this page only asks. Namespaces from before
   /// projects (such as `default`) have no owner and stay open to everyone.
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';

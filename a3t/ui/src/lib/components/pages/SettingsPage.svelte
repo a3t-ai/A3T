@@ -43,12 +43,12 @@
     flag: '<path d="M3.5 14.5V2M3.5 2.5h8l-1.6 2.6L11.5 8h-8"/>',
   };
 
-  // ── Persistence (a3t-settings CRUD flow; upsert = delete then set) ──
+  // ── Persistence (flow_a3t_settings CRUD flow; upsert = delete then set) ──
   let settings = $state<Record<string, string>>({});
   const org = () => $currentUser?.org_id ?? 'org-default';
   let loaded = $state(false);
   async function loadAll() {
-    const res = await execFlow('a3t-settings', 'a3t', { input: { action: 'list', org_id: org() } }, { silent: true });
+    const res = await execFlow('flow_a3t_settings', 'a3t', { input: { action: 'list', org_id: org() } }, { silent: true });
     if (res.ok) {
       const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
       const map: Record<string, string> = {};
@@ -82,8 +82,8 @@
     navData = nav;
   }
   async function saveSetting(key: string, value: string): Promise<boolean> {
-    await execFlow('a3t-settings', 'a3t', { input: { action: 'delete', org_id: org(), key } }, { silent: true });
-    const res = await execFlow('a3t-settings', 'a3t', {
+    await execFlow('flow_a3t_settings', 'a3t', { input: { action: 'delete', org_id: org(), key } }, { silent: true });
+    const res = await execFlow('flow_a3t_settings', 'a3t', {
       input: { action: 'set', org_id: org(), key, value, user_id: $currentUser?.id ?? 'usr-superadmin', timestamp: new Date().toISOString() }
     }, { silent: true });
     if (res.ok) settings = { ...settings, [key]: value };

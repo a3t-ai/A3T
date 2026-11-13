@@ -115,7 +115,7 @@
 
         <section>
           <h4>Serving</h4>
-          <label><span>Chat flow (target)</span><input value={value.serving?.target ?? ''} oninput={(e) => edit(['serving', 'target'], e.currentTarget.value)} placeholder="a3t/a3t-chat-engine" /></label>
+          <label><span>Chat flow (target)</span><input value={value.serving?.target ?? ''} oninput={(e) => edit(['serving', 'target'], e.currentTarget.value)} placeholder="a3t/tmpl_a3t_agent" /></label>
           <label><span>Endpoint path</span><input value={value.serving?.ep_path ?? ''} oninput={(e) => edit(['serving', 'ep_path'], e.currentTarget.value)} placeholder="/agent/<id>/chat" /></label>
         </section>
       {/key}

@@ -354,7 +354,7 @@ function isAgentCall(type: string): boolean {
   return type === 'call:a3t:agent' || type === 'call:agent' || type === 'call:a3t:agent-engine';
 }
 
-const CHAT_FLOWS = new Set(['a3t-chat-engine', 'a3t-chat-agent']);
+const CHAT_FLOWS = new Set(['tmpl_a3t_agent']);
 
 /// What the graph shows of an agent step: a `call: a3t:agent`, or a run of an
 /// agent's chat flow (an agent dropped from the Explorer). Null for other steps.

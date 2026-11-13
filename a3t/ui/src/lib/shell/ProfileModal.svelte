@@ -39,7 +39,7 @@
     personalSaving = true; personalMsg = '';
     try {
       const res = await mcpCall('execute_flow', {
-        name: 'a3t-users', namespace: 'a3t',
+        name: 'flow_a3t_users', namespace: 'a3t',
         input: { input: { action: 'update', id: $currentUser?.id, name: `${firstName} ${lastName}`.trim(), email, address } }
       });
       personalMsg = res.ok ? 'Saved' : (res.error ?? 'Save failed');
@@ -78,7 +78,7 @@
       if (!verify.ok) { pwMsg = 'Current password is incorrect'; return; }
 
       // 2. Set the new password via the users CRUD flow (waits for completion).
-      const res = await execFlow('a3t-users', 'a3t', {
+      const res = await execFlow('flow_a3t_users', 'a3t', {
         input: {
           action: 'change-password',
           id: $currentUser?.id,

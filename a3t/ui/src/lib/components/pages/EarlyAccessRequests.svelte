@@ -20,8 +20,8 @@
   async function load() {
     loading = true;
     error = '';
-    // a3t-early-access reads (.input // {}).action — pass the wrapped list action.
-    const res = await execFlow('a3t-early-access', 'a3t', { input: { action: 'list' } }, { silent: true });
+    // flow_a3t_early_access reads (.input // {}).action — pass the wrapped list action.
+    const res = await execFlow('flow_a3t_early_access', 'a3t', { input: { action: 'list' } }, { silent: true });
     if (res.ok && res.data?.ok === false) {
       error = res.data.error ?? 'Refused';
     } else if (res.ok) {

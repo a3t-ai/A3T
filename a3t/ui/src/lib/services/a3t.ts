@@ -1,6 +1,6 @@
 // A3T Domain Service — wraps FlowR consolidated CRUD flow executions
 //
-// Each entity has a single consolidated flow (e.g. a3t-templates, a3t-agents)
+// Each entity has a single consolidated flow (e.g. flow_a3t_templates, flow_a3t_agents)
 // that routes by input.action (list, get, create, update, delete).
 // Flow input lands at `.` (not `.input`), so we pass { input: { action, ...data } }.
 // Auth context (org_id, user_id) is injected from the session store.
@@ -54,12 +54,12 @@ async function exec(flowName: string, input: Record<string, any>) {
 export const templates = {
   async list() {
     const { org_id } = ctx();
-    return exec('a3t-templates', { input: { action: 'list', org_id } });
+    return exec('flow_a3t_templates', { input: { action: 'list', org_id } });
   },
 
   async get(id: string) {
     const { org_id } = ctx();
-    return exec('a3t-templates', { input: { action: 'get', id, org_id } });
+    return exec('flow_a3t_templates', { input: { action: 'get', id, org_id } });
   },
 
   async create(data: {
@@ -72,7 +72,7 @@ export const templates = {
     spec_yaml?: string;
   }) {
     const { org_id, user_id, timestamp } = ctx();
-    return exec('a3t-templates', {
+    return exec('flow_a3t_templates', {
       input: {
         action: 'create',
         org_id, user_id, timestamp,
@@ -83,14 +83,14 @@ export const templates = {
 
   async update(id: string, data: Record<string, any>) {
     const { org_id, timestamp } = ctx();
-    return exec('a3t-templates', {
+    return exec('flow_a3t_templates', {
       input: { action: 'update', id, org_id, timestamp, data },
     });
   },
 
   async delete(id: string) {
     const { org_id } = ctx();
-    return exec('a3t-templates', { input: { action: 'delete', id, org_id } });
+    return exec('flow_a3t_templates', { input: { action: 'delete', id, org_id } });
   },
 };
 
@@ -99,12 +99,12 @@ export const templates = {
 export const agents = {
   async list() {
     const { org_id } = ctx();
-    return exec('a3t-agents', { input: { action: 'list', org_id } });
+    return exec('flow_a3t_agents', { input: { action: 'list', org_id } });
   },
 
   async get(id: string) {
     const { org_id } = ctx();
-    return exec('a3t-agents', { input: { action: 'get', id, org_id } });
+    return exec('flow_a3t_agents', { input: { action: 'get', id, org_id } });
   },
 
   async create(data: {
@@ -118,7 +118,7 @@ export const agents = {
     resource_bindings?: string;
   }) {
     const { org_id, user_id, timestamp } = ctx();
-    return exec('a3t-agents', {
+    return exec('flow_a3t_agents', {
       input: {
         action: 'create',
         org_id, user_id, timestamp,
@@ -136,21 +136,21 @@ export const agents = {
 
   async update(id: string, data: Record<string, any>) {
     const { org_id, timestamp } = ctx();
-    return exec('a3t-agents', {
+    return exec('flow_a3t_agents', {
       input: { action: 'update', id, org_id, timestamp, data },
     });
   },
 
   async delete(id: string) {
     const { org_id } = ctx();
-    return exec('a3t-agents', { input: { action: 'delete', id, org_id } });
+    return exec('flow_a3t_agents', { input: { action: 'delete', id, org_id } });
   },
 };
 
 // ── Canvas ──
 // Retired: canvases are now `type_ref=canvas` registry resources with the
 // a3t.io/v1alpha1 CanvasSpec (see A3T_CANVAS_SPEC.md §8). Use `canvasApi` in
-// services/api.ts (registry CRUD + /canvas/* placement). The old `a3t-canvas`
+// services/api.ts (registry CRUD + /canvas/* placement). The old `flow_a3t_canvas`
 // (canvas_specs) CRUD flow is deprecated.
 
 // ── Resources ──
@@ -158,7 +158,7 @@ export const agents = {
 export const resources = {
   async list() {
     const { org_id } = ctx();
-    return exec('a3t-resources', { input: { action: 'list', org_id } });
+    return exec('flow_a3t_resources', { input: { action: 'list', org_id } });
   },
 
   async create(data: {
@@ -168,7 +168,7 @@ export const resources = {
     config?: string;
   }) {
     const { org_id, user_id, timestamp } = ctx();
-    return exec('a3t-resources', {
+    return exec('flow_a3t_resources', {
       input: {
         action: 'create',
         org_id, user_id, timestamp,
@@ -187,7 +187,7 @@ export const resources = {
 export const users = {
   async list() {
     const { org_id } = ctx();
-    return exec('a3t-users', { input: { action: 'list', org_id } });
+    return exec('flow_a3t_users', { input: { action: 'list', org_id } });
   },
 };
 
@@ -196,13 +196,13 @@ export const users = {
 export const audit = {
   async list() {
     const { org_id } = ctx();
-    return exec('a3t-audit', { input: { action: 'list', org_id } });
+    return exec('flow_a3t_audit', { input: { action: 'list', org_id } });
   },
 };
 
 // ── Knowledge Graph (RotatE / ConceptNet over LanceDB) ──
 //
-// Backed by the a3t-knowledge flow → call:rotate handler → a3t-kg-db resource.
+// Backed by the flow_a3t_knowledge flow → call:rotate handler → a3t-kg-db resource.
 // Each triple is { head, relation, tail, weight?, head_type?, tail_type? }.
 
 export type Triple = {
@@ -217,51 +217,51 @@ export type Triple = {
 export const knowledge = {
   /** Add ConceptNet triples; entities/relations are created on the fly. */
   async ingest(triples: Triple[], dim = 256) {
-    return exec('a3t-knowledge', { input: { action: 'ingest', triples, dim } });
+    return exec('flow_a3t_knowledge', { input: { action: 'ingest', triples, dim } });
   },
 
   /** Train RotatE embeddings over the stored triples. */
   async train(opts: { epochs?: number; lr?: number; gamma?: number; neg_samples?: number } = {}) {
-    return exec('a3t-knowledge', { input: { action: 'train', ...opts } });
+    return exec('flow_a3t_knowledge', { input: { action: 'train', ...opts } });
   },
 
   /** Score a single (head, relation, tail) fact. */
   async score(head: string, relation: string, tail: string, gamma?: number) {
-    return exec('a3t-knowledge', { input: { action: 'score', head, relation, tail, gamma } });
+    return exec('flow_a3t_knowledge', { input: { action: 'score', head, relation, tail, gamma } });
   },
 
   /** Rank candidate tails for (head, relation) via RotatE link prediction. */
   async predictTail(head: string, relation: string, limit = 10, gamma?: number) {
-    return exec('a3t-knowledge', { input: { action: 'predict_tail', head, relation, limit, gamma } });
+    return exec('flow_a3t_knowledge', { input: { action: 'predict_tail', head, relation, limit, gamma } });
   },
 
   /** Rank candidate heads for (relation, tail). */
   async predictHead(relation: string, tail: string, limit = 10, gamma?: number) {
-    return exec('a3t-knowledge', { input: { action: 'predict_head', relation, tail, limit, gamma } });
+    return exec('flow_a3t_knowledge', { input: { action: 'predict_head', relation, tail, limit, gamma } });
   },
 
   /** Nearest entities to a given entity in embedding space. */
   async neighbors(entity: string, limit = 10) {
-    return exec('a3t-knowledge', { input: { action: 'neighbors', entity, limit } });
+    return exec('flow_a3t_knowledge', { input: { action: 'neighbors', entity, limit } });
   },
 
   /** Filter stored triples by any of head / relation / tail. */
   async lookup(filter: { head?: string; relation?: string; tail?: string; limit?: number } = {}) {
-    return exec('a3t-knowledge', { input: { action: 'lookup', ...filter } });
+    return exec('flow_a3t_knowledge', { input: { action: 'lookup', ...filter } });
   },
 
   /** Paginated entity list with vector norms + previews (Vectors tab). */
   async entities(opts: { query?: string; limit?: number; offset?: number } = {}) {
-    return exec('a3t-knowledge', { input: { action: 'entities', ...opts } });
+    return exec('flow_a3t_knowledge', { input: { action: 'entities', ...opts } });
   },
 
   /** Relation list with per-relation triple counts. */
   async relations() {
-    return exec('a3t-knowledge', { input: { action: 'relations' } });
+    return exec('flow_a3t_knowledge', { input: { action: 'relations' } });
   },
 
   /** Graph summary + 3D projection of entities + edges (3D Graph tab). */
   async stats(opts: { sample?: number; max_edges?: number } = {}) {
-    return exec('a3t-knowledge', { input: { action: 'stats', ...opts } });
+    return exec('flow_a3t_knowledge', { input: { action: 'stats', ...opts } });
   },
 };

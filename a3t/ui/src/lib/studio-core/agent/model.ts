@@ -120,8 +120,9 @@ export function toRecord(agent: any, specYaml: string, own: Record<string, unkno
 export function chatFlowFor(specYaml: string): string {
   let name = '';
   try { name = YAML.parse(specYaml)?.document?.name ?? ''; } catch { /* keep '' */ }
-  if (name === 'agent-engine' || /a3t:agent/.test(specYaml)) return 'a3t/a3t-chat-engine';
-  return 'a3t/a3t-chat-agent';
+  void name;
+  // Every agent runs through a3t/tmpl_a3t_agent, whatever its template.
+  return 'a3t/tmpl_a3t_agent';
 }
 
 /// Required fields the agent has not set.

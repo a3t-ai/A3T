@@ -2,7 +2,7 @@
   /// Settings → General → Organisations. A superadmin creates and deletes
   /// organisations and manages who is in each (member, admin, security admin);
   /// an org's own admins can manage its members too. Users are independent: one
-  /// person can be in several orgs. All of it is the a3t-orgs flow, which checks
+  /// person can be in several orgs. All of it is the flow_a3t_orgs flow, which checks
   /// the caller on the server.
   import { onMount } from 'svelte';
   import { userRole, currentUser } from '$lib/stores/auth';

@@ -78,7 +78,7 @@ export function taskForItem(it: Item): { base: string; task: Body } | null {
   const ref = `${it.project}/${it.name}`;
   if (it.kind === 'flow') return { base: it.name, task: { run: { workflow: { namespace: it.project, name: it.name, version: 'latest', input: {} } } } };
   if (it.kind === 'agent') {
-    const target = (() => { try { return JSON.parse(it.data?.variables ?? '{}').target; } catch { return ''; } })() || 'a3t/a3t-chat-engine';
+    const target = (() => { try { return JSON.parse(it.data?.variables ?? '{}').target; } catch { return ''; } })() || 'a3t/tmpl_a3t_agent';
     const [ns, ...name] = String(target).split('/');
     return { base: it.name, task: { run: { workflow: { namespace: ns, name: name.join('/'), version: 'latest', input: { message: '${ .message }', agent_id: it.id ?? it.name } } } } };
   }

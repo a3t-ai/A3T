@@ -596,7 +596,7 @@ do:
     llmInput = '';
     testing = true;
     try {
-      const res = await execFlow('a3t-test-resource', 'a3t', {
+      const res = await execFlow('flow_a3t_resource_test', 'a3t', {
         input: { test_type: 'llm', resource: `${selected.namespace}/${selected.name}`, message: msg }
       });
       const content = res.data?.content ?? res.data?.text ?? (typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
@@ -608,14 +608,14 @@ do:
     }
   }
 
-  // ── ADB: one AQL statement via the a3t-test-resource flow's call:adb branch ──
+  // ── ADB: one AQL statement via the flow_a3t_resource_test flow's call:adb branch ──
   async function testAdb() {
     if (!selected || !adbQuery.trim()) return;
     testing = true;
     testResult = '';
     try {
       const input = { test_type: 'adb', resource: `${selected.namespace}/${selected.name}`, query: adbQuery.trim() };
-      const res = await execFlow('a3t-test-resource', 'a3t', { input });
+      const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
       testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
@@ -633,7 +633,7 @@ do:
       const input: any = { test_type: 'db', resource: `${selected.namespace}/${selected.name}`, operation: dbOperation };
       if (dbOperation === 'query' && dbQuery) input.filter = dbQuery;
       if (dbOperation === 'query' && dbQuery) input.table = dbQuery.split(' ')[0];
-      const res = await execFlow('a3t-test-resource', 'a3t', { input });
+      const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
       testResult = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
@@ -649,7 +649,7 @@ do:
     mcpTools = [];
     testResult = '';
     try {
-      const res = await execFlow('a3t-test-resource', 'a3t', {
+      const res = await execFlow('flow_a3t_resource_test', 'a3t', {
         input: { test_type: 'mcp', resource: `${selected.namespace}/${selected.name}` }
       });
       const tools = res.data?.tools ?? res.data;
@@ -673,7 +673,7 @@ do:
     try {
       let args: any = {};
       try { args = JSON.parse(mcpToolArgs); } catch {}
-      const res = await execFlow('a3t-test-resource', 'a3t', {
+      const res = await execFlow('flow_a3t_resource_test', 'a3t', {
         input: { test_type: 'mcp_call', resource: `${selected.namespace}/${selected.name}`, tool: mcpSelectedTool, arguments: args }
       });
       mcpToolResult = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
