@@ -4,7 +4,6 @@
   /// refuses every call. Pausing its deployment and revoking its tools are real
   /// too. Then what its code runs and the policies that have decided about it.
   import { opsApi } from '$lib/services/api';
-  import { navigateTo } from '$lib/stores/panels.svelte.ts';
   import { factsOf, type AgentRec, type TemplateRec } from './agentData';
   import { setBlocked } from './controlPlane';
   import type { AgentLive } from './agentLive.svelte';
@@ -55,16 +54,6 @@
     msg = (await onrevoke(on)) ?? '';
     busy = ''; confirm = '';
   }
-  /// Policies named in the decisions about it.
-  const policies = $derived.by(() => {
-    const m = new Map<string, { id: string; allow: number; deny: number }>();
-    for (const d of live.decisions) for (const id of (d.reason || '').split(/,\s*/).filter((x) => x && !/\s/.test(x))) {
-      const e = m.get(id) ?? { id, allow: 0, deny: 0 };
-      d.allow ? e.allow++ : e.deny++;
-      m.set(id, e);
-    }
-    return [...m.values()].sort((a, b) => b.deny - a.deny || b.allow - a.allow);
-  });
 </script>
 
 <section class="agt">
@@ -107,20 +96,7 @@
     <p class="dim">The core agent's error handler (<span class="mono">system/flow_system_error_handler</span>, locked) answers every failed turn, and every turn is logged.{f.hooks.length ? ` Its template adds ${f.hooks.length} hook${f.hooks.length === 1 ? '' : 's'}: ${f.hooks.map((h) => h.name).join(', ')}.` : ' Its template adds no hooks: nothing filters what goes in or out (no redaction, no guard).'}</p>
   </div>
 
-  <div class="card">
-    <div class="card-head"><h3>Policies</h3><span>that have decided about it, in the latest {live.scanned} decisions</span><span class="grow"></span>
-      <button class="link" onclick={() => navigateTo('security', 'Security', { selectedId: 'policies' })}>All policies →</button></div>
-    {#if live.decErr}<p class="dim">{live.decErr}</p>
-    {:else if policies.length}
-      <table class="tbl">
-        <thead><tr><th>Policy</th><th>Allowed</th><th>Blocked</th></tr></thead>
-        <tbody>{#each policies as po (po.id)}<tr><td class="mono">{po.id}</td><td>{po.allow}</td><td class:err={po.deny > 0}>{po.deny}</td></tr>{/each}</tbody>
-      </table>
-    {:else}
-      <p class="dim">No decision about it names a policy yet. Which policies <em>would</em> apply needs a policy query (UI-6).</p>
-    {/if}
-  </div>
-
+  <p class="dim">Which policies decide about it, and a test of what they would decide: <button class="link" onclick={() => ongo('audit')}>Audit → Policies</button>.</p>
 </section>
 
 <style>
@@ -133,5 +109,4 @@
   .sw li.cf { justify-content: flex-start; flex-wrap: wrap; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border-top: 0; font-size: 12.5px; }
   .why { flex: 1 1 200px; height: 28px; font-size: 12.5px; }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
-  td.err { color: var(--err); }
 </style>

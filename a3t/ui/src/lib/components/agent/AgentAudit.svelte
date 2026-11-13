@@ -48,28 +48,6 @@
 </script>
 
 <section class="agt">
-  {#if live.placement?.stats}
-    {@const s = live.placement.stats}
-    <div class="tiles six">
-      <div class="tile"><span class="v">{s.runsLastHour}</span><span class="k">Calls, last hour</span></div>
-      <div class="tile"><span class="v">{s.runs}</span><span class="k">Calls, total</span></div>
-      <div class="tile" class:bad={s.errorRate > 0.02}><span class="v">{(s.errorRate * 100).toFixed(1)}%</span><span class="k">Errors</span></div>
-      <div class="tile"><span class="v">{dur(s.p50Ms)}</span><span class="k">p50</span></div>
-      <div class="tile"><span class="v">{dur(s.p95Ms)}</span><span class="k">p95</span></div>
-      <div class="tile" class:bad={s.refused > 0}><span class="v">{s.refused}</span><span class="k">Refused</span></div>
-    </div>
-    {#if s.lastError}<div class="note bad"><b>Last error</b> {s.lastError}</div>{/if}
-  {:else if own}
-    <div class="tiles six">
-      <div class="tile"><span class="v">{own.summary.turns}</span><span class="k">Turns</span></div>
-      <div class="tile" class:bad={own.summary.failed > 0}><span class="v">{own.summary.failed}</span><span class="k">Failed</span></div>
-      <div class="tile"><span class="v">{own.summary.degraded}</span><span class="k">Degraded</span></div>
-      <div class="tile"><span class="v">{own.summary.tool_calls}</span><span class="k">Tool calls</span></div>
-      <div class="tile"><span class="v">{own.summary.turns ? dur(own.summary.avg_ms) : '—'}</span><span class="k">Average turn</span></div>
-      <div class="tile"><span class="v">{own.summary.last_at ? ago(own.summary.last_at) : '—'}</span><span class="k">Last</span></div>
-    </div>
-  {/if}
-
   <div class="chips">
     {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${calls.length})`], ['err', `Errors (${calls.filter((c) => c.err).length})`], ['conv', `Test chats (${live.convs.length})`]] as [k, label] (k)}
       <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
@@ -110,6 +88,5 @@
 </section>
 
 <style>
-  .tiles.six { grid-template-columns: repeat(6, 1fr); }
   .ic { font-size: 9.5px !important; }
 </style>

@@ -19,6 +19,7 @@
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
   import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
   import AgentSetup from '$lib/components/agent/AgentSetup.svelte';
+  import AgentPolicies from '$lib/components/agent/AgentPolicies.svelte';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import AgentMetrics from '$lib/components/agent/AgentMetrics.svelte';
   import { keepKey } from '$lib/components/agent/keyOnce';
@@ -815,6 +816,8 @@
             {:else if propNode === 'secure' && sub.secure === 'exposure'}
               <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
             {:else if propNode === 'audit'}
+              <AgentPolicies {agent} {templates} live={live!} />
+              <h3 class="sect">Audit log</h3>
               <AgentAudit {agent} {templates} live={live!} onstudio={studio} ongo={goTab} />
             {:else if propNode === 'metrics'}
               <AgentMetrics id={agent.id} />
@@ -933,6 +936,7 @@
 </div>
 
 <style>
+  .sect { margin: 22px 0 10px; font: 400 19px var(--font-serif); color: var(--text-1); }
   .subnav { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 14px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-subtle); align-self: flex-start; }
   .subnav button { border: 0; background: none; padding: 5px 12px; border-radius: 7px; font: 500 12.5px var(--font-sans); color: var(--text-3); cursor: pointer; }
   .subnav button.on { background: var(--bg-surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
