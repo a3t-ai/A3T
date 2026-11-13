@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_templates
-  version: 1.0.0
+  version: 1.1.0
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -82,7 +82,7 @@ do:
     with:
       operation: query
       table: template_registry
-      filter: name = "${ $context._cr_name }" AND org_id = "${ $context._cr_org }"
+      filter: (name = "${ $context._cr_name }" OR id = "${ $context._cr_id }") AND org_id = "${ $context._cr_org }"
       limit: 100
       _resource: a3t/a3t-platform-db
     metadata:
@@ -97,17 +97,22 @@ do:
 - create-same:
     set:
       _cr_same: >-
-        ${ [ .[] | select(((([(.spec_yaml // "") | capture("\n\\s+namespace:\\s*['\"]?(?<ns>[A-Za-z0-9_.-]+)")] | .[0]) // {}).ns) == $context._cr_ns and .version == $context._cr_version) ] }
+        ${ [ .[] | select(.name == $context._cr_name and ((([(.spec_yaml // "") | capture("\n\\s+namespace:\\s*['\"]?(?<ns>[A-Za-z0-9_.-]+)")] | .[0]) // {}).ns) == $context._cr_ns and .version == $context._cr_version) ] }
+      # One catalogue row per template id: its versions are FlowR's (the flow's).
+      _cr_id_taken: '${ ([ .[] | select(.id == $context._cr_id) ] | length) > 0 }'
     export:
       as: "."
 - create-decide:
     switch:
     - replace:
-        when: ${ ($context._cr_same | length) > 0 and $context._cr_replace }
+        when: ${ (($context._cr_same | length) > 0 or $context._cr_id_taken) and $context._cr_replace }
         then: create-replace
     - case:
         when: ${ ($context._cr_same | length) > 0 }
         then: create-exists
+    - taken:
+        when: ${ $context._cr_id_taken }
+        then: create-taken
     - default:
         then: create-insert
 # Re-publishing: the release in that project is updated in place.
@@ -116,7 +121,7 @@ do:
     with:
       operation: update
       table: template_registry
-      filter: id = "${ $context._cr_same[0].id }"
+      filter: id = "${ ($context._cr_same[0] // {}).id // $context._cr_id }"
       values:
         version: ${ $context._cr_version }
         spec_yaml: ${ $context._cr_spec }
@@ -134,6 +139,11 @@ do:
 - create-exists:
     set:
       error: '${ $context._cr_name + " " + $context._cr_version + " is already released in " + (if $context._cr_ns == "" then "this project" else $context._cr_ns end) + " — a release is never replaced. Give it a new version to release a change." }'
+      name: ${ $context._cr_name }
+    then: end
+- create-taken:
+    set:
+      error: '${ "A template with id " + $context._cr_id + " exists already: publish a new version of it (its code, in Studio), or give this one another id." }'
       name: ${ $context._cr_name }
     then: end
 - create-insert:

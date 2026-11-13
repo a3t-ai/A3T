@@ -59,8 +59,15 @@ pub async fn check_table_delete(db: &dyn crate::platform_db::PlatformDb, table: 
         // A template with agents built from it.
         "template_registry" => {
             let rows = ids_matching(db, table, filter).await?;
-            for t in rows {
+            for t in &rows {
                 let Some(id) = t.get("id").and_then(|v| v.as_str()) else { continue };
+                // A duplicate row of a template (same id) may go as long as one stays:
+                // the agents still have their template.
+                let removed = rows.iter().filter(|r| r.get("id").and_then(|v| v.as_str()) == Some(id)).count();
+                let all = ids_matching(db, table, &format!("id = {}", quote(id))).await.map(|a| a.len()).unwrap_or(0);
+                if all > removed {
+                    continue;
+                }
                 let agents = ids_matching(db, "agent_configs", &format!("template_id = {}", quote(id)))
                     .await
                     .unwrap_or_default();
@@ -68,7 +75,7 @@ pub async fn check_table_delete(db: &dyn crate::platform_db::PlatformDb, table: 
                     let names: Vec<String> = agents.iter().map(name_of).collect();
                     return Err(format!(
                         "Template '{}' is used by {} agent(s): {}. Delete those agents first.",
-                        name_of(&t),
+                        name_of(t),
                         names.len(),
                         list(&names)
                     ));
