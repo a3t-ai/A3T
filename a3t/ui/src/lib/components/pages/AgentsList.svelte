@@ -786,7 +786,7 @@
               </div>
             {/if}
             {#if propNode === 'overview'}
-              <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} />
+              <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} onreload={loadAgents} />
             {:else if propNode === 'build' && sub.build === 'tools'}
               <AgentSetup {agent} bind:bindings {llmResources} {mcpResources} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings}>
