@@ -273,7 +273,7 @@
 </div>
 
 <style>
-  .tg { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 28px; max-width: var(--detail-w, 980px); container: tg / inline-size; }
+  .tg { display: flex; flex-direction: column; gap: 14px; padding: 24px 32px 40px; max-width: var(--detail-w, 980px); container: tg / inline-size; }
   .tg-warn { padding: 9px 12px; border: 1px solid var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
   .tg-hero h2 { margin: 0; font: 400 26px/1.25 var(--font-serif); color: var(--text-1); }
   .tg-summary { margin: 8px 0 0; font-size: 16px; color: var(--text-1); line-height: 1.45; }
