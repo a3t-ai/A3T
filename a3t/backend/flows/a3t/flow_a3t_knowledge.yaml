@@ -1,6 +1,7 @@
 # A3T Knowledge Graph — RotatE over ConceptNet triples (LanceDB).
 # Consolidated flow routed by .input.action, matching the other a3t-* CRUD flows.
-# Backed by the call:rotate task handler against the a3t-kg-db resource.
+# Backed by the call:rotate task handler against a KG database: input.kg names
+# it (a LanceDB resource, project/name); a3t/a3t-kg-db when it is not given.
 #
 # Actions:
 #   ingest        — add ConceptNet triples (creates entities/relations on the fly)
@@ -22,7 +23,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_knowledge
-  version: 1.1.0
+  version: 1.2.0
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -72,7 +73,7 @@ do:
       operation: ingest
       triples: ${ .input.triples }
       dim: ${ .input.dim // 256 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - train:
@@ -83,7 +84,7 @@ do:
       lr: ${ .input.lr // 0.001 }
       gamma: ${ .input.gamma // 12.0 }
       neg_samples: ${ .input.neg_samples // 8 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - score:
@@ -94,7 +95,7 @@ do:
       relation: ${ .input.relation }
       tail: ${ .input.tail }
       gamma: ${ .input.gamma // 12.0 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - predict-tail:
@@ -105,7 +106,7 @@ do:
       relation: ${ .input.relation }
       limit: ${ .input.limit // 10 }
       gamma: ${ .input.gamma // 12.0 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - predict-head:
@@ -116,7 +117,7 @@ do:
       tail: ${ .input.tail }
       limit: ${ .input.limit // 10 }
       gamma: ${ .input.gamma // 12.0 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - neighbors:
@@ -125,7 +126,7 @@ do:
       operation: neighbors
       entity: ${ .input.entity }
       limit: ${ .input.limit // 10 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - lookup:
@@ -136,7 +137,7 @@ do:
       relation: ${ .input.relation }
       tail: ${ .input.tail }
       limit: ${ .input.limit // 100 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - entities:
@@ -146,14 +147,14 @@ do:
       query: ${ .input.query }
       limit: ${ .input.limit // 100 }
       offset: ${ .input.offset // 0 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - relations:
     call: rotate
     with:
       operation: relations
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - stats:
@@ -162,12 +163,13 @@ do:
       operation: stats
       sample: ${ .input.sample // 2000 }
       max_edges: ${ .input.max_edges // 8000 }
-      _resource: a3t/a3t-kg-db
+      _resource: '${ .input.kg // "a3t/a3t-kg-db" }'
     then: end
 
 - from-semantic:
     set:
       _ns: '${ (.input.namespace // "a3t-usage") | tostring }'
+      _kg: '${ .input.kg // "a3t/a3t-kg-db" }'
       _res: '${ .input.resource // "a3t/adb" }'
       _lim: '${ .input.limit // 5000 }'
       _epochs: '${ .input.epochs // 300 }'
@@ -212,7 +214,7 @@ do:
       operation: ingest
       triples: '${ $context._triples }'
       dim: '${ $context._dim }'
-      _resource: a3t/a3t-kg-db
+      _resource: '${ $context._kg }'
     export:
       as: '${ $context + {_ingest: .} }'
 - from-semantic-train:
@@ -224,7 +226,7 @@ do:
       lr: '${ $context._lr }'
       gamma: '${ $context._gamma }'
       neg_samples: '${ $context._neg }'
-      _resource: a3t/a3t-kg-db
+      _resource: '${ $context._kg }'
     export:
       as: '${ $context + {_trained: .} }'
 - from-semantic-done:
