@@ -57,3 +57,7 @@
 
 /* A list of problems in a red note: readable, not footnote-grey. */
 .agt .note.bad .notes { margin-top: 4px; font-size: 12.5px; color: var(--text-1); gap: 2px; }
+
+/* Rows whose label is a long name (agents, tools): a wider label column. */
+.agt .rows.wide > li { grid-template-columns: minmax(150px, 34%) 1fr auto; }
+.agt .rows.wide .lbl { overflow-wrap: anywhere; }

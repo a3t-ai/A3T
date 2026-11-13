@@ -24,8 +24,11 @@
   import { onMount, tick, untrack } from 'svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
   import { namespacesFor, inContext, itemProject, getProject, isPlatform } from '$lib/stores/context.svelte.ts';
-  import { contextRev_ } from '$lib/stores/apps.svelte.ts';
+  import { contextRev_, bumpItems } from '$lib/stores/apps.svelte.ts';
   import * as YAML from 'yaml';
+  import '$lib/components/agent/agent.css';
+  import '$lib/components/triggers/triggers.css';
+  import { usedBy, type Use } from '$lib/components/resources/resourceUse';
 
   const canCreate = can('create', 'resource');
   const canUpdate = can('update', 'resource');
@@ -79,6 +82,24 @@
 
   // ── Detail panel ──
   let selected = $state<Resource | null>(null);
+  /// Who relies on the open resource (agents, canvases, triggers).
+  let uses = $state<Use[] | null>(null);
+  async function loadUses() { const r = selected; uses = null; if (!r || r.category === 'flows') return; const u = await usedBy(`${r.namespace}/${r.name}`); if (selected === r) uses = u; }
+  /// The last test of the open resource, this session: did it answer.
+  let lastTest = $state<{ ok: boolean; msg: string } | null>(null);
+  let showJson = $state(false);
+  let flowMsg = $state('');
+  /// The name typed to confirm a delete, and the delete in progress.
+  let delName = $state('');
+  let deleting = $state(false);
+  async function deleteSelected() {
+    if (!selected || delName !== selected.name) return;
+    deleting = true;
+    deleteTarget = { name: selected.name, namespace: selected.namespace };
+    await deleteResource();
+    deleting = false;
+    bumpItems();
+  }
   let panelTab = $state('overview');
   let testResult = $state('');
   let testing = $state(false);
@@ -120,6 +141,7 @@
     if (selected && selected.name === r.name && selected.namespace === r.namespace) {
       selected.config = cfg;
       llmCfg = { ...cfg };
+      cfgDraft = fieldsOf(cfg);
       cfgRev++;   // the saved config, for telling edits apart
     }
   }
@@ -190,8 +212,16 @@
     }
     llmCfg = cfg;
     await saveConfig();
-    if (cfgMsg === 'Saved') cfgEditing = false;
+    if (cfgMsg === 'Saved') { cfgEditing = false; cfgDraft = fieldsOf(cfg); }
   }
+  /// The field form differs from what is saved.
+  const cfgDirty = $derived(!!selected && JSON.stringify(cfgDraft) !== JSON.stringify(fieldsOf(selected.config ?? {})));
+  const llmDirty = $derived(!!selected && JSON.stringify(llmCfg) !== JSON.stringify(selected.config ?? {}));
+  /// Keys whose values are secret: shown as dots, typed as passwords.
+  const SECRET_KEY = /^(value|token|password|api_key|secret|client_secret|key)$/i;
+  let revealed = $state(false);
+  const FIELD_LABEL: Record<string, string> = { url: 'URL', transport: 'Transport', db_path: 'Database path', backend: 'Backend', flight_url: 'Flight URL', value: 'Value', labels: 'Labels', default: 'Default', external_url: 'External URL', tools: 'Tools', auth: 'Auth', oauth2: 'OAuth2', host: 'Host', port: 'Port', database: 'Database', user: 'User', password: 'Password' };
+  const fieldLabel = (k: string) => FIELD_LABEL[k] ?? k;
 
   async function saveConfig() {
     if (!selected) return;
@@ -225,6 +255,8 @@
   let mcpSelectedTool = $state('');
   let mcpToolArgs = $state('{}');
   let mcpToolResult = $state('');
+  /// The server was asked for its tools (so an empty list means it has none).
+  let mcpListed = $state(false);
 
   // ── Flow test state ──
   let flowInput = $state('{}');
@@ -269,7 +301,19 @@
     { id: 'review', label: 'Review & Create', hint: 'Check, then create' },
   ]);
   /// An existing resource's sections, numbered the same way (any step, any time).
-  const detailSteps = $derived(detailNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon })));
+  const detailSteps = $derived(detailNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: hintFor(n.id) })));
+  /// What each tab is for, for the kind of resource open.
+  function hintFor(tab: string): string {
+    const c = selected?.category ?? '';
+    if (c === 'flows') return ({ overview: 'Its name, project, version and what it does', definition: 'Its steps, as a graph and as YAML', test: 'Run it with an input and see what it gives', logs: 'Its recent runs, newest first' } as Record<string, string>)[tab] ?? '';
+    const what = c === 'llm' ? 'model' : c === 'mcp' ? 'tool server' : c === 'database' ? 'database' : c === 'credentials' ? 'secret' : 'resource';
+    return ({
+      overview: `What this ${what} is, whether it works, and who relies on it`,
+      config: c === 'llm' ? 'Where its calls go, which model, and the key it sends' : c === 'credentials' ? 'The value it holds — never shown unless you ask' : c === 'mcp' ? 'Where the server is and how to reach it' : 'How FlowR connects to it',
+      test: c === 'llm' ? 'Ask it something, as you' : c === 'mcp' ? 'Its tools, and a call to one' : c === 'database' ? 'Look inside it' : c === 'credentials' ? 'Check it resolves' : 'Read it back',
+      used: 'The agents, canvases and triggers that rely on it',
+    } as Record<string, string>)[tab] ?? '';
+  }
 
   const createTreeNodes = [
     { id: 'details', label: 'Details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
@@ -283,16 +327,16 @@
   const detailTreeNodes = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
     { id: 'config', label: 'Configuration', icon: '<path d="M8 1v4M8 11v4M1 8h4M11 8h4"/><circle cx="8" cy="8" r="3"/>' },
-    { id: 'test', label: 'Test / Execute', icon: '<polygon points="4,2 13,8 4,14"/>' },
-    { id: 'logs', label: 'Execution Logs', icon: '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/>' },
+    { id: 'test', label: 'Test', icon: '<polygon points="4,2 13,8 4,14"/>' },
+    { id: 'used', label: 'Used by', icon: '<circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="8" cy="12" r="2"/><path d="M5.5 5.5L7 10.5M10.5 5.5L9 10.5"/>' },
   ];
 
   // Flows: editable Overview form first, then Definition (graph + YAML)
   const flowDetailTreeNodes = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
     { id: 'definition', label: 'Definition', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>' },
-    { id: 'test', label: 'Test / Execute', icon: '<polygon points="4,2 13,8 4,14"/>' },
-    { id: 'logs', label: 'Execution Logs', icon: '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/>' },
+    { id: 'test', label: 'Run', icon: '<polygon points="4,2 13,8 4,14"/>' },
+    { id: 'logs', label: 'Runs', icon: '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/>' },
   ];
 
   let detailNodes = $derived(selected?.category === 'flows' ? flowDetailTreeNodes : detailTreeNodes);
@@ -421,9 +465,18 @@ do:
   async function saveFlow() {
     if (selected?.category !== 'flows' || !flowMeta.name) return;
     if (flowMetaDirty) syncMetaToYaml();
-    flowDeploying = true;
+    flowDeploying = true; flowMsg = '';
     try {
-      await mcpCall('create_flow', { yaml: flowYaml });
+      // Saved as its version; then made the active one. A version already saved
+      // is refused: raise the version to save a change (no silent no-op).
+      const c = await mcpCall('create_flow', { yaml: flowYaml });
+      if (!c.ok) {
+        const t = String(c.error ?? c.data ?? '');
+        flowMsg = /exist/i.test(t) ? `Version ${flowMeta.version} is already saved: raise the version to save this change.` : `Not saved: ${t.slice(0, 200)}`;
+        return;
+      }
+      const u = await mcpCall('update_flow', { namespace: flowMeta.namespace, name: flowMeta.name, version: flowMeta.version, enabled: true });
+      flowMsg = u.ok ? `Saved v${flowMeta.version}, now the active version.` : `Saved v${flowMeta.version}, but not made active: ${String(u.error ?? '').slice(0, 160)}`;
       flowDirty = false;
       flowMetaDirty = false;
       if (isNewFlow) {
@@ -534,8 +587,10 @@ do:
     panelTab = 'overview';
     resetTestState();
     cfgEditing = false;
+    // A test still running on the last one is not this one's.
+    lastTest = null; showJson = false; flowMsg = ''; testing = false; mcpListed = false; delName = '';
     if (r.category === 'flows') loadFlowDefinition(r);
-    else loadConfig(r);
+    else { loadConfig(r); void loadUses(); }
   }
 
   function pickKind(category: string) {
@@ -553,6 +608,8 @@ do:
   /// the form asks for the kind first.
   function openCreate(category: string) {
     if (category === 'flows') { newFlow(); return; }
+    // One panel at a time: a resource open in Details gives way to the new one.
+    selected = null;
     createForCategory = category;
     newResource = { name: '', namespace: getProject() || '', type: TYPES_BY_CATEGORY[category]?.[0]?.value ?? '', config: '{}' };
     createTab = 'details';
@@ -601,8 +658,10 @@ do:
       });
       const content = res.data?.content ?? res.data?.text ?? (typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
       llmMessages = [...llmMessages, { role: 'assistant', content }];
+      lastTest = res.ok && !/^error/i.test(String(content)) ? { ok: true, msg: 'It answered.' } : { ok: false, msg: String(res.error ?? content).slice(0, 200) };
     } catch (e: any) {
       llmMessages = [...llmMessages, { role: 'assistant', content: `Error: ${e.message ?? e}` }];
+      lastTest = { ok: false, msg: String(e.message ?? e) };
     } finally {
       testing = false;
     }
@@ -617,6 +676,7 @@ do:
       const input = { test_type: 'adb', resource: `${selected.namespace}/${selected.name}`, query: adbQuery.trim() };
       const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
       testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+      lastTest = res.ok ? { ok: true, msg: 'It answered AQL.' } : { ok: false, msg: String(res.error ?? 'failed') };
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
     } finally {
@@ -634,7 +694,8 @@ do:
       if (dbOperation === 'query' && dbQuery) input.filter = dbQuery;
       if (dbOperation === 'query' && dbQuery) input.table = dbQuery.split(' ')[0];
       const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
-      testResult = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+      testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+      lastTest = res.ok ? { ok: true, msg: 'It opened.' } : { ok: false, msg: String(res.error ?? 'failed') };
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
     } finally {
@@ -653,10 +714,13 @@ do:
         input: { test_type: 'mcp', resource: `${selected.namespace}/${selected.name}` }
       });
       const tools = res.data?.tools ?? res.data;
-      if (Array.isArray(tools)) {
+      if (res.ok && Array.isArray(tools)) {
         mcpTools = tools.map((t: any) => ({ name: t.name ?? '', description: t.description ?? '' }));
+        mcpListed = true;
+        lastTest = { ok: true, msg: `It lists ${mcpTools.length} tool${mcpTools.length === 1 ? '' : 's'}.` };
       } else {
-        testResult = typeof tools === 'string' ? tools : JSON.stringify(tools, null, 2);
+        testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof tools === 'string' ? tools : JSON.stringify(tools, null, 2);
+        lastTest = { ok: false, msg: String(res.error ?? testResult).slice(0, 200) };
       }
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
@@ -712,6 +776,8 @@ do:
       const config = res?.data?.config ?? {};
       secretConfig = config;
       testResult = '';
+      const v = config.value ?? config.token ?? config.api_key ?? config.password;
+      lastTest = v ? { ok: true, msg: 'It holds a value.' } : { ok: false, msg: 'It is empty.' };
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
     } finally {
@@ -773,7 +839,8 @@ do:
   };
 </script>
 
-<!-- Detail Slide Panel -->
+<!-- Detail: the agents' and triggers' frame — header and tabs (PropertiesTree),
+     each tab numbered cards (.agt) at the details width. -->
 <SlidePanel
   open={!!selected}
   onclose={closePanel}
@@ -781,6 +848,7 @@ do:
   onopenineditor={selected && !isNewFlow ? () => openInStudio(selected!.category === 'flows' ? 'flow' : selected!.type === 'canvas' ? 'canvas' : 'resource', selected!.namespace, selected!.name) : undefined}
 >
   {#if selected}
+    {@const what = selected.category === 'flows' ? 'Flow' : selected.category === 'llm' ? 'Model' : selected.category === 'mcp' ? 'Tool server' : selected.category === 'database' ? (isAdb(selected) ? 'ADB' : 'Database') : selected.category === 'credentials' ? 'Secret' : catMeta(selected.category).label.replace(/s$/, '')}
     <div class="panel-layout">
       <PropertiesTree
         icon={catMeta(selected.category).icon}
@@ -792,354 +860,281 @@ do:
         activeNode={panelTab}
         onselect={selectPanelTab}
       />
-      <div class="panel-content" class:panel-content-flush={panelTab === 'definition'}>
-        {#if panelTab === 'definition'}
-          {#if flowYamlLoading}
-            <!-- the header bar shows loading -->
+      <div class="panel-col">
+      <div class="panel-content"><div class="pf">
+        <WizardHead step={detailSteps.find((x) => x.id === panelTab)} />
+        <fieldset class="rs-fs" disabled={!$canUpdate && selected.category !== 'flows'}><section class="agt">
 
-          {:else if flowYaml}
-            <div class="flow-def-pane">
-              <FlowEditorPane initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} />
+        {#if panelTab === 'overview' && selected.category === 'flows'}
+          <div class="card">
+            <div class="card-head"><h3>1 · {isNewFlow ? 'New flow' : 'Flow'}</h3><span>its name, project, version and what it does</span></div>
+            <div class="fields">
+              <label class="fld">Name<input type="text" bind:value={flowMeta.name} oninput={() => flowMetaDirty = true} placeholder="flow_default_refund" /></label>
+              <label class="fld">Project<input type="text" bind:value={flowMeta.namespace} oninput={() => flowMetaDirty = true} /></label>
+              <label class="fld">Version <small>a change is saved as a new version</small><input type="text" bind:value={flowMeta.version} oninput={() => flowMetaDirty = true} /></label>
+              <label class="fld full">Description<textarea rows="3" bind:value={flowMeta.description} oninput={() => flowMetaDirty = true} placeholder="What it does"></textarea></label>
             </div>
-          {:else}
-            <div class="pf"><div class="pf-empty-state">No definition available for this flow.</div></div>
+            <div class="acts">
+              <button class="btn2 primary" disabled={flowDeploying || !flowMeta.name} onclick={saveFlow}>{flowDeploying ? (isNewFlow ? 'Creating…' : 'Saving…') : isNewFlow ? 'Create flow' : 'Save'}</button>
+              {#if isNewFlow}<button class="btn2 quiet" onclick={closePanel}>Cancel</button>{/if}
+              {#if flowMsg}<span class={/^Saved/.test(flowMsg) ? 'ok' : 'err'}>{flowMsg}</span>{/if}
+            </div>
+          </div>
+          {#if !isNewFlow}
+            <div class="card">
+              <div class="card-head"><h3>2 · Status</h3><span>its steps, and how to change and run it</span></div>
+              <ul class="rows">
+                <li><span class="lbl">Version</span><span class="val">{selected.description || `v${flowMeta.version}`}</span><button class="btn2" onclick={() => selectPanelTab('definition')}>Steps</button></li>
+                <li><span class="lbl">State</span><span class="val"><span class="dot" class:ok={selected.healthy}></span> {selected.healthy ? 'enabled' : 'disabled'}</span><span></span></li>
+                <li><span class="lbl">Runs</span><span class="val">run it with an input, or see its recent runs</span><button class="btn2" onclick={() => selectPanelTab('test')}>Run</button></li>
+              </ul>
+            </div>
           {/if}
 
-        {:else if panelTab === 'overview' && selected.category === 'flows'}
-          <div class="pf">
-            <h3>{isNewFlow ? 'New Flow' : 'Overview'}</h3>
-            <p class="pf-hint">Edit the flow's properties. The full step graph is in the Definition tab.</p>
-            <div class="pf-kv">
-              <label class="cf-field"><span>Name</span><input type="text" bind:value={flowMeta.name} oninput={() => flowMetaDirty = true} placeholder="my-flow" /></label>
-              <label class="cf-field"><span>Namespace</span><input type="text" bind:value={flowMeta.namespace} oninput={() => flowMetaDirty = true} /></label>
-              <label class="cf-field"><span>Version</span><input type="text" bind:value={flowMeta.version} oninput={() => flowMetaDirty = true} /></label>
-              <label class="cf-field full"><span>Description</span><textarea rows="3" bind:value={flowMeta.description} oninput={() => flowMetaDirty = true}></textarea></label>
-            </div>
-            <div class="create-actions">
-              {#if isNewFlow}
-                <button class="btn ghost" onclick={closePanel}>Cancel</button>
-                <button class="btn spec" disabled={flowDeploying || !flowMeta.name} onclick={saveFlow}>{flowDeploying ? 'Creating…' : 'Create Flow'}</button>
-              {:else}
-                <button class="btn spec" disabled={flowDeploying || !flowMeta.name} onclick={saveFlow}>{flowDeploying ? 'Saving…' : 'Save Changes'}</button>
-              {/if}
-            </div>
-          </div>
+        {:else if panelTab === 'definition'}
+          {#if flowYamlLoading}<p class="dim">Reading the flow…</p>
+          {:else if flowYaml}
+            <div class="def-pane"><FlowEditorPane initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} /></div>
+            <div class="acts"><button class="btn2 primary" disabled={flowDeploying || !flowDirty} onclick={saveFlow}>{flowDeploying ? 'Saving…' : 'Save'}</button>
+              <span class="dim">{flowDirty ? 'Changed — saved as v' + flowMeta.version + '.' : 'No changes.'}</span>
+              {#if flowMsg}<span class={/^Saved/.test(flowMsg) ? 'ok' : 'err'}>{flowMsg}</span>{/if}</div>
+          {:else}<div class="card"><p class="empty">No definition for this flow.</p></div>{/if}
 
-        {:else if panelTab === 'overview'}
-          <div class="pf">
-            <h3>Overview</h3>
-            <div class="pf-kv">
-              <div class="pf-row"><span class="pf-k">Name</span><span class="pf-v">{selected.name}</span></div>
-              <div class="pf-row"><span class="pf-k">Namespace</span><span class="pf-v">{selected.namespace}</span></div>
-              <div class="pf-row"><span class="pf-k">Type</span><span class="pf-v mono">{selected.type}</span></div>
-              <div class="pf-row"><span class="pf-k">Category</span><span class="pf-v">{catMeta(selected.category).label}</span></div>
-              {#if selected.description}
-                <div class="pf-row"><span class="pf-k">Description</span><span class="pf-v">{selected.description}</span></div>
-              {/if}
-              {#if selected.created_at}
-                <div class="pf-row"><span class="pf-k">Created</span><span class="pf-v">{new Date(selected.created_at).toLocaleString()}</span></div>
-              {/if}
-              {#if selected.created_by}
-                <div class="pf-row"><span class="pf-k">Created by</span><span class="pf-v">{selected.created_by}</span></div>
-              {/if}
-              {#if selected.tags.length > 0}
-                <div class="pf-row"><span class="pf-k">Tags</span><span class="pf-v">{selected.tags.join(', ')}</span></div>
-              {/if}
-            </div>
-          </div>
-
-        {:else if panelTab === 'config'}
-          <div class="pf">
-            <h3>Configuration</h3>
-            {#if selected.category === 'llm'}
-              <p class="pf-hint">Where this LLM's calls go. <strong>Endpoint</strong> is the API base URL the request is sent to.</p>
-              <label class="cf-field"><span>Endpoint (API URL)</span>
-                <input type="text" bind:value={llmCfg.api_url} placeholder="https://api.provider.com/v1" readonly={!$canUpdate} />
-              </label>
-              <label class="cf-field"><span>Model</span>
-                <input type="text" bind:value={llmCfg.model} placeholder="model-id" readonly={!$canUpdate} />
-              </label>
-              <div class="cf-grid2">
-                <label class="cf-field"><span>Provider</span><input type="text" bind:value={llmCfg.provider} placeholder="openai" readonly={!$canUpdate} /></label>
-                <label class="cf-field"><span>Max tokens</span><input type="number" bind:value={llmCfg.max_tokens} readonly={!$canUpdate} /></label>
-              </div>
-              <div class="cf-grid2">
-                <label class="cf-field"><span>Temperature</span><input type="number" step="0.1" bind:value={llmCfg.temperature} readonly={!$canUpdate} /></label>
-                <label class="cf-field"><span>API key source</span>
-                  <select value={llmCfg.api_key_ref != null ? 'secret' : 'inline'} onchange={(e) => setKeyMode(e.currentTarget.value)} disabled={!$canUpdate}>
-                    <option value="secret">Secret reference (recommended)</option>
-                    <option value="inline">Inline key</option>
-                  </select>
-                </label>
-              </div>
-              {#if llmCfg.api_key_ref != null}
-                <label class="cf-field"><span>Secret</span>
-                  <select bind:value={llmCfg.api_key_ref} disabled={!$canUpdate}>
-                    <option value="">— select a secret —</option>
-                    {#each secretRefs as s}<option value={s.ref}>{s.ref}</option>{/each}
-                    {#if llmCfg.api_key_ref && !secretRefs.some((s) => s.ref === llmCfg.api_key_ref)}<option value={llmCfg.api_key_ref}>{llmCfg.api_key_ref} (missing)</option>{/if}
-                  </select>
-                  <span class="pf-hint" style="margin:4px 0 0;">Points at a <strong>Secret</strong> resource (its <span class="mono">config.value</span> holds the key). Pick the same secret your working LLMs use (e.g. <span class="mono">openrouter-key</span>).</span>
-                </label>
-              {:else}
-                <label class="cf-field"><span>Inline key</span><input type="password" bind:value={llmCfg.api_key} placeholder="sk-…" readonly={!$canUpdate} /></label>
-              {/if}
-              {#if $canUpdate}
-                <div class="cfg-actions">
-                  <button class="btn spec sm" disabled={cfgSaving} onclick={saveConfig}>{cfgSaving ? 'Saving…' : 'Save'}</button>
-                  {#if cfgMsg}<span class="cfg-msg" class:ok={cfgMsg === 'Saved'}>{cfgMsg}</span>{/if}
-                </div>
-              {/if}
-              <details class="cfg-raw"><summary>Raw config JSON</summary><pre class="pf-code">{JSON.stringify(llmCfg, null, 2)}</pre></details>
-            {:else if cfgEditing}
-              <p class="pf-hint">Edit the configuration of <span class="mono">{selected.type}</span> resource {selected.namespace}/{selected.name}.</p>
-              <div class="cfg-edit">
-                {#each cfgDraft as f, i}
-                  <div class="cfg-edit-row">
-                    <input class="cfg-key mono" type="text" bind:value={f.key} placeholder="key" />
-                    {#if f.kind === 'boolean'}
-                      <select bind:value={f.value}><option value="true">true</option><option value="false">false</option></select>
-                    {:else if f.kind === 'json'}
-                      <textarea class="cfg-val mono" rows="4" bind:value={f.value}></textarea>
-                    {:else}
-                      <input class="cfg-val mono" type={selected.category === 'credentials' ? 'password' : 'text'} bind:value={f.value} placeholder="value" />
-                    {/if}
-                    <button class="btn ghost sm" title="Remove field" onclick={() => (cfgDraft = cfgDraft.filter((_, j) => j !== i))}>×</button>
-                  </div>
-                {/each}
-                <button class="btn ghost sm cfg-add" onclick={() => (cfgDraft = [...cfgDraft, { key: '', value: '', kind: 'string' }])}>+ Add field</button>
-              </div>
-              <div class="cfg-actions">
-                <button class="btn spec sm" disabled={cfgSaving} onclick={saveEdit}>{cfgSaving ? 'Saving…' : 'Save'}</button>
-                <button class="btn sm" disabled={cfgSaving} onclick={() => { cfgEditing = false; cfgMsg = ''; }}>Cancel</button>
-                {#if cfgMsg}<span class="cfg-msg" class:ok={cfgMsg === 'Saved'}>{cfgMsg}</span>{/if}
-              </div>
-            {:else}
-              <p class="pf-hint">Resource configuration.</p>
-              <div class="pf-kv">
-                <div class="pf-row"><span class="pf-k">Type Ref</span><span class="pf-v mono">{selected.type}</span></div>
-                <div class="pf-row"><span class="pf-k">Namespace</span><span class="pf-v mono">{selected.namespace}</span></div>
-                {#each Object.entries(selected.config ?? {}) as [k, v]}
-                  <div class="pf-row"><span class="pf-k">{k}</span><span class="pf-v mono">{selected.category === 'credentials' ? '••••••' : typeof v === 'object' ? JSON.stringify(v) : String(v)}</span></div>
-                {/each}
-              </div>
-              {#if !selected.config || Object.keys(selected.config).length === 0}<p class="pf-hint" style="margin-top:10px;">No config values.</p>{/if}
-              {#if $canUpdate}
-                <div class="cfg-actions">
-                  <button class="btn spec sm" onclick={startEdit}>Edit</button>
-                  {#if cfgMsg}<span class="cfg-msg" class:ok={cfgMsg === 'Saved'}>{cfgMsg}</span>{/if}
-                </div>
-              {/if}
-            {/if}
-          </div>
-
-        {:else if panelTab === 'test'}
-          <div class="pf">
-            {#if selected.category === 'llm'}
-              <!-- ── LLM: Chat test ── -->
-              <h3>Chat Test</h3>
-              <p class="pf-hint">Send a message to test the LLM connection.</p>
-              <div class="test-chat">
-                <div class="chat-messages">
-                  {#if llmMessages.length === 0}
-                    <div class="chat-empty">Send a message to test this LLM resource</div>
-                  {/if}
-                  {#each llmMessages as msg}
-                    <div class="chat-msg" class:chat-user={msg.role === 'user'} class:chat-assistant={msg.role === 'assistant'}>
-                      <span class="chat-role">{msg.role}</span>
-                      <div class="chat-content">{msg.content}</div>
-                    </div>
-                  {/each}
-                  {#if testing}
-                    <div class="chat-msg chat-assistant"><span class="chat-role">assistant</span><div class="chat-content chat-typing">Thinking...</div></div>
-                  {/if}
-                </div>
-                <div class="chat-input-row">
-                  <input type="text" class="chat-input" placeholder="Type a message..." bind:value={llmInput}
-                    onkeydown={(e) => { if (e.key === 'Enter' && !testing) testLlm(); }} disabled={testing} />
-                  <button class="btn spec sm" disabled={testing || !llmInput.trim()} onclick={testLlm}>Send</button>
-                </div>
-              </div>
-
-            {:else if isAdb(selected)}
-              <!-- ── ADB: AQL through the ADB driver ── -->
-              <h3>ADB Test</h3>
-              <p class="pf-hint">Run one AQL statement against this ADB server.</p>
-              <div class="test-db">
-                <label class="cf-field full">
-                  <span>AQL</span>
-                  <textarea class="mono" rows="3" bind:value={adbQuery}
-                    onkeydown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !testing) testAdb(); }}></textarea>
-                </label>
-                <button class="btn spec sm" disabled={testing || !adbQuery.trim()} onclick={testAdb}>
-                  {testing ? 'Running...' : 'Execute'}
-                </button>
-              </div>
-              {#if testResult}
-                <pre class="pf-code" style="margin-top: 12px;">{testResult}</pre>
-              {/if}
-
-            {:else if selected.category === 'database'}
-              <!-- ── Database: Connection + Query ── -->
-              <h3>Database Test</h3>
-              <p class="pf-hint">Test connectivity and run queries.</p>
-              <div class="test-db">
-                <label class="cf-field">
-                  <span>Operation</span>
-                  <select bind:value={dbOperation}>
-                    <option value="list_tables">List Tables</option>
-                    <option value="query">Query</option>
-                  </select>
-                </label>
-                {#if dbOperation === 'query'}
-                  <label class="cf-field full">
-                    <span>Table / Filter</span>
-                    <input type="text" bind:value={dbQuery} placeholder="table_name" />
-                  </label>
-                {/if}
-                <button class="btn spec sm" disabled={testing} onclick={testDb}>
-                  {testing ? 'Running...' : 'Execute'}
-                </button>
-              </div>
-              {#if testResult}
-                <pre class="pf-code" style="margin-top: 12px;">{testResult}</pre>
-              {/if}
-
-            {:else if selected.category === 'mcp'}
-              <!-- ── MCP: Tools list + call ── -->
-              <h3>MCP Server Test</h3>
-              <p class="pf-hint">Discover tools and test tool calls.</p>
-              <button class="btn spec sm" disabled={testing} onclick={testMcpListTools} style="margin-bottom: 16px;">
-                {testing && mcpTools.length === 0 ? 'Discovering...' : 'Discover Tools'}
-              </button>
-              {#if mcpTools.length > 0}
-                <div class="mcp-tools">
-                  <div class="mcp-tools-header">{mcpTools.length} tools available</div>
-                  {#each mcpTools as tool}
-                    <button class="mcp-tool-item" class:active={mcpSelectedTool === tool.name}
-                      onclick={() => { mcpSelectedTool = tool.name; mcpToolArgs = '{}'; mcpToolResult = ''; }}>
-                      <span class="mcp-tool-name">{tool.name}</span>
-                      <span class="mcp-tool-desc">{tool.description}</span>
-                    </button>
-                  {/each}
-                </div>
-                {#if mcpSelectedTool}
-                  <div class="mcp-call-section">
-                    <div class="mcp-call-header">Call: {mcpSelectedTool}</div>
-                    <label class="cf-field full">
-                      <span>Arguments (JSON)</span>
-                      <textarea rows="4" bind:value={mcpToolArgs}></textarea>
-                    </label>
-                    <button class="btn spec sm" disabled={testing} onclick={testMcpCallTool}>
-                      {testing ? 'Calling...' : 'Call Tool'}
-                    </button>
-                    {#if mcpToolResult}
-                      <pre class="pf-code" style="margin-top: 12px;">{mcpToolResult}</pre>
-                    {/if}
-                  </div>
-                {/if}
-              {/if}
-              {#if testResult}
-                <pre class="pf-code" style="margin-top: 12px;">{testResult}</pre>
-              {/if}
-
-            {:else if selected.category === 'credentials'}
-              <!-- ── Secret: Verify + masked display ── -->
-              <h3>Secret Verification</h3>
-              <p class="pf-hint">Verify the secret exists and inspect its masked value.</p>
-              <button class="btn spec sm" disabled={testing} onclick={testSecret} style="margin-bottom: 16px;">
-                {testing ? 'Verifying...' : 'Verify Secret'}
-              </button>
-              {#if secretConfig}
-                <div class="secret-display">
-                  {#each Object.entries(secretConfig) as [key, val]}
-                    <div class="pf-row">
-                      <span class="pf-k">{key}</span>
-                      <span class="pf-v mono">
-                        {#if key === 'value' || key === 'token' || key === 'password' || key === 'api_key'}
-                          {secretRevealed ? String(val) : maskValue(String(val))}
-                        {:else}
-                          {String(val)}
-                        {/if}
-                      </span>
-                    </div>
-                  {/each}
-                  <button class="btn ghost sm" style="margin-top: 12px;" onclick={() => secretRevealed = !secretRevealed}>
-                    {secretRevealed ? 'Hide Values' : 'Reveal Values'}
-                  </button>
-                </div>
-              {/if}
-              {#if testResult}
-                <pre class="pf-code" style="margin-top: 12px;">{testResult}</pre>
-              {/if}
-
-            {:else if selected.category === 'flows'}
-              <!-- ── Flow: Execute with input ── -->
-              <h3>Execute Flow</h3>
-              <p class="pf-hint">Run the workflow with custom input.</p>
-              <label class="cf-field full">
-                <span>Input (JSON)</span>
-                <textarea rows="6" bind:value={flowInput}></textarea>
-              </label>
-              <button class="btn spec sm" disabled={testing} onclick={testFlow} style="margin-top: 8px;">
-                {testing ? 'Running...' : 'Execute Flow'}
-              </button>
-              {#if testResult}
-                <pre class="pf-code" style="margin-top: 12px;">{testResult}</pre>
-              {/if}
-
-            {:else}
-              <!-- ── Generic fallback ── -->
-              <h3>Test / Execute</h3>
-              <p class="pf-hint">Test connectivity and inspect the resource state.</p>
-              <button class="btn spec sm" disabled={testing} onclick={testGeneric}>
-                {testing ? 'Testing...' : 'Run Test'}
-              </button>
-              {#if testResult}
-                <pre class="pf-code" style="margin-top: 12px;">{testResult}</pre>
-              {/if}
-            {/if}
+        {:else if panelTab === 'test' && selected.category === 'flows'}
+          <div class="card">
+            <div class="card-head"><h3>1 · Run it</h3><span>as you, with this input</span></div>
+            <label class="fld">Input <small>JSON</small><textarea rows="6" bind:value={flowInput} spellcheck="false"></textarea></label>
+            <div class="acts"><button class="btn2 primary" disabled={testing} onclick={testFlow}>{testing ? 'Running…' : 'Run'}</button>
+              <button class="link" onclick={() => selectPanelTab('logs')}>Its runs →</button></div>
+            {#if testResult}<pre class="code out">{testResult}</pre>{/if}
           </div>
 
         {:else if panelTab === 'logs' && selected.category === 'flows'}
-          <div class="pf">
-            <div class="logs-head">
-              <h3>Execution Logs</h3>
-              <button class="btn ghost sm" disabled={execLoading} onclick={() => loadExecutions(selected)}>Refresh</button>
-            </div>
-            <p class="pf-hint">Recent runs of this flow, newest first.</p>
-            {#if execLoading}
-              <!-- the header bar shows loading -->
-            {:else if flowExecutions.length === 0}
-              <div class="pf-empty-state">No executions yet. Run this flow from the Test tab.</div>
+          <div class="card">
+            <div class="card-head"><h3>1 · Recent runs</h3><span>up to 25</span><span class="grow"></span><button class="btn2 quiet rm" disabled={execLoading} onclick={() => loadExecutions(selected!)}>Refresh</button></div>
+            {#if execLoading}<p class="dim">Reading its runs…</p>
+            {:else if flowExecutions.length === 0}<p class="empty">No runs recorded. Run it from Run.</p>
             {:else}
-              <div class="exec-list">
-                {#each flowExecutions as e}
-                  <details class="exec-row">
-                    <summary class="exec-summary">
-                      <span class="exec-status {String(e.status).toLowerCase()}">{e.status}</span>
-                      <span class="exec-time">{e.started_at ? new Date(e.started_at).toLocaleString() : '—'}</span>
-                      <span class="exec-dur">{execDuration(e)}</span>
-                      <span class="exec-id mono">{String(e.instance_id ?? '').slice(0, 8)}</span>
-                    </summary>
-                    <div class="exec-detail">
-                      {#if e.error}<div class="exec-err">{e.error}</div>{/if}
-                      <div class="exec-kv"><span>Input</span><pre class="pf-code">{JSON.stringify(e.input ?? {}, null, 2)}</pre></div>
-                      {#if e.output != null}<div class="exec-kv"><span>Output</span><pre class="pf-code">{JSON.stringify(e.output, null, 2)}</pre></div>{/if}
-                    </div>
-                  </details>
+              <ul class="tl">
+                {#each flowExecutions as e (e.instance_id)}
+                  <li class="ev" class:err={/fail/i.test(String(e.status))}>
+                    <span class="ic"><span class="dot" class:ok={/complet/i.test(String(e.status))} class:err={/fail/i.test(String(e.status))} class:warn={/run/i.test(String(e.status))}></span></span>
+                    <details>
+                      <summary class="t">{e.status} · {execDuration(e)} <span class="m mono">{String(e.instance_id ?? '').slice(0, 8)}</span></summary>
+                      {#if e.error}<div class="m err">{e.error}</div>{/if}
+                      <div class="m">Input</div><pre class="code out">{JSON.stringify(e.input ?? {}, null, 2)}</pre>
+                      {#if e.output != null}<div class="m">Output</div><pre class="code out">{JSON.stringify(e.output, null, 2)}</pre>{/if}
+                    </details>
+                    <time>{e.started_at ? new Date(e.started_at).toLocaleString() : '—'}</time>
+                  </li>
                 {/each}
-              </div>
+              </ul>
             {/if}
           </div>
 
-        {:else if panelTab === 'logs'}
-          <div class="pf">
-            <h3>Execution Logs</h3>
-            <p class="pf-hint">Recent operations and events for this resource.</p>
-            <div class="pf-empty-state">No logs available yet</div>
+        {:else if panelTab === 'overview'}
+          {@const cfg = selected.config ?? {}}
+          <div class="card">
+            <div class="card-head"><h3>1 · {what}</h3><span>{catMeta(selected.category).label}</span></div>
+            <ul class="rows">
+              <li><span class="lbl">Name</span><span class="val">{selected.name}</span><span></span></li>
+              <li><span class="lbl">Project</span><span class="val">{selected.namespace}</span><span></span></li>
+              <li><span class="lbl">Type</span><span class="val mono">{selected.type}</span><span></span></li>
+              {#if selected.created_at}<li><span class="lbl">Created</span><span class="val">{new Date(selected.created_at).toLocaleString()}{selected.created_by ? ` · ${selected.created_by}` : ''}</span><span></span></li>{/if}
+              {#if selected.description}<li><span class="lbl">About</span><span class="val">{selected.description}</span><span></span></li>{/if}
+              {#if selected.tags.length}<li><span class="lbl">Tags</span><span class="val">{selected.tags.join(', ')}</span><span></span></li>{/if}
+            </ul>
+            {#if selected.type === 'canvas' || selected.type === 'runtime'}
+              <div class="note">A {selected.type} is managed in its own app.
+                <button class="link" onclick={() => navigateTo(selected!.type === 'canvas' ? 'canvas' : 'runtime', selected!.type === 'canvas' ? 'Canvas' : 'Runtime', selected!.type === 'canvas' ? { selectedId: selected!.name } : {})}>Open in {selected.type === 'canvas' ? 'Canvas' : 'Runtime'} →</button></div>
+            {/if}
           </div>
+          <div class="card">
+            <div class="card-head"><h3>2 · Status</h3><span>whether it works, and who relies on it</span></div>
+            <ul class="rows">
+              {#if selected.category === 'llm'}
+                <li><span class="lbl">Model</span><span class="val mono">{cfg.model ?? '—'}</span><button class="btn2" onclick={() => selectPanelTab('config')}>Change</button><span class="sub">{cfg.api_url ?? cfg.base_url ?? 'no endpoint set'}</span></li>
+                <li><span class="lbl">Key</span>
+                  <span class="val">{#if cfg.api_key_ref}<span class="dot" class:ok={secretRefs.some((s) => s.ref === cfg.api_key_ref)} class:err={!secretRefs.some((s) => s.ref === cfg.api_key_ref)}></span> secret <span class="mono">{cfg.api_key_ref}</span>{secretRefs.some((s) => s.ref === cfg.api_key_ref) ? '' : ' (missing)'}{:else if cfg.api_key}<span class="dot warn"></span> inline, in its configuration{:else}<span class="dot err"></span> none{/if}</span>
+                  <button class="btn2" onclick={() => selectPanelTab('config')}>Change</button>
+                  {#if cfg.api_key && !cfg.api_key_ref}<span class="sub">An inline key is stored with the resource: keep it in a Secret instead.</span>{/if}</li>
+              {:else if selected.category === 'mcp'}
+                <li><span class="lbl">Server</span><span class="val mono">{cfg.url ?? cfg.external_url ?? '—'}</span><button class="btn2" onclick={() => selectPanelTab('config')}>Change</button><span class="sub">{cfg.transport ?? 'http'}{cfg.auth || cfg.oauth2 ? ' · authenticated' : ''}</span></li>
+              {:else if selected.category === 'database'}
+                <li><span class="lbl">Where</span><span class="val mono">{cfg.url ?? cfg.db_path ?? cfg.host ?? '—'}</span><button class="btn2" onclick={() => selectPanelTab('config')}>Change</button>{#if cfg.flight_url || cfg.backend}<span class="sub">{[cfg.backend, cfg.flight_url].filter(Boolean).join(' · ')}</span>{/if}</li>
+              {:else if selected.category === 'credentials'}
+                <li><span class="lbl">Value</span><span class="val">{cfg.value || cfg.token || cfg.api_key ? 'set (hidden)' : 'empty'}</span><button class="btn2" onclick={() => selectPanelTab('config')}>Change</button></li>
+              {/if}
+              <li><span class="lbl">Works</span>
+                <span class="val">{#if lastTest}<span class="dot" class:ok={lastTest.ok} class:err={!lastTest.ok}></span> {lastTest.msg}{:else}<span class="dot"></span> not checked yet{/if}</span>
+                <button class="btn2" onclick={() => selectPanelTab('test')}>Test</button></li>
+              <li><span class="lbl">Used by</span>
+                <span class="val">{#if uses === null}…{:else if uses.length}{uses.filter((u) => u.kind === 'agent').length} agent{uses.filter((u) => u.kind === 'agent').length === 1 ? '' : 's'}, {uses.filter((u) => u.kind === 'canvas').length} canvas{uses.filter((u) => u.kind === 'canvas').length === 1 ? '' : 'es'}, {uses.filter((u) => u.kind === 'trigger').length} trigger{uses.filter((u) => u.kind === 'trigger').length === 1 ? '' : 's'}{:else}nothing{/if}</span>
+                <button class="btn2" onclick={() => selectPanelTab('used')}>See</button></li>
+            </ul>
+          </div>
+          {#if $canUpdate}
+            <div class="card">
+              <div class="card-head"><h3>3 · Delete</h3><span>remove it from the registry</span></div>
+              {#if uses?.length}<div class="note warn">{uses.length} thing{uses.length === 1 ? '' : 's'} rely on it: {uses.map((u) => u.name).join(', ')}. They stop working when it is gone.</div>{/if}
+              <!-- Confirmed here, in the card: a dialog would open behind the Details pane. -->
+              <div class="row"><input class="grow ask" type="text" bind:value={delName} placeholder="Type {selected.name} to delete it" autocomplete="off" />
+                <button class="btn2 danger" disabled={delName !== selected.name || deleting} onclick={deleteSelected}>{deleting ? 'Deleting…' : `Delete ${selected.name}`}</button></div>
+            </div>
+          {/if}
+
+        {:else if panelTab === 'config' && selected.category === 'llm'}
+          <div class="card">
+            <div class="card-head"><h3>1 · Endpoint</h3><span>where its calls go, and which model</span></div>
+            <div class="fields">
+              <label class="fld full">API URL <small>the base URL requests are sent to</small><input type="text" class="mono" bind:value={llmCfg.api_url} placeholder="https://api.provider.com/v1" /></label>
+              <label class="fld">Model<input type="text" class="mono" bind:value={llmCfg.model} placeholder="model-id" /></label>
+              <label class="fld">Provider <small>its API style</small><input type="text" bind:value={llmCfg.provider} placeholder="openai" /></label>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>2 · Key</h3><span>what it sends to the provider</span></div>
+            <div class="seg src" role="tablist">
+              <button role="tab" class:on={llmCfg.api_key_ref != null} onclick={() => setKeyMode('secret')}>From a secret</button>
+              <button role="tab" class:on={llmCfg.api_key_ref == null} onclick={() => setKeyMode('inline')}>Inline</button>
+            </div>
+            {#if llmCfg.api_key_ref != null}
+              <label class="fld">Secret <small>a Secret resource whose value is the key</small>
+                <select bind:value={llmCfg.api_key_ref}>
+                  <option value="">— pick a secret —</option>
+                  {#each secretRefs as s (s.ref)}<option value={s.ref}>{s.ref}</option>{/each}
+                  {#if llmCfg.api_key_ref && !secretRefs.some((s) => s.ref === llmCfg.api_key_ref)}<option value={llmCfg.api_key_ref}>{llmCfg.api_key_ref} (missing)</option>{/if}
+                </select></label>
+            {:else}
+              <label class="fld">Key<input type="password" bind:value={llmCfg.api_key} placeholder="sk-…" autocomplete="off" /></label>
+              <div class="note warn">An inline key is stored with this resource and shown to anyone who can read it. Keep it in a Secret and pick that instead.</div>
+            {/if}
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>3 · Defaults</h3><span>used when a call does not say</span></div>
+            <div class="fields">
+              <label class="fld">Max tokens<input type="number" bind:value={llmCfg.max_tokens} /></label>
+              <label class="fld">Temperature<input type="number" step="0.1" bind:value={llmCfg.temperature} /></label>
+            </div>
+          </div>
+          {#if $canUpdate}
+            <div class="acts"><button class="btn2 primary" disabled={cfgSaving || !llmDirty} onclick={saveConfig}>{cfgSaving ? 'Saving…' : 'Save'}</button>
+              <button class="btn2 quiet" disabled={cfgSaving || !llmDirty} onclick={() => (llmCfg = { ...(selected?.config ?? {}) })}>Discard</button>
+              {#if cfgMsg}<span class={cfgMsg === 'Saved' ? 'ok' : 'err'}>{cfgMsg}</span>{:else}<span class="dim">{llmDirty ? 'Not saved yet.' : ''}</span>{/if}
+              <span class="grow"></span><button class="link" onclick={() => (showJson = !showJson)}>{showJson ? 'Hide' : 'Show'} as JSON</button></div>
+            {#if showJson}<pre class="code">{JSON.stringify({ ...llmCfg, ...(llmCfg.api_key ? { api_key: '••••••' } : {}) }, null, 2)}</pre>{/if}
+          {/if}
+
+        {:else if panelTab === 'config'}
+          <div class="card">
+            <div class="card-head"><h3>1 · {selected.category === 'credentials' ? 'Value' : 'Settings'}</h3><span>{selected.category === 'credentials' ? 'hidden unless you show it' : `its ${selected.type} configuration`}</span>
+              {#if cfgDraft.some((f) => SECRET_KEY.test(f.key))}<span class="grow"></span><button class="btn2 quiet rm" onclick={() => (revealed = !revealed)}>{revealed ? 'Hide' : 'Show'} values</button>{/if}</div>
+            {#if selected.type === 'adb'}<p class="dim"><span class="mono">url</span> is its HTTP address (AQL, MCP at <span class="mono">/mcp/sse</span>); <span class="mono">call:adb</span> uses Arrow Flight on the same host, port 3001 — set <span class="mono">flight_url</span> only if it is elsewhere.</p>{/if}
+            {#if cfgDraft.length}
+              <div class="kvf">
+                {#each cfgDraft as f, i (i)}
+                  <label class="fld">{f.key ? fieldLabel(f.key) : 'New setting'}{#if f.key && fieldLabel(f.key).toLowerCase() !== f.key.toLowerCase()} <small class="mono">{f.key}</small>{/if}{#if f.kind === 'json'} <small>JSON</small>{/if}
+                    {#if !f.key}<input class="mono" type="text" bind:value={f.key} placeholder="key" />{/if}
+                    {#if f.kind === 'boolean'}<select bind:value={f.value}><option value="true">true</option><option value="false">false</option></select>
+                    {:else if f.kind === 'json'}<textarea rows="4" bind:value={f.value} spellcheck="false"></textarea>
+                    {:else}<input class="mono" type={SECRET_KEY.test(f.key) && !revealed ? 'password' : 'text'} bind:value={f.value} autocomplete="off" />{/if}
+                  </label>
+                  <button class="btn2 quiet" title="Remove {f.key}" onclick={() => (cfgDraft = cfgDraft.filter((_, j) => j !== i))}>Remove</button>
+                {/each}
+              </div>
+            {:else}<p class="empty">No settings.</p>{/if}
+            {#if $canUpdate}<div class="acts"><button class="btn2" onclick={() => (cfgDraft = [...cfgDraft, { key: '', value: '', kind: 'string' }])}>+ Add a setting</button></div>{/if}
+          </div>
+          {#if $canUpdate}
+            <div class="acts"><button class="btn2 primary" disabled={cfgSaving || !cfgDirty} onclick={saveEdit}>{cfgSaving ? 'Saving…' : 'Save'}</button>
+              <button class="btn2 quiet" disabled={cfgSaving || !cfgDirty} onclick={() => (cfgDraft = fieldsOf(selected?.config ?? {}))}>Discard</button>
+              {#if cfgMsg}<span class={cfgMsg === 'Saved' ? 'ok' : 'err'}>{cfgMsg}</span>{:else}<span class="dim">{cfgDirty ? 'Not saved yet.' : ''}</span>{/if}</div>
+          {/if}
+
+        {:else if panelTab === 'test'}
+          {#if selected.category === 'llm'}
+            <div class="card">
+              <div class="card-head"><h3>1 · Ask it</h3><span>as you, through flow_a3t_resource_test</span></div>
+              {#if llmMessages.length}
+                <ol class="msgs">{#each llmMessages as m, i (i)}<li class={m.role}><b>{m.role === 'user' ? 'You' : 'It'}</b><span>{m.content}</span></li>{/each}
+                  {#if testing}<li class="assistant"><b>It</b><span class="dim">…</span></li>{/if}</ol>
+              {/if}
+              <form class="row" onsubmit={(e) => { e.preventDefault(); if (!testing) testLlm(); }}>
+                <input class="grow ask" type="text" bind:value={llmInput} placeholder="Say something to it" disabled={testing} />
+                <button class="btn2 primary" type="submit" disabled={testing || !llmInput.trim()}>{testing ? 'Answering…' : 'Send'}</button>
+              </form>
+            </div>
+          {:else if isAdb(selected)}
+            <div class="card">
+              <div class="card-head"><h3>1 · Run AQL</h3><span>one statement against this ADB</span></div>
+              <label class="fld">AQL <small>Ctrl+Enter runs it</small><textarea rows="3" bind:value={adbQuery} spellcheck="false"
+                onkeydown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !testing) testAdb(); }}></textarea></label>
+              <div class="acts"><button class="btn2 primary" disabled={testing || !adbQuery.trim()} onclick={testAdb}>{testing ? 'Running…' : 'Run'}</button></div>
+              {#if testResult}<pre class="code out">{testResult}</pre>{/if}
+            </div>
+          {:else if selected.category === 'database'}
+            <div class="card">
+              <div class="card-head"><h3>1 · Look inside</h3><span>its tables, or one table's rows</span></div>
+              <div class="seg src" role="tablist">
+                <button role="tab" class:on={dbOperation === 'list_tables'} onclick={() => (dbOperation = 'list_tables')}>Tables</button>
+                <button role="tab" class:on={dbOperation === 'query'} onclick={() => (dbOperation = 'query')}>Rows of a table</button>
+              </div>
+              {#if dbOperation === 'query'}<label class="fld">Table<input type="text" class="mono" bind:value={dbQuery} placeholder="table_name" /></label>{/if}
+              <div class="acts"><button class="btn2 primary" disabled={testing} onclick={testDb}>{testing ? 'Running…' : 'Run'}</button></div>
+              {#if testResult}<pre class="code out">{testResult}</pre>{/if}
+            </div>
+          {:else if selected.category === 'mcp'}
+            <div class="card">
+              <div class="card-head"><h3>1 · Its tools</h3><span>{mcpListed ? `${mcpTools.length} listed` : 'ask the server what it offers'}</span></div>
+              <div class="acts"><button class="btn2 primary" disabled={testing} onclick={testMcpListTools}>{testing && !mcpTools.length ? 'Asking…' : mcpTools.length ? 'Ask again' : 'List its tools'}</button></div>
+              {#if mcpListed && !mcpTools.length}<div class="note warn">It answered, but lists no tools. If it should have some, check its URL in Configuration{selected.config?.url ? ` (now ${selected.config.url})` : ''}.</div>{/if}
+              {#if mcpTools.length}
+                <ul class="rows wide">{#each mcpTools as t (t.name)}<li><span class="lbl mono">{t.name}</span><span class="val">{t.description}</span>
+                  <button class="btn2" class:primary={mcpSelectedTool === t.name} onclick={() => { mcpSelectedTool = t.name; mcpToolArgs = '{}'; mcpToolResult = ''; }}>{mcpSelectedTool === t.name ? 'Picked' : 'Try'}</button></li>{/each}</ul>
+              {/if}
+              {#if testResult}<pre class="code out">{testResult}</pre>{/if}
+            </div>
+            {#if mcpSelectedTool}
+              <div class="card">
+                <div class="card-head"><h3>2 · Call {mcpSelectedTool}</h3><span>as you</span></div>
+                <label class="fld">Arguments <small>JSON</small><textarea rows="4" bind:value={mcpToolArgs} spellcheck="false"></textarea></label>
+                <div class="acts"><button class="btn2 primary" disabled={testing} onclick={testMcpCallTool}>{testing ? 'Calling…' : 'Call'}</button></div>
+                {#if mcpToolResult}<pre class="code out">{mcpToolResult}</pre>{/if}
+              </div>
+            {/if}
+          {:else if selected.category === 'credentials'}
+            <div class="card">
+              <div class="card-head"><h3>1 · Check it</h3><span>that it holds a value, masked</span></div>
+              <div class="acts"><button class="btn2 primary" disabled={testing} onclick={testSecret}>{testing ? 'Checking…' : 'Check'}</button>
+                {#if secretConfig}<button class="btn2 quiet" onclick={() => (secretRevealed = !secretRevealed)}>{secretRevealed ? 'Hide' : 'Show'} values</button>{/if}</div>
+              {#if secretConfig}
+                <ul class="rows">{#each Object.entries(secretConfig) as [k, v] (k)}<li><span class="lbl">{k}</span><span class="val mono">{SECRET_KEY.test(k) && !secretRevealed ? maskValue(String(v)) : String(v)}</span><span></span></li>{/each}</ul>
+              {/if}
+              {#if testResult}<pre class="code out">{testResult}</pre>{/if}
+            </div>
+          {:else}
+            <div class="card">
+              <div class="card-head"><h3>1 · Read it back</h3><span>what the registry holds</span></div>
+              <div class="acts"><button class="btn2 primary" disabled={testing} onclick={testGeneric}>{testing ? 'Reading…' : 'Read'}</button></div>
+              {#if testResult}<pre class="code out">{testResult}</pre>{/if}
+            </div>
+          {/if}
+
+        {:else if panelTab === 'used'}
+          {#each [['agent', 'Agents', 'their model, tool servers or memory'], ['canvas', 'Canvases', 'the deployments that depend on it'], ['trigger', 'Triggers', 'that read an ADB topic through it']] as [k, title, sub], i (k)}
+            <div class="card">
+              <div class="card-head"><h3>{i + 1} · {title}</h3><span>{sub}</span></div>
+              {#if uses === null}<p class="dim">Looking…</p>
+              {:else if uses.some((u) => u.kind === k)}
+                <ul class="rows wide">{#each uses.filter((u) => u.kind === k) as u (u.id)}<li><span class="lbl">{u.name}</span><span class="val">{u.how} <span class="dim">· {u.project}</span></span>
+                  <button class="btn2" onclick={() => navigateTo(k === 'agent' ? 'agents' : k === 'canvas' ? 'canvas' : 'triggers', title, { selectedId: k === 'canvas' ? u.name : u.id })}>Open</button></li>{/each}</ul>
+              {:else}<p class="empty">None.</p>{/if}
+            </div>
+          {/each}
         {/if}
+
+        </section></fieldset>
+      </div></div>
       </div>
     </div>
   {/if}
@@ -1170,58 +1165,51 @@ do:
     />
     <div class="panel-col">
     <div class="panel-content">
-      {#if createTab === 'details'}
-        <div class="pf">
-          <WizardHead step={createSteps.find((x) => x.id === createTab)} />
-          <div class="pf-kv">
-            <label class="cf-field"><span>Name</span><input type="text" bind:value={newResource.name} placeholder="my-resource" /></label>
-            <label class="cf-field"><span>Namespace</span>
-              <select bind:value={newResource.namespace}>
-                {#if !newResource.namespace}<option value="" disabled>Choose a project…</option>{/if}
-                {#each [...new Set([newResource.namespace, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}
-              </select>
-            </label>
-            <label class="cf-field"><span>Kind</span>
-              <select value={createForCategory} onchange={(e) => pickKind((e.currentTarget as HTMLSelectElement).value)}>
-                {#if !createForCategory}<option value="" disabled>Choose a kind…</option>{/if}
-                {#each Object.keys(TYPES_BY_CATEGORY) as c}<option value={c}>{catMeta(c).label}</option>{/each}
-              </select>
-            </label>
+      <div class="pf">
+        <WizardHead step={createSteps.find((x) => x.id === createTab)} />
+        <section class="agt">
+        {#if createTab === 'details'}
+          <div class="card">
+            <div class="card-head"><h3>1 · What it is</h3><span>its kind and type</span></div>
+            <div class="seg src kinds" role="tablist">
+              {#each Object.keys(TYPES_BY_CATEGORY) as c (c)}<button role="tab" class:on={createForCategory === c} onclick={() => pickKind(c)}>{catMeta(c).label}</button>{/each}
+            </div>
             {#if createForCategory}
-            <label class="cf-field"><span>Type</span>
-              <select bind:value={newResource.type}>
-                {#each (TYPES_BY_CATEGORY[createForCategory] ?? []) as t}
-                  <option value={t.value}>{t.label}</option>
-                {/each}
-              </select>
-            </label>
+              <div class="fields"><label class="fld">Type
+                <select bind:value={newResource.type}>{#each (TYPES_BY_CATEGORY[createForCategory] ?? []) as t (t.value)}<option value={t.value}>{t.label}</option>{/each}</select></label></div>
             {/if}
           </div>
-        </div>
-
-      {:else if createTab === 'config'}
-        <div class="pf">
-          <WizardHead step={createSteps.find((x) => x.id === createTab)} />
-          {#if newResource.type === 'adb'}
-            <p class="pf-hint">ADB: <code>url</code> is its HTTP address (AQL, MCP at <code>/mcp/sse</code>); <code>call:adb</code> uses Arrow Flight on the same host, port 3001 — set <code>flight_url</code> only if it is elsewhere.</p>
-          {/if}
-          <label class="cf-field full">
-            <span>Config (JSON)</span>
-            <textarea class="mono-area" rows="12" spellcheck="false" bind:value={newResource.config}></textarea>
-          </label>
-        </div>
-
-      {:else if createTab === 'review'}
-        <div class="pf">
-          <WizardHead step={createSteps.find((x) => x.id === createTab)} />
-          <div class="pf-kv">
-            <div class="pf-row"><span class="pf-k">Name</span><span class="pf-v">{newResource.name || '—'}</span></div>
-            <div class="pf-row"><span class="pf-k">Namespace</span><span class="pf-v">{newResource.namespace}</span></div>
-            <div class="pf-row"><span class="pf-k">Type</span><span class="pf-v mono">{newResource.type || '—'}</span></div>
+          <div class="card">
+            <div class="card-head"><h3>2 · Name</h3><span>how flows and agents refer to it: project/name</span></div>
+            <div class="fields">
+              <label class="fld">Name<input type="text" class="mono" bind:value={newResource.name} placeholder="my-resource" /></label>
+              <label class="fld">Project
+                <select bind:value={newResource.namespace}>
+                  {#if !newResource.namespace}<option value="" disabled>Choose a project…</option>{/if}
+                  {#each [...new Set([newResource.namespace, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}
+                </select></label>
+            </div>
           </div>
-          <pre class="pf-code" style="margin-top: 16px;">{newResource.config}</pre>
-        </div>
-      {/if}
+        {:else if createTab === 'config'}
+          <div class="card">
+            <div class="card-head"><h3>1 · Configuration</h3><span>how FlowR connects to it, as JSON — change it any time after</span></div>
+            {#if newResource.type === 'adb'}<p class="dim"><span class="mono">url</span> is its HTTP address (AQL, MCP at <span class="mono">/mcp/sse</span>); <span class="mono">call:adb</span> uses Arrow Flight on the same host, port 3001 — set <span class="mono">flight_url</span> only if it is elsewhere.</p>{/if}
+            {#if createForCategory === 'credentials'}<div class="note">Put the secret in <span class="mono">value</span>. It is shown masked from then on.</div>{/if}
+            <label class="fld">JSON<textarea rows="12" spellcheck="false" bind:value={newResource.config}></textarea></label>
+            {#if !configOk}<p class="err">Not valid JSON yet.</p>{/if}
+          </div>
+        {:else if createTab === 'review'}
+          <div class="card">
+            <div class="card-head"><h3>1 · Review</h3><span>what will be created</span></div>
+            <ul class="rows">
+              <li><span class="lbl">Name</span><span class="val mono">{newResource.namespace}/{newResource.name || '—'}</span><span></span></li>
+              <li><span class="lbl">Kind</span><span class="val">{createForCategory ? catMeta(createForCategory).label : '—'} · <span class="mono">{newResource.type || '—'}</span></span><span></span></li>
+            </ul>
+            <pre class="code">{createForCategory === 'credentials' ? newResource.config.replace(/("(?:value|token|password|api_key)"\s*:\s*")[^"]*"/g, '$1••••••"') : newResource.config}</pre>
+          </div>
+        {/if}
+        </section>
+      </div>
     </div>
     <WizardNav steps={createSteps} active={createTab} wizard onselect={(id) => { createTab = id; }}
       final={createResource} finalLabel="Create resource" finalBusy={creating} busyLabel="Creating…" />
@@ -1443,7 +1431,20 @@ do:
   .exec-err { font-size: 12px; color: var(--err, #d44); font-family: var(--font-mono); background: var(--err-bg, #fde8e8); padding: 8px 10px; border-radius: var(--r-sm); }
   .exec-kv { display: flex; flex-direction: column; gap: 3px; }
   .exec-kv > span { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-4); }
-  .pf { padding: 24px 32px; max-width: var(--detail-w); }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
+  .rs-fs { border: 0; margin: 0; padding: 0; min-width: 0; }
+  .def-pane { height: max(520px, calc(100vh - 340px)); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .def-pane > :global(*) { flex: 1; min-height: 0; }
+  /* Settings: each a labelled field with its Remove beside it. */
+  .kvf { display: grid; grid-template-columns: 1fr auto; gap: 10px 10px; align-items: end; }
+  /* Ask a model: the conversation, then the box. */
+  .msgs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .msgs li { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 8px; background: var(--bg-subtle); font-size: 13px; color: var(--text-1); white-space: pre-wrap; }
+  .msgs li.user { background: var(--spec-bg); }
+  .msgs b { font-size: 11.5px; color: var(--text-3); font-weight: 600; }
+  .ask { height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 13px var(--font-sans); color: var(--text-1); min-width: 0; }
+  .seg.kinds { flex-wrap: wrap; }
   .pf h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .pf-kv { display: flex; flex-direction: column; }
   .pf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }
