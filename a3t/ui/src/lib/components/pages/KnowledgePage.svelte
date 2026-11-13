@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import KGPointCloud from '$lib/components/editor/KGPointCloud.svelte';
-  import { knowledge, type Triple } from '$lib/services/a3t';
+  import { knowledge, agents as agentsApi, type Triple } from '$lib/services/a3t';
+  import { insight } from '$lib/components/agent/controlPlane';
+  import { openInStudio } from '$lib/stores/panels.svelte';
 
   // ── State ──
   let activeTab = $state<'graph' | 'vectors' | 'upload' | 'train'>('graph');
@@ -53,6 +55,47 @@
     }
   }
   onMount(loadGraph);
+
+  // ── Source: the facts live in a SEMANTIC space on ADB; the graph is built from it ──
+  const SPACES = [
+    { ns: 'a3t-docs', label: 'A3T documentation' },
+    { ns: 'a3t-usage', label: 'A3T usage' },
+  ];
+  let space = $state('a3t-docs');
+  let building = $state(false);
+  let buildMsg = $state('');
+  async function buildFromAdb() {
+    building = true; buildMsg = ''; errorMsg = '';
+    try {
+      const r: any = await knowledge.fromSemantic(space);
+      buildMsg = `${r?.facts ?? 0} facts from ${space}: ${r?.ingest?.ingested ?? 0} new triples` + (r?.trained ? ` · trained (MRR ${Number(r.trained.mrr ?? 0).toFixed(3)})` : '');
+      await loadGraph();
+      vectorsLoaded = false;
+    } catch (e: any) { buildMsg = ''; errorMsg = e?.message ?? String(e); }
+    finally { building = false; }
+  }
+  let agentList = $state<{ id: string; name: string }[]>([]);
+  let attachTo = $state('');
+  let attachMsg = $state('');
+  async function loadAgents() {
+    try {
+      const r: any = await agentsApi.list();
+      agentList = (Array.isArray(r) ? r : r?.rows ?? r?.agents ?? []).map((a: any) => ({ id: a.id, name: a.name ?? a.id }))
+        .filter((a: { id: string }) => a.id && !a.id.startsWith('agent_a3t_') && a.id !== 'agent_system_core');
+    } catch { agentList = []; }
+  }
+  onMount(loadAgents);
+  async function attach() {
+    if (!attachTo) return;
+    attachMsg = '';
+    const r = await insight.attach(attachTo, space);
+    attachMsg = r.ok ? `${space} attached to ${agentList.find((a) => a.id === attachTo)?.name ?? attachTo}: it recalls these facts each turn.` : (r.error ?? 'It could not be attached.');
+  }
+  function studio() {
+    const aql = `RECALL FROM SEMANTIC ALL NAMESPACE "${space}" LIMIT 100\n\n-- Change a fact, then Build from ADB again:\n-- UPDATE INTO SEMANTIC WHERE key = "<key>" (object = "…", confidence = 0.9) NAMESPACE "${space}"\n-- STORE INTO SEMANTIC (subject = "…", predicate = "…", object = "…") NAMESPACE "${space}"\n-- FORGET FROM SEMANTIC WHERE key = "<key>" NAMESPACE "${space}"`;
+    try { localStorage.setItem('a3t.studio.db.draft.a3t://a3t/resource/adb', JSON.stringify(aql)); } catch { /* private window */ }
+    openInStudio('resource', 'a3t', 'adb');
+  }
 
   // Relation names for the Quick-Add dropdown (falls back to a starter set when empty)
   let RELATION_TYPES = $derived(
@@ -289,6 +332,24 @@
     </div>
   </div>
 
+  <div class="kg-source">
+    <span class="src-label">Source</span>
+    <select bind:value={space} aria-label="Semantic space on ADB">
+      {#each SPACES as sp (sp.ns)}<option value={sp.ns}>{sp.label} · {sp.ns}</option>{/each}
+    </select>
+    <span class="src-dim">SEMANTIC space on ADB</span>
+    <button class="btn spec sm" onclick={buildFromAdb} disabled={building}>{building ? 'Building…' : 'Build from ADB'}</button>
+    <button class="btn ghost sm" onclick={studio} title="Open ADB in the Studio with this space as AQL">Edit with AQL in Studio →</button>
+    <span class="src-gap"></span>
+    <select bind:value={attachTo} aria-label="Agent to attach the space to">
+      <option value="">Attach to agent…</option>
+      {#each agentList as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
+    </select>
+    <button class="btn ghost sm" onclick={attach} disabled={!attachTo}>Attach</button>
+    {#if buildMsg}<span class="src-msg">{buildMsg}</span>{/if}
+    {#if attachMsg}<span class="src-msg">{attachMsg}</span>{/if}
+  </div>
+
   <div class="kg-body">
     {#if activeTab === 'graph'}
       <!-- ═══ 3D GRAPH TAB ═══ -->
@@ -333,7 +394,7 @@
           {:else if !loading && cloudPoints.length === 0}
             <div class="graph-empty">
               <p>No knowledge graph yet.</p>
-              <p class="detail-hint">Add ConceptNet triples in the <strong>Upload</strong> tab, then <strong>Train</strong> RotatE embeddings.</p>
+              <p class="detail-hint"><strong>Build from ADB</strong> above turns a semantic space's facts into the graph and trains RotatE, or add triples in <strong>Upload</strong> and <strong>Train</strong>.</p>
             </div>
           {/if}
 
@@ -569,6 +630,12 @@
 </div>
 
 <style>
+  .kg-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; }
+  .kg-source select { width: auto; min-width: 200px; max-width: 280px; height: 30px; padding: 0 28px 0 8px; font-size: 12.5px; line-height: 28px; flex: 0 0 auto; }
+  .src-label { font: 600 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-4); }
+  .src-dim { color: var(--text-3); }
+  .src-gap { flex: 1 1 auto; }
+  .src-msg { flex-basis: 100%; color: var(--text-2); }
   .kg-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 
   .screen-header { padding: 18px 32px 0; border-bottom: 1px solid var(--border); background: var(--bg-page); flex-shrink: 0; }

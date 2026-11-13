@@ -5,7 +5,7 @@
 // Flow input lands at `.` (not `.input`), so we pass { input: { action, ...data } }.
 // Auth context (org_id, user_id) is injected from the session store.
 
-import { flows, plainError } from './api';
+import { execFlow, plainError } from './api';
 import { getSession } from '$lib/stores/auth';
 
 // ── Helpers ──
@@ -23,30 +23,14 @@ function genId(prefix: string) {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+/// Run an A3T flow through the one path the app uses (execFlow): a platform flow
+/// is called as its A3T agent's tool, which answers with the output itself. This
+/// used to poll get_execution_status and JSON.parse its answer, which is text
+/// ("Execution … status …"), so every call failed with "Unexpected token 'E'".
 async function exec(flowName: string, input: Record<string, any>) {
-  const res = await flows.execute(flowName, 'a3t', input);
-  console.log(`[a3t] exec ${flowName}:`, res);
-  if (!res.ok) throw new Error(plainError(res.error ?? `Flow ${flowName} failed`));
-
-  // execute_flow returns async — extract instance_id and poll for completion
-  const text = typeof res.data === 'string' ? res.data : res.data?.text ?? '';
-  const idMatch = typeof text === 'string' ? text.match(/Instance ID:\s*`?([0-9a-f-]+)`?/) : null;
-  const instanceId = idMatch?.[1] ?? res.data?.instance_id;
-
-  if (!instanceId) {
-    return res.data;
-  }
-
-  // Poll for completion (max 15s)
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 500));
-    const status = await flows.status(instanceId);
-    if (!status.ok) continue;
-    const d = typeof status.data === 'string' ? JSON.parse(status.data) : status.data;
-    if (d?.status === 'completed' || d?.status === 'Completed') return d?.output ?? d;
-    if (d?.status === 'failed' || d?.status === 'Failed') throw new Error(plainError(d?.error ?? 'Flow failed'));
-  }
-  throw new Error(`Flow ${flowName} timed out`);
+  const r = await execFlow(flowName, 'a3t', input, { silent: true, maxPolls: 120 });
+  if (!r.ok) throw new Error(plainError(r.error ?? `Flow ${flowName} failed`));
+  return r.data;
 }
 
 // ── Templates ──
@@ -258,6 +242,11 @@ export const knowledge = {
   /** Relation list with per-relation triple counts. */
   async relations() {
     return exec('flow_a3t_knowledge', { input: { action: 'relations' } });
+  },
+
+  /** Build the graph from a SEMANTIC space on ADB (subject → predicate → object facts), then train RotatE. */
+  async fromSemantic(namespace: string, opts: { epochs?: number; train?: boolean } = {}) {
+    return exec('flow_a3t_knowledge', { input: { action: 'from_semantic', namespace, ...opts } });
   },
 
   /** Graph summary + 3D projection of entities + edges (3D Graph tab). */
