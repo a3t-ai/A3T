@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: tmpl_a3t_service
-  version: '1.0.0'
+  version: '1.0.1'
   metadata:
     description: >
       The template of A3T's own control-plane agents (agent_a3t_agents,
@@ -16,7 +16,7 @@ document:
 
 metadata:
   a3t:
-    extends: system/tmpl_system_agent_engine@2.1.0
+    extends: system/tmpl_system_agent_engine@2.2.0
 
 do:
   - service:

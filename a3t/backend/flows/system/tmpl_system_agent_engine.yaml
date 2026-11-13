@@ -2,11 +2,11 @@ document:
   dsl: '1.0.3'
   namespace: system
   name: tmpl_system_agent_engine
-  version: '2.1.0'
+  version: '2.2.0'
   metadata:
     description: >
       The core agent. Every A3T agent runs through it: an A3T agent flow declares
-      metadata.a3t.extends: system/tmpl_system_agent_engine@2.1.0 and runs this flow with its own
+      metadata.a3t.extends: system/tmpl_system_agent_engine@2.2.0 and runs this flow with its own
       config. Each turn it (1) recalls reference knowledge from SEMANTIC memory
       (FlowR docs, namespace system-knowledge), (2) recalls the tools that fit the
       request from its tool catalogue in PROCEDURAL memory (namespace system-tools),
@@ -49,7 +49,7 @@ do:
                 semantic: {read: true},
                 procedural: {read: false}
               },
-              knowledge: {enabled: true, namespace: "system-knowledge", limit: 4, max_chars: 600},
+              knowledge: {enabled: true, namespace: "system-knowledge", attached: [], limit: 4, max_chars: 600},
               tool_catalogue: {enabled: true, namespace: "system-tools", limit: 6}
             } * (.config // {}) }
       export:
@@ -74,15 +74,22 @@ do:
       if: '${ $context._cfg.knowledge.enabled == true and $context._k_res != null and ($context._ask | length) > 0 }'
       try:
         do:
+          # The shared knowledge, then each semantic space attached to the agent
+          # (its variables.semantic_spaces): the best few of each.
           - knowledge_query:
-              call: adb
-              with:
-                query: '${ "RECALL FROM SEMANTIC LIKE $q NAMESPACE \"" + $context._cfg.knowledge.namespace + "\" LIMIT " + ($context._cfg.knowledge.limit | tostring) }'
-                variables:
-                  q: '${ $context._ask }'
-                _resource: '${ $context._k_res }'
-              export:
-                as: '${ $context + {_knowledge: ((.data.records // .data.data.records // .records // []) | map(.data))} }'
+              for:
+                each: _kns
+                in: '${ [$context._cfg.knowledge.namespace] + (($context._cfg.knowledge.attached // []) | map(tostring)) | map(select(. != "")) | unique }'
+                do:
+                  - knowledge_one:
+                      call: adb
+                      with:
+                        query: '${ "RECALL FROM SEMANTIC LIKE $q NAMESPACE \"" + $_kns + "\" LIMIT " + ($context._cfg.knowledge.limit | tostring) }'
+                        variables:
+                          q: '${ $context._ask }'
+                        _resource: '${ $context._k_res }'
+                      export:
+                        as: '${ $context + {_knowledge: ($context._knowledge + ((.data.records // .data.data.records // .records // []) | map(.data)))} }'
         catch:
           do:
             - knowledge_failed:
@@ -93,7 +100,7 @@ do:
                     input:
                       error: '${ $context.error }'
                       flow: system/tmpl_system_agent_engine
-                      version: 2.1.0
+                      version: 2.2.0
                       run_id: '${ $context._run }'
                       principal: '${ $context._who }'
                       step: recall_knowledge
@@ -124,7 +131,7 @@ do:
                     input:
                       error: '${ $context.error }'
                       flow: system/tmpl_system_agent_engine
-                      version: 2.1.0
+                      version: 2.2.0
                       run_id: '${ $context._run }'
                       principal: '${ $context._who }'
                       step: recall_tools
@@ -204,7 +211,7 @@ do:
                     input:
                       error: '${ $context.error }'
                       flow: system/tmpl_system_agent_engine
-                      version: 2.1.0
+                      version: 2.2.0
                       run_id: '${ $context._run }'
                       principal: '${ $context._who }'
                       step: log_turn

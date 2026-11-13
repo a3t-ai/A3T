@@ -13,7 +13,7 @@
  *   - a turn: the prompt carries the agent's instructions, the relevant doc section
  *     and the fitting tools; WORKING and EPISODIC memory are written; one
  *     a3t_agent_turns row;
- *   - a child agent (extends system/tmpl_system_agent_engine@2.1.0) inherits the base's error
+ *   - a child agent (extends system/tmpl_system_agent_engine@2.2.0) inherits the base's error
  *     handler and runs through the core;
  *   - degraded: knowledge on an unreachable ADB → the turn still answers, one
  *     a3t_errors row for step recall_knowledge;
@@ -173,7 +173,7 @@ do:
   await must('create_flow', { yaml: `document: { dsl: '1.0.3', namespace: a3t, name: core-test-agent, version: '1.0.0' }
 metadata:
   a3t:
-    extends: system/tmpl_system_agent_engine@2.1.0
+    extends: system/tmpl_system_agent_engine@2.2.0
 do:
   - agent:
       run:

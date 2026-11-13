@@ -2,12 +2,12 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: tmpl_a3t_agent
-  version: '4.4.0'
+  version: '4.5.0'
   metadata:
     description: >
       A3T chat: every message from the console's AI Chat and from an agent's Chat
       tab (POST /chat) runs here. It is an A3T agent on the core agent: it extends
-      system/tmpl_system_agent_engine@2.1.0 and runs it with the agent's own values, read from
+      system/tmpl_system_agent_engine@2.2.0 and runs it with the agent's own values, read from
       the agent's record (agent_configs; the session id is <agent-id>:<session>).
       A session with no agent is the A3T assistant. What the request carries wins
       over the record (llm_resource, enabled_tools, mcp_servers), as the Chat tab
@@ -17,7 +17,7 @@ document:
 
 metadata:
   a3t:
-    extends: system/tmpl_system_agent_engine@2.1.0
+    extends: system/tmpl_system_agent_engine@2.2.0
 
 do:
   - who:
@@ -56,7 +56,7 @@ do:
                     input:
                       error: '${ $context.error }'
                       flow: a3t/tmpl_a3t_agent
-                      version: 4.4.0
+                      version: 4.5.0
                       run_id: '${ (($workflow // {}).id // "") | tostring }'
                       principal: '${ (($context._principal // {}).user // "") | tostring }'
                       step: load_agent
@@ -118,6 +118,7 @@ do:
             + (if (($context._vars.hooks // {}) | type) == "object" and (($context._vars.hooks // {}) | length) > 0
                then {hooks: ($context._vars.hooks | with_entries(.value |= ((. // []) | map(tostring) | map(select(contains("/"))))))} else {} end)
             + (if (($context._vars.tool_flows // {}) | length) > 0 then {tool_flows: $context._vars.tool_flows} else {} end)
+            + (if (($context._vars.semantic_spaces // []) | length) > 0 then {knowledge: {attached: ($context._vars.semantic_spaces | map(tostring))}} else {} end)
             + (if ($context._in | has("enabled_tools")) then {enabled_tools: $context._in.enabled_tools}
                elif ($context._vars.enabled_tools != null) then {enabled_tools: $context._vars.enabled_tools}
                else {} end)

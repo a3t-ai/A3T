@@ -91,7 +91,7 @@ memory_config:
   episodic:   {read: true, write: true}
   semantic:   {read: true}          # reflect: true writes facts after each turn
   procedural: {read: false}         # learned procedures; off until CA-R6
-knowledge:      {enabled: true, namespace: system-knowledge, limit: 4, max_chars: 600}   # resource: defaults to memory_resource
+knowledge:      {enabled: true, namespace: system-knowledge, attached: [], limit: 4, max_chars: 600}   # attached: the agent's semantic_spaces; resource: defaults to memory_resource
 tool_catalogue: {enabled: true, namespace: system-tools, limit: 6}                       # resource: defaults to memory_resource
 ```
 
@@ -106,7 +106,7 @@ An A3T agent is a short flow. It extends the core and runs it with its own confi
 document: { dsl: '1.0.3', namespace: my-project, name: release-checker, version: '1.0.0' }
 metadata:
   a3t:
-    extends: system/tmpl_system_agent_engine@2.1.0     # the core's base: error handler, locks
+    extends: system/tmpl_system_agent_engine@2.2.0     # the core's base: error handler, locks
 do:
   - agent:
       run:

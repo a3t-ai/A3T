@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.3.2'
+  version: '1.4.0'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -15,7 +15,11 @@ document:
       through ADB), evolve (a fork that can't merge becomes its own agent), shares,
       share, unshare, shared_with (agents shared with a namespace, and public ones),
       block and unblock (its data plane refuses calls while blocked), turns and
-      memory (its own figures). Changes (share, unshare, block, unblock) are
+      memory (its own figures, and the semantic spaces attached to it), memory_put
+      and memory_forget (edit one entry of its memory, in its own space or an
+      attached one), memory_attach and memory_detach (a semantic space it also
+      knows; the core recalls from it each turn). Changes (share, unshare, block,
+      unblock, memory edits, attach, detach) are
       written to its history (agent_events).
       Memory copies with history (fork, branch, promote) stay FlowR's REST routes
       under /agents/{id}; this flow records the relation. See
@@ -53,6 +57,8 @@ do:
         - turns: { when: '${ $context._in.action == "turns" }', then: turns }
         - memory: { when: '${ $context._in.action == "memory" }', then: memory_space }
         - block: { when: '${ $context._in.action == "block" or $context._in.action == "unblock" }', then: block }
+        - memory_edit: { when: '${ $context._in.action == "memory_put" or $context._in.action == "memory_forget" }', then: mem_scope }
+        - memory_attach: { when: '${ $context._in.action == "memory_attach" or $context._in.action == "memory_detach" }', then: mem_scope }
         - unknown: { then: unknown }
 
   - unknown:
@@ -61,7 +67,7 @@ do:
           type: https://a3t.io/errors/input
           status: 400
           title: Unknown action
-          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with, forget, turns, memory, block or unblock." }'
+          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with, forget, turns, memory, memory_put, memory_forget, memory_attach, memory_detach, block or unblock." }'
 
   # ═══ create ════════════════════════════════════════════════════════════════
   # { action: create, from: {kind: template|agent, id, version?}, mode?: template | inherit|clone|fork,
@@ -222,7 +228,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.3.2
+                    version: 1.4.0
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: create_space
@@ -249,7 +255,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.3.2
+                    version: 1.4.0
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: create_key
@@ -838,6 +844,56 @@ do:
                           _mem: '${ $context._mem + {($_type | ascii_downcase): []} }'
                         export:
                           as: '${ $context + . }'
+  # The semantic spaces attached to it (variables.semantic_spaces), each read whole.
+  - memory_cfg:
+      try:
+        do:
+          - cfg_row:
+              call: lancedb
+              with:
+                operation: query
+                table: agent_configs
+                filter: '${ "id = ''" + ($context._in.id // "") + "''" }'
+                limit: 1
+                _resource: a3t/a3t-platform-db
+              export:
+                as: >-
+                  ${ $context + {_attached: ((if type == "array" then . else [] end) | .[0] // {} | (.variables // "{}")
+                     | (if type == "string" then (try fromjson catch {}) else . end) | (.semantic_spaces // []) | map(tostring)), _att: []} }
+      catch:
+        do:
+          - no_cfg:
+              set:
+                _attached: []
+                _att: []
+              export:
+                as: '${ $context + . }'
+  - memory_attached:
+      for:
+        each: _sp
+        in: '${ $context._attached }'
+        do:
+          - one_space:
+              try:
+                do:
+                  - recall_space:
+                      call: adb
+                      with:
+                        query: '${ "RECALL FROM SEMANTIC ALL NAMESPACE \"" + $_sp + "\" LIMIT " + ($context._lim | tostring) }'
+                        _resource: '${ $context._in.memory_resource // "a3t/adb" }'
+                      export:
+                        as: >-
+                          ${ $context + {_att: ($context._att + [{namespace: $_sp, entries:
+                             ((.data.records // .data.data.records // .records // [])
+                              | map({key: (.key // .data.key // null), at: (.metadata.created_at // .created_at // null), data: (.data // {})})
+                              | sort_by(.at // "") | reverse)}])} }
+                catch:
+                  do:
+                    - space_failed:
+                        set:
+                          _att: '${ $context._att + [{namespace: $_sp, entries: [], error: ($context.error.detail // $context.error.title // "could not be read")}] }'
+                        export:
+                          as: '${ $context + . }'
   - memory_done:
       set:
         ok: true
@@ -845,7 +901,184 @@ do:
         namespace: '${ $context._ns }'
         counts: '${ $context._mem | with_entries(.value |= length) }'
         memory: '${ $context._mem }'
+        attached: '${ $context._att }'
       then: end
+
+  # ═══ memory edits and attached spaces ══════════════════════════════════════
+  # { action: memory_put, id, type, key?, data, namespace? }: with a key, UPDATE
+  #   sets the fields given on that entry; without one, STORE makes a new entry.
+  # { action: memory_forget, id, type, key, namespace? }: FORGET that entry.
+  # { action: memory_attach | memory_detach, id, namespace }: a semantic space the
+  #   agent also knows (variables.semantic_spaces). A system-* space or another
+  #   agent's own space can't be attached.
+  # Edits go only to its own space or a space attached to it.
+  - mem_scope:
+      if: '${ ($context._in.id // "") == "" }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't change its memory
+          detail: '${ ($context._in.action) + " needs the agent''s id." }'
+  - mem_row:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "id = ''" + $context._in.id + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+      export:
+        as: '${ $context + {_row: ((if type == "array" then . else [] end) | .[0] // null)} }'
+  - mem_found:
+      if: '${ $context._row == null }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 404
+          title: No such agent
+          detail: '${ "There is no agent " + $context._in.id + "." }'
+  - mem_space:
+      try:
+        do:
+          - mem_space_row:
+              call: lancedb
+              with:
+                operation: query
+                table: agent_memory
+                filter: '${ "agent_id = ''" + $context._in.id + "''" }'
+                limit: 1
+                _resource: a3t/a3t-platform-db
+              export:
+                as: '${ $context + {_space: ((if type == "array" then . else [] end) | .[0] // {} | .namespace // null)} }'
+      catch:
+        do:
+          - mem_no_space:
+              set:
+                _space: null
+              export:
+                as: '${ $context + . }'
+  - mem_vars:
+      set:
+        _vars: '${ ($context._row.variables // "{}") | if type == "string" then (try fromjson catch {}) // {} else . end }'
+        _own: '${ $context._space // $context._in.id }'
+      export:
+        as: '${ $context + . + {_attached: ((.["_vars"].semantic_spaces // []) | map(tostring))} }'
+  - mem_which:
+      switch:
+        - put: { when: '${ $context._in.action == "memory_put" or $context._in.action == "memory_forget" }', then: mem_check }
+        - attach: { when: '${ $context._in.action == "memory_attach" or $context._in.action == "memory_detach" }', then: att_check }
+
+  - mem_check:
+      set:
+        _ns: '${ ($context._in.namespace // $context._own) | tostring }'
+        _type: '${ ($context._in.type // "") | tostring | ascii_upcase }'
+        _key: '${ $context._in.key // null }'
+      export:
+        as: '${ $context + . }'
+  - mem_check_type:
+      if: '${ ["WORKING", "EPISODIC", "SEMANTIC", "PROCEDURAL"] | index($context._type) | not }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Which memory?
+          detail: 'type is one of working, episodic, semantic or procedural.'
+  - mem_check_ns:
+      if: '${ ([$context._own] + $context._attached) | index($context._ns) | not }'
+      raise:
+        error:
+          type: https://a3t.io/errors/forbidden
+          status: 403
+          title: Not its memory
+          detail: '${ $context._ns + " is neither this agent''s own space nor a space attached to it." }'
+  - mem_check_input:
+      if: '${ ($context._in.action == "memory_forget" and ($context._key // "") == "") or ($context._in.action == "memory_put" and (($context._in.data // null) | type) != "object") }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't change its memory
+          detail: 'memory_put needs data (an object of fields), and a key to change an entry; memory_forget needs the key.'
+  - mem_write:
+      call: adb
+      with:
+        query: >-
+          ${ def q: "\"" + (if type == "string" then . else tojson end | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"") | gsub("\n"; "\\n")) + "\"";
+          def v: if type == "number" or type == "boolean" then tostring elif type == "array" then "[" + (map(q) | join(", ")) + "]" else q end;
+          ($context._in.data // {} | del(.key, .id) | to_entries | map(select(.value != null)) | map(.key + " = " + (.value | v)) | join(", ")) as $f
+          | if $context._in.action == "memory_forget" then "FORGET FROM " + $context._type + " WHERE key = " + ($context._key | q) + " NAMESPACE " + ($context._ns | q)
+            elif ($context._key // "") != "" then "UPDATE INTO " + $context._type + " WHERE key = " + ($context._key | q) + " (" + $f + ") NAMESPACE " + ($context._ns | q)
+            else "STORE INTO " + $context._type + " (key = " + (($context._type | ascii_downcase) + "-" + ((now * 1000) | floor | tostring) | q) + (if $f == "" then "" else ", " + $f end) + ") NAMESPACE " + ($context._ns | q) end }
+        _resource: '${ $context._in.memory_resource // "a3t/adb" }'
+  - mem_done:
+      set:
+        _out: '${ {ok: true, id: $context._in.id, namespace: $context._ns, type: ($context._type | ascii_downcase), key: $context._key, op: (if $context._in.action == "memory_forget" then "forget" elif ($context._key // "") != "" then "update" else "store" end)} }'
+        _ev: '${ {type: (if $context._in.action == "memory_forget" then "memory_forgotten" else "memory_edited" end), payload: {namespace: $context._ns, type: ($context._type | ascii_downcase), key: $context._key}} }'
+      export:
+        as: '${ $context + . }'
+      then: note_event
+
+  - att_check:
+      set:
+        _sp: '${ ($context._in.namespace // "") | tostring }'
+      export:
+        as: '${ $context + . }'
+  - att_check_name:
+      if: '${ ($context._sp | test("^[a-z0-9][a-z0-9._-]{1,62}$") | not) or ($context._sp | startswith("system-")) or $context._sp == $context._own }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't attach that space
+          detail: '${ "A semantic space name is lower case letters, digits, . _ - (2 to 63), not a system-* space and not its own space: " + $context._sp }'
+  - att_other:
+      if: '${ $context._in.action == "memory_attach" }'
+      call: lancedb
+      with:
+        operation: query
+        table: agent_memory
+        filter: '${ "namespace = ''" + $context._sp + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_taken: ((if type == "array" then . else [] end) | .[0] // null | if . == null then null else .agent_id end)} }'
+  - att_other_check:
+      if: '${ $context._in.action == "memory_attach" and ($context._taken // null) != null and $context._taken != $context._in.id }'
+      raise:
+        error:
+          type: https://a3t.io/errors/forbidden
+          status: 403
+          title: Can't attach that space
+          detail: '${ $context._sp + " is the own memory space of agent " + $context._taken + "." }'
+  - att_set:
+      call: lancedb
+      with:
+        operation: update
+        table: agent_configs
+        filter: '${ "id = ''" + $context._in.id + "''" }'
+        values:
+          variables: >-
+            ${ $context._vars + {semantic_spaces: (if $context._in.action == "memory_attach" then ($context._attached + [$context._sp] | unique)
+               else ($context._attached | map(select(. != $context._sp))) end)} | tojson }
+          updated_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+  - att_done:
+      set:
+        _out: >-
+          ${ {ok: true, id: $context._in.id, semantic_spaces: (if $context._in.action == "memory_attach" then ($context._attached + [$context._sp] | unique)
+             else ($context._attached | map(select(. != $context._sp))) end)} }
+        _ev: '${ {type: (if $context._in.action == "memory_attach" then "memory_attached" else "memory_detached" end), payload: {namespace: $context._sp}} }'
+      export:
+        as: '${ $context + . }'
+      then: note_event
 
   # ═══ block / unblock ═══════════════════════════════════════════════════════
   # { action: block | unblock, id, reason? }. Blocked, its data plane
@@ -946,7 +1179,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.3.2
+                    version: 1.4.0
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: note_event
