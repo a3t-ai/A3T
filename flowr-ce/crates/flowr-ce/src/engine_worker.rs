@@ -57,6 +57,11 @@ pub(crate) fn worker_pools() -> Vec<String> {
     vec![DEFAULT_POOL.to_string()]
 }
 
+/// Whether ADB refused a purge as not this token's to make (PF-35).
+fn refused(e: &str) -> bool {
+    crate::handlers::call_adb::adb_code(e).0.as_deref() == Some("forbidden") || e.contains("purge_finished is the console")
+}
+
 fn max_concurrent() -> usize {
     std::env::var("FLOWR_MAX_CONCURRENT_RUNS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(64)
 }
@@ -81,6 +86,9 @@ pub(crate) async fn run(storage: Arc<dyn StorageBackend>, engine: Arc<dyn Engine
         std::env::var("FLOWR_COMPACT_INTERVAL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(600),
     );
     let mut next_compact = std::time::Instant::now() + Duration::from_secs(30);
+    // PF-35: purging finished runs is for the console's ADB token; a worker on a pool
+    // token is refused (`forbidden`) and then leaves it to the console.
+    let mut retention = true;
 
     loop {
         let free = slots.available_permits();
@@ -128,10 +136,16 @@ pub(crate) async fn run(storage: Arc<dyn StorageBackend>, engine: Arc<dyn Engine
                     }
                     // Retention: finished runs and their journals.
                     let days = std::env::var("FLOWR_RUN_RETENTION_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(30i64);
-                    match engine.purge_finished(chrono::Utc::now() - chrono::Duration::days(days)).await {
-                        Ok(n) if n > 0 => info!(removed = n, days, "run retention"),
-                        Ok(_) => {}
-                        Err(e) => warn!(error = %e, "run retention failed"),
+                    if retention {
+                        match engine.purge_finished(chrono::Utc::now() - chrono::Duration::days(days)).await {
+                            Ok(n) if n > 0 => info!(removed = n, days, "run retention"),
+                            Ok(_) => {}
+                            Err(e) if refused(&e.to_string()) => {
+                                retention = false;
+                                info!("run retention: this worker's ADB token may not purge finished runs; the console's does it");
+                            }
+                            Err(e) => warn!(error = %e, "run retention failed"),
+                        }
                     }
                     next_compact = std::time::Instant::now() + interval;
                 }

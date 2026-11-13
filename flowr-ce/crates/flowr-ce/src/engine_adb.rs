@@ -82,30 +82,71 @@ pub fn remote_from_env(data_dir: &str) -> Option<Client<FlightTransport>> {
 /// A failure of the connection, not an answer from ADB. An HTTP/2 GOAWAY reaches the
 /// caller as `Internal`, so a call must recognise it by its message.
 fn retriable(e: &tonic::Status) -> bool {
-    matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded)
-        || (e.code() == tonic::Code::Internal && e.message().contains("h2 protocol error"))
+    matches!(e.code(), tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled | tonic::Code::DeadlineExceeded) || protocol_error(e)
+}
+
+/// An HTTP/2 protocol error on the connection (PF-41): retried, and after
+/// [`PROTOCOL_STRIKES`] in a row on one node its channel is replaced, since the old
+/// connection can keep failing every call made on it.
+fn protocol_error(e: &tonic::Status) -> bool {
+    e.code() == tonic::Code::Internal && e.message().contains("h2 protocol error")
+}
+
+const PROTOCOL_STRIKES: u32 = 2;
+
+/// A status with its source chain, for the log (the message alone said only
+/// "h2 protocol error: http2 error").
+fn status_detail(e: &tonic::Status) -> String {
+    let mut out = format!("{:?}: {}", e.code(), e.message());
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push_str(&format!(" <- {s}"));
+        src = s.source();
+    }
+    out
+}
+
+fn connect(u: &str) -> Result<tonic::transport::Channel, String> {
+    Ok(tonic::transport::Channel::from_shared(u.to_string()).map_err(|e| format!("bad ADB Flight URL {u}: {e}"))?.connect_timeout(Duration::from_secs(5)).connect_lazy())
 }
 
 /// The engine wire over ADB's Flight: `do_action("engine")` per op,
 /// `do_action("engine_subscribe")` for notices.
 pub struct FlightTransport {
     url: String,
-    channel: tonic::transport::Channel,
+    /// C-8: every ADB node's Flight address (`FLOWR_ENGINE_ADB_URL` may list them, comma
+    /// separated): only the leader serves Flight, so a call that finds a node unavailable
+    /// moves on to the next, and stays with the one that answers.
+    channels: Arc<Vec<std::sync::RwLock<tonic::transport::Channel>>>,
+    /// Each node's URL, to open a fresh channel (PF-41), and its protocol errors in a row.
+    urls: Arc<Vec<String>>,
+    strikes: Arc<Vec<std::sync::atomic::AtomicU32>>,
+    /// Notice streams (`subscribe`) on connections of their own (PF-41): a run's stream
+    /// is reset when the run ends, and once 1,024 resets pile up on one HTTP/2
+    /// connection h2 fails it — with every engine call on it.
+    sub_channels: Arc<Vec<tonic::transport::Channel>>,
+    current: Arc<std::sync::atomic::AtomicUsize>,
     bearer: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
     space: String,
 }
 
 impl FlightTransport {
     pub fn new(url: &str, token: Option<String>, space: String) -> Result<Self, String> {
-        let channel = tonic::transport::Channel::from_shared(url.to_string())
-            .map_err(|e| format!("bad ADB Flight URL {url}: {e}"))?
-            .connect_timeout(Duration::from_secs(5))
-            .connect_lazy();
+        let urls: Vec<String> = url.split(',').map(str::trim).filter(|u| !u.is_empty()).map(String::from).collect();
+        let mut channels = Vec::new();
+        for u in &urls {
+            channels.push(std::sync::RwLock::new(connect(u)?));
+        }
+        let strikes = urls.iter().map(|_| std::sync::atomic::AtomicU32::new(0)).collect();
+        let sub_channels = urls.iter().map(|u| connect(u)).collect::<Result<Vec<_>, _>>()?;
+        if channels.is_empty() {
+            return Err("no ADB Flight URL".into());
+        }
         let bearer = match token {
             Some(t) => Some(format!("Bearer {t}").parse().map_err(|_| "the engine token is not a valid header".to_string())?),
             None => None,
         };
-        Ok(Self { url: url.to_string(), channel, bearer, space })
+        Ok(Self { url: url.to_string(), channels: Arc::new(channels), urls: Arc::new(urls), strikes: Arc::new(strikes), sub_channels: Arc::new(sub_channels), current: Default::default(), bearer, space })
     }
 
     fn request<T>(&self, body: T) -> tonic::Request<T> {
@@ -116,20 +157,59 @@ impl FlightTransport {
         r
     }
 
+    /// The node to call now.
+    fn channel(&self) -> tonic::transport::Channel {
+        let i = self.current.load(std::sync::atomic::Ordering::Relaxed) % self.channels.len();
+        self.channels[i].read().unwrap().clone()
+    }
+
+    /// A call on node `i` answered (or failed otherwise): its protocol errors start over.
+    fn healthy(&self, i: usize) {
+        self.strikes[i].store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// A protocol error on node `i` (PF-41): logged with its cause; after
+    /// [`PROTOCOL_STRIKES`] in a row the node gets a new channel (a new connection).
+    fn protocol_strike(&self, i: usize, op: &str, e: &tonic::Status) {
+        let n = self.strikes[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        warn!(node = %self.urls[i], op, strikes = n, error = %status_detail(e), "HTTP/2 protocol error on the ADB engine connection");
+        if n >= PROTOCOL_STRIKES {
+            if let Ok(c) = connect(&self.urls[i]) {
+                *self.channels[i].write().unwrap() = c;
+                self.strikes[i].store(0, std::sync::atomic::Ordering::Relaxed);
+                warn!(node = %self.urls[i], "ADB engine channel replaced after repeated HTTP/2 protocol errors");
+            }
+        }
+    }
+
+    /// The node `failed` did not answer: try the next (another caller may have moved on).
+    fn next_node(&self, failed: usize) {
+        let n = self.channels.len();
+        if n > 1 {
+            let _ = self.current.compare_exchange(failed, (failed + 1) % n, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     fn client(&self) -> arrow_flight::flight_service_client::FlightServiceClient<tonic::transport::Channel> {
-        arrow_flight::flight_service_client::FlightServiceClient::new(self.channel.clone())
+        arrow_flight::flight_service_client::FlightServiceClient::new(self.channel())
             .max_decoding_message_size(64 << 20)
             .max_encoding_message_size(64 << 20)
     }
 }
 
-#[async_trait]
-impl Transport for FlightTransport {
-    async fn call(&self, op: &str, args: Value) -> StoreResult<Value> {
+impl FlightTransport {
+    async fn call_raw(&self, op: &str, args: Value) -> StoreResult<Value> {
         let body = json!({ "space": self.space, "op": op, "args": args }).to_string();
         // Retried briefly, like the gateway client: ADB restarting must not fail a run's write.
         let mut wait = Duration::from_millis(200);
-        for attempt in 0..5 {
+        let nodes = self.channels.len();
+        // C-21: retried for as long as an election takes (bounded), not a fixed count.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        for attempt in 0.. {
+            let last = std::time::Instant::now() >= deadline;
+            let on = self.current.load(std::sync::atomic::Ordering::Relaxed) % nodes;
+            // C-8: the first pass over the other nodes goes without the backoff sleep.
+            let hop = |this: &Self| { this.next_node(on); attempt + 1 < nodes };
             let action = arrow_flight::Action { r#type: "engine".into(), body: body.clone().into() };
             // A call on a connection that broke must fail and be retried, not hang.
             let mut req = self.request(action);
@@ -138,11 +218,19 @@ impl Transport for FlightTransport {
                 Ok(r) => {
                     let mut s = r.into_inner();
                     let answer = match s.next().await {
-                        Some(Ok(a)) => a,
+                        Some(Ok(a)) => {
+                            self.healthy(on);
+                            a
+                        }
                         // The connection can also break after the call was accepted.
-                        Some(Err(e)) if retriable(&e) && attempt < 4 => {
-                            tokio::time::sleep(wait).await;
-                            wait *= 2;
+                        Some(Err(e)) if retriable(&e) && !last => {
+                            if protocol_error(&e) {
+                                self.protocol_strike(on, op, &e);
+                            }
+                            if !hop(self) {
+                                tokio::time::sleep(wait).await;
+                                wait = (wait * 2).min(Duration::from_secs(2));
+                            }
                             continue;
                         }
                         Some(Err(e)) => return Err(StoreError::Backend(format!("ADB {op}: {}", e.message()))),
@@ -160,15 +248,38 @@ impl Transport for FlightTransport {
                 // Cancelled: the HTTP/2 connection went away under the call (an ADB
                 // restart or failover); the call did not reach ADB or is retried under
                 // the same arguments, which the engine core treats idempotently.
-                Err(e) if retriable(&e) && attempt < 4 => {
-                    tokio::time::sleep(wait).await;
-                    wait *= 2;
+                Err(e) if retriable(&e) && !last => {
+                    if protocol_error(&e) {
+                        self.protocol_strike(on, op, &e);
+                    }
+                    if !hop(self) {
+                        tokio::time::sleep(wait).await;
+                        wait = (wait * 2).min(Duration::from_secs(2));
+                    }
                 }
-                Err(e) => return Err(StoreError::Backend(format!("ADB at {}: {}", self.url, e.message()))),
+                Err(e) => return Err(StoreError::Backend(format!("ADB at {}: {}", self.url, status_detail(&e)))),
             }
         }
         unreachable!()
     }
+}
+
+#[async_trait]
+impl Transport for FlightTransport {
+    async fn call(&self, op: &str, args: Value) -> StoreResult<Value> {
+        // AO-4: each engine store op, counted and timed (`flowr::engine` at debug).
+        let t = flowr_metrics::Timer::start();
+        let r = self.call_raw(op, args).await;
+        flowr_metrics::observe(&flowr_metrics::get().engine_ops, &flowr_metrics::get().engine_seconds, &[op], r.is_ok(), t.took());
+        if t.took() >= flowr_metrics::slow() {
+            tracing::info!(target: "flowr::engine", op, ms = t.ms(), ok = r.is_ok(), "slow engine op");
+        } else {
+            tracing::debug!(target: "flowr::engine", op, ms = t.ms(), ok = r.is_ok(), "engine op");
+        }
+        r
+    }
+
+
 
     /// Notices from ADB, reconnecting until the receiver is dropped (best effort).
     ///
@@ -178,10 +289,12 @@ impl Transport for FlightTransport {
     fn subscribe(&self, topic: &str) -> BoxStream<'static, Value> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let body = json!({ "space": self.space, "topic": topic }).to_string();
-        let (channel, bearer) = (self.channel.clone(), self.bearer.clone());
+        let (channels, current, bearer) = (Arc::clone(&self.sub_channels), Arc::clone(&self.current), self.bearer.clone());
         tokio::spawn(async move {
             while !tx.is_closed() {
-                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channel.clone());
+                // The node the calls use now (C-8): after a takeover, the new leader.
+                let on = current.load(std::sync::atomic::Ordering::Relaxed) % channels.len();
+                let mut client = arrow_flight::flight_service_client::FlightServiceClient::new(channels[on].clone());
                 let mut req = tonic::Request::new(arrow_flight::Action { r#type: "engine_subscribe".into(), body: body.clone().into() });
                 if let Some(b) = &bearer {
                     req.metadata_mut().insert("authorization", b.clone());
@@ -190,6 +303,9 @@ impl Transport for FlightTransport {
                     r = client.do_action(req) => r,
                     _ = tx.closed() => return,
                 };
+                if opened.is_err() && channels.len() > 1 {
+                    let _ = current.compare_exchange(on, (on + 1) % channels.len(), std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+                }
                 if let Ok(r) = opened {
                     let mut s = r.into_inner();
                     loop {

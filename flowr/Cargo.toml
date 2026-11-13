@@ -33,6 +33,7 @@ flowr-types = { path = "../shared/flowr-types" }
 flowr-storage = { path = "../shared/flowr-storage" }
 flowr-mcp-core = { path = "../shared/flowr-mcp-core" }
 flowr-policy = { path = "../shared/flowr-policy" }
+flowr-metrics = { path = "../shared/flowr-metrics" }
 
 # Legacy crates (excluded from workspace, kept for reference)
 # flowr-core, flowr-tasks, flowr-registry, flowr-hub, flowr-worker, flowr-suspend
@@ -100,3 +101,9 @@ flowr-ce-storage = { path = "../flowr-ce/crates/flowr-ce-storage" }
 # checkout. One parser for both (stage H).
 [patch."https://github.com/srirammails/AQL.git"]
 aql-parser = { path = "../../AQL/crates/aql-parser" }
+
+# Test images (deploy.sh BUILD_PROFILE=perf): release optimisation, as flowr-ce's.
+[profile.perf]
+inherits = "release"
+lto = false
+codegen-units = 16

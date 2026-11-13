@@ -438,6 +438,46 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         .merge(Router::new().nest("/ops", ops_routes))
         // Agents as repos: an agent's memory space, branches, tags, layers, fork, promote
         .merge(agent_space_routes)
+        // AO-1: this process's metrics (with an embedded ADB's in CE).
+        .route("/metrics", get(metrics_text))
+        .route("/admin/stats/metrics", get(metrics_json))
+        // AO-2: every request by route template, outermost so refusals count too.
+        .layer(axum::middleware::from_fn(http_metrics))
+}
+
+/// AO-2: an HTTP request's metrics, by its route template (never the raw path).
+async fn http_metrics(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let route = req.extensions().get::<axum::extract::MatchedPath>().map(|p| p.as_str().to_string()).unwrap_or_else(|| "other".into());
+    let m = flowr_metrics::get();
+    m.requests_in_flight.inc();
+    let t = flowr_metrics::Timer::start();
+    let r = next.run(req).await;
+    m.requests_in_flight.dec();
+    let class = match r.status().as_u16() {
+        200..=399 => "ok",
+        401 | 403 => "denied",
+        400..=499 => "client_error",
+        _ => "server_error",
+    };
+    m.requests.with_label_values(&[route.as_str(), class]).inc();
+    m.request_seconds.with_label_values(&[route.as_str()]).observe(t.took().as_secs_f64());
+    r
+}
+
+/// AO-1: Prometheus text: FlowR's metrics, then an embedded ADB's (CE; `adb_` names).
+async fn metrics_text() -> impl IntoResponse {
+    let mut text = flowr_metrics::render();
+    text.push_str(&adb_core::metrics::render());
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], text)
+}
+
+/// AO-1: the same as JSON with p50 / p90 / p99 (for the A3T UI).
+async fn metrics_json() -> Json<Value> {
+    let mut v = flowr_metrics::snapshot();
+    if let (Some(o), Value::Object(adb)) = (v.as_object_mut(), adb_core::metrics::snapshot()) {
+        o.extend(adb);
+    }
+    Json(v)
 }
 
 /// Spawn the background execution worker
@@ -1642,9 +1682,15 @@ async fn message_handler(
     principal: Option<Extension<Principal>>,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    info!("Executing tool tool={}", request.method);
     let response = handle_request(&state.storage, caller(principal), request).await;
     Json(response)
+}
+
+/// AO-2: a tool's metrics label: its name if FlowR lists it, else `other`.
+fn tool_label(name: &str) -> String {
+    static KNOWN: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    let known = KNOWN.get_or_init(|| get_tools().into_iter().map(|t| t.name).collect());
+    if known.contains(name) { name.to_string() } else { "other".to_string() }
 }
 
 /// The caller identity for a request: the middleware-supplied Principal, or the
@@ -1674,6 +1720,8 @@ async fn handle_request(
                 .and_then(|p| serde_json::from_value(p).ok());
             match params {
                 Some(p) => {
+                    let t = flowr_metrics::Timer::start();
+                    let name = p.name.clone();
                     // Try agent-specific tools first (need flowr-ce-agents)
                     // Direct MCP call: no approver here, so the dispatcher makes the
                     // target decisions itself (pre_authorized = false).
@@ -1682,6 +1730,15 @@ async fn handle_request(
                         // Fall through to shared handler — authorize the caller.
                         None => handle_tool_call(storage.as_ref(), &principal, &p.name, p.arguments).await,
                     };
+                    // AO-2: one line per tool call, with its name, time and result.
+                    let ok = !tool_result.is_error.unwrap_or(false);
+                    let label = tool_label(&name);
+                    flowr_metrics::observe(&flowr_metrics::get().tool_calls, &flowr_metrics::get().tool_seconds, &[label.as_str()], ok, t.took());
+                    if t.took() >= flowr_metrics::slow() {
+                        warn!(tool = %label, ms = t.ms(), ok, principal = %principal.id(), "slow tool call");
+                    } else {
+                        info!(tool = %label, ms = t.ms(), ok, "tool call");
+                    }
                     JsonRpcResponse::success(id, serde_json::to_value(tool_result).unwrap())
                 }
                 None => JsonRpcResponse::error(id, error_codes::INVALID_PARAMS, "Invalid params".to_string()),
@@ -2664,6 +2721,38 @@ fn install_inline_runner(storage: Arc<dyn StorageBackend>) {
 /// nothing is written — the engine worker records the outcome when it releases
 /// the run — and a refusal comes back as a failed state.
 pub(crate) async fn run_request(
+    storage: Arc<dyn StorageBackend>,
+    request: flowr_types::ExecutionRequest,
+    persist: bool,
+    hook: Option<Arc<dyn swf_runtime::StepHook>>,
+) -> anyhow::Result<ExecutionState> {
+    // AO-3: every run this process executes, by durability (journaled or not) and
+    // outcome, with one `info` line when it ends.
+    let durability = if hook.is_some() { "durable" } else { "transient" };
+    let m = flowr_metrics::get();
+    m.runs_started.with_label_values(&[durability]).inc();
+    m.runs_active.with_label_values(&[durability]).inc();
+    let flow = format!("{}/{}", request.namespace, request.name);
+    let t = flowr_metrics::Timer::start();
+    let r = run_request_raw(storage, request, persist, hook).await;
+    m.runs_active.with_label_values(&[durability]).dec();
+    let outcome = match &r {
+        Ok(state) => match state.status {
+            ExecutionStatus::Completed => "completed",
+            ExecutionStatus::Failed => "failed",
+            ExecutionStatus::Cancelled => "cancelled",
+            ExecutionStatus::Suspended => "suspended",
+            _ => "other",
+        },
+        Err(_) => "error",
+    };
+    m.runs_finished.with_label_values(&[durability, outcome]).inc();
+    m.run_seconds.with_label_values(&[durability]).observe(t.took().as_secs_f64());
+    info!(flow = %flow, durability, outcome, ms = t.ms(), "run finished");
+    r
+}
+
+async fn run_request_raw(
     storage: Arc<dyn StorageBackend>,
     request: flowr_types::ExecutionRequest,
     persist: bool,

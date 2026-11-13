@@ -108,6 +108,10 @@ deploy_for() { [ "$1" = controller ] && echo a3t-controller || echo "${1%%-*}"; 
 # ═══════════════════════════════════════════════════════════════════
 step_build() {
     local target="$1"
+    # BUILD_PROFILE=perf: release optimisation without fat LTO (perf profile in both
+    # workspaces) — minutes instead of ~40 per build; for test rounds. Shipped
+    # releases keep the default (release, fat LTO).
+    local profile="${BUILD_PROFILE:-release}" out="${BUILD_PROFILE:-release}"
     mkdir -p "$BUILD_DIR/bin"
     # Keep build dirs under budget: they're on the node disk, and at ~200 GB the
     # kubelet evicted every pod on the node (2026-10-25).
@@ -118,25 +122,25 @@ step_build() {
             [ "$target" = flowr-ee ] && features=(--features ee)
             log "Building $target (cargo, ~16 min from clean)..."
             (cd "$FLOWR_DIR/flowr" && CARGO_TARGET_DIR="$BUILD_DIR/target-$target" \
-                cargo build --release -p flowr-server "${features[@]}")
-            cp "$BUILD_DIR/target-$target/release/flowr" "$(binary_for "$target")"
+                cargo build --profile "$profile" -p flowr-server "${features[@]}")
+            cp "$BUILD_DIR/target-$target/$out/flowr" "$(binary_for "$target")"
             ;;
         adb)
             # ADB/.cargo/config.toml (gitignored) points the AQL parser at ../AQL.
             log "Building adb (cargo)..."
             (cd "$ADB_DIR" && CARGO_TARGET_DIR="$BUILD_DIR/target-adb" \
-                cargo build --release -p adb-cli)
-            cp "$BUILD_DIR/target-adb/release/adb" "$(binary_for adb)"
+                cargo build --profile "$profile" -p adb-cli)
+            cp "$BUILD_DIR/target-adb/$out/adb" "$(binary_for adb)"
             ;;
         controller)
             # Same workspace as FlowR EE, so it shares that target dir's deps.
             log "Building the a3t-controller (cargo)..."
             (cd "$FLOWR_DIR/flowr" && CARGO_TARGET_DIR="$BUILD_DIR/target-flowr-ee" \
-                cargo build --release -p flowr-canvas --bin flowr-controller)
-            cp "$BUILD_DIR/target-flowr-ee/release/flowr-controller" "$(binary_for controller)"
+                cargo build --profile "$profile" -p flowr-canvas --bin flowr-controller)
+            cp "$BUILD_DIR/target-flowr-ee/$out/flowr-controller" "$(binary_for controller)"
             ;;
     esac
-    log "Binary: $(binary_for "$target")"
+    log "Binary: $(binary_for "$target") (profile $profile)"
 }
 
 # ═══════════════════════════════════════════════════════════════════
