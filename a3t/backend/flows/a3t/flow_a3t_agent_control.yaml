@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.3.0'
+  version: '1.3.1'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -222,7 +222,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.3.0
+                    version: 1.3.1
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: create_space
@@ -249,7 +249,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.3.0
+                    version: 1.3.1
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: create_key
@@ -807,7 +807,7 @@ do:
   - memory:
       set:
         _ns: '${ $context._in.namespace // $context._space // $context._in.id // "" }'
-        _lim: '${ $context._in.limit // 20 }'
+        _lim: '${ $context._in.limit // 100 }'
         _mem: {}
       export:
         as: '${ $context + . }'
@@ -825,7 +825,12 @@ do:
                         query: '${ "RECALL FROM " + $_type + " ALL NAMESPACE \"" + $context._ns + "\" LIMIT " + ($context._lim | tostring) }'
                         _resource: '${ $context._in.memory_resource // "a3t/adb" }'
                       export:
-                        as: '${ $context + {_mem: ($context._mem + {($_type | ascii_downcase): ((.data.records // .data.data.records // .records // []) | map(.data))})} }'
+                        # Each entry with its key and when it was stored, newest first.
+                        as: >-
+                          ${ $context + {_mem: ($context._mem + {($_type | ascii_downcase):
+                             ((.data.records // .data.data.records // .records // [])
+                              | map({key: (.key // .data.key // null), at: (.metadata.created_at // .created_at // null), data: (.data // {})})
+                              | sort_by(.at // "") | reverse)})} }
                 catch:
                   do:
                     - none:
@@ -941,7 +946,7 @@ do:
                   input:
                     error: '${ $context.error }'
                     flow: a3t/flow_a3t_agent_control
-                    version: 1.3.0
+                    version: 1.3.1
                     run_id: '${ (($workflow // {}).id // "") | tostring }'
                     principal: '${ $context._who }'
                     step: note_event
