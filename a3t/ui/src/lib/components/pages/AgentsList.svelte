@@ -676,17 +676,16 @@
     loadAgents();
     loadRegistry();
     loadCanvases();
-    await loadTemplates();
     const panel = getActivePanel();
+    // New opens its form at once; the templates fill its picker when they arrive.
+    if (panel?.props?.createFromTemplate || panel?.props?.create) newAgentPanel();
+    await loadTemplates();
     if (panel?.props?.createFromTemplate) {
-      // Deep-linked from a Template's "+ Create Agent": open the create pop-in
-      // pre-selected to that template (one template → many agents).
-      newAgentPanel();
-      newAgent.template_id = panel.props.createFromTemplate;
-      onTemplateChange();
+      // Deep-linked from a Template's "+ Create Agent": the form pre-selected to
+      // that template (one template → many agents).
+      if (creatingNew && !newAgent.template_id) { newAgent.template_id = panel.props.createFromTemplate; onTemplateChange(); }
     } else if (panel?.props?.create) {
-      // The shell's "New agent" in Items.
-      newAgentPanel();
+      // The shell's "New agent" in Items: opened above.
     } else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
       // "Open its memory", "Review its controls"… land on that tab.

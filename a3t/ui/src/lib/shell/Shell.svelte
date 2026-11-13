@@ -134,12 +134,17 @@
 
   // A create form closed (its actions went away): drop the request from the
   // URL so Details goes back to "Nothing selected" and New works again.
-  let hadActions = false;
+  // Only the form of THIS request counts: pressing New while an item is open
+  // unmounts that item's actions too, and taking that for the new form closing
+  // dropped the request before the form could open (New needed a second click).
+  let actionsFor: unknown = undefined;
   $effect(() => {
     const has = !!getDetailActions();
     untrack(() => {
-      if (hadActions && !has && panel?.props?.create && !panel?.props?.selectedId) navigateTo(activeType, panel.title);
-      hadActions = has;
+      const create = panel?.props?.create;
+      if (has) { actionsFor = create && !panel?.props?.selectedId ? create : undefined; return; }
+      if (actionsFor !== undefined && create === actionsFor && !panel?.props?.selectedId) navigateTo(activeType, panel.title);
+      actionsFor = undefined;
     });
   });
 
