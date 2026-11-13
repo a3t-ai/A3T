@@ -119,11 +119,8 @@ fn default_ttl() -> u64 { 1800 }
 
 use super::agent_memory::{parse_reflection, reflection_input, AgentMemory, MemoryTierConfig, REFLECT_CONTEXT, REFLECT_PROMPT};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ToolFlowRef {
-    namespace: String,
-    name: String,
-}
+/// A tool that runs a flow, with its fixed input, schema and description (TF-1).
+type ToolFlowRef = crate::tool_flows::ToolFlow;
 
 // ═══════════════════════════════════════════════════════════════════
 // Agent state — mutable through the loop
@@ -614,10 +611,11 @@ impl TaskHandler for AgentHandler {
             for (tool_name, flow_ref) in &config.config.tool_flows {
                 match storage.workflows().get(&flow_ref.namespace, &flow_ref.name).await {
                     Ok(record) => {
-                        // Extract description and input schema from the flow
-                        let description = record.metadata.description.clone()
+                        // The entry's own description and schema (TF-1), else the flow's.
+                        let description = flow_ref.description.clone()
+                            .or_else(|| record.metadata.description.clone())
                             .unwrap_or_else(|| format!("Execute workflow {}/{}", flow_ref.namespace, flow_ref.name));
-                        let input_schema = match record.parse() {
+                        let input_schema = if let Some(s) = flow_ref.schema.clone() { s } else { match record.parse() {
                             Ok(swf) => {
                                 // Try to get input.schema from the parsed workflow
                                 if let Some(input) = swf.input {
@@ -627,7 +625,7 @@ impl TaskHandler for AgentHandler {
                                 }
                             }
                             Err(_) => json!({"type": "object"}),
-                        };
+                        } };
                         all_tools.push(json!({
                             "name": tool_name,
                             "description": description,
@@ -793,7 +791,7 @@ impl TaskHandler for AgentHandler {
                                 // Check if tool maps to a workflow
                                 if let Some(flow_ref) = config.config.tool_flows.get(tool_name) {
                                     // Execute as nested workflow
-                                    execute_tool_flow(&storage, &flow_ref.namespace, &flow_ref.name, tool_input.clone(), ctx).await
+                                    execute_tool_flow(&storage, &flow_ref.namespace, &flow_ref.name, flow_ref.call_input(tool_input.clone()), ctx).await
                                 } else {
                                     // Execute via MCP, on the server that advertised this tool
                                     // (else the first server, as before, for tools the LLM names

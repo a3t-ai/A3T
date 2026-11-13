@@ -258,6 +258,9 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/deployments", get(list_deployments))
         .route("/agents/:agent_id/runs", get(list_runs))
         .route("/agents/:agent_id/usage", get(agent_usage))
+        // The control plane's tools (AT-1): an agent's tools, called directly, no model.
+        .route("/agents/:agent_id/tools", get(list_agent_tools))
+        .route("/agents/:agent_id/tools/:tool", post(call_agent_tool))
         .route("/projects/:project/usage", get(project_usage))
         .route("/agents/:agent_id/deployments/:environment", axum::routing::put(pin_deployment))
         .merge(merge_requests::routes())
@@ -266,6 +269,55 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
 }
 
 type St = State<Arc<dyn StorageBackend>>;
+
+/// An agent the caller may read, else 404 (as for every agent route: no hint it exists).
+async fn readable_agent(storage: &dyn StorageBackend, principal: &Principal, id: &str) -> Result<Value, Response> {
+    let row = agent_row(storage, id).await?;
+    let project = project_of(&row);
+    if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await {
+        return Err(err(StatusCode::NOT_FOUND, format!("no agent {id:?}")));
+    }
+    Ok(row)
+}
+
+/// AT-1: the agent's tools, as a backend or an LLM sees them.
+async fn list_agent_tools(State(s): St, p: P, Path(id): Path<String>) -> Response {
+    both(async {
+        let row = readable_agent(s.as_ref(), &who(p), &id).await?;
+        let tools: Vec<Value> = crate::tool_flows::of_agent(&row)
+            .into_iter()
+            .map(|(name, t)| json!({ "name": name, "flow": format!("{}/{}", t.namespace, t.name), "description": t.description, "schema": t.schema }))
+            .collect();
+        ok(json!({ "agent": id, "tools": tools }))
+    }.await)
+}
+
+/// AT-1: run one of the agent's tools now, as the caller, with no model. The body is
+/// the tool's arguments; the tool's fixed input is merged over them (TF-1). The run
+/// goes through `execute_flow`, so the caller's project access and the flow's own
+/// policies apply as for any run. Answers `{agent, tool, output}`.
+async fn call_agent_tool(State(s): St, p: P, Path((id, tool)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let row = readable_agent(s.as_ref(), &principal, &id).await?;
+        let tools = crate::tool_flows::of_agent(&row);
+        let entry = tools.get(&tool).ok_or_else(|| err(StatusCode::NOT_FOUND, format!("agent {id:?} has no tool {tool:?}")))?;
+        let args = body.map(|Json(b)| b).unwrap_or_else(|| json!({}));
+        let input = entry.call_input(args);
+        let r = flowr_mcp_core::tools::dispatch_tool_call(
+            s.as_ref(), &principal, "execute_flow",
+            Some(json!({ "namespace": entry.namespace, "name": entry.name, "input": input })),
+        ).await;
+        let text = r.content.iter().map(|c| match c { flowr_mcp_core::protocol::ToolContent::Text { text } => text.as_str() }).collect::<Vec<_>>().join("\n");
+        if r.is_error == Some(true) {
+            let status = if text.contains("not found") || text.contains("Not allowed") || text.contains("denied") { StatusCode::FORBIDDEN } else { StatusCode::UNPROCESSABLE_ENTITY };
+            return Err(err(status, text));
+        }
+        let output = text.split_once("Output:\n").map(|(_, o)| serde_json::from_str::<Value>(o.trim()).unwrap_or_else(|_| Value::String(o.trim().to_string()))).unwrap_or(Value::Null);
+        ok(json!({ "agent": id, "tool": tool, "output": output }))
+    }.await)
+}
+
 type P = Option<Extension<Principal>>;
 
 async fn get_memory(State(s): St, p: P, Path(id): Path<String>) -> Response {

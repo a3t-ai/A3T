@@ -8,6 +8,7 @@
 
 pub(crate) mod server;
 pub mod access;
+pub mod tool_flows;
 pub mod agent_space;
 pub mod approval;
 pub mod token_stream;
