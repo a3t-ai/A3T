@@ -418,6 +418,8 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/agents/:agent_id/metrics", get(agent_metrics_handler))
         // Triggers
         .route("/triggers", get(list_triggers_handler).post(create_trigger_handler))
+        // Dev time: run a mapping over sample events, as the trigger would.
+        .route("/triggers/mapping/check", post(mapping_check_handler))
         .route("/triggers/:trigger_id", get(get_trigger_handler).delete(delete_trigger_handler))
         .route("/triggers/:trigger_id/enable", post(enable_trigger_handler))
         .route("/triggers/:trigger_id/pause", post(pause_trigger_handler))
@@ -766,6 +768,72 @@ async fn webhook_handler(
 }
 
 // --- Trigger handlers ---
+
+/// Check a trigger mapping before it is used (dev time): run `expr` over each
+/// sample body exactly as delivery would — the same event, the same engine, the
+/// same shaping — and, for a flow's input, validate each result against the
+/// flow's `input.schema`. Nothing runs and nothing is stored.
+///
+/// Body: `{ expr, samples: [body…], field?: input|message|conversation,
+///          target?: "ns/flow", trigger?, source?, message? }`
+async fn mapping_check_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let expr = body.get("expr").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let samples = body.get("samples").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if expr.is_empty() || samples.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "expr and at least one sample are needed"}))).into_response();
+    }
+    let field = body.get("field").and_then(|v| v.as_str()).unwrap_or("input").to_string();
+    let trigger = body.get("trigger").and_then(|v| v.as_str()).unwrap_or("trigger");
+    let source = body.get("source").and_then(|v| v.as_str()).unwrap_or("webhook");
+    let message = body.get("message").and_then(|v| v.as_str());
+
+    // The flow's input schema, when the target is a flow that declares one.
+    let mut schema: Option<Value> = None;
+    let mut schema_note: Option<String> = None;
+    if field == "input" {
+        if let Some((ns, name)) = body.get("target").and_then(|v| v.as_str()).and_then(|t| t.split_once('/')) {
+            match state.storage.workflows().get(ns, name).await {
+                Ok(rec) => {
+                    let doc: Value = serde_yaml::from_str(&rec.raw_yaml).unwrap_or(Value::Null);
+                    let s = doc.pointer("/input/schema").cloned();
+                    // SWF wraps it as { format, document }; FlowR flows also write it plain.
+                    schema = s.map(|s| s.get("document").cloned().unwrap_or(s));
+                    if schema.is_none() { schema_note = Some(format!("{ns}/{name} declares no input schema: only the expression is checked")); }
+                }
+                Err(e) => schema_note = Some(format!("{ns}/{name}: {e}")),
+            }
+        }
+    }
+    let validator = match schema.as_ref().map(jsonschema::validator_for) {
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => { schema_note = Some(format!("the flow's input schema is not valid JSON Schema: {e}")); None }
+        None => None,
+    };
+
+    let adapter = TriggerWorkflowAdapter { principal: None, blocked: Default::default() };
+    let results: Vec<Value> = samples.into_iter().map(|sample| {
+        let content = message.map(str::to_string).unwrap_or_else(|| sample.to_string());
+        let event = flowr_ce_agents::triggers::event_of(trigger, &content, Some(sample), source);
+        match flowr_ce_agents::triggers::WorkflowExecutor::map(&adapter, &expr, &event) {
+            Err(e) => json!({"ok": false, "error": e.to_string()}),
+            Ok(v) => {
+                let v = flowr_ce_agents::triggers::shape_for(&field, v);
+                let errors: Vec<String> = validator.as_ref()
+                    .map(|val| val.iter_errors(&v).map(|e| {
+                        let at = e.instance_path.to_string();
+                        if at.is_empty() { e.to_string() } else { format!("{at}: {e}") }
+                    }).collect())
+                    .unwrap_or_default();
+                json!({"ok": errors.is_empty(), "value": v, "schema_errors": errors})
+            }
+        }
+    }).collect();
+    let all_ok = results.iter().all(|r| r["ok"].as_bool() == Some(true));
+    Json(json!({"all_ok": all_ok, "results": results, "schema": schema, "schema_note": schema_note})).into_response()
+}
 
 async fn list_triggers_handler() -> impl IntoResponse {
     let triggers = flowr_ce_agents::trigger_manager().list().await;

@@ -17,6 +17,28 @@ use uuid::Uuid;
 
 use types::*;
 
+/// The event a trigger's mappings read: `{ body, message, source, trigger, time }`.
+/// Delivery and the mapping check (dev time) build it here, so a mapping checked
+/// against a sample sees what it will see when the trigger fires.
+pub fn event_of(trigger_name: &str, content: &str, body: Option<Value>, source: &str) -> Value {
+    json!({
+        "body": body.unwrap_or(Value::Null),
+        "message": content,
+        "source": source,
+        "trigger": trigger_name,
+        "time": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// What a mapping's value becomes for a target field: a flow's input is an
+/// object (anything else is wrapped as `{value}`); a message or conversation is text.
+pub fn shape_for(field: &str, v: Value) -> Value {
+    match field {
+        "message" | "conversation" => Value::String(match v { Value::String(s) => s, Value::Null => String::new(), other => other.to_string() }),
+        _ => if v.is_object() { v } else { json!({ "value": v }) },
+    }
+}
+
 /// Manages trigger lifecycle and delivery
 pub struct TriggerManager {
     triggers: RwLock<HashMap<String, Trigger>>,
@@ -390,13 +412,7 @@ impl TriggerManager {
         let mut failed = Vec::new();
         let mut executions = Vec::new();
         // What a target's expressions read: the payload and where it came from.
-        let event = json!({
-            "body": context.clone().unwrap_or(Value::Null),
-            "message": content,
-            "source": source,
-            "trigger": trigger_name,
-            "time": chrono::Utc::now().to_rfc3339(),
-        });
+        let event = event_of(trigger_name, content, context.clone(), source);
         let text = |v: Value| match v { Value::String(s) => s, Value::Null => String::new(), other => other.to_string() };
         // One run per firing and target, however many FlowRs deliver it (CA-2,
         // CA-10): a cron tick's minute, a topic message's offset. A mapped input or
@@ -464,7 +480,7 @@ impl TriggerManager {
                 TriggerTarget::Workflow { namespace, name, input_mapping } => {
                     let input = match input_mapping.as_deref().filter(|m| !m.trim().is_empty()) {
                         Some(expr) => match workflow_executor.map(expr, &event) {
-                            Ok(v) => with_dedupe(if v.is_object() { v } else { json!({ "value": v }) }, &format!("{namespace}/{name}")),
+                            Ok(v) => with_dedupe(shape_for("input", v), &format!("{namespace}/{name}")),
                             Err(e) => {
                                 warn!(trigger = %trigger_id, workflow = %name, error = %e, "input mapping failed");
                                 failed.push(format!("workflow:{}/{} (mapping: {})", namespace, name, e));

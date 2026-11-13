@@ -5,7 +5,8 @@
  *   - a webhook delivered to an A3T agent: its message and conversation mapped;
  *   - a schedule (cron) that fires on its own, once per minute however many
  *     FlowRs run the scheduler (one run per tick);
- *   - a mapping that fails is reported, and nothing runs.
+ *   - a mapping that fails is reported, and nothing runs;
+ *   - dev time: a mapping checked on samples against the flow's input schema.
  *
  *   A3T_TOKEN_FILE=<file with a console token> node a3t/backend/tests/e2e-triggers.mjs [--url …] [--keep]
  */
@@ -76,6 +77,23 @@ d = ainst ? await status(ainst) : null;
 check(`  it answered from the mapped message: "${String(d?.output?.content ?? '').slice(0, 60)}"`, /B-?42/.test(String(d?.output?.content ?? '')), JSON.stringify(d).slice(0, 300));
 const turns = await tool('agent_a3t_agents', 'tool_a3t_agent_turns', { id: agentId });
 check('  in the mapped conversation (cust-c9)', (turns.body?.output?.turns ?? []).some((t) => t.session_id === `${agentId}:cust-c9`), JSON.stringify(turns.body?.output?.turns?.map((t) => t.session_id)));
+
+// 3b. Dev time: a mapping checked on samples, against the flow's input schema.
+const sflow = `flow_default_schema_${run}`;
+r = await mcp('create_flow', { yaml: `document: { dsl: '1.0.3', namespace: default, name: ${sflow}, version: '1.0.0' }\ninput:\n  schema:\n    type: object\n    required: [order, amount_cents]\n    properties:\n      order: { type: string }\n      amount_cents: { type: integer }\ndo:\n  - echo:\n      set:\n        got: '\${ . }'\n` });
+created.flows.push(sflow);
+const mcheck = async (expr, samples, extra = {}) => { const x = await fetch(`${URL_}/triggers/mapping/check`, { method: 'POST', headers: H, body: JSON.stringify({ expr, samples, field: 'input', target: `default/${sflow}`, trigger: 't', source: 'webhook', ...extra }) }); return { status: x.status, body: await x.json().catch(() => ({})) }; };
+const S = [{ order_id: 'A-1', amount: 4.5 }, { order_id: 'B-2', amount: 12 }];
+let c = await mcheck('${ {order: .body.order_id, amount_cents: (.body.amount * 100 | round)} }', S);
+check('mapping check: a good mapping passes on every sample, against the schema', c.status === 200 && c.body.all_ok === true && c.body.results?.[0]?.value?.amount_cents === 450 && !!c.body.schema, JSON.stringify(c.body).slice(0, 300));
+c = await mcheck('${ {order: .body.order_id} }', S);
+check('  one missing a required field fails, naming it', c.body.all_ok === false && /amount_cents/.test(JSON.stringify(c.body.results?.[0]?.schema_errors)), JSON.stringify(c.body).slice(0, 300));
+c = await mcheck('${ .body.amount | error("bad") }', S);
+check('  one that errors reports the error', c.body.all_ok === false && /bad/.test(c.body.results?.[0]?.error ?? ''), JSON.stringify(c.body).slice(0, 300));
+c = await mcheck('${ "Order " + .body.order_id }', S, { field: 'message', target: undefined });
+check('  a message mapping gives text', c.body.all_ok === true && c.body.results?.[0]?.value === 'Order A-1', JSON.stringify(c.body).slice(0, 300));
+c = await mcheck('${ . }', []);
+check('  no samples: 400', c.status === 400, JSON.stringify(c));
 
 // 4. A schedule: fires on its own, one run per minute.
 const before = (await runsOf()).length;
