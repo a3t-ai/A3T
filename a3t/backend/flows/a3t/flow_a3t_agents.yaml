@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_agents
-  version: 1.0.0
+  version: 1.1.4
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -23,7 +23,7 @@ do:
         then: create
     - case:
         when: ${ .input.action == "update" }
-        then: update
+        then: update-prep
     - case:
         when: ${ .input.action == "delete" }
         then: delete
@@ -113,7 +113,7 @@ do:
       - id: ${ $context._ag_id }-evt-created
         agent_config_id: ${ $context._ag_id }
         event_type: created
-        payload: '{}'
+        payload: '${ {by: ($context._ag_user // (($context._principal // {}).user // "")), template: (($context._ag_tpl_id // "") + "@" + ($context._ag_tpl_ver // ""))} | tojson }'
         created_at: ${ $context._ag_ts }
       _resource: a3t/a3t-platform-db
     metadata:
@@ -123,6 +123,26 @@ do:
           resource:
             type: Agent
     then: end
+# Update: the record as it was, the update, then one event in its history
+# (agent_events) naming who changed it and which fields.
+- update-prep:
+    set:
+      _u: ${ .input }
+    export:
+      as: ${ $context + . }
+- update-read:
+    call: lancedb
+    with:
+      operation: query
+      table: agent_configs
+      filter: id = "${ $context._u.id }"
+      limit: 1
+      _resource: a3t/a3t-platform-db
+    # export sees the output below: the row rides along in it.
+    output:
+      as: '${ {input: $context._u, old: ((if type == "array" then . else [] end) | .[0] // {})} }'
+    export:
+      as: '${ $context + {_old: .old} }'
 - update:
     call: lancedb
     with:
@@ -137,7 +157,9 @@ do:
         variables: ${ .input.data.variables // "" }
         resource_bindings: ${ .input.data.resource_bindings // "" }
         namespace: ${ .input.data.namespace // "" }
-        status: ${ .input.data.status // "draft" }
+        # Blocking is the control plane's (flow_a3t_agent_control block/unblock): an
+        # update neither blocks an agent nor unblocks it.
+        status: '${ ((.old // {}).status // "") as $was | (.input.data.status // $was | if . == "" then "draft" else . end) as $new | if $was == "blocked" then "blocked" elif $new == "blocked" then (if $was == "" then "draft" else $was end) else $new end }'
         updated_at: ${ .input.timestamp }
       _resource: a3t/a3t-platform-db
     metadata:
@@ -147,7 +169,63 @@ do:
           resource:
             type: Agent
             id: ${ .input.id }
+    then: update-diff
+- update-diff:
+    set:
+      _diff: >-
+          ${ ($context._old // {}) as $o
+          | (($o.status // "") as $was | (($context._u.data // {}).status // $was | if . == "" then "draft" else . end) as $want
+             | if $was == "blocked" then "blocked" elif $want == "blocked" then (if $was == "" then "draft" else $was end) else $want end) as $st
+          | (($context._u.data // {}) + {status: $st}) as $n
+          | (($o.variables // "{}") | if type == "string" then (try fromjson catch {}) else . end // {}) as $vo
+          | (($n.variables // "{}") | if type == "string" then (try fromjson catch {}) else . end // {}) as $vn
+          | {by: ($context._u.user_id // (($context._principal // {}).user // "")),
+             changed: (
+               (["name", "template_id", "template_version", "mode", "namespace", "status", "resource_bindings"]
+                | map(select(($n[.] // null) != null and (($n[.] | tostring) != (($o[.] // "") | tostring)))))
+               + ((($vo | keys) + ($vn | keys)) | unique | map(select(($vo[.] // null) != ($vn[.] // null))) | map("values." + .))),
+             status: {from: ($o.status // null), to: ($n.status // null)}}
+          }
+    export:
+      as: '${ $context + . }'
+# Only a real change goes into its history.
+- update-event:
+    if: '${ ($context._diff.changed | length) > 0 }'
+    try:
+      do:
+      - update-event-insert:
+          call: lancedb
+          with:
+            operation: insert
+            table: agent_events
+            records:
+            - id: '${ $context._u.id + "-evt-" + ((now * 1000000) | floor | tostring) }'
+              agent_config_id: ${ $context._u.id }
+              event_type: updated
+              payload: '${ $context._diff | tojson }'
+              created_at: ${ $context._u.timestamp // (now | todateiso8601) }
+            _resource: a3t/a3t-platform-db
+    catch:
+      do:
+      - update-event-failed:
+          run:
+            workflow:
+              namespace: system
+              name: flow_system_error_handler
+              input:
+                error: ${ $context.error }
+                flow: a3t/flow_a3t_agents
+                version: 1.1.4
+                run_id: ${ (($workflow // {}).id // "") | tostring }
+                principal: ${ (($context._principal // {}).user // "") | tostring }
+                step: update-event
+- update-done:
+    set:
+      updated: true
+    output:
+      as: '${ {updated: true, id: $context._u.id} }'
     then: end
+
 - delete:
     call: lancedb
     with:

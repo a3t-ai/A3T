@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: tmpl_a3t_agent
-  version: '4.1.0'
+  version: '4.3.0'
   metadata:
     description: >
       A3T chat: every message from the console's AI Chat and from an agent's Chat
@@ -11,7 +11,7 @@ document:
       the agent's record (agent_configs; the session id is <agent-id>:<session>).
       A session with no agent is the A3T assistant. What the request carries wins
       over the record (llm_resource, enabled_tools, mcp_servers), as the Chat tab
-      sends them. Input: { message, session_id, llm_resource?, enabled_tools?,
+      sends them. A blocked agent (status blocked) refuses the call. Input: { message, session_id, llm_resource?, enabled_tools?,
       mcp_servers?, context?, ui_context? }. Output: the core agent's.
 
 metadata:
@@ -25,6 +25,7 @@ do:
         _agent_id: >-
           ${ (.session_id // "") | split(":") | if length > 1 and (.[0] | test("^(agt-[A-Za-z0-9_-]+|agent_[a-z0-9_]+)$")) then .[0] else null end }
         _row: null
+        _space: null
       export:
         as: '${ $context + . }'
 
@@ -54,10 +55,34 @@ do:
                     input:
                       error: '${ $context.error }'
                       flow: a3t/tmpl_a3t_agent
-                      version: 4.1.0
+                      version: 4.3.0
                       run_id: '${ (($workflow // {}).id // "") | tostring }'
                       principal: '${ (($context._principal // {}).user // "") | tostring }'
                       step: load_agent
+
+  # Its memory space (FlowR's agent_memory, set when it is made, forked or
+  # promoted). None registered, or no such table: its id, where the core keeps it.
+  - agent_space:
+      if: '${ $context._agent_id != null }'
+      try:
+        do:
+          - space_row:
+              call: lancedb
+              with:
+                operation: query
+                table: agent_memory
+                filter: '${ "agent_id = ''" + $context._agent_id + "''" }'
+                limit: 1
+                _resource: a3t/a3t-platform-db
+              export:
+                as: '${ $context + {_space: ((if type == "array" then . else [] end) | .[0] // {} | .namespace // null)} }'
+      catch:
+        do:
+          - no_space:
+              set:
+                _space: null
+              export:
+                as: '${ $context + . }'
 
   - values:
       set:
@@ -66,6 +91,16 @@ do:
         _mode: '${ ($context._row // {}).mode // "session" }'
       export:
         as: '${ $context + . }'
+
+  # Blocked by its owner (its Controls, or tool_a3t_agent_block): no call runs.
+  - blocked:
+      if: '${ (($context._row // {}).status // "") == "blocked" }'
+      raise:
+        error:
+          type: https://a3t.io/errors/authorization
+          status: 403
+          title: Agent blocked
+          detail: '${ $context._agent_id + " is blocked by its owner: it takes no calls until it is unblocked" }'
 
   - config:
       set:
@@ -77,7 +112,7 @@ do:
               mcp_servers: ($context._in.mcp_servers // $context._vars.mcp_servers // ["a3t/agent-flows"]),
               temperature: ($context._vars.temperature // 0.4),
               max_iterations: ($context._vars.max_iterations // 10),
-              memory_namespace: ($context._agent_id // "a3t-assistant")
+              memory_namespace: ($context._space // $context._agent_id // "a3t-assistant")
             }
             + (if (($context._vars.tool_flows // {}) | length) > 0 then {tool_flows: $context._vars.tool_flows} else {} end)
             + (if ($context._in | has("enabled_tools")) then {enabled_tools: $context._in.enabled_tools}

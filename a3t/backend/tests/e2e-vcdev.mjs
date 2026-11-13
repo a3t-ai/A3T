@@ -69,6 +69,27 @@ check('  the record says so', after.body?.output?.agent?.variables?.system_promp
 c = await chat('Who are you?', 's2');
 check('  and the agent answers with it', c.status === 200 && /CHANGED/i.test(c.reply), c.reply.slice(0, 200));
 
+// 4b. Its history names the change, and its controls go through the control plane.
+const evs = async () => { const e = await tool('agent_a3t_agents', 'tool_a3t_agent_events', { id }); return (Array.isArray(e.body?.output) ? e.body.output : []).map(x => ({ ...x, p: JSON.parse(x.payload || '{}') })); };
+let ev = await evs();
+const upd = ev.find(x => x.event_type === 'updated');
+check(`history: created + updated (${(upd?.p?.changed ?? []).join(', ')})`, ev.some(x => x.event_type === 'created') && upd?.p?.changed?.includes('values.system_prompt') && !!upd?.p?.by, JSON.stringify(ev).slice(0, 300));
+t = await tool('agent_a3t_agents', 'tool_a3t_agent_block', { org_id: 'org-default', id, reason: 'e2e' });
+check('controls: tool_a3t_agent_block', t.status === 200 && t.body?.output?.status === 'blocked', JSON.stringify(t.body).slice(0, 300));
+c = await chat('Are you there?', 's3');
+check('  a blocked agent refuses its data plane', !/CHANGED/i.test(c.reply) && /blocked/i.test(c.text), `${c.status} ${c.text.slice(0, 300)}`);
+const g2 = await tool('agent_a3t_agents', 'tool_a3t_agent_get', { org_id: 'org-default', id });
+const row2 = Array.isArray(g2.body?.output) ? g2.body.output[0] : g2.body?.output;
+await tool('agent_a3t_agents', 'tool_a3t_agent_update', { org_id: 'org-default', id, timestamp: new Date().toISOString(),
+  data: { name: row2?.name, template_id: row2?.template_id, template_version: row2?.template_version, mode: row2?.mode, variables: row2?.variables,
+          resource_bindings: row2?.resource_bindings, namespace: row2?.namespace, status: 'live' } });
+const after2 = await tool('agent_a3t_agents', 'tool_a3t_agent_describe', { org_id: 'org-default', id });
+check('  a plain update (status live) does not unblock it', after2.body?.output?.agent?.status === 'blocked', JSON.stringify(after2.body?.output?.agent?.status));
+t = await tool('agent_a3t_agents', 'tool_a3t_agent_unblock', { org_id: 'org-default', id });
+check(`  tool_a3t_agent_unblock gives back "${t.body?.output?.status}"`, t.status === 200 && t.body?.output?.status === 'live', JSON.stringify(t.body).slice(0, 300));
+ev = await evs();
+check('  both are in its history, with who', ['blocked', 'unblocked'].every(k => ev.some(x => x.event_type === k && x.p.by)), JSON.stringify(ev.map(x => x.event_type)));
+
 // 5. Figures and memory.
 t = await tool('agent_a3t_agents', 'tool_a3t_agent_turns', { id });
 check(`metrics: ${t.body?.output?.summary?.turns ?? 0} turns, avg ${t.body?.output?.summary?.avg_ms ?? '-'} ms`, t.status === 200 && (t.body?.output?.summary?.turns ?? 0) >= 2, JSON.stringify(t.body).slice(0, 300));

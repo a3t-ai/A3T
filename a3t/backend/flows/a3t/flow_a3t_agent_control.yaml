@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.0.3'
+  version: '1.1.2'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -11,7 +11,10 @@ document:
       relate (record where an agent came from, e.g. after POST /agents/{id}/fork),
       compare (can a fork merge back?), merge (a fork's procedures into its source,
       through ADB), evolve (a fork that can't merge becomes its own agent), shares,
-      share, unshare, shared_with (agents shared with a namespace, and public ones).
+      share, unshare, shared_with (agents shared with a namespace, and public ones),
+      block and unblock (its data plane refuses calls while blocked), turns and
+      memory (its own figures). Changes (share, unshare, block, unblock) are
+      written to its history (agent_events).
       Memory copies with history (fork, branch, promote) stay FlowR's REST routes
       under /agents/{id}; this flow records the relation. See
       .ai/A3T_AGENTS_API_PLAN.md.
@@ -46,7 +49,8 @@ do:
         - shared_with: { when: '${ $context._in.action == "shared_with" }', then: shared_with }
         - forget: { when: '${ $context._in.action == "forget" }', then: forget }
         - turns: { when: '${ $context._in.action == "turns" }', then: turns }
-        - memory: { when: '${ $context._in.action == "memory" }', then: memory }
+        - memory: { when: '${ $context._in.action == "memory" }', then: memory_space }
+        - block: { when: '${ $context._in.action == "block" or $context._in.action == "unblock" }', then: block }
         - unknown: { then: unknown }
 
   - unknown:
@@ -55,7 +59,7 @@ do:
           type: https://a3t.io/errors/input
           status: 400
           title: Unknown action
-          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with, forget, turns or memory." }'
+          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with, forget, turns, memory, block or unblock." }'
 
   # ═══ create ════════════════════════════════════════════════════════════════
   # { action: create, from: {kind: template|agent, id, version?}, mode?: template|inherit|clone,
@@ -185,7 +189,7 @@ do:
           - id: '${ $context._id + "-evt-created" }'
             agent_config_id: '${ $context._id }'
             event_type: created
-            payload: '${ {from: $context._from, relation: $context._rel} | tojson }'
+            payload: '${ {by: $context._who, from: $context._from, relation: $context._rel} | tojson }'
             created_at: '${ $context._now }'
         _resource: a3t/a3t-platform-db
   - create_done:
@@ -499,7 +503,7 @@ do:
           - id: '${ $context._relrow.parent_id + "-evt-merge-" + $context._in.id + "-" + ((now * 1000 | floor) | tostring) }'
             agent_config_id: '${ $context._relrow.parent_id }'
             event_type: merged
-            payload: '${ {from: $context._in.id, procedures: $context.merged, failed: ($context.merge_failed | length)} | tojson }'
+            payload: '${ {by: $context._who, from: $context._in.id, procedures: $context.merged, failed: ($context.merge_failed | length)} | tojson }'
             created_at: '${ $context._now }'
         _resource: a3t/a3t-platform-db
   - merge_done:
@@ -592,10 +596,11 @@ do:
         _resource: a3t/a3t-platform-db
   - share_done:
       set:
-        ok: true
-        id: '${ $context._in.id }'
-        target: '${ $context._in.target }'
-      then: end
+        _out: '${ {ok: true, id: $context._in.id, target: $context._in.target} }'
+        _ev: '${ {type: "shared", payload: {target: $context._in.target, rights: ($context._in.rights // {call: true})}} }'
+      export:
+        as: '${ $context + . }'
+      then: note_event
 
   - unshare:
       call: lancedb
@@ -613,10 +618,11 @@ do:
               id: '${ $context._in.id }'
   - unshare_done:
       set:
-        ok: true
-        id: '${ $context._in.id }'
-        target: '${ $context._in.target }'
-      then: end
+        _out: '${ {ok: true, id: $context._in.id, target: $context._in.target} }'
+        _ev: '${ {type: "unshared", payload: {target: $context._in.target}} }'
+      export:
+        as: '${ $context + . }'
+      then: note_event
 
   - shared_with:
       call: lancedb
@@ -690,7 +696,7 @@ do:
                 degraded: ($t | map(select((.degraded // "") != "")) | length),
                 tool_calls: ($t | map((.tool_calls // "0") | tonumber) | add // 0),
                 avg_ms: (if ($ms | length) > 0 then (($ms | add) / ($ms | length) | floor) else 0 end),
-                last_at: ($t[0].at // null)
+                last_at: (($t[0] // {}).at // null)
               },
               turns: ($t | .[0:50])
             } }
@@ -699,9 +705,29 @@ do:
   # ═══ memory ════════════════════════════════════════════════════════════════
   # { action: memory, id, namespace?, limit? }. What the agent remembers, by memory
   # type, from its own namespace on the org ADB (the core keeps it under the agent's id).
+  - memory_space:
+      try:
+        do:
+          - space_row:
+              call: lancedb
+              with:
+                operation: query
+                table: agent_memory
+                filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+                limit: 1
+                _resource: a3t/a3t-platform-db
+              export:
+                as: '${ $context + {_space: ((if type == "array" then . else [] end) | .[0] // {} | .namespace // null)} }'
+      catch:
+        do:
+          - no_space:
+              set:
+                _space: null
+              export:
+                as: '${ $context + . }'
   - memory:
       set:
-        _ns: '${ $context._in.namespace // $context._in.id // "" }'
+        _ns: '${ $context._in.namespace // $context._space // $context._in.id // "" }'
         _lim: '${ $context._in.limit // 20 }'
         _mem: {}
       export:
@@ -737,3 +763,112 @@ do:
         memory: '${ $context._mem }'
       then: end
 
+  # ═══ block / unblock ═══════════════════════════════════════════════════════
+  # { action: block | unblock, id, reason? }. Blocked, its data plane
+  # (a3t/tmpl_a3t_agent: POST /chat, its webhook) refuses every call; its record,
+  # memory and control plane stay. Unblocking gives back the status it had.
+  - block:
+      if: '${ ($context._in.id // "") == "" }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 400
+          title: Can't block
+          detail: 'block and unblock need the agent''s id.'
+  - block_read:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "id = ''" + $context._in.id + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: write
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+      export:
+        as: '${ $context + {_row: ((if type == "array" then . else [] end) | .[0] // null)} }'
+  - block_found:
+      if: '${ $context._row == null }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 404
+          title: No such agent
+          detail: '${ "There is no agent " + $context._in.id + "." }'
+  - block_prev:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_events
+        filter: '${ "agent_config_id = ''" + $context._in.id + "'' AND event_type = ''blocked''" }'
+        limit: 200
+        _resource: a3t/a3t-platform-db
+      export:
+        as: >-
+          ${ $context + {_prev: ((if type == "array" then . else [] end) | sort_by(.created_at) | reverse
+             | map((.payload // "{}") | try fromjson catch {}) | map(.prev // null) | map(select(. != null and . != "blocked")) | .[0] // "live")} }
+  - block_set:
+      call: lancedb
+      with:
+        operation: update
+        table: agent_configs
+        filter: '${ "id = ''" + $context._in.id + "''" }'
+        values:
+          status: '${ if $context._in.action == "block" then "blocked" elif $context._row.status == "blocked" then $context._prev else $context._row.status end }'
+          updated_at: '${ $context._now }'
+        _resource: a3t/a3t-platform-db
+  - block_done:
+      set:
+        _out: >-
+          ${ {ok: true, id: $context._in.id,
+              status: (if $context._in.action == "block" then "blocked" elif $context._row.status == "blocked" then $context._prev else $context._row.status end)} }
+        _ev: >-
+          ${ {type: (if $context._in.action == "block" then "blocked" else "unblocked" end),
+              payload: ({prev: $context._row.status} + (if $context._in.reason then {reason: $context._in.reason} else {} end))} }
+      export:
+        as: '${ $context + . }'
+      then: note_event
+
+  # ═══ its history ═══════════════════════════════════════════════════════════
+  # The change in _ev ({type, payload}) goes to agent_events; the action's answer
+  # is _out. A failed write is reported and never fails the action.
+  - note_event:
+      try:
+        do:
+          - note_insert:
+              call: lancedb
+              with:
+                operation: insert
+                table: agent_events
+                records:
+                  - id: '${ $context._in.id + "-evt-" + ((now * 1000000) | floor | tostring) }'
+                    agent_config_id: '${ $context._in.id }'
+                    event_type: '${ $context._ev.type }'
+                    payload: '${ ($context._ev.payload // {}) + {by: $context._who} | tojson }'
+                    created_at: '${ $context._now }'
+                _resource: a3t/a3t-platform-db
+      catch:
+        do:
+          - note_failed:
+              run:
+                workflow:
+                  namespace: system
+                  name: flow_system_error_handler
+                  input:
+                    error: '${ $context.error }'
+                    flow: a3t/flow_a3t_agent_control
+                    version: 1.1.2
+                    run_id: '${ (($workflow // {}).id // "") | tostring }'
+                    principal: '${ $context._who }'
+                    step: note_event
+  - note_done:
+      set:
+        done: true
+      output:
+        as: '${ $context._out }'
+      then: end

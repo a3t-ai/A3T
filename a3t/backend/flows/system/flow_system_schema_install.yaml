@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: system
   name: flow_system_schema_install
-  version: 1.2.0
+  version: 1.3.0
 metadata:
   a3t:
     extends: system/flow_system_base@1.0.0
@@ -12,7 +12,7 @@ do:
     with:
       operation: create_table
       table: orgs
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         name: string
@@ -27,7 +27,7 @@ do:
     with:
       operation: create_table
       table: users
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -46,7 +46,7 @@ do:
     with:
       operation: create_table
       table: sessions
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         user_id: string
@@ -62,7 +62,7 @@ do:
     with:
       operation: create_table
       table: api_keys
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         user_id: string
@@ -79,7 +79,7 @@ do:
     with:
       operation: create_table
       table: invitations
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -96,7 +96,7 @@ do:
     with:
       operation: create_table
       table: roles
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -110,7 +110,7 @@ do:
     with:
       operation: create_table
       table: permissions
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         role_id: string
@@ -124,7 +124,7 @@ do:
     with:
       operation: create_table
       table: template_registry
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -146,7 +146,7 @@ do:
     with:
       operation: create_table
       table: agent_configs
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -167,7 +167,7 @@ do:
     with:
       operation: create_table
       table: agent_events
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         agent_config_id: string
@@ -180,7 +180,7 @@ do:
     with:
       operation: create_table
       table: resource_registry
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -198,7 +198,7 @@ do:
     with:
       operation: create_table
       table: canvas_specs
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -216,7 +216,7 @@ do:
     with:
       operation: create_table
       table: canvas_events
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         canvas_id: string
@@ -229,7 +229,7 @@ do:
     with:
       operation: create_table
       table: audit_log
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -246,7 +246,7 @@ do:
     with:
       operation: create_table
       table: settings
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         org_id: string
@@ -262,7 +262,7 @@ do:
     with:
       operation: create_table
       table: a3t_errors
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         created_at: string
@@ -285,7 +285,7 @@ do:
     with:
       operation: create_table
       table: a3t_agent_turns
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         at: string
@@ -310,7 +310,7 @@ do:
     with:
       operation: create_table
       table: agent_relations
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         agent_id: string
@@ -328,7 +328,7 @@ do:
     with:
       operation: create_table
       table: agent_shares
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         agent_id: string
@@ -346,7 +346,7 @@ do:
     with:
       operation: create_table
       table: early_access_requests
-      mode: create_if_not_exists
+      mode: create_or_reset_empty
       schema:
         id: string
         name: string

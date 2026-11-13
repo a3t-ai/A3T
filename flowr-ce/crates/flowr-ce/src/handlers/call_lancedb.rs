@@ -67,6 +67,24 @@ impl TaskHandler for LanceDbHandler {
             "create_table" => {
                 let mode = with.get("mode").and_then(|v| v.as_str()).unwrap_or("create_if_not_exists");
                 let schema = with.get("schema").and_then(|v| v.as_object());
+                // `create_or_reset_empty`: as create_if_not_exists, but a table that
+                // exists with no rows is made again with `schema`, so a table first made
+                // without its columns (filters on them fail) heals on the next install.
+                // A table with rows is never touched.
+                if mode == "create_or_reset_empty" {
+                    if let Some(s) = schema {
+                        if db.list_tables().await.map_err(comm)?.iter().any(|t| t == table_name) {
+                            let rows: usize = db.query(table_name, None, 1).await.map_err(comm)?.iter().map(|b| b.num_rows()).sum();
+                            if rows > 0 {
+                                return Ok(TaskResult::new(json!({"created": false, "exists": true})));
+                            }
+                            let columns: Vec<String> = s.keys().cloned().collect();
+                            db.replace_table(table_name, &columns, &[]).await.map_err(comm)?;
+                            return Ok(TaskResult::new(json!({"created": false, "exists": true, "reset": true, "table": table_name})));
+                        }
+                    }
+                    return Ok(TaskResult::new(db.create_table(table_name, schema, "create_if_not_exists").await.map_err(comm)?));
+                }
                 Ok(TaskResult::new(db.create_table(table_name, schema, mode).await.map_err(comm)?))
             }
 

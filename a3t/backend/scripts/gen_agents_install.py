@@ -41,7 +41,7 @@ AGENTS = [
                "tool_a3t_agent_record_create": {"namespace": "a3t", "name": "flow_a3t_agents", "wrap": "input", "input": {"input": {"action": "create"}}, "description": "Write an agent record as given (prefer tool_a3t_agent_create)."},
                **{f"tool_a3t_agent_{a}": {"namespace": "a3t", "name": "flow_a3t_agent_control", "input": {"action": a},
                                           "description": f"Agent control plane: {a.replace('_', ' ')}."}
-                  for a in ["create", "lineage", "relate", "compare", "merge", "evolve", "shares", "share", "unshare", "shared_with", "forget", "turns", "memory"]},
+                  for a in ["create", "lineage", "relate", "compare", "merge", "evolve", "shares", "share", "unshare", "shared_with", "forget", "turns", "memory", "block", "unblock"]},
                "tool_a3t_agent_describe": {"namespace": "a3t", "name": "flow_a3t_agent_control", "input": {"action": "get"}, "description": "An agent's record, relation, endpoints and shares."}}},
     {"id": "agent_a3t_templates", "name": "agent_a3t_templates", "prompt": "You manage templates: the code users' agents are made from.",
      "tools": crud("flow_a3t_templates", "template", ["list", "get", "create", "update", "delete"], True)},
@@ -87,7 +87,7 @@ flow = f"""document:
   dsl: '1.0.3'
   namespace: system
   name: flow_system_agents_install
-  version: '1.0.2'
+  version: '1.0.3'
   metadata:
     description: >
       Creates or updates the A3T agents (plan "A3T control plane as A3T agents"):
