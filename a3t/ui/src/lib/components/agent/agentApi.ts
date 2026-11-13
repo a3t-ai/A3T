@@ -23,7 +23,7 @@ export type Lang = 'curl' | 'ts' | 'python';
 export function chatSnippet(lang: Lang, agentId: string): string {
   const url = `${apiBase()}/chat`;
   if (lang === 'curl') return `curl -N -X POST "${url}" \\
-  -H "Authorization: Bearer $A3T_TOKEN" \\
+  -H "Authorization: Bearer $A3T_AGENT_KEY" \\
   -H "Content-Type: application/json" \\
   -H "Accept: text/event-stream" \\
   -d '{"session_id":"${agentId}:conv-1","message":"Hello"}'
@@ -31,10 +31,11 @@ export function chatSnippet(lang: Lang, agentId: string): string {
 # …
 # data: [DONE]`;
   if (lang === 'ts') return `// Streams the agent's answer; onText gets each piece as it is written.
-export async function ask(token: string, message: string, conversationId: string, onText: (t: string) => void): Promise<string> {
+// key: one of the agent's keys (its Keys tab), kept on your server.
+export async function ask(key: string, message: string, conversationId: string, onText: (t: string) => void): Promise<string> {
   const res = await fetch('${url}', {
     method: 'POST',
-    headers: { Authorization: \`Bearer \${token}\`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: { Authorization: \`Bearer \${key}\`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({ session_id: \`${agentId}:\${conversationId}\`, message }),
   });
   if (!res.ok || !res.body) throw new Error(\`\${res.status} \${await res.text()}\`);
@@ -55,10 +56,11 @@ export async function ask(token: string, message: string, conversationId: string
 }`;
   return `import json, requests
 
-def ask(token: str, message: str, conversation_id: str) -> str:
-    """Streams the agent's answer, printing each piece as it is written."""
+def ask(key: str, message: str, conversation_id: str) -> str:
+    """Streams the agent's answer, printing each piece as it is written.
+    key: one of the agent's keys (its Keys tab), kept on your server."""
     res = requests.post("${url}", stream=True,
-        headers={"Authorization": f"Bearer {token}", "Accept": "text/event-stream"},
+        headers={"Authorization": f"Bearer {key}", "Accept": "text/event-stream"},
         json={"session_id": f"${agentId}:{conversation_id}", "message": message})
     res.raise_for_status()
     answer = ""
@@ -74,19 +76,13 @@ def ask(token: str, message: str, conversation_id: str) -> str:
     return answer`;
 }
 
-/// A webhook call: it starts a run of the agent's flow, polled until it completes.
+/// A webhook call: it starts a run of the agent (fire and forget, for events from
+/// other systems). The answer is not returned there; for answers, use POST /chat.
 export function webhookSnippet(url: string, agentId: string): string {
-  const base = apiBase();
-  return `# 1. Send a message: the answer is the run it started
+  return `# Start a run for an event; the answer is not returned (use POST /chat for that)
 curl -s -X POST "${url}" \\
-  -H "Authorization: Bearer $A3T_TOKEN" \\
+  -H "Authorization: Bearer $A3T_AGENT_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"session_id":"${agentId}:conv-1","message":"Hello"}'
-# → {"targets":["<flow> (<run-id>)"]}
-
-# 2. Poll the run until status is "completed"; output.content is the answer
-curl -s -X POST "${base}/message" \\
-  -H "Authorization: Bearer $A3T_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_execution_status","arguments":{"instance_id":"<run-id>"}}}'`;
+  -d '{"session_id":"${agentId}:events","message":"Order 1042 was refunded"}'
+# → {"targets":["<flow> (<run-id>)"]}`;
 }

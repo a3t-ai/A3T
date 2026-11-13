@@ -48,7 +48,7 @@
     </div>
   </div>
 
-  <AgentEndpoints id={agent.id} />
+  <AgentEndpoints id={agent.id} onkeys={() => ongo('keys')} />
 
   <AgentMetrics id={agent.id} />
 

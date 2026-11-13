@@ -5,7 +5,7 @@
   import { addresses, chatCurl } from './controlPlane';
   import { copy } from './agentApi';
 
-  let { id }: { id: string } = $props();
+  let { id, onkeys }: { id: string; onkeys?: () => void } = $props();
   const a = $derived(addresses(id));
   const curl = $derived(chatCurl(id));
   let copied = $state('');
@@ -30,6 +30,7 @@
     <div class="row between"><span class="dim">Call it</span><button class="link" onclick={() => cp('x', curl)}>{copied === 'x' ? 'Copied' : 'Copy'}</button></div>
     <pre>{curl}</pre>
   </div>
+  <p class="dim">Every call needs a token: <span class="mono">$A3T_AGENT_KEY</span> is one of its keys — make and revoke them on its <button class="link" onclick={() => onkeys?.()}>Keys</button> tab.</p>
   <p class="dim">Own addresses per agent (<span class="mono">{id}.run.a3t.io</span>) come with the gateway; these paths keep working.</p>
 </div>
 

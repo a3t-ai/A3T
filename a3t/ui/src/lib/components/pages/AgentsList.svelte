@@ -17,6 +17,8 @@
   import { liveFor } from '$lib/components/agent/agentLive.svelte';
   import '$lib/components/agent/agent.css';
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
+  import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
+  import { keepKey, peekKey } from '$lib/components/agent/keyOnce';
   import { updateAgent } from '$lib/studio-core/adapters/agents';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
@@ -185,6 +187,7 @@
     { id: 'lineage', label: 'Lineage', icon: '<circle cx="8" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="13" r="1.6"/><path d="M8 4.6V8M8 8l-4 3.4M8 8l4 3.4"/>' },
     { id: 'sharing', label: 'Sharing', icon: '<circle cx="12" cy="4" r="2"/><circle cx="4" cy="8" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.8 7l4.4-2M5.8 9l4.4 2"/>' },
     { id: 'access', label: 'Access', icon: '<circle cx="5.5" cy="8" r="3"/><path d="M8.5 8H15M12.5 8v3M14.5 8v2"/>' },
+    { id: 'keys', label: 'Keys', icon: '<circle cx="5" cy="8" r="3"/><path d="M8 8h7M12 8v3M14.5 8v2"/>' },
     { id: 'exposure', label: 'Exposure', icon: '<circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13"/>' },
     { id: 'controls', label: 'Controls', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
     { id: 'audit', label: 'Audit', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
@@ -193,7 +196,7 @@
   ];
   /// Tab names other pages (and earlier versions) link with.
   const TAB_ALIAS: Record<string, string> = {
-    detail: 'overview', api: 'exposure', config: 'access', configure: 'access', policy: 'controls', canvas: 'releases', deploy: 'releases',
+    detail: 'overview', api: 'exposure', tokens: 'keys', token: 'keys', config: 'access', configure: 'access', policy: 'controls', canvas: 'releases', deploy: 'releases',
     branches: 'releases', health: 'audit', activity: 'audit', observe: 'audit', memory: 'audit', ownership: 'settings',
   };
   let activityStart = $state<'memory' | undefined>(undefined);
@@ -263,6 +266,7 @@
     selected = id;
     propNode = 'overview';
     makeKind = null;
+    if (peekKey(id)) propNode = 'keys';
     navigateToDetail('agents', 'Agents', id);
   }
 
@@ -306,10 +310,21 @@
       creatingNew = false;
       newAgent = { name: '', namespace: newNamespace(), template_id: '', template_version: '1.0.0', mode: 'session', target: '', ep_path: '', llm: 'a3t/claude-cli-max', mcp_servers: [], enabled_tools: null };
       await loadAgents();
+      keepNewKey(res.data);
       selectAgent(id);
     } else { error = res.error ?? 'Create failed'; }
     creating = false;
   }
+
+  /// The key the control plane made with a new agent: on its Keys tab, once.
+  function keepNewKey(out: any) {
+    const k = out?.key;
+    const id = out?.agent?.id;
+    if (k?.key && id) keepKey(id, { name: k.name ?? 'default', key: k.key });
+  }
+  // An agent with a key waiting to be copied opens on its Keys tab, whichever way
+  // it is opened after it is made (in place, or the page again).
+  $effect(() => { const id = selected; if (id) untrack(() => { if (peekKey(id)) propNode = 'keys'; }); });
 
   /// Delete an agent, its endpoint and its own canvas. An error, or null.
   async function removeAgent(a: any): Promise<string | null> {
@@ -382,6 +397,7 @@
     });
     makeKind = null;
     await Promise.all([loadAgents(), loadTriggerOptions()]);
+    keepNewKey(r.data);
     selectAgent(id);
     if (!t.ok) error = `It was made, but its endpoint was not: ${t.error}`;
     return null;
@@ -777,6 +793,8 @@
               </AgentAccess>
             {:else if propNode === 'exposure'}
               <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
+            {:else if propNode === 'keys'}
+              <AgentKeys {agent} canEdit={$canEditAgent} />
             {:else if propNode === 'controls'}
               <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} onreload={loadAgents} ongo={goTab} />
             {:else if propNode === 'releases'}

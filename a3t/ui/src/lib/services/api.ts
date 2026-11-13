@@ -641,9 +641,14 @@ export const agentSpaceApi = {
   dropBranch: (id: string, name: string) => request(ag(id, `/branches/${encodeURIComponent(name)}`), { method: 'DELETE' }),
   conflicts: (id: string, name: string) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/conflicts`)),
   merge: (id: string, name: string, body: Record<string, unknown>) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/merge`), { method: 'POST', body: JSON.stringify(body) }),
+  /// Its keys: tokens for its data plane. A new key is returned once (`key`).
+  keys: (id: string) => request<{ keys: AgentKey[] }>(ag(id, '/keys')),
+  makeKey: (id: string, name: string) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name }) }),
+  revokeKey: (id: string, keyId: string) => request(ag(id, `/keys/${encodeURIComponent(keyId)}`), { method: 'DELETE' }),
   promote: (id: string, name: string, newAgent: { id: string; name: string }) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/promote`), { method: 'POST', body: JSON.stringify({ new_agent: newAgent }) }),
 };
 export interface AgentVersion { version: string; template: { id: string; version: string }; memory: { namespace: string; tag: string } | null; note: string; created_by: string; created_at: string }
+export interface AgentKey { id: string; name: string; prefix: string; created_by: string; created_at: string; last_used_at: string; revoked_at: string }
 export interface MemoryBranch { id: string; name: string; parent: string; created_by: string; point_ts: number }
 
 export async function agentTool(agent: string, tool: string, args: Record<string, any> = {}): Promise<ApiResponse> {

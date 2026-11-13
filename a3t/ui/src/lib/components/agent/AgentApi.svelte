@@ -28,7 +28,7 @@
       <button class="btn2" onclick={() => cp('url', chatUrl)}>{copied === 'url' ? 'Copied' : 'Copy'}</button></div>
     {#if agent.status === 'blocked'}<div class="note bad">Blocked: every call is refused until it is unblocked in Controls.</div>{/if}
     <dl class="kv">
-      <dt>Auth</dt><dd><span class="mono">Authorization: Bearer &lt;token&gt;</span> — a signed-in user's token; the call runs as that user, and every tool call is checked for the agent <em>and</em> the user.</dd>
+      <dt>Auth</dt><dd><span class="mono">Authorization: Bearer &lt;key&gt;</span> — one of its keys (Keys tab), kept on the calling app's server; or a signed-in user's token. A call without one is refused. Every tool call is checked for the agent <em>and</em> whoever the key runs as.</dd>
       <dt>Body</dt><dd><span class="mono">{'{'} "session_id": "{agent.id}:&lt;conversation&gt;", "message": "…" {'}'}</span> — the same conversation id continues a conversation; a new one starts one.</dd>
       <dt>Agent</dt><dd>Read from its record by the session id: its model, instructions, tools and memory. The caller sends nothing else.</dd>
       <dt>Answer</dt><dd>Server-sent events (the AI SDK UI message stream): <span class="mono">text-delta</span> events as it writes, then <span class="mono">[DONE]</span>.</dd>
@@ -44,10 +44,9 @@
 
   {#if hook}
     <div class="card">
-      <div class="card-head"><h3>Webhook</h3><span>starts a run; poll it for the answer</span></div>
+      <div class="card-head"><h3>Webhook</h3><span>for events: starts a run, returns no answer</span></div>
       <div class="ep"><span class="verb">POST</span><span class="path">{hook}</span>
         <button class="btn2" onclick={() => cp('hook', hook)}>{copied === 'hook' ? 'Copied' : 'Copy'}</button></div>
-      <div class="note bad">Webhook paths are public: a call without a token is accepted and runs without a user (SRV-16).</div>
       <pre class="code">{webhookSnippet(hook, agent.id)}<button class="btn2 copy" onclick={() => cp('wh', webhookSnippet(hook, agent.id))}>{copied === 'wh' ? 'Copied' : 'Copy'}</button></pre>
     </div>
   {/if}

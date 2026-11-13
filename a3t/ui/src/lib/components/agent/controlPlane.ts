@@ -104,7 +104,7 @@ export function chatCurl(id: string): string {
   const a = addresses(id);
   return [
     `curl -N ${a.data} \\`,
-    `  -H "Authorization: Bearer $A3T_TOKEN" \\`,
+    `  -H "Authorization: Bearer $A3T_AGENT_KEY" \\`,
     `  -H "Content-Type: application/json" \\`,
     `  -d '{"session_id":"${id}:s-1","message":"Hello"}'`,
   ].join('\n');
