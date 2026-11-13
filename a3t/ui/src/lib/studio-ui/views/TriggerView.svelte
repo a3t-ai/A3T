@@ -11,21 +11,23 @@
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
   import SaveBar from '../parts/SaveBar.svelte';
   import EditButton from '../parts/EditButton.svelte';
-  import { flows as flowsApi, fromText, ITEM_MIME, setAt, toText, type Doc, type Workspace } from '$lib/studio-core';
+  import { flows as flowsApi, fromText, ITEM_MIME, setAt, type Doc, type Workspace } from '$lib/studio-core';
+  import { toYaml as triggerYaml, fromYaml as triggerFromYaml } from '$lib/components/triggers/triggerSpec';
   import type { Studio } from '../layout.svelte.ts';
 
   let { doc, workspace, studio }: { doc: Doc; workspace: Workspace; studio: Studio } = $props();
 
   type Target = { type: string; namespace?: string; name?: string; agent_id?: string; url?: string; input_mapping?: unknown };
   const kind = $derived(workspace.kindOf(doc));
-  const parsed = $derived(fromText(doc.text));
+  // A trigger's text is YAML (triggerSpec.ts); its problems are shown, not fatal.
+  const parsed = $derived.by(() => { const r = triggerFromYaml(doc.text); return { value: r.trigger, error: r.trigger ? null : r.issues.join(' '), issues: r.issues }; });
   const t = $derived((parsed.value ?? {}) as { name?: string; description?: string; enabled?: boolean; config?: any; targets?: Target[] });
   const cfg = $derived(t.config ?? {});
   const targets = $derived(t.targets ?? []);
   const connected = $derived(new Set(targets.filter((x) => x.type === 'workflow').map((x) => `${x.namespace}/${x.name}`)));
 
   /// Edit one field of the trigger document.
-  const set = (path: (string | number)[], v: unknown) => { if (parsed.value) doc.text = toText(setAt(t, path, v)); };
+  const set = (path: (string | number)[], v: unknown) => { if (parsed.value) doc.text = triggerYaml({ ...(setAt(t, path, v) as any), namespace: (t as any).namespace ?? doc.ref.project }); };
   const CHANNELS = {
     webhook: () => ({ type: 'webhook', path: `/${t.name || 'my-hook'}`, method: 'POST' }),
     cron: () => ({ type: 'cron', expression: '*/5 * * * *', message: '' }),
@@ -121,7 +123,7 @@
   {:else if doc.error}
     <div class="err">Could not load {doc.ref.name}: {doc.error}</div>
   {:else if parsed.error}
-    <div class="err">The trigger is not valid JSON ({parsed.error}) — fix it with Edit.</div>
+    <div class="err">The trigger's YAML has a problem ({parsed.error}) — fix it with Edit.</div>
   {:else}
     <div class="form">
       <div class="col">

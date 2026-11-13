@@ -2,6 +2,7 @@
   /// What Details shows for a list app with nothing picked: the app's banner and
   /// where to start.
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import TriggersGuide from '$lib/components/triggers/TriggersGuide.svelte';
   import { contextLabel } from '$lib/stores/apps.svelte.ts';
 
   type Accent = 'spec' | 'runtime' | 'control' | 'ephemeral';
@@ -21,9 +22,9 @@
     canvas: { headline: 'Deploy a flow as a Canvas.', highlight: 'Canvas', accent: 'control',
       subtitle: 'A canvas is one flow\'s deployment: where it loads, how it scales, what it depends on.',
       description: 'Pick the flow, set placement, lifecycle and health. The canvas resolves to a runtime pool; Deploy puts it there.' },
-    triggers: { headline: 'Route inputs to flows.', highlight: 'inputs', accent: 'runtime',
-      subtitle: 'HTTP endpoints, cron schedules, and event listeners that start workflows and agents.',
-      description: 'Triggers are independent. Any trigger can fan out to several flows. Pause, throttle or rewire without changing the flow itself.' },
+    triggers: { headline: 'Start flows and agents from events.', highlight: 'events', accent: 'runtime',
+      subtitle: 'A webhook call, a schedule, a message on an ADB topic or a platform event — each firing goes to the flows and agents you name, with the input you map.',
+      description: 'A trigger is YAML: what fires it, and where each firing goes. Write it here or in the Studio; pause or rewire it without changing the flow.' },
     resources: { headline: 'Connect your resources.', highlight: 'resources', accent: 'ephemeral',
       subtitle: 'Databases, LLMs, MCP servers, memory — everything agents need.',
       description: 'Resources are named connections to external systems. Register them once, reference them by name in any workflow or agent.' },
@@ -47,6 +48,8 @@
 
 <div class="aw">
   <PageBanner headline={b.headline} highlightWord={b.highlight} subtitle={b.subtitle} description={b.description} accent={b.accent} />
+  <!-- An app with a concept to learn before its first item shows it here. -->
+  {#if appType === 'triggers'}<TriggersGuide />{/if}
 
   <div class="aw-start">
     <span>Pick from {what} in Items to open it here, or ask in Chat.</span>

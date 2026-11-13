@@ -1,33 +1,35 @@
 <script lang="ts">
-  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { inContext, namespacesFor, isPlatform, itemProject, getProject } from '$lib/stores/context.svelte.ts';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
-  import { contextRev_ } from '$lib/stores/apps.svelte.ts';
+  import { contextRev_, bumpItems } from '$lib/stores/apps.svelte.ts';
   import { getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { API_BASE } from '$lib/config';
   import { mcpCall } from '$lib/services/api';
   import { createTrigger, putTrigger } from '$lib/studio-core/adapters/config';
-  import { SvelteFlow, Background, Controls, type Node, type Edge, type Connection, Position } from '@xyflow/svelte';
-  import '@xyflow/svelte/dist/style.css';
-  import TargetNode from '$lib/components/editor/TargetNode.svelte';
+  import '$lib/components/triggers/triggers.css';
+  import TriggersGuide from '$lib/components/triggers/TriggersGuide.svelte';
+  import TriggerTargets from '$lib/components/triggers/TriggerTargets.svelte';
+  import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
+  import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
+  import { toYaml, fromYaml, BODY_OF, targetLabel, type StoredTarget, type SourceKind } from '$lib/components/triggers/triggerSpec';
+  import { agentTool, getAccessToken } from '$lib/services/api';
 
-  const nodeTypes = { target: TargetNode };
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
   import AppHome from '$lib/shell/AppHome.svelte';
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
   import { onMount, untrack } from 'svelte';
-  import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import type { WizardStep } from '$lib/components/shared/WizardSteps.svelte';
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
-  interface TriggerTarget { type: string; namespace?: string; name?: string; agent_id?: string; url?: string }
+  type TriggerTarget = StoredTarget;
   interface Trigger {
     id: string; name: string; namespace: string;
     config: { type: string; path?: string; method?: string; expression?: string; source?: string; message_template?: string; message?: string; timezone?: string; filter?: string; [k: string]: any };
@@ -48,7 +50,7 @@
   // ── Form state ──
   let formName = $state('');
   let formDesc = $state('');
-  let formType = $state<'webhook' | 'cron' | 'event'>('webhook');
+  let formType = $state<SourceKind>('webhook');
   let formEnabled = $state(true);
   let formNs = $state(getProject() || 'default');
   let formPath = $state('/');
@@ -59,7 +61,17 @@
   let formTimezone = $state('');
   let formEventSource = $state('');
   let formEventFilter = $state('');
+  let formTopicRes = $state('a3t/adb');
+  let formTopic = $state('');
+  let formTopicFilter = $state('');
   let formTargets = $state<TriggerTarget[]>([]);
+  /// Agents a trigger can send to (id → name), for the target picker.
+  let agentOptions = $state<{ value: string; label: string }[]>([]);
+  async function loadAgentOptions() {
+    const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_list', { org_id: 'org-default' });
+    agentOptions = (Array.isArray(r.data) ? r.data : []).map((a: any) => ({ value: a.id, label: `${a.name} · ${a.namespace}` }));
+  }
+  const flowOptions = $derived(availableFlows.map((f) => ({ value: `${f.namespace}/${f.name}`, label: `${f.namespace}/${f.name}` })));
 
   // ── Test state ──
   let testPayload = $state('{"message": "Hello from test!"}');
@@ -74,10 +86,10 @@
 
     // Step 1: save trigger first if it hasn't been saved
     if (!editingTrigger) {
-      await saveTrigger();
-      await loadTriggers();
-      // Find the trigger we just created
-      const found = triggers.find(t => t.name === formName);
+      await saveTrigger(true);
+      if (saveError) { testError = `Not saved: ${saveError}`; testRunning = false; return; }
+      // The trigger just made: from now on, edits save to it.
+      const found = triggers.find(t => t.name === formName && (t.namespace || 'default') === (formNs || 'default'));
       if (found) editingTrigger = found;
     }
 
@@ -90,20 +102,24 @@
       const path = formPath.startsWith('/') ? formPath : '/' + formPath;
       const webhookRes = await fetch(`${base}/webhook${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // As you: an agent's webhook takes no call without a token.
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAccessToken() ?? ''}` },
         body: JSON.stringify(payload),
       });
       const webhookData = await webhookRes.json();
 
       if (!webhookRes.ok || webhookData.error) {
-        testError = webhookData.error ?? `HTTP ${webhookRes.status}`;
+        // A mapping that fails, a target that refuses: say which and why.
+        const why = (webhookData.failed ?? []).map((f: any) => f.error).join('\n');
+        testError = why ? `Nothing ran — ${why}` : (webhookData.error ?? `HTTP ${webhookRes.status}`);
         testRunning = false;
         return;
       }
 
       if (!webhookData.executions?.length) {
-        testError = 'Trigger fired but no executions were created';
-        testResult = webhookData;
+        // Nothing to follow: show what the platform answered (a paused target, a URL target).
+        testError = webhookData.delivered ? '' : 'It fired, but nothing ran: no target took it.';
+        testResult = { trigger: webhookData };
         testRunning = false;
         return;
       }
@@ -138,30 +154,10 @@
     }
   }
 
-  // ── Sidebar filter ──
-  let sidebarSearch = $state('');
-  let sidebarFilter = $state<'all' | 'flows' | 'agents'>('all');
-
   // ── Resize state ──
-  let flowListWidth = $state(220);
   let outputHeight = $state(200);
-  let draggingSide = $state(false);
   let draggingBottom = $state(false);
-  let bottomContainer: HTMLDivElement;
   let editorContainer: HTMLDivElement;
-
-  let filteredSidebarItems = $derived.by(() => {
-    let items = availableFlows;
-    if (sidebarFilter === 'agents') items = items.filter(f => f.type === 'agent' || f.name.includes('agent'));
-    else if (sidebarFilter === 'flows') items = items.filter(f => f.type !== 'agent' && !f.name.includes('agent'));
-    if (sidebarSearch) {
-      const q = sidebarSearch.toLowerCase();
-      items = items.filter(f => f.name.toLowerCase().includes(q) || f.namespace.toLowerCase().includes(q));
-    }
-    return items;
-  });
-
-  let connectedKeys = $derived(new Set(formTargets.filter(t => t.type === 'workflow').map(t => `${t.namespace}/${t.name}`)));
 
   // ── Load ──
   async function loadTriggers() {
@@ -196,7 +192,9 @@
     for (const ns of namespacesFor('picker')) {
       const res = await mcpCall('list_flows', { namespace: ns });
       if (res.ok && res.data) {
-        const raw = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+        // A project with no flows answers in words ("No workflows found."), not JSON.
+        let raw: any = res.data;
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = []; } }
         const flows = raw.workflows ?? raw.flows ?? (Array.isArray(raw) ? raw : []);
         for (const f of flows) {
           all.push({ name: f.name, namespace: f.namespace ?? ns, version: f.version, type: f.name.includes('agent') ? 'agent' : 'flow' });
@@ -206,16 +204,10 @@
     availableFlows = all;
   }
 
-  function handleDisconnect(e: Event) {
-    const idx = (e as CustomEvent).detail;
-    if (typeof idx === 'number') removeTarget(idx);
-  }
 
   onMount(() => {
-    loadTriggers(); loadFlows();
+    loadTriggers(); loadFlows(); loadAgentOptions();
     if (getActivePanel()?.props?.create) openCreate();  // the shell's "New trigger"
-    window.addEventListener('trigger-disconnect', handleDisconnect);
-    return () => window.removeEventListener('trigger-disconnect', handleDisconnect);
   });
 
   // ── Form helpers ──
@@ -224,7 +216,8 @@
     formPath = '/'; formMethod = 'POST'; formMsgTemplate = '';
     formCron = '*/5 * * * *'; formCronMsg = ''; formTimezone = '';
     formEventSource = ''; formEventFilter = '';
-    formTargets = []; sidebarSearch = '';
+    formTopicRes = 'a3t/adb'; formTopic = ''; formTopicFilter = '';
+    formTargets = [];
   }
 
   function openCreate() { editingTrigger = null; resetForm(); step = 'details'; view = 'editor'; formRev++; }
@@ -235,11 +228,14 @@
   let saving = $state(false);
   const trgSteps = $derived.by((): WizardStep[] => [
     { id: 'details', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', label: 'Details', hint: 'Name, project, description', ok: !!formName.trim() && !!formNs, need: 'Name the trigger.' },
-    { id: 'source', icon: '<path d="M9 1L3 9h5l-1 6 6-8H8z"/>', label: 'Source', hint: 'What fires it: webhook, cron or event', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : !!formEventSource.trim(),
-      need: formType === 'webhook' ? 'Give the webhook a path.' : formType === 'cron' ? 'Give the schedule a cron expression.' : 'Name the event source.' },
-    { id: 'destinations', icon: '<path d="M2 8h9M8 4l4 4-4 4"/><path d="M14 3v10"/>', label: 'Destinations', hint: 'The flows and agents it delivers to', ok: formTargets.length > 0, need: 'Connect a destination: drag a flow or agent onto the canvas.' },
-    { id: 'test', icon: '<path d="M4 2l10 6-10 6z"/>', label: 'Test', hint: 'Fire it with a sample input', optional: true },
+    { id: 'source', icon: '<path d="M9 1L3 9h5l-1 6 6-8H8z"/>', label: 'On', hint: 'What fires it: a webhook, a schedule, an ADB topic or a platform event', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : formType === 'adb_topic' ? !!formTopic.trim() && !!formTopicRes.trim() : !!formEventSource.trim(),
+      need: formType === 'webhook' ? 'Give the webhook a path.' : formType === 'cron' ? 'Give the schedule a cron expression.' : formType === 'adb_topic' ? 'Name the ADB resource and topic.' : 'Name the event source.' },
+    { id: 'destinations', icon: '<path d="M2 8h9M8 4l4 4-4 4"/><path d="M14 3v10"/>', label: 'Send', hint: 'The flows and agents each firing goes to, and the input each gets', ok: formTargets.length > 0 && formTargets.every(targetOk), need: 'Add a target, and pick its flow or agent.' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'YAML', hint: 'The whole trigger as YAML — the same text the Studio edits' },
+    { id: 'test', icon: '<path d="M4 2l10 6-10 6z"/>', label: 'Test', hint: 'Fire it with a sample body and see what each target got', optional: true },
   ]);
+
+  const targetOk = (g: TriggerTarget) => g.type === 'workflow' ? !!(g.namespace && g.name) : g.type === 'a3t_agent' ? !!g.agent_id : g.type === 'webhook' ? !!g.url : true;
 
   function openEdit(t: Trigger) {
     editingTrigger = t;
@@ -247,8 +243,10 @@
     formEnabled = t.enabled; formNs = t.namespace;
     formPath = t.config.path ?? '/'; formMethod = t.config.method ?? 'POST'; formMsgTemplate = t.config.message_template ?? '';
     formCron = t.config.expression ?? '*/5 * * * *'; formCronMsg = t.config.message ?? ''; formTimezone = t.config.timezone ?? '';
-    formEventSource = t.config.source ?? ''; formEventFilter = t.config.filter ?? '';
-    formTargets = [...t.targets]; sidebarSearch = '';
+    formEventSource = t.config.source ?? ''; formEventFilter = typeof t.config.filter === 'string' ? t.config.filter : '';
+    formTopicRes = t.config.resource ?? 'a3t/adb'; formTopic = t.config.topic ?? '';
+    formTopicFilter = t.config.type === 'adb_topic' && t.config.filter ? JSON.stringify(t.config.filter) : '';
+    formTargets = t.targets.map((g) => ({ ...g }));
     step = 'details';
     view = 'editor';
     formRev++;   // the form now holds the saved trigger
@@ -261,7 +259,36 @@
     if (formType === 'webhook') { c.path = formPath; c.method = formMethod; if (formMsgTemplate) c.message_template = formMsgTemplate; }
     else if (formType === 'cron') { c.expression = formCron; c.message = formCronMsg; if (formTimezone) c.timezone = formTimezone; }
     else if (formType === 'event') { c.source = formEventSource; if (formEventFilter) c.filter = formEventFilter; }
-    return { name: formName, namespace: formNs, config: c, targets: formTargets, enabled: formEnabled, description: formDesc };
+    else if (formType === 'adb_topic') {
+      c.resource = formTopicRes; c.topic = formTopic;
+      if (formTopicFilter.trim()) { try { c.filter = JSON.parse(formTopicFilter); } catch { c.filter = undefined; } }
+    }
+    // Empty mappings are no mapping: the target gets the default.
+    const targets = formTargets.map((g) => Object.fromEntries(Object.entries(g).filter(([, v]) => v !== '' && v != null)) as TriggerTarget);
+    return { name: formName, namespace: formNs, config: c, targets, enabled: formEnabled, description: formDesc };
+  }
+
+  // ── YAML: the form and the text are one trigger ──
+  let yamlIssues = $state<string[]>([]);
+  let yamlRev = $state(0);
+  /// The text in the designer: the form's trigger when the YAML step opens, then
+  /// what is typed (re-made from the form on each keystroke, it would jump).
+  let yamlDraft = $state('');
+  $effect(() => { if (step === 'yaml') untrack(() => { yamlDraft = toYaml(formTrigger() as any); yamlRev++; }); });
+  function applyYaml(text: string) {
+    yamlDraft = text;
+    const r = fromYaml(text);
+    yamlIssues = r.issues;
+    if (!r.trigger || r.issues.length) return;
+    const t = r.trigger;
+    formName = t.name; formNs = t.namespace; formDesc = t.description ?? ''; formEnabled = t.enabled;
+    formType = t.config.type;
+    const c = t.config;
+    if (c.type === 'webhook') { formPath = c.path; formMethod = c.method ?? 'POST'; formMsgTemplate = c.message_template ?? ''; }
+    else if (c.type === 'cron') { formCron = c.expression; formCronMsg = c.message ?? ''; formTimezone = c.timezone ?? ''; }
+    else if (c.type === 'adb_topic') { formTopicRes = c.resource; formTopic = c.topic; formTopicFilter = c.filter ? JSON.stringify(c.filter) : ''; }
+    else { formEventSource = c.source; formEventFilter = typeof c.filter === 'string' ? c.filter : ''; }
+    formTargets = t.targets;
   }
 
   // The chat's context: the trigger in the editor, its step, and the form as edited.
@@ -286,7 +313,8 @@
   });
 
   let saveError = $state('');
-  async function saveTrigger() {
+  /// `stay`: keep the editor open (the Test step saves before it fires).
+  async function saveTrigger(stay = false) {
     const triggerObj = formTrigger();
     // The trigger's fields go at the top level, as the platform's Trigger reads them
     // (a wrapped { trigger } failed both calls, silently).
@@ -295,25 +323,13 @@
     saving = false;
     if (!r.ok) { saveError = r.error; return; }
     saveError = '';
-    view = 'list';
+    if (!stay) view = 'list';
     await loadTriggers();
+    bumpItems();  // the Items list shows it now
   }
 
-  async function deleteTrigger(t: Trigger) { await mcpCall('delete_trigger', { id: t.id }); deleteTarget = null; await loadTriggers(); }
-  async function toggleEnabled(t: Trigger) { await mcpCall(t.enabled ? 'pause_trigger' : 'enable_trigger', { id: t.id }); await loadTriggers(); }
-
-  // ── Side panel resize (flow list width) ──
-  function onSideDragStart(e: MouseEvent) {
-    draggingSide = true; e.preventDefault();
-    const onMove = (ev: MouseEvent) => {
-      if (!bottomContainer) return;
-      const rect = bottomContainer.getBoundingClientRect();
-      const fromRight = rect.right - ev.clientX;
-      flowListWidth = Math.max(140, Math.min(400, fromRight));
-    };
-    const onUp = () => { draggingSide = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
-  }
+  async function deleteTrigger(t: Trigger) { await mcpCall('delete_trigger', { id: t.id }); deleteTarget = null; await loadTriggers(); bumpItems(); }
+  async function toggleEnabled(t: Trigger) { await mcpCall(t.enabled ? 'pause_trigger' : 'enable_trigger', { id: t.id }); await loadTriggers(); bumpItems(); }
 
   // ── Output panel resize (height) ──
   function onBottomDragStart(e: MouseEvent) {
@@ -328,58 +344,8 @@
     window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
   }
 
-  // ── Graph ──
-  let graphNodes = $derived.by<Node[]>(() => {
-    const nodes: Node[] = [];
-    // Trigger node center-left
-    nodes.push({
-      id: 'trigger', position: { x: 80, y: 180 },
-      data: { label: formName || 'Trigger' },
-      sourcePosition: Position.Right, type: 'default',
-      style: 'background: var(--runtime-bg, #e6f4ef); border: 2px solid var(--runtime, #1a7158); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 14px; color: var(--runtime, #1a7158); min-width: 140px; text-align: center;',
-    });
-    // Connected flow nodes
-    formTargets.forEach((t, i) => {
-      const label = t.type === 'workflow' ? `${t.namespace}/${t.name}` : t.type === 'agent' ? `agent:${t.agent_id}` : t.url ?? '';
-      nodes.push({
-        id: `target-${i}`, position: { x: 450, y: 80 + i * 90 },
-        data: { label, targetIdx: i },
-        targetPosition: Position.Left, type: 'target',
-      });
-    });
-    return nodes;
-  });
 
-  let graphEdges = $derived.by<Edge[]>(() => {
-    return formTargets.map((_, i) => ({
-      id: `e-${i}`, source: 'trigger', target: `target-${i}`,
-      type: 'smoothstep', animated: true,
-      style: 'stroke: var(--runtime, #1a7158); stroke-width: 2;',
-    }));
-  });
-
-  // Drop a flow onto the canvas from sidebar
-  function onDropFlow(e: DragEvent) {
-    e.preventDefault();
-    const data = e.dataTransfer?.getData('application/json');
-    if (!data) return;
-    try {
-      const flow = JSON.parse(data) as FlowSummary;
-      if (connectedKeys.has(`${flow.namespace}/${flow.name}`)) return;
-      formTargets = [...formTargets, { type: 'workflow', namespace: flow.namespace, name: flow.name }];
-    } catch {}
-  }
-
-  function onDragOver(e: DragEvent) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'link'; }
-
-  function onDragFlowStart(e: DragEvent, f: FlowSummary) {
-    e.dataTransfer?.setData('application/json', JSON.stringify(f));
-    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'link';
-  }
-
-  function removeTarget(idx: number) { formTargets = formTargets.filter((_, i) => i !== idx); }
-
-  function typeIcon(t: string) { return t === 'webhook' ? 'W' : t === 'cron' ? 'C' : t === 'event' ? 'E' : '?'; }
+  function typeIcon(t: string) { return t === 'webhook' ? 'W' : t === 'cron' ? 'C' : t === 'event' ? 'E' : t === 'adb_topic' ? 'T' : '?'; }
   function typeStyle(t: string) {
     return t === 'webhook' ? 'background: var(--runtime-bg, #e6f4ef); color: var(--runtime, #1a7158);'
       : t === 'cron' ? 'background: var(--control-bg, #fdf0e0); color: var(--control, #c97c2e);'
@@ -398,10 +364,11 @@
   </div>
 </div>
 <div class="trg-page">
-  <PageBanner headline="Route inputs to flows." highlightWord="inputs"
-    subtitle="HTTP endpoints, cron schedules, and event listeners that trigger workflows and agents."
-    description="Triggers are independent. Any trigger can fan out to multiple flows. Pause, throttle, or rewire without changing the flow itself."
+  <PageBanner headline="Start flows and agents from events." highlightWord="events"
+    subtitle="A webhook call, a schedule, a message on an ADB topic or a platform event — each firing goes to the flows and agents you name, with the input you map."
+    description="A trigger is YAML: what fires it, and where each firing goes. Write it here or in the Studio; pause or rewire it without changing the flow."
     accent="runtime" />
+  <div class="trg-how"><TriggersGuide oncreate={openCreate} /></div>
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="triggers" embedded />
@@ -423,11 +390,12 @@
               {#if t.config.type === 'webhook'}<span class="trg-detail">{t.config.method ?? 'POST'} {t.config.path}</span>{/if}
               {#if t.config.type === 'cron'}<span class="trg-detail">{t.config.expression}</span>{/if}
               {#if t.config.type === 'event'}<span class="trg-detail">{t.config.source}</span>{/if}
+              {#if t.config.type === 'adb_topic'}<span class="trg-detail">{t.config.resource} · {t.config.topic}</span>{/if}
             </div>
             {#if t.targets.length > 0}
               <div class="trg-targets">
                 {#each t.targets as tgt}
-                  <span class="trg-target">{tgt.type === 'workflow' ? `${tgt.namespace}/${tgt.name}` : tgt.type === 'agent' ? `agent:${tgt.agent_id}` : tgt.url}</span>
+                  <span class="trg-target">{targetLabel(tgt)}{tgt.input_mapping || tgt.message ? ' · mapped' : ''}</span>
                 {/each}
               </div>
             {/if}
@@ -470,18 +438,16 @@
 
 <!-- ═══════════ EDITOR (SlidePanel pop-in) ═══════════ -->
 <!-- Open in Studio once it is saved: the Studio opens a trigger by its id. -->
-<SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={saveTrigger}
+<SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={() => saveTrigger()}
   onopenineditor={editingTrigger ? () => openInStudio('trigger', editingTrigger!.namespace || 'default', editingTrigger!.name, editingTrigger!.id) : undefined}>
-  <div class="te-wiz">
-  <aside class="te-rail">
-    <div class="te-rail-head">
-      <div class="te-rail-icon">{(formName || 'NT').slice(0, 2).toUpperCase()}</div>
-      <div><div class="te-rail-name">{formName || 'New trigger'}</div><div class="te-rail-meta">{formType} · {formNs || '—'}</div></div>
-      <DetailActionsBar />
-    </div>
-    <WizardSteps steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }} />
-  </aside>
-  <div class="te" bind:this={editorContainer}>
+  <!-- The same frame as an agent's or a template's details: header and steps
+       (PropertiesTree), then the step's page at the details width. -->
+  <div class="panel-layout">
+  <PropertiesTree icon={(formName || 'NT').slice(0, 2).toUpperCase()} color="#1a7158"
+    name={formName || 'New trigger'} meta={`${formType} · ${formNs || '—'}`} nodes={[]}
+    steps={trgSteps} wizard={!editingTrigger} activeNode={step}
+    onselect={(id) => { step = id; if (id === 'test') showOutput = true; }} />
+  <div class="panel-col te trg-ui" bind:this={editorContainer}>
     {#if saveError}<div class="te-error" role="alert">Could not save: {saveError}</div>{/if}
     <!-- Details / Source -->
     {#if step === 'details' || step === 'source'}
@@ -510,6 +476,9 @@
             <button class="tf-type" class:active={formType === 'cron'} onclick={() => formType = 'cron'}>
               <span class="tf-ti" style="background:var(--control-bg);color:var(--control);">C</span> Cron
             </button>
+            <button class="tf-type" class:active={formType === 'adb_topic'} onclick={() => formType = 'adb_topic'}>
+              <span class="tf-ti" style="background:var(--spec-bg);color:var(--spec);">T</span> ADB topic
+            </button>
             <button class="tf-type" class:active={formType === 'event'} onclick={() => formType = 'event'}>
               <span class="tf-ti" style="background:var(--signal-bg);color:var(--signal);">E</span> Event
             </button>
@@ -527,107 +496,61 @@
               <label><span>Expression</span><input type="text" bind:value={formCron} placeholder="*/5 * * * *" /></label>
               <label><span>Timezone</span><input type="text" bind:value={formTimezone} placeholder="UTC" /></label>
             </div>
+          {:else if formType === 'adb_topic'}
+            <div class="tf-row2">
+              <label><span>ADB resource</span><input type="text" bind:value={formTopicRes} placeholder="a3t/adb" /></label>
+              <label><span>Topic</span><input type="text" bind:value={formTopic} placeholder="orders" /></label>
+            </div>
+            <label class="tf-full"><span>Only messages where (optional)</span><input type="text" class="mono" bind:value={formTopicFilter} placeholder={'{"kind": "refund"}'} /></label>
+            <div class="tf-note">Fires once per message published to the topic, on every FlowR, one run per message. <b>Kafka, Postgres and Pulsar</b> come in this way: ADB connects to them and publishes their events to a topic, which a trigger like this one starts flows and agents from. The ADB connectors are requested from ADB (parked).</div>
           {:else if formType === 'event'}
             <label class="tf-full"><span>Source</span><input type="text" bind:value={formEventSource} placeholder="system.workflow.completed" /></label>
           {/if}
+          <div class="tf-note">Its targets' expressions read <span class="mono">.body</span>: {BODY_OF[formType]}.</div>
         </div>
         {/if}
       </div>
     </div>
     {/if}
 
-    {#if step === 'destinations' || step === 'test'}
-    <!-- Connected targets bar -->
-    {#if formTargets.length > 0}
-      <div class="te-targets-bar">
-        <span class="te-tb-label">Connected ({formTargets.length})</span>
-        {#each formTargets as tgt, i}
-          <span class="te-tb-chip">
-            {tgt.type === 'workflow' ? `${tgt.namespace}/${tgt.name}` : tgt.agent_id ?? tgt.url}
-            <button class="te-tb-rm" onclick={() => removeTarget(i)} title="Disconnect">
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L4 12M4 4l8 8"/></svg>
-            </button>
-          </span>
-        {/each}
+    {#if step === 'destinations'}
+      <div class="te-form">
+        <WizardHead step={trgSteps.find((x) => x.id === step)} />
+        <TriggerTargets bind:targets={formTargets} flows={flowOptions} agents={agentOptions} source={formType} trigger={formName} />
       </div>
     {/if}
 
-    <!-- BOTTOM: Canvas (left) + divider + Flow/Agent list (right) -->
-    <div class="te-bottom" class:dragging-side={draggingSide} bind:this={bottomContainer} style="grid-template-columns: 1fr 5px {flowListWidth}px;">
-      <!-- Canvas -->
-      <div class="te-canvas" ondrop={onDropFlow} ondragover={onDragOver}>
-        <SvelteFlow nodes={graphNodes} edges={graphEdges} {nodeTypes} fitView
-          defaultEdgeOptions={{ type: 'smoothstep', animated: true, style: 'stroke: var(--runtime, #1a7158); stroke-width: 2;' }}
-        >
-          <Background />
-          <Controls />
-        </SvelteFlow>
-        {#if formTargets.length === 0}
-          <div class="te-canvas-hint">Drag flows from the right and drop here</div>
-        {/if}
-        <!-- Test button -->
-        {#if formType === 'webhook' && formTargets.length > 0}
-          <button class="te-test-btn" class:running={testRunning} onclick={runTest} disabled={testRunning}>
-            {#if testRunning}
-              <span class="te-test-spin"></span> Running...
-            {:else}
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><polygon points="3,2 13,8 3,14"/></svg>
-              Test
-            {/if}
-          </button>
+    {#if step === 'yaml'}
+      <div class="te-form">
+        <WizardHead step={trgSteps.find((x) => x.id === step)} />
+        <p class="tf-note">The trigger as code, in the flow designer: Graph shows what fires it and where each firing goes; Code is the YAML — change it here or in the form, they are one. <span class="mono">on</span> is what fires it; <span class="mono">send</span> the targets, each with its <span class="mono">input</span> (a flow) or <span class="mono">message</span> and <span class="mono">conversation</span> (an agent), in jq over the event.</p>
+        <div class="te-yaml">{#key yamlRev}
+          <FlowEditorPane part="main" initialYaml={yamlDraft} onchange={applyYaml}>
+            {#snippet toolbar()}<span class="grow"></span><span class="ver mono">{formNs || 'default'}/{formName || 'new trigger'}</span>
+              {#if editingTrigger}<button class="link" onclick={() => openInStudio('trigger', editingTrigger!.namespace || 'default', editingTrigger!.name, editingTrigger!.id)}>Edit in Studio →</button>{/if}{/snippet}
+          </FlowEditorPane>
+        {/key}</div>
+        {#if yamlIssues.length}<ul class="te-issues">{#each yamlIssues as i (i)}<li>{i}</li>{/each}</ul>{/if}
+      </div>
+    {/if}
+
+    {#if step === 'test'}
+      <div class="te-form">
+        <WizardHead step={trgSteps.find((x) => x.id === step)} />
+        {#if formType === 'webhook'}
+          <p class="tf-note">Fires <span class="mono">{formMethod} /webhook{formPath.startsWith('/') ? formPath : '/' + formPath}</span> with this body, as you{editingTrigger ? '' : ' (it is saved first)'}; each target runs with the input its mapping makes.</p>
+          <div class="row"><button class="btn2 primary" onclick={runTest} disabled={testRunning || !formTargets.length}>{testRunning ? 'Firing…' : 'Fire it'}</button>
+            {#if testResult?.trigger?.executions?.length}<span class="dim">{testResult.trigger.executions.length} run{testResult.trigger.executions.length === 1 ? '' : 's'} started</span>{/if}</div>
+        {:else}
+          <p class="tf-note">{formType === 'cron' ? 'A schedule fires on its own, each minute its expression matches, once saved and enabled.' : formType === 'adb_topic' ? 'It fires on each message published to its topic, once saved and enabled.' : 'It fires on each matching platform event, once saved and enabled.'} Its runs show in Executions.</p>
         {/if}
       </div>
-
-      <!-- Side divider -->
-      <div class="te-side-divider" onmousedown={onSideDragStart} role="separator"></div>
-
-      <!-- Flow/Agent list (drag source) -->
-      <div class="te-flowlist">
-        <div class="te-fl-header">
-          <div class="te-fl-tabs">
-            <button class="te-fl-tab" class:active={sidebarFilter === 'all'} onclick={() => sidebarFilter = 'all'}>All</button>
-            <button class="te-fl-tab" class:active={sidebarFilter === 'flows'} onclick={() => sidebarFilter = 'flows'}>Flows</button>
-            <button class="te-fl-tab" class:active={sidebarFilter === 'agents'} onclick={() => sidebarFilter = 'agents'}>Agents</button>
-          </div>
-          <div class="te-fl-search">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4"/><path d="M10 10l3.5 3.5"/></svg>
-            <input type="text" bind:value={sidebarSearch} placeholder="Filter..." />
-          </div>
-        </div>
-        <div class="te-fl-list">
-          {#each filteredSidebarItems as f}
-            {@const connected = connectedKeys.has(`${f.namespace}/${f.name}`)}
-            <div class="te-fl-item" class:connected
-              draggable={connected ? 'false' : 'true'}
-              ondragstart={(e) => { if (!connected) onDragFlowStart(e, f); else e.preventDefault(); }}
-              role="listitem">
-              <span class="te-fl-drag">
-                {#if !connected}<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><circle cx="5" cy="4" r="1.3"/><circle cx="11" cy="4" r="1.3"/><circle cx="5" cy="8" r="1.3"/><circle cx="11" cy="8" r="1.3"/><circle cx="5" cy="12" r="1.3"/><circle cx="11" cy="12" r="1.3"/></svg>{/if}
-              </span>
-              <span class="te-fl-icon" class:agent={f.type === 'agent'}>{f.type === 'agent' ? 'A' : 'F'}</span>
-              <div class="te-fl-info">
-                <span class="te-fl-name">{f.name}</span>
-                <span class="te-fl-ns">{f.namespace}</span>
-              </div>
-              {#if connected}<span class="te-fl-linked">linked</span>{/if}
-            </div>
-          {/each}
-          {#if filteredSidebarItems.length === 0}
-            <div class="te-fl-empty">No items</div>
-          {/if}
-        </div>
-      </div>
-    </div>
-
     {/if}
 
-    {#if step === 'test' && !(formType === 'webhook' && formTargets.length > 0)}
-      <div class="te-note">{formType !== 'webhook' ? 'Test fires webhook triggers from here; a cron or event trigger runs on its schedule or event once saved.' : 'Connect a destination first — Test sends the input below to it.'}</div>
-    {/if}
     <!-- Output panel -->
-    {#if showOutput && step === 'test'}
+    {#if step === 'test' && formType === 'webhook'}
       <div class="te-bottom-divider" class:dragging-bottom={draggingBottom} onmousedown={onBottomDragStart} role="separator"></div>
-      <div class="te-output" style="height: {outputHeight}px;">
+      <div class="te-output" style="height: {Math.max(outputHeight, 260)}px;">
         <div class="te-out-header">
           <span class="te-out-title">Test</span>
           {#if testResult?.phase === 'completed'}<span class="te-out-badge ok">completed</span>{/if}
@@ -635,14 +558,12 @@
           {#if testResult?.phase === 'running'}<span class="te-out-badge run">running ({testResult.poll ?? 0}s)</span>{/if}
           {#if testResult?.instanceId}<span class="te-out-id">{testResult.instanceId}</span>{/if}
           <span style="flex:1"></span>
-          <button class="te-out-close" onclick={() => showOutput = false}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4L4 12M4 4l8 8"/></svg>
-          </button>
+
         </div>
         <div class="te-out-split">
           <!-- INPUT -->
           <div class="te-out-pane">
-            <div class="te-out-pane-label">INPUT</div>
+            <div class="te-out-pane-label">BODY IT POSTS</div>
             <textarea class="te-out-editor" bind:value={testPayload} placeholder='&#123;"message": "Hello"&#125;' spellcheck="false"></textarea>
           </div>
           <!-- OUTPUT -->
@@ -667,7 +588,7 @@
       </div>
     {/if}
     <WizardNav steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => { step = id; if (id === 'test') showOutput = true; }}
-      final={saveTrigger} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
+      final={() => saveTrigger()} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
   </div>
   </div>
 </SlidePanel>
@@ -678,6 +599,23 @@
   onconfirm={() => deleteTrigger(deleteTarget!)} oncancel={() => deleteTarget = null} />
 
 <style>
+  .tf-note .link { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font: inherit; }
+  .trg-how { margin: 16px 0 20px; }
+  .grow { flex: 1 1 auto; }
+  .mono { font-family: var(--font-mono); font-size: 0.92em; }
+  /* As an agent's Build › Code: the designer pane, framed. */
+  .te-yaml { height: max(480px, calc(100vh - 380px)); margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .te-yaml > :global(*) { flex: 1; min-height: 0; }
+  .te-yaml .ver { font-size: 12px; color: var(--text-3); }
+  .te-yaml .link { border: 0; background: none; padding: 0 8px; color: var(--spec); cursor: pointer; font: 500 12.5px var(--font-sans); }
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+  .panel-col { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+  @container details (max-width: 560px) { .te-form { padding: 16px 14px; } }
+  .te-issues { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--err); }
+  .tf-note { font-size: 12.5px; color: var(--text-3); line-height: 1.55; margin: 6px 0 0; }
+  .te-form .row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .te-form .dim { font-size: 12.5px; color: var(--text-3); }
+  .te-form .mono, .tf-note .mono { font-family: var(--font-mono); font-size: 0.92em; }
   /* ═══ LIST VIEW ═══ */
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
@@ -710,14 +648,6 @@
 
   /* ═══ EDITOR (inside SlidePanel) ═══ */
   .te { display: flex; flex-direction: column; height: 100%; }
-  .te-wiz { display: grid; grid-template-columns: 280px 1fr; height: 100%; min-height: 0; }
-  .te-wiz > .te { min-width: 0; min-height: 0; }
-  .te-rail { display: flex; flex-direction: column; min-height: 0; background: var(--bg-surface); border-right: 1px solid var(--border); }
-  .te-rail-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
-  .te-rail-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; background: var(--runtime, #1a7158); }
-  .te-rail-head > div:last-child { min-width: 0; }
-  .te-rail-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .te-rail-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .te-note { padding: 10px 16px; font-size: 12.5px; color: var(--text-3); background: var(--bg-subtle); border-top: 1px solid var(--border); }
 
   /* TOP: form — two columns side by side */

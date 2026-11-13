@@ -1,0 +1,5 @@
+/* The Triggers app's buttons: the same as the agent pane's (agent.css), scoped to .trg-ui. */
+.trg-ui .btn2 { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12.5px var(--font-sans); color: var(--text-1); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.trg-ui .btn2:hover:not(:disabled) { border-color: var(--spec); }
+.trg-ui .btn2.primary { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
+.trg-ui .btn2:disabled { opacity: 0.5; cursor: default; }

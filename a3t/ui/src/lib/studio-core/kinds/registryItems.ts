@@ -7,6 +7,7 @@ import * as act from '../adapters/act';
 import { fail, ok } from '../items';
 import { fromText, maskedPaths, toText } from '../config';
 import { listTriggers } from '../adapters/registry';
+import { toYaml as triggerYaml, fromYaml as triggerFromYaml } from '$lib/components/triggers/triggerSpec';
 import { startingConfig, categoryOf } from '../resourceTypes';
 import type { Doc } from '../workspace';
 import type { ItemKind, PanelDef } from './types';
@@ -44,8 +45,10 @@ export const resourceConfig: Pick<ItemKind, 'load' | 'push' | 'dirty' | 'masked'
     loaded(doc, toText(r.data.config), r.data);
   },
   async push(doc) {
-    const { value, error } = fromText(doc.text);
-    if (error) return fail(`Not valid JSON: ${error}`);
+    const parsed = triggerFromYaml(doc.text);
+    if (!parsed.trigger) return fail(parsed.issues.join(' '));
+    if (parsed.issues.length) return fail(parsed.issues.join(' '));
+    const { namespace: _ns, ...value } = parsed.trigger as any;
     if (doc.isNew) {
       if (!NAME.test(doc.ref.name)) return fail(`Name it: ${checkName(doc.ref.name)}`);
       const c = await config.createResource(doc.ref.project, doc.ref.name, doc.type ?? 'secret', value);
@@ -78,7 +81,8 @@ export const triggerKind: ItemKind = {
     const name = n > 1 ? `new-trigger-${n}` : 'new-trigger';
     return {
       ref: { project, kind: 'trigger', name },
-      text: toText({ name, enabled: true, description: '', config: { type: 'webhook', path: `/${name}`, method: 'POST' }, targets: [] }),
+      // A trigger is YAML (components/triggers/triggerSpec.ts), as on the Triggers page.
+      text: triggerYaml({ name, namespace: project, enabled: true, description: '', config: { type: 'webhook', path: `/${name}`, method: 'POST' }, targets: [] }),
     };
   },
   checkName,
@@ -92,8 +96,8 @@ export const triggerKind: ItemKind = {
     if (!id) { doc.error = 'This trigger has no id'; return; }
     const r = await config.getTrigger(id);
     if (!r.ok) { doc.error = r.error; return; }
-    const { name, enabled, description, config: c, targets } = r.data;
-    loaded(doc, toText({ name, enabled, description: description ?? '', config: c, targets }), r.data);
+    const { name, enabled, description, config: c, targets, namespace } = r.data;
+    loaded(doc, triggerYaml({ name, namespace: namespace ?? doc.ref.project, enabled, description: description ?? '', config: c, targets }), r.data);
   },
   async push(doc) {
     const { value, error } = fromText(doc.text);

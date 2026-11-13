@@ -697,7 +697,7 @@ export interface WorkflowGraph {
     hasExtensions: boolean;
     extensionCount: number;
     taskCount: number;
-    format: 'flowr' | 'cncf-dsl' | 'unknown';
+    format: 'flowr' | 'cncf-dsl' | 'trigger' | 'unknown';
   };
 }
 
@@ -731,6 +731,63 @@ function extractAgentConfig(parsed: any): any {
   return parsed.config ?? parsed;
 }
 
+/** A trigger document (triggerSpec.ts): `on` (what fires it) and `send` (its targets). */
+export function isTriggerYaml(parsed: any): boolean {
+  return !!parsed && typeof parsed === 'object' && !!parsed.on && typeof parsed.on === 'object' && Array.isArray(parsed.send);
+}
+
+const short = (v: unknown, n = 44) => { const t = String(v ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+
+/**
+ * A trigger as a graph, with the flow nodes: its name, what fires it (a listen
+ * step), then one column per target — the mapping (a set step, the jq it runs)
+ * and the target (a flow run, an agent call, a URL).
+ */
+function parseTriggerToGraph(parsed: any): WorkflowGraph {
+  const g = new GraphBuilder();
+  const send: any[] = parsed.send ?? [];
+  const kind = (['webhook', 'cron', 'adb_topic', 'event'] as const).find((k) => parsed.on?.[k]) ?? 'webhook';
+  const on = parsed.on?.[kind] ?? {};
+  const fired = kind === 'webhook' ? `${on.method ?? 'POST'} /webhook${on.path ?? ''}`
+    : kind === 'cron' ? `${on.expression ?? ''}${on.timezone ? ` · ${on.timezone}` : ''}`
+    : kind === 'adb_topic' ? `${on.resource ?? ''} · ${on.topic ?? ''}` : String(on.source ?? '');
+
+  const cols = Math.max(1, send.length);
+  const cx = 300 + ((cols - 1) * COL_W) / 2;
+  const startId = g.id('start');
+  g.node(startId, 'flowMarker', cx - 20, 10, { label: parsed.name ?? 'trigger', marker: 'start' });
+  const srcId = g.id('on');
+  const srcY = 80;
+  g.node(srcId, 'step', cx - NODE_W / 2, srcY, { label: `on ${kind}`, callType: 'listen', server: fired });
+  g.edge(startId, srcId, { animated: true });
+
+  const mapY = srcY + NODE_H + GAP_V, tgtY = mapY + NODE_H + GAP_V;
+  send.forEach((t, i) => {
+    const x = 300 + i * COL_W - NODE_W / 2;
+    const mapId = g.id('map');
+    const expr = t?.flow ? t.input : t?.agent ? t.message : null;
+    g.node(mapId, 'step', x, mapY, {
+      label: t?.flow ? 'input' : t?.agent ? 'message' : 'as sent',
+      callType: 'set',
+      server: expr ? short(expr) : t?.flow ? 'the body as it came' : t?.agent ? "the trigger's message" : 'the event, posted',
+      exportAs: t?.agent && t.conversation ? `conversation ${short(t.conversation, 28)}` : undefined,
+    });
+    g.edge(srcId, mapId, { animated: true, label: send.length > 1 ? `send ${i + 1}` : 'send' });
+    const tgtId = g.id('to');
+    const [callType, label, subtitle] = t?.flow ? ['run:workflow', String(t.flow).split('/').pop(), String(t.flow).split('/')[0]]
+      : t?.agent ? ['call:agent', String(t.agent), 'an agent turn']
+      : t?.url ? ['call:http', short(t.url, 30), 'POST'] : ['emit', String(t?.inbox ?? '?'), 'inbox'];
+    g.node(tgtId, 'step', x, tgtY, { label, callType, server: subtitle });
+    g.edge(mapId, tgtId, { animated: true });
+  });
+
+  return {
+    nodes: g.nodes, edges: g.edges,
+    meta: { name: parsed.name ?? '', namespace: parsed.project ?? 'default', version: '', description: parsed.description,
+      hasExtensions: false, extensionCount: 0, taskCount: send.length, format: 'trigger' },
+  };
+}
+
 export function parseWorkflowToGraph(parsed: any): WorkflowGraph {
   const empty: WorkflowGraph = {
     nodes: [], edges: [],
@@ -738,6 +795,7 @@ export function parseWorkflowToGraph(parsed: any): WorkflowGraph {
   };
 
   if (!parsed || typeof parsed !== 'object') return empty;
+  if (isTriggerYaml(parsed)) return parseTriggerToGraph(parsed);
 
   // Extensions from use block
   const extensions = parsed.use?.extensions ?? [];
