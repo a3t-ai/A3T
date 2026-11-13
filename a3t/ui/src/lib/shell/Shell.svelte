@@ -47,7 +47,7 @@
   ///  - chat: AI Chat itself, laid out like a list app: conversations in Items,
   ///    the open conversation in Details. No Items | Chat toggle — the app is
   ///    the chat, so the list and the conversation sit side by side.
-  const OWN_EXPLORER = new Set(['flow-editor', 'knowledge', 'db-console', 'aql-console', 'console-editor']);
+  const OWN_EXPLORER = new Set(['flow-editor', 'db-console', 'aql-console', 'console-editor']);
   const kind = $derived<'list' | 'own' | 'page' | 'chat'>(
     activeType === 'chat' ? 'chat' : OWN_EXPLORER.has(activeType) ? 'own' : hasContext(activeType) ? 'list' : 'page');
   const ownExplorer = $derived(kind === 'own');

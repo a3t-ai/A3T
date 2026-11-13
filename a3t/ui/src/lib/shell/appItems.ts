@@ -258,6 +258,23 @@ async function loadAll(source: string): Promise<AppItem[]> {
     }));
   }
 
+  if (source === 'kg-dbs') {
+    // The knowledge-graph databases: LanceDB resources that are KGs (kgApi.isKg).
+    const { isKg } = await import('$lib/components/knowledge/kgApi');
+    const nss = namespacesFor('picker');
+    const lists = await Promise.all(nss.map((ns) => within(mcpCall('list_resources', { namespace: ns })).then((r) => [ns, r] as const)));
+    const out: AppItem[] = [];
+    for (const [ns, res] of lists) {
+      if (!res?.ok) continue;
+      for (const r of rows(res.data, 'resources')) {
+        if (!isKg({ type: r.type, name: r.name, config: r.config })) continue;
+        const project = itemProject('resource', r.namespace ?? ns, r);
+        if (!inContext(project, 'shared')) continue;
+        out.push({ id: `${r.namespace ?? ns}~${r.name}`, label: r.name, namespace: project, sub: r.config?.source_space ? `from ${r.config.source_space}` : 'knowledge graph' });
+      }
+    }
+    return out;
+  }
   if (source === 'memory-agents') {
     // The agents, for their memory: each one's mode says how long it remembers.
     const res = await mcpCall('list_agents', {});
