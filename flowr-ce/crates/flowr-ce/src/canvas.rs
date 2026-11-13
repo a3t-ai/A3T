@@ -925,6 +925,25 @@ async fn deploy_flow(
     }
 }
 
+/// The Canvas CR name for a flow or canvas name: Kubernetes names are DNS-1123
+/// labels (lowercase letters, digits and '-', at most 63), and flow names are
+/// `flow_<ns>_<fn>`. A name that had to change gets a short stable hash, so two
+/// names that map to the same text (`a_b`, `a-b`) never share a CR. Deploy and
+/// undeploy both name the CR with this.
+pub(crate) fn cr_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_lowercase() || c.is_ascii_digit() { out.push(c) } else if !out.ends_with('-') { out.push('-') }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out == name && !out.is_empty() && out.len() <= 63 { return out; }
+    // FNV-1a: stable across builds (std's hasher is not).
+    let h = name.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let base: String = out.chars().take(54).collect::<String>().trim_end_matches('-').to_string();
+    format!("{}-{:08x}", if base.is_empty() { "canvas" } else { &base }, h as u32)
+}
+
 /// Push a canvas spec to the A3T controller's HTTP API (`POST /v1/canvas`) under
 /// the CR name `name`. The controller applies the `Canvas` CR → Sandbox; flowr
 /// holds no k8s client.
@@ -934,7 +953,7 @@ async fn push_spec_to_controller(
     name: &str,
     spec: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let body = json!({ "namespace": ns, "name": name, "spec": spec });
+    let body = json!({ "namespace": ns, "name": cr_name(name), "spec": spec });
     let mut req = reqwest::Client::new()
         .post(format!("{}/v1/canvas", url.trim_end_matches('/')))
         .json(&body);
@@ -1015,5 +1034,21 @@ async fn deploy_canvas_resource(
             Json(json!({ "deployed": true, "edition": "ee", "canvas": format!("{ns}/{name}"), "flowRef": spec.flow_ref, "agentRef": spec.agent_ref, "controller": applied })).into_response()
         }
         Err(e) => (axum::http::StatusCode::BAD_GATEWAY, Json(json!({ "deployed": false, "error": format!("controller push failed: {e}") }))).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod cr_name_tests {
+    use super::cr_name;
+    #[test]
+    fn names_are_dns_1123_and_distinct() {
+        assert_eq!(cr_name("ops-ping"), "ops-ping");
+        let a = cr_name("flow_default_refund");
+        assert!(a.starts_with("flow-default-refund-") && a.len() <= 63, "{a}");
+        assert_ne!(cr_name("a_b"), cr_name("a-b"));
+        assert_eq!(cr_name("a_b"), cr_name("a_b"));
+        let long = cr_name(&"x_".repeat(60));
+        assert!(long.len() <= 63 && long.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{long}");
+        assert!(!cr_name("___").starts_with('-'));
     }
 }

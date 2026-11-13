@@ -597,9 +597,10 @@ pub async fn undeploy(storage: &dyn StorageBackend, id: &str, by: &str) -> Resul
     let controller = match std::env::var("A3T_CONTROLLER_URL").ok().filter(|u| !u.is_empty()) {
         None => Value::Null,
         Some(url) => {
-            // The CR path is `ns/name`, exactly the flow ref.
+            // The CR is `ns/<cr_name(flow)>` — the name the deploy route gave it.
+            let (fns, fname) = d.flow_ref.split_once('/').unwrap_or(("default", d.flow_ref.as_str()));
             let mut req = reqwest::Client::new()
-                .delete(format!("{}/v1/canvas/{}", url.trim_end_matches('/'), d.flow_ref))
+                .delete(format!("{}/v1/canvas/{}/{}", url.trim_end_matches('/'), fns, crate::canvas::cr_name(fname)))
                 .timeout(std::time::Duration::from_secs(5));
             if let Ok(tok) = std::env::var("A3T_CONTROLLER_TOKEN") {
                 if !tok.is_empty() {
