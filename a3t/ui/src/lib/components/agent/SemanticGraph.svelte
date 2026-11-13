@@ -181,5 +181,5 @@
   .tip { position: absolute; pointer-events: none; padding: 3px 8px; border-radius: 6px; background: var(--bg-elevated, var(--bg-surface)); border: 1px solid var(--border); font: 12px var(--font-mono); color: var(--text-1); white-space: nowrap; }
   .ctl { position: absolute; top: 8px; right: 10px; display: flex; gap: 10px; }
   .hint { position: absolute; left: 10px; bottom: 6px; margin: 0; font-size: 11px; color: var(--text-4); pointer-events: none; }
-  @media (max-width: 600px) { .graph { height: 300px; } }
+  @container details (max-width: 600px) { .graph { height: 300px; } }
 </style>

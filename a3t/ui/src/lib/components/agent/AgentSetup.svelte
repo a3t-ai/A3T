@@ -217,7 +217,7 @@
   .ck input, .opt input { width: auto; }
   .tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 4px 12px; max-height: 320px; overflow: auto; }
   .tool { font-size: 12px; }
-  @media (max-width: 600px) { .bar input[type='search'], .tbar input[type='search'] { width: 100%; } .cnt { display: none; } }
+  @container details (max-width: 600px) { .bar input[type='search'], .tbar input[type='search'] { width: 100%; } .cnt { display: none; } }
   .mem { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
   .opt { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 400; }
   .opt.on { border-color: var(--spec); background: var(--spec-bg); }

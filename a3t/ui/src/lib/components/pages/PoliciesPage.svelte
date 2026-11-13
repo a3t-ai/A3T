@@ -352,7 +352,7 @@
   .ro-badge { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-4); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
   textarea.code[readonly] { opacity: 0.85; }
   .main { overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 24px; }
-  .editor { display: flex; flex-direction: column; gap: 12px; max-width: 820px; }
+  .editor { display: flex; flex-direction: column; gap: 12px; max-width: var(--detail-w); }
   .ed-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-3); }
   .inp { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, var(--bg-surface)); color: var(--text-1); font-size: 13px; }
@@ -360,7 +360,7 @@
   .code { padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, #12141c); color: var(--text-1); font-family: var(--font-mono, monospace); font-size: 12.5px; line-height: 1.5; resize: vertical; }
   .ed-actions { display: flex; align-items: center; gap: 10px; }
   .save-msg { font-size: 12px; color: var(--text-3); }
-  .test { border-top: 1px solid var(--border); padding-top: 20px; max-width: 820px; }
+  .test { border-top: 1px solid var(--border); padding-top: 20px; max-width: var(--detail-w); }
   .test h2 { font-size: 15px; font-weight: 600; }
   .test-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin: 12px 0; }
   .test-opts { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }

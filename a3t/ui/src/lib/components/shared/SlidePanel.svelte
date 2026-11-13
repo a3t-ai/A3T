@@ -87,6 +87,9 @@
     box-shadow: 0 8px 40px rgba(0,0,0,0.14), 0 2px 10px rgba(0,0,0,0.06), -4px 0 20px rgba(0,0,0,0.04);
     animation: panelIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     display: flex; flex-direction: column;
+    /* Pages inside lay out by the panel's width, not the window's: the Details
+       pane can be narrow in a wide window (@container details (…)). */
+    container: details / inline-size;
   }
   .sp-panel.closing { animation: panelOut 0.2s ease-in forwards; }
   /* In the Details pane: flush with the pane, below the shell's pop-ins. */

@@ -1068,7 +1068,7 @@ do:
   .sp-empty { padding: 40px; text-align: center; color: var(--text-4); font-size: 13px; }
 
   /* Form views */
-  .sp-form { padding: 24px 32px; max-width: 600px; }
+  .sp-form { padding: 24px 32px; max-width: var(--detail-w); }
   .sp-form h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .sf-kv { display: flex; flex-direction: column; }
   .sf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }

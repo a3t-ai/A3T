@@ -120,7 +120,7 @@
   .sentence .role { flex: 0 1 130px; min-width: 100px; }
   .sentence .does { flex: 0 1 140px; min-width: 110px; }
   .sentence .tgt, .sentence .tgt-pick { flex: 1 1 180px; min-width: 100px; }
-  @media (max-width: 700px) { .sentence { flex-wrap: wrap; } }
+  @container details (max-width: 700px) { .sentence { flex-wrap: wrap; } }
   .draft > summary { cursor: pointer; font-size: 12.5px; color: var(--spec); width: fit-content; }
   .draft textarea { width: 100%; margin-top: 8px; font: 12.5px/1.5 var(--font-mono); }
   .ck { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }

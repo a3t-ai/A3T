@@ -1078,7 +1078,7 @@
   .screen-body { flex: 1; overflow-y: auto; padding: 20px 32px 40px; }
   .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 
-  .pj { max-width: 704px; padding: 24px 32px 40px; }
+  .pj { max-width: var(--detail-w); padding: 24px 32px 40px; }
   .pj-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
   .pj-icon { width: 44px; height: 44px; border-radius: var(--r-sm); background: #5530a8; color: white; display: grid; place-items: center; font: 700 13px var(--font-mono); }
   .pj-title { margin: 0; font-family: var(--font-serif); font-size: 22px; font-weight: 500; }

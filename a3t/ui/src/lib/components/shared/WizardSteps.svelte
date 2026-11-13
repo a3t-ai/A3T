@@ -23,6 +23,7 @@
   /// Later steps of a new item stay locked until the ones before are filled in.
   /// `horizontal` is a compact strip for narrow places.
   import { detailsPane } from '$lib/shell/detailsPane';
+  import SwipeStrip from './SwipeStrip.svelte';
   let { steps, active, onselect, wizard = false, orientation: given }: {
     steps: WizardStep[]; active: string; onselect: (id: string) => void;
     /// A new item: go in order. An existing one: any step, any time.
@@ -37,15 +38,18 @@
 </script>
 
 {#if !wizard}
-  <!-- An existing item: plain tabs, any one at a time. -->
-  <nav class="tabs" class:row={orientation === 'horizontal'} aria-label="Sections">
-    {#each steps as s (s.id)}
-      <button class="tab" class:on={s.id === active} onclick={() => onselect(s.id)} aria-current={s.id === active ? 'page' : undefined} title={s.hint ?? s.label}>
-        {#if s.icon}<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">{@html s.icon}</svg>{/if}
-        <span>{s.label}</span>
-      </button>
-    {/each}
-  </nav>
+  <!-- An existing item: plain tabs, any one at a time. Across the top they swipe. -->
+  {#snippet tabs(row: boolean)}
+    <nav class="tabs" class:row aria-label="Sections">
+      {#each steps as s (s.id)}
+        <button class="tab" class:on={s.id === active} onclick={() => onselect(s.id)} aria-current={s.id === active ? 'page' : undefined} title={s.hint ?? s.label}>
+          {#if s.icon}<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">{@html s.icon}</svg>{/if}
+          <span>{s.label}</span>
+        </button>
+      {/each}
+    </nav>
+  {/snippet}
+  {#if orientation === 'horizontal'}<SwipeStrip class="tabstrip">{@render tabs(true)}</SwipeStrip>{:else}{@render tabs(false)}{/if}
 {:else}
 <nav class="ws {orientation}" aria-label="Steps">
   {#each steps as s, i (s.id)}
@@ -78,7 +82,8 @@
   .tab.on { color: var(--text-1); font-weight: 600; background: var(--bg-subtle); box-shadow: inset 3px 0 0 var(--spec, #5530a8); }
   .tab.on svg { color: var(--spec, #5530a8); }
   /* Across the top, as in the shell's Details pane. */
-  .tabs.row { flex-direction: row; padding: 0 12px; gap: 2px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border); container-type: inline-size; }
+  .tabs.row { flex-direction: row; padding: 0 12px; gap: 2px; }
+  :global(.swipe.tabstrip) { border-bottom: 1px solid var(--border); }
   .tabs.row .tab { height: auto; padding: 10px 10px 9px; white-space: nowrap; border-bottom: 2px solid transparent; gap: 7px; }
   .tabs.row .tab:hover { background: none; }
   .tabs.row .tab.on { background: none; box-shadow: none; border-bottom-color: var(--spec, #5530a8); }

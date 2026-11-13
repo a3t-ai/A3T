@@ -91,6 +91,11 @@
   .sw { justify-self: end; display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }
   .sw input { width: auto; }
   .kv { grid-template-columns: 70px 1fr; }
+  /* Narrow pane: what it is on one line, its state and action below. */
+  @container details (max-width: 560px) {
+    .ifs li { grid-template-columns: auto 1fr; }
+    .ifs li > :first-child { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+  }
   pre.code { max-height: 340px; padding-right: 80px; }
   td.err { color: var(--err); }
 </style>

@@ -173,7 +173,7 @@
   .node .tag { align-self: flex-start; }
   .node.me { border: 2px solid var(--spec); background: var(--signal-bg); }
   .ways { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-  @media (max-width: 900px) { .ways { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @container details (max-width: 900px) { .ways { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .way { display: flex; flex-direction: column; gap: 6px; padding: 11px 12px; border: 1px solid var(--border); border-top-width: 3px; border-radius: 10px; background: var(--bg-surface); font-size: 12px; }
   .way b { font: 400 15px var(--font-serif); color: var(--text-1); }
   .way em { font: normal 11.5px var(--font-mono); color: var(--text-1); }

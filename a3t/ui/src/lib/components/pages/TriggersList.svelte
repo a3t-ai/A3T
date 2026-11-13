@@ -721,7 +721,7 @@
   .te-note { padding: 10px 16px; font-size: 12.5px; color: var(--text-3); background: var(--bg-subtle); border-top: 1px solid var(--border); }
 
   /* TOP: form — two columns side by side */
-  .te-form { padding: 24px 32px; flex: 1; min-height: 0; overflow-y: auto; }
+  .te-form { padding: 24px 32px; flex: 1; min-height: 0; overflow-y: auto; max-width: var(--detail-w); }
   .tf-row-top { display: block; max-width: 640px; }
   .tf-col { display: flex; flex-direction: column; gap: 14px; }
 

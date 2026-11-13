@@ -727,7 +727,7 @@
   .ov-arrow { width: 14px; height: 14px; color: var(--text-5); flex-shrink: 0; }
 
   /* Cards */
-  .card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); padding: 20px 22px; max-width: 720px; }
+  .card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); padding: 20px 22px; max-width: var(--detail-w); }
   .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .card-title { display: flex; align-items: center; gap: 9px; }
   .card-ico { width: 18px; height: 18px; color: var(--spec, #c47028); }

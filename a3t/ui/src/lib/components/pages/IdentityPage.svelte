@@ -262,7 +262,7 @@
   .btn:disabled { opacity: 0.5; cursor: default; }
   .state { padding: 40px; text-align: center; color: var(--text-4); }
   .state.err { color: var(--warn, #d66); }
-  .body { overflow-y: auto; padding: 20px 32px; display: flex; flex-direction: column; gap: 18px; max-width: 780px; }
+  .body { overflow-y: auto; padding: 20px 32px; display: flex; flex-direction: column; gap: 18px; max-width: var(--detail-w); }
   .card { border: 1px solid var(--border); border-radius: 8px; padding: 18px; background: var(--bg-surface); }
   .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
   .count { font-size: 12px; color: var(--text-4); font-weight: 400; }

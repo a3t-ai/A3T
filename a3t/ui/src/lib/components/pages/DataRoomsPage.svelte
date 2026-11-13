@@ -58,7 +58,7 @@
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
   .breadcrumb .sep { color: var(--text-5, var(--text-4)); }
   .screen-title { font-family: var(--font-serif); font-size: 26px; font-weight: 500; margin: 0; }
-  .body { padding: 24px 32px; display: flex; flex-direction: column; gap: 14px; max-width: 1100px; overflow-y: auto; }
+  .body { padding: 24px 32px; display: flex; flex-direction: column; gap: 14px; max-width: var(--detail-w); overflow-y: auto; }
   .banner { padding: 12px 14px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font-size: 13px; color: var(--text-2); line-height: 1.55; }
   .sample { display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border: 1px dashed var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
   .sample b { color: var(--warn, #b45309); }

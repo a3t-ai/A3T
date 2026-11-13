@@ -1443,7 +1443,7 @@ do:
   .exec-err { font-size: 12px; color: var(--err, #d44); font-family: var(--font-mono); background: var(--err-bg, #fde8e8); padding: 8px 10px; border-radius: var(--r-sm); }
   .exec-kv { display: flex; flex-direction: column; gap: 3px; }
   .exec-kv > span { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-4); }
-  .pf { padding: 24px 32px; max-width: 704px; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); }
   .pf h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .pf-kv { display: flex; flex-direction: column; }
   .pf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }

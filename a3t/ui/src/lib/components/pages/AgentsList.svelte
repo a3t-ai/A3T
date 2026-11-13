@@ -19,6 +19,7 @@
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
   import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
   import AgentCode from '$lib/components/agent/AgentCode.svelte';
+  import SwipeStrip from '$lib/components/shared/SwipeStrip.svelte';
   import { agentName } from '$lib/components/agent/agentData';
   import AgentSetup from '$lib/components/agent/AgentSetup.svelte';
   import AgentPolicies from '$lib/components/agent/AgentPolicies.svelte';
@@ -792,9 +793,11 @@
           <div class="pf wide">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
             {#if SECTIONS[propNode]}
-              <div class="subnav" role="tablist">
-                {#each SECTIONS[propNode] as x (x.id)}<button role="tab" class:on={sub[propNode] === x.id} aria-selected={sub[propNode] === x.id} onclick={() => (sub[propNode] = x.id)}>{x.label}</button>{/each}
-              </div>
+              <SwipeStrip class="substrip">
+                <div class="subnav" role="tablist">
+                  {#each SECTIONS[propNode] as x (x.id)}<button role="tab" class:on={sub[propNode] === x.id} aria-selected={sub[propNode] === x.id} onclick={() => (sub[propNode] = x.id)}>{x.label}</button>{/each}
+                </div>
+              </SwipeStrip>
             {/if}
             {#if propNode === 'overview'}
               <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} onreload={loadAgents} />
@@ -945,7 +948,9 @@
 
 <style>
   .sect { margin: 22px 0 10px; font: 400 19px var(--font-serif); color: var(--text-1); }
-  .subnav { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 14px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-subtle); align-self: flex-start; }
+  .subnav { display: flex; gap: 4px; flex-wrap: nowrap; min-width: 100%; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-subtle); }
+  .subnav button { white-space: nowrap; }
+  :global(.swipe.substrip) { margin: 0 0 14px; }
   .subnav button { border: 0; background: none; padding: 5px 12px; border-radius: 7px; font: 500 12.5px var(--font-sans); color: var(--text-3); cursor: pointer; }
   .subnav button.on { background: var(--bg-surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
   .subnav button:hover:not(.on) { color: var(--text-1); }
@@ -980,8 +985,8 @@
   .mono { font-family: var(--font-mono); }
 
   /* Panel forms */
-  .pf { padding: 24px 32px; max-width: 704px; }
-  .pf.wide { max-width: 980px; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
   .pf-hint { font-size: 12px; color: var(--text-4); margin-bottom: 12px; }
 
 

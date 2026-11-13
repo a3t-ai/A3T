@@ -37,6 +37,10 @@
 <style>
   .planes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
   .planes li { display: grid; grid-template-columns: 210px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--divider); }
+  @container details (max-width: 560px) {
+    .planes li { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; }
+    .planes li > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; overflow-wrap: anywhere; }
+  }
   .who { display: flex; flex-direction: column; gap: 2px; }
   .who b { font-weight: 600; color: var(--text-1); font-size: 13px; }
   .url { font-family: var(--font-mono); font-size: 12px; padding: 7px 10px; background: var(--bg-subtle); border-radius: 6px; overflow-x: auto; white-space: nowrap; color: var(--text-1); }

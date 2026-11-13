@@ -128,7 +128,9 @@
   .key { font-size: 11px; color: var(--text-4); }
   .io { font-size: 12px; }
   .hooks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .hooks li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .hooks li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .hooks li > :global(*) { min-width: 0; overflow-wrap: anywhere; }
+  .ph-head { flex-wrap: wrap; }
   .n { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font: 600 11px var(--font-mono); background: var(--bg-subtle); color: var(--text-3); }
   .grow { flex: 1 1 auto; }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }

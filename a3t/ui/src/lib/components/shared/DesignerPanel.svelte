@@ -47,7 +47,7 @@
 
   /* Shared form styling so every popin's right-hand form is identical. Global so
      it applies to the children rendered in the consumer's scope. */
-  :global(.pf) { padding: 24px 32px; max-width: 660px; }
+  :global(.pf) { padding: 24px 32px; max-width: var(--detail-w); }
   :global(.pf h3) { font-family: var(--font-serif, serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   :global(.pf-hint) { font-size: 12px; color: var(--text-4); margin: -4px 0 14px; }
   :global(.cf-grid) { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

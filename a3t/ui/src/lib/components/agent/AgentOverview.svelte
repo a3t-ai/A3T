@@ -223,6 +223,18 @@
   .eps .lbl { font-weight: 600; font-size: 13px; color: var(--text-1); }
   .eps .url { overflow-wrap: anywhere; font-size: 12.5px; }
   .eps .sub { grid-column: 2 / 4; font-size: 12px; }
+  /* Narrow pane: the label and its button on one line, the value full width below. */
+  @container details (max-width: 560px) {
+    .eps li { grid-template-columns: 1fr auto; }
+    .eps li > :nth-child(1) { grid-column: 1; grid-row: 1; }
+    .eps li > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+    .eps li > :nth-child(3) { grid-column: 2; grid-row: 1; }
+    .eps .sub { grid-column: 1 / -1; }
+    .st li { grid-template-columns: 1fr auto; gap: 4px 10px; }
+    .st li > :nth-child(1) { grid-column: 1; grid-row: 1; }
+    .st li > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+    .st li > :nth-child(3) { grid-column: 2; grid-row: 1; }
+  }
   .eps .bad, .bad { color: var(--err); }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
   pre.code { margin: 0; padding-right: 80px; white-space: pre-wrap; overflow-wrap: anywhere; }

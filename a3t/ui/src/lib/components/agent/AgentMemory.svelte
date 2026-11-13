@@ -340,7 +340,7 @@
   .types b { font-size: 13px; color: var(--text-1); }
   .types .n { font: 600 13px var(--font-mono); color: var(--text-1); }
   .types .dim { grid-column: 1 / 3; font-size: 11.5px; }
-  @media (max-width: 700px) { .types { grid-template-columns: repeat(2, 1fr); } }
+  @container details (max-width: 700px) { .types { grid-template-columns: repeat(2, 1fr); } }
   input[type='search'] { margin-top: 8px; }
   .spaces { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .sp { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-surface); font: 12.5px var(--font-sans); color: var(--text-1); cursor: pointer; }
@@ -361,7 +361,7 @@
   .form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
   .form label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-3); }
   .form .wide { grid-column: 1 / -1; }
-  @media (max-width: 700px) { .form { grid-template-columns: 1fr 1fr; } .attach { margin-left: 0; width: 100%; } .attach input { flex: 1; } }
+  @container details (max-width: 700px) { .form { grid-template-columns: 1fr 1fr; } .attach { margin-left: 0; width: 100%; } .attach input { flex: 1; } }
   textarea { width: 100%; box-sizing: border-box; font: 12.5px var(--font-mono); padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); color: var(--text-1); }
   .row { display: flex; gap: 8px; margin-top: 8px; }
   .addrow { display: flex; justify-content: flex-end; }
