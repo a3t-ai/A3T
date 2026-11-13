@@ -894,7 +894,7 @@ do:
         {:else if panelTab === 'definition'}
           {#if flowYamlLoading}<p class="dim">Reading the flow…</p>
           {:else if flowYaml}
-            <div class="def-pane"><FlowEditorPane initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} /></div>
+            <div class="def-pane"><FlowEditorPane part="main" initialYaml={flowYaml} onchange={(y) => { flowYaml = y; flowDirty = true; }} /></div>
             <div class="acts"><button class="btn2 primary" disabled={flowDeploying || !flowDirty} onclick={saveFlow}>{flowDeploying ? 'Saving…' : 'Save'}</button>
               <span class="dim">{flowDirty ? 'Changed — saved as v' + flowMeta.version + '.' : 'No changes.'}</span>
               {#if flowMsg}<span class={/^Saved/.test(flowMsg) ? 'ok' : 'err'}>{flowMsg}</span>{/if}</div>
