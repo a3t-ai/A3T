@@ -627,6 +627,25 @@ export function a3tToolFor(flow: string, input: any): { agent: string; tool: str
 }
 
 /// Call one of an agent's tools on its control plane (AT-1). Answers the tool's output.
+/// An agent's memory space, versions and memory branches (FlowR's /agents/{id}/…).
+/// The space is the namespace its memory lives in on the org's ADB — the agent's
+/// id, where the core agent keeps it; versions and branches need it registered.
+const ag = (id: string, rest = '') => `/agents/${encodeURIComponent(id)}${rest}`;
+export const agentSpaceApi = {
+  memory: (id: string) => request<{ namespace: string | null; own: boolean; resource: string }>(ag(id, '/memory')),
+  register: (id: string) => request(ag(id, '/memory'), { method: 'PUT', body: JSON.stringify({ namespace: id }) }),
+  versions: (id: string) => request<{ versions: AgentVersion[] }>(ag(id, '/versions')),
+  makeVersion: (id: string, note: string) => request<AgentVersion>(ag(id, '/versions'), { method: 'POST', body: JSON.stringify({ note }) }),
+  branches: (id: string) => request<{ branches: MemoryBranch[] }>(ag(id, '/branches')),
+  branch: (id: string, name: string) => request<MemoryBranch>(ag(id, '/branches'), { method: 'POST', body: JSON.stringify({ name }) }),
+  dropBranch: (id: string, name: string) => request(ag(id, `/branches/${encodeURIComponent(name)}`), { method: 'DELETE' }),
+  conflicts: (id: string, name: string) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/conflicts`)),
+  merge: (id: string, name: string, body: Record<string, unknown>) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/merge`), { method: 'POST', body: JSON.stringify(body) }),
+  promote: (id: string, name: string, newAgent: { id: string; name: string }) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/promote`), { method: 'POST', body: JSON.stringify({ new_agent: newAgent }) }),
+};
+export interface AgentVersion { version: string; template: { id: string; version: string }; memory: { namespace: string; tag: string } | null; note: string; created_by: string; created_at: string }
+export interface MemoryBranch { id: string; name: string; parent: string; created_by: string; point_ts: number }
+
 export async function agentTool(agent: string, tool: string, args: Record<string, any> = {}): Promise<ApiResponse> {
   const r = await request<any>(`/agents/${encodeURIComponent(agent)}/tools/${encodeURIComponent(tool)}`, { method: 'POST', body: JSON.stringify(args) });
   return r.ok ? { ...r, data: r.data?.output } : r;

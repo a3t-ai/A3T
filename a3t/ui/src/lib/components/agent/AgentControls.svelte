@@ -1,21 +1,25 @@
 <script lang="ts">
-  /// Controls — how to stop it, and what governs it. The stop switches are
-  /// real: block its endpoint, pause its deployment, revoke its tools. Then the
-  /// hooks its code runs, the policies that have decided about it, and the
-  /// approval rules for changing it (Sample).
-  import { mcpCall, opsApi } from '$lib/services/api';
+  /// Controls — how to stop it, and what governs it. Block goes through the A3T
+  /// control plane (agent_a3t_agents, tool_a3t_agent_block): its data plane then
+  /// refuses every call. Pausing its deployment and revoking its tools are real
+  /// too. Then what its code runs and the policies that have decided about it.
+  import { opsApi } from '$lib/services/api';
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { factsOf, envOf, type AgentRec, type TemplateRec } from './agentData';
+  import { factsOf, type AgentRec, type TemplateRec } from './agentData';
+  import { setBlocked } from './controlPlane';
   import type { AgentLive } from './agentLive.svelte';
 
-  let { agent, templates, live, canAdmin, onrevoke, onchanged }: {
-    agent: AgentRec;
+  let { agent, templates, live, canAdmin, onrevoke, onchanged, onreload, ongo }: {
+    agent: AgentRec & { status?: string };
     templates: TemplateRec[];
     live: AgentLive;
     canAdmin: boolean;
     /// Revoke every tool (true) or give back what it had (false); an error, or null.
     onrevoke: (revoke: boolean) => Promise<string | null>;
     onchanged: () => void;
+    /// Its record changed (blocked or unblocked): reload it.
+    onreload: () => void;
+    ongo: (tab: string) => void;
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
@@ -25,13 +29,18 @@
   let msg = $state('');
   let confirm = $state('');
 
+  // svelte-ignore state_referenced_locally — its status as loaded; a block or unblock updates it
+  let status = $state(agent.status ?? '');
+  $effect(() => { status = agent.status ?? ''; });
+  const blocked = $derived(status === 'blocked');
+  let reason = $state('');
   async function block(on: boolean) {
-    if (!live.trigger) return;
     busy = 'block'; msg = '';
-    const r = await mcpCall(on ? 'pause_trigger' : 'enable_trigger', { id: live.trigger.id });
-    busy = ''; confirm = '';
+    const r = await setBlocked(agent.id, on, on ? reason.trim() || undefined : undefined);
+    busy = ''; confirm = ''; reason = '';
     if (!r.ok) { msg = r.error ?? 'Not changed'; return; }
-    await live.loadTrigger(f.endpoint);
+    status = r.status ?? (on ? 'blocked' : 'live');
+    onreload();
   }
   async function pause(on: boolean) {
     if (!p?.id) return;
@@ -56,8 +65,6 @@
     }
     return [...m.values()].sort((a, b) => b.deny - a.deny || b.allow - a.allow);
   });
-  // Sample approval rules: who must approve a change, by environment.
-  let rules = $state({ prod: true, test: false, tools: true });
 </script>
 
 <section class="agt">
@@ -66,13 +73,12 @@
     {#if !canAdmin}<p class="dim">Only its project's admins can use these.</p>{/if}
     <ul class="sw">
       <li>
-        <div><b>Block calls</b><span class="dim">{live.trigger ? `Its endpoint /webhook${live.trigger.path} — ${live.trigger.enabled ? 'open' : 'blocked: callers get an error'}` : f.endpoint ? 'Finding its endpoint…' : 'It has no endpoint.'}</span></div>
-        {#if live.trigger}
-          {#if live.trigger.enabled}<button class="btn2 danger" disabled={!canAdmin || !!busy} onclick={() => (confirm = 'block')}>Block</button>
-          {:else}<button class="btn2" disabled={!canAdmin || !!busy} onclick={() => block(false)}>{busy === 'block' ? '…' : 'Unblock'}</button>{/if}
-        {/if}
+        <div><b>Block calls</b><span class="dim">{blocked ? 'Blocked: every call to it is refused — its chat endpoint and its webhook. Its record and memory stay.' : 'Open: it answers on its data plane (POST /chat) and its webhook, if it has one.'}</span></div>
+        {#if blocked}<button class="btn2" disabled={!canAdmin || !!busy} onclick={() => block(false)}>{busy === 'block' ? '…' : 'Unblock'}</button>
+        {:else}<button class="btn2 danger" disabled={!canAdmin || !!busy} onclick={() => (confirm = 'block')}>Block</button>{/if}
       </li>
       {#if confirm === 'block'}<li class="cf">Block every call to {agent.name}? Apps calling it get an error until it is unblocked.
+        <input class="why" type="text" bind:value={reason} placeholder="Why (kept in its history)" />
         <button class="btn2 danger" onclick={() => block(true)}>{busy === 'block' ? 'Blocking…' : 'Block calls'}</button><button class="link" onclick={() => (confirm = '')}>Cancel</button></li>{/if}
       <li>
         <div><b>Pause its deployment</b><span class="dim">{p ? `${p.runtime || 'its runtime'} — ${p.deploymentState === 'paused' ? 'paused' : 'running'}` : 'Not deployed: it runs on the shared runtime, which is not paused for one agent — block its calls instead.'}</span></div>
@@ -97,15 +103,8 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h3>Hooks</h3><span>what its code runs around each step — from its template</span></div>
-    {#if f.hooks.length}
-      <table class="tbl">
-        <thead><tr><th>Hook</th><th>Applies to</th><th>Runs</th></tr></thead>
-        <tbody>{#each f.hooks as h (h.name)}<tr><td class="mono">{h.name}</td><td>{h.extend}{h.when ? ` · when ${h.when}` : ''}</td><td class="mono">{h.flows.join(', ') || '—'}</td></tr>{/each}</tbody>
-      </table>
-    {:else}
-      <p class="dim">Its template has no hooks — nothing filters what goes in or out (no redaction, no guard).</p>
-    {/if}
+    <div class="card-head"><h3>What its code runs</h3><span>around every turn</span><span class="grow"></span><button class="link" onclick={() => ongo('hooks')}>Hooks →</button></div>
+    <p class="dim">The core agent's error handler (<span class="mono">system/flow_system_error_handler</span>, locked) answers every failed turn, and every turn is logged.{f.hooks.length ? ` Its template adds ${f.hooks.length} hook${f.hooks.length === 1 ? '' : 's'}: ${f.hooks.map((h) => h.name).join(', ')}.` : ' Its template adds no hooks: nothing filters what goes in or out (no redaction, no guard).'}</p>
   </div>
 
   <div class="card">
@@ -122,13 +121,6 @@
     {/if}
   </div>
 
-  <div class="card">
-    <div class="card-head"><h3>Approval to change it</h3><span class="tag sample">sample</span></div>
-    <label class="ck"><input type="checkbox" bind:checked={rules.prod} /> A change to a <b>prod</b> agent needs a Security approver</label>
-    <label class="ck"><input type="checkbox" bind:checked={rules.test} /> A change to a <b>test</b> agent needs its project's admin</label>
-    <label class="ck"><input type="checkbox" bind:checked={rules.tools} /> Adding a tool server or a destructive tool always needs a Security approver</label>
-    <p class="dim">It is <b>{envOf(agent) || 'not set to an environment'}</b>. Approvals are not enforced yet (SRV-20) — this shows how they will be set.</p>
-  </div>
 </section>
 
 <style>
@@ -139,7 +131,7 @@
   .sw li > div { display: flex; flex-direction: column; gap: 2px; }
   .sw b { font-size: 13px; color: var(--text-1); }
   .sw li.cf { justify-content: flex-start; flex-wrap: wrap; padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border-top: 0; font-size: 12.5px; }
-  .ck { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }
-  .ck input { width: auto; }
+  .why { flex: 1 1 200px; height: 28px; font-size: 12.5px; }
+  .mono { font-family: var(--font-mono); font-size: 0.92em; }
   td.err { color: var(--err); }
 </style>

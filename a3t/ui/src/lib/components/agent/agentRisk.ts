@@ -9,9 +9,10 @@ export type Flag = { level: 'high' | 'medium' | 'info'; title: string; why: stri
 export function flagsOf(agent: AgentRec & { created_by?: string }, templates: TemplateRec[], live: AgentLive, llmLabel?: string): Flag[] {
   const f = factsOf(agent, templates);
   const out: Flag[] = [];
-  if (f.endpoint && live.trigger?.enabled !== false) {
+  if (f.endpoint && live.trigger?.enabled !== false && (agent as { status?: string }).status !== 'blocked') {
     out.push({ level: 'high', title: 'Callable without a token', why: `POST /webhook${f.endpoint} accepts calls with no user or app key (SRV-16).`, tab: 'exposure' });
   }
+  if ((agent as { status?: string }).status === 'blocked') out.push({ level: 'medium', title: 'Blocked', why: 'Its owner blocked it: every call is refused until it is unblocked.', tab: 'controls' });
   if (!agent.created_by) out.push({ level: 'high', title: 'No owner', why: 'Nobody is accountable for it; what it may be granted has no bound.', tab: 'settings' });
   if (live.destructive.length) {
     out.push({ level: 'high', title: `${live.destructive.length} destructive tool${live.destructive.length === 1 ? '' : 's'} allowed`, why: live.destructive.slice(0, 4).join(', ') + (live.destructive.length > 4 ? '…' : ''), tab: 'access' });

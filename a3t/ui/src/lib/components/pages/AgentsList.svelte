@@ -17,7 +17,7 @@
   import { liveFor } from '$lib/components/agent/agentLive.svelte';
   import '$lib/components/agent/agent.css';
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
-  import { createAgent as createAgentRec, updateAgent } from '$lib/studio-core/adapters/agents';
+  import { updateAgent } from '$lib/studio-core/adapters/agents';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
@@ -197,6 +197,8 @@
     branches: 'releases', health: 'audit', activity: 'audit', observe: 'audit', memory: 'audit', ownership: 'settings',
   };
   let activityStart = $state<'memory' | undefined>(undefined);
+  /// A tab link from inside a tab: by its name or an alias.
+  const goTab = (t: string) => { propNode = TAB_ALIAS[t] ?? t; };
 
   async function loadAgents() {
     loading = true; error = '';
@@ -361,24 +363,27 @@
     if (!agent || !makeKind) return null;
     if (allAgents.some((a) => a.name === name && a.namespace === project)) return `There is already an agent called ${name} in ${project}.`;
     const id = `agt-${crypto.randomUUID().slice(0, 8)}`;
-    const vars = parseJson(agent.variables ?? '') || {};
-    // Its own endpoint and no deployment; where it came from.
-    delete vars.canvasRef; delete vars.clonedFrom; delete vars.forkedFrom;
-    vars.ep_path = `/agent/${id}/chat`;
-    vars[makeKind === 'fork' ? 'forkedFrom' : 'clonedFrom'] = agent.id;
-    vars.fromName = agent.name;
-    const r = await createAgentRec({
-      id, name, namespace: project, template_id: agent.template_id, template_version: agent.template_version,
-      mode: agent.mode, resource_bindings: typeof agent.resource_bindings === 'string' ? agent.resource_bindings : JSON.stringify(agent.resource_bindings ?? {}),
-      variables: JSON.stringify(vars),
-    }, vars.target || 'a3t/tmpl_a3t_agent', vars.ep_path);
-    if (!r.ok && !String(r.error ?? '').startsWith('Agent created')) return r.error ?? 'It was not made.';
-    // Where it came from, for Lineage (the control plane's agent_relations).
-    await control.relate(id, { kind: 'agent', id: agent.id, version: agent.template_version }, makeKind);
+    const src = parseJson(agent.variables ?? '') || {};
+    // Made by the control plane (agent_a3t_agents, tool_a3t_agent_create): its record
+    // from the source's, the relation (Lineage), its history and its memory space.
+    // Its own endpoint, no deployment, and where it came from.
+    const epPath = `/agent/${id}/chat`;
+    const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_create', {
+      org_id: 'org-default', user_id: $currentUser?.id ?? '',
+      id, name, project, from: { kind: 'agent', id: agent.id, version: agent.template_version }, mode: makeKind,
+      values: { ep_path: epPath, canvasRef: null, clonedFrom: makeKind === 'clone' ? agent.id : null, forkedFrom: makeKind === 'fork' ? agent.id : null, fromName: agent.name },
+    });
+    if (!r.ok) return r.error ?? 'It was not made.';
+    const target = src.target || 'a3t/tmpl_a3t_agent';
+    const [tns, ...tname] = target.includes('/') ? target.split('/') : ['a3t', target];
+    const t = await mcpCall('create_trigger', {
+      name: `agent-${id}-chat`, namespace: project, config: { type: 'webhook', path: epPath },
+      targets: [{ type: 'workflow', namespace: tns, name: tname.join('/') }], enabled: true,
+    });
     makeKind = null;
     await Promise.all([loadAgents(), loadTriggerOptions()]);
     selectAgent(id);
-    if (!r.ok) error = r.error ?? '';
+    if (!t.ok) error = `It was made, but its endpoint was not: ${t.error}`;
     return null;
   }
 
@@ -756,7 +761,7 @@
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
             {#if propNode === 'overview'}
               <AgentOverview {agent} {templates} {allAgents} live={live!} me={$currentUser?.id ?? ''} {llmLabel}
-                ongo={(t) => (propNode = t)} onstudio={studio} oncode={openCode} onlifecycle={lifecycle} />
+                ongo={goTab} onstudio={studio} oncode={openCode} onlifecycle={lifecycle} />
             {:else if propNode === 'hooks'}
               <AgentHooks {agent} {templates} />
             {:else if propNode === 'lineage'}
@@ -764,19 +769,19 @@
             {:else if propNode === 'sharing'}
               <AgentSharing {agent} canEdit={$canEditAgent} />
             {:else if propNode === 'access'}
-              <AgentAccess {agent} {templates} live={live!} {bindings} {llmLabel} canEdit={$canEditAgent} ongo={(t) => (propNode = t)}>
+              <AgentAccess {agent} {templates} live={live!} {bindings} {llmLabel} canEdit={$canEditAgent} ongo={goTab}>
                 {#snippet editor()}
                   <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
                     onsave={saveBindings} ondiscard={discardBindings} oncode={openCode} {llmResources} {mcpResources} {flowOptions} />
                 {/snippet}
               </AgentAccess>
             {:else if propNode === 'exposure'}
-              <AgentExposure {agent} {templates} live={live!} ongo={(t) => (propNode = t)} />
+              <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
             {:else if propNode === 'controls'}
-              <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} />
+              <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} onreload={loadAgents} ongo={goTab} />
             {:else if propNode === 'releases'}
-              <AgentReleases {agent} {templates} {allAgents} live={live!} me={$currentUser?.email ?? $currentUser?.id ?? ''} bind:branchForm
-                onstudio={studio} onopen={selectAgent} onchanged={() => deployRev++}>
+              <AgentReleases {agent} {templates} {allAgents} live={live!} canEdit={$canEditAgent} bind:branchForm
+                onopen={selectAgent} onmade={async (id) => { await loadAgents(); selectAgent(id); }} onchanged={() => deployRev++}>
                 {#snippet notDeployed()}
                   {#if boundCanvas}
                     <div class="dep-row">
@@ -799,10 +804,10 @@
                 {/snippet}
               </AgentReleases>
             {:else if propNode === 'audit'}
-              <AgentAudit {agent} {templates} live={live!} start={activityStart} onstudio={studio} ongo={(t) => (propNode = t)} />
+              <AgentAudit {agent} {templates} live={live!} start={activityStart} onstudio={studio} ongo={goTab} />
             {:else if propNode === 'settings'}
               <AgentSettings {agent} {templates} {allAgents} live={live!} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
-                onsave={saveBindings} ondiscard={discardBindings} ongo={(t) => (propNode = t)} onopen={selectAgent}
+                onsave={saveBindings} ondiscard={discardBindings} ongo={goTab} onopen={selectAgent}
                 onupgrade={upgradeTemplate} ondelete={deleteCurrent} />
             {/if}
           </div>

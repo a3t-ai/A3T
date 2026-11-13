@@ -98,7 +98,7 @@
     {#if error}<p class="err">{error}</p>{/if}
   </div>
 
-  <div class="sample"><b>Not yet</b><span>FlowR doesn't check these rights itself yet when another namespace forks or merges; the dash and the control plane do (requested).</span></div>
+  <div class="note"><b>Not yet:</b> <span>FlowR doesn't check these rights itself yet when another namespace forks or merges; the dash and the control plane do (requested).</span></div>
 </section>
 
 <style>

@@ -1,23 +1,25 @@
 <script lang="ts">
-  /// Releases — where it runs and which version. Its environment (dev, test,
-  /// prod) is its owner's setting, not a platform mode. Its deployment is real
-  /// (deploy / undeploy; pausing is in Controls); branches, the review before a
-  /// merge, and releases are Sample (SRV-12, SRV-20). Forks are real.
+  /// Releases — where it runs, its versions and its branches. A version is a
+  /// snapshot: its template version and a tag on its memory. A branch is a copy of
+  /// its memory to try changes on: merged back when only procedures changed and
+  /// nothing conflicts, or promoted to a new agent (evolve). Both are FlowR's
+  /// /agents/{id}/versions and /branches, on the agent's memory space. Its
+  /// deployment is real (deploy / undeploy; pausing is in Controls).
   import { untrack, type Snippet } from 'svelte';
-  import { opsApi } from '$lib/services/api';
+  import { opsApi, agentSpaceApi, type AgentVersion, type MemoryBranch } from '$lib/services/api';
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
   import { factsOf, forksOf, envOf, ago, type AgentRec, type TemplateRec } from './agentData';
-  import { branchesOf, addBranch, dropBranch, mergeBranch, rollBack } from './agentBranches.svelte';
   import type { AgentLive } from './agentLive.svelte';
 
-  let { agent, templates, allAgents, live, me, onstudio, onopen, onchanged, notDeployed, branchForm = $bindable(false) }: {
+  let { agent, templates, allAgents, live, canEdit, onopen, onmade, onchanged, notDeployed, branchForm = $bindable(false) }: {
     agent: AgentRec & { created_at?: string };
     templates: TemplateRec[];
     allAgents: AgentRec[];
     live: AgentLive;
-    me: string;
-    onstudio: () => void;
+    canEdit: boolean;
     onopen: (id: string) => void;
+    /// A branch became a new agent: reload the list and open it.
+    onmade: (id: string) => void;
     /// The deployment changed: reload what is shown.
     onchanged: () => void;
     /// How to deploy it when it is not deployed (the page's profile picker).
@@ -27,12 +29,10 @@
 
   const f = $derived(factsOf(agent, templates));
   const forks = $derived(forksOf(agent, allAgents));
-  const repo = $derived(branchesOf(agent.id, agent.created_at));
-  const prodTag = $derived(repo.releases[0]?.tag ?? 'v1');
   const p = $derived(live.placement);
   const env = $derived(envOf(agent));
 
-  // ── prod: one click each; details in Runtimes ──
+  // ── deployment ──
   let busy = $state('');
   let opMsg = $state('');
   let confirmUndeploy = $state(false);
@@ -45,32 +45,108 @@
     onchanged();
   }
 
-  // ── dev branches (sample) ──
-  let brName = $state('');
-  let brIntent = $state('');
-  let merging = $state('');
-  let dropping = $state('');
-  let mergedMsg = $state('');
-  $effect(() => { if (branchForm) untrack(() => { brName = `dev/${new Date().toISOString().slice(5, 10).replace('-', '')}`; brIntent = ''; }); });
-  function makeBranch() {
-    const n = brName.trim().replace(/\s+/g, '-');
-    if (!n) return;
-    addBranch(agent.id, n.startsWith('dev/') ? n : `dev/${n}`, me || 'you', brIntent.trim());
-    branchForm = false;
+  // ── its memory space, versions and branches ──
+  let space = $state<{ own: boolean; namespace: string | null } | null>(null);
+  let versions = $state<AgentVersion[] | null>(null);
+  let branches = $state<MemoryBranch[] | null>(null);
+  let err = $state('');
+  let msg = $state('');
+  async function load(id: string) {
+    space = null; versions = null; branches = null; err = '';
+    const m = await agentSpaceApi.memory(id);
+    if (agent.id !== id) return;
+    if (!m.ok) { err = m.error ?? 'Its memory space could not be read.'; return; }
+    space = { own: !!m.data?.own, namespace: m.data?.namespace ?? null };
+    if (!space.own) return;
+    const [v, b] = await Promise.all([agentSpaceApi.versions(id), agentSpaceApi.branches(id)]);
+    if (agent.id !== id) return;
+    versions = v.ok ? [...(v.data?.versions ?? [])].sort((x, y) => Number(y.version) - Number(x.version)) : [];
+    branches = b.ok ? b.data?.branches ?? [] : [];
+    if (!v.ok || !b.ok) err = (v.ok ? b.error : v.error) ?? 'Not read.';
   }
-  let approver = $state('');
+  $effect(() => { const id = agent.id; untrack(() => load(id)); });
+
+  async function register() {
+    busy = 'register'; err = '';
+    const r = await agentSpaceApi.register(agent.id);
+    busy = '';
+    if (!r.ok) { err = r.error ?? 'Not registered.'; return; }
+    await load(agent.id);
+  }
+
+  let note = $state('');
+  async function makeVersion() {
+    busy = 'version'; err = ''; msg = '';
+    const r = await agentSpaceApi.makeVersion(agent.id, note.trim());
+    busy = '';
+    if (!r.ok) { err = r.error ?? 'No version made.'; return; }
+    note = ''; msg = `Version ${r.data?.version} made.`;
+    await load(agent.id);
+  }
+
+  let brName = $state('');
+  $effect(() => { if (branchForm) untrack(() => { brName = `try-${new Date().toISOString().slice(5, 10).replace('-', '')}`; }); });
+  const brValid = $derived(/^[a-z0-9][a-z0-9-]{0,62}$/.test(brName));
+  async function makeBranch() {
+    busy = 'branch'; err = ''; msg = '';
+    const r = await agentSpaceApi.branch(agent.id, brName);
+    busy = '';
+    if (!r.ok) { err = r.error ?? 'No branch made.'; return; }
+    branchForm = false; msg = `Branch ${brName} made from its memory now.`;
+    await load(agent.id);
+  }
+
+  /// Per branch: what merging it would do, then the action chosen.
+  let open = $state('');
+  let check = $state<{ clean: number; conflicts: number; main: number } | null>(null);
+  let promoteName = $state('');
+  async function review(name: string) {
+    open = name; check = null; err = ''; msg = '';
+    promoteName = `${agent.name}-${name}`.slice(0, 63);
+    const r = await agentSpaceApi.conflicts(agent.id, name);
+    if (!r.ok) { err = r.error ?? 'Not compared.'; return; }
+    check = { clean: (r.data?.clean ?? []).length, conflicts: (r.data?.conflicts ?? []).length, main: r.data?.main?.offset ?? 0 };
+  }
+  async function merge(name: string) {
+    if (!check) return;
+    busy = 'merge'; err = '';
+    const r = await agentSpaceApi.merge(agent.id, name, { main_offset: check.main, resolutions: [] });
+    busy = '';
+    if (!r.ok) { err = r.error ?? 'Not merged.'; return; }
+    msg = `Merged ${name}: ${r.data?.added ?? 0} added, ${r.data?.changed ?? 0} changed.`;
+    open = '';
+    await load(agent.id);
+  }
+  async function promote(name: string) {
+    busy = 'promote'; err = '';
+    const id = `agt-${crypto.randomUUID().slice(0, 8)}`;
+    const r = await agentSpaceApi.promote(agent.id, name, { id, name: promoteName });
+    busy = '';
+    if (!r.ok) { err = r.error ?? 'Not promoted.'; return; }
+    open = '';
+    onmade(id);
+  }
+  async function drop(name: string) {
+    busy = 'drop'; err = '';
+    const r = await agentSpaceApi.dropBranch(agent.id, name);
+    busy = '';
+    if (!r.ok) { err = r.error ?? 'Not dropped.'; return; }
+    open = ''; msg = `Branch ${name} dropped.`;
+    await load(agent.id);
+  }
 </script>
 
 <section class="agt">
   <div class="card">
     <div class="card-head"><h3>Deployment</h3><span class="grow"></span>
-      {#if !branchForm}<button class="btn2" onclick={() => (branchForm = true)}>Branch</button>{/if}</div>
+      {#if !branchForm && space?.own}<button class="btn2" onclick={() => (branchForm = true)}>Branch</button>{/if}</div>
     <dl class="kv">
       <dt>Environment</dt><dd>{#if env}<span class="tag" class:prod={env === 'prod'} class:dev={env !== 'prod'}>{env}</span>{:else}<span class="dim">not set</span>{/if} <span class="dim">— its owner's setting, in Settings</span></dd>
-      <dt>Release</dt><dd><b class="mono">{prodTag}</b> <span class="tag sample">sample</span></dd>
+      <dt>Version</dt><dd>{#if versions?.length}<b class="mono">v{versions[0].version}</b> <span class="dim">— {versions[0].note || 'no note'}, {ago(versions[0].created_at)}</span>{:else}<span class="dim">none yet</span>{/if}</dd>
+      <dt>Made from</dt><dd class="mono">{agent.template_id}@{agent.template_version}</dd>
       <dt>Runs on</dt><dd>{#if live.loading}…{:else if p}<span class="row"><span class="dot {p.deploymentState === 'paused' ? 'warn' : 'ok'}"></span>{p.deploymentState === 'paused' ? 'paused' : 'deployed'} on <span class="mono">{p.runtime || '—'}</span>{p.canvas ? ` · ${p.canvas}` : ''}</span>
         {:else}<span class="row"><span class="dot"></span>not deployed — the shared runtime</span>{/if}</dd>
-      <dt>Endpoint</dt><dd class="mono">{f.endpoint ? `/webhook${f.endpoint}` : '—'}</dd>
+      <dt>Webhook</dt><dd class="mono">{f.endpoint ? `/webhook${f.endpoint}` : "none"}</dd>
     </dl>
     {#if !live.loading && p}
       <div class="acts">
@@ -90,60 +166,72 @@
     {#if live.placeErr}<p class="dim">{live.placeErr}</p>{/if}
   </div>
 
-  {#if branchForm}
+  {#if err}<p class="err">{err}</p>{/if}
+  {#if msg}<p class="ok">{msg}</p>{/if}
+
+  {#if space && !space.own}
     <div class="card">
-      <div class="card-head"><h3>Branch</h3><span>a copy of this agent's code and values to change and test; this agent is not touched until the branch is merged</span></div>
-      <div class="form">
-        <label>Branch<input type="text" class="mono" bind:value={brName} /></label>
-        <label>What will you change? <small>(optional)</small><input type="text" bind:value={brIntent} placeholder="e.g. a smaller model for low-priority alerts" /></label>
-        <div class="acts"><button class="btn2 primary" disabled={!brName.trim()} onclick={makeBranch}>Make the branch</button><button class="btn2 quiet" onclick={() => (branchForm = false)}>Cancel</button></div>
-      </div>
+      <div class="card-head"><h3>Versions and branches</h3></div>
+      <p class="dim">They work on its memory space: the namespace its memory lives in on the org's ADB, <span class="mono">{agent.id}</span>. It is not registered yet; agents made from now on get it when they are made.</p>
+      <div class="acts"><button class="btn2 primary" disabled={!canEdit || !!busy} onclick={register}>{busy === 'register' ? 'Registering…' : 'Register its memory space'}</button></div>
     </div>
-  {/if}
-
-  <div class="sample"><b>Sample</b> Branches, reviews, merges and releases are not stored yet — this shows how they will work; nothing here is saved. The deployment and the forks are real.</div>
-
-  <h4>Branches <span class="count">{repo.branches.length}</span></h4>
-  {#if mergedMsg}<p class="ok">{mergedMsg}</p>{/if}
-  <ul class="list">
-    {#each repo.branches as b (b.name)}
-      <li class="card">
-        <div class="row between">
-          <div class="row"><span class="tag dev">branch</span><b class="mono">{b.name}</b><span class="dim">{b.by}, {ago(b.created)}</span></div>
-          <div class="acts">
-            <button class="btn2" onclick={onstudio}>Test in Studio</button>
-            <button class="btn2 primary" onclick={() => { merging = b.name; dropping = ''; approver = ''; }}>Merge</button>
-            <button class="btn2 quiet" onclick={() => { dropping = b.name; merging = ''; }}>Drop</button>
-          </div>
+  {:else if space}
+    {#if branchForm}
+      <div class="card">
+        <div class="card-head"><h3>Branch</h3><span>a copy of its memory as it is now, to try changes on; the agent is not touched until the branch is merged</span></div>
+        <div class="form">
+          <label>Name<input type="text" class="mono" bind:value={brName} /></label>
+          {#if brName && !brValid}<span class="err">Lower-case letters, digits and dashes.</span>{/if}
+          <div class="acts"><button class="btn2 primary" disabled={!brValid || !!busy} onclick={makeBranch}>{busy === 'branch' ? 'Making…' : 'Make the branch'}</button><button class="btn2 quiet" onclick={() => (branchForm = false)}>Cancel</button></div>
         </div>
-        <ul class="changes">{#each b.changes as c}<li>{c}</li>{:else}<li class="dim">No changes yet — open it in the Studio.</li>{/each}</ul>
-        {#if merging === b.name}
-          <div class="note">Merging makes <b>v{(Number(prodTag.slice(1)) || 0) + 1}</b> of {agent.name}; callers get it on their next message.
-            Its values and code replace the agent's; what it learned on the branch (procedures) is added to the agent's memory.
-            {#if env === 'prod'}<label class="appr">It is a <b>prod</b> agent: a Security approver signs off first
-              <select bind:value={approver}><option value="">— approver —</option><option>security@acme.com</option><option>ciso@acme.com</option></select></label>{/if}
-            <span class="acts"><button class="btn2 primary" disabled={env === 'prod' && !approver} onclick={() => { const t = mergeBranch(agent.id, b.name); merging = ''; mergedMsg = `Merged ${b.name} — ${agent.name} is now ${t}${approver ? `, approved by ${approver}` : ''}.`; }}>{env === 'prod' ? 'Request and merge' : 'Merge'}</button>
-            <button class="link" onclick={() => (merging = '')}>Cancel</button></span></div>
-        {:else if dropping === b.name}
-          <div class="note">Drop <b class="mono">{b.name}</b>? Its changes and what it learned are thrown away; prod is not touched.
-            <span class="acts"><button class="btn2 danger" onclick={() => { dropBranch(agent.id, b.name); dropping = ''; }}>Drop it</button>
-            <button class="link" onclick={() => (dropping = '')}>Cancel</button></span></div>
-        {/if}
-      </li>
-    {:else}
-      <li class="empty">No branches.</li>
-    {/each}
-  </ul>
+      </div>
+    {/if}
 
-  <h4>Releases</h4>
-  <table class="tbl">
-    <tbody>
-      {#each repo.releases as r, i (r.tag)}
-        <tr><td class="mono k">{r.tag}</td><td>{#if i === 0}<span class="tag prod">prod</span>&nbsp; {/if}{r.note}</td><td class="when">{ago(r.at)}</td>
-          <td class="when">{#if i > 0}<button class="link" onclick={() => { const t = rollBack(agent.id, r.tag); mergedMsg = `Prod is now ${t}, the same as ${r.tag}.`; }}>Roll back to {r.tag}</button>{/if}</td></tr>
+    <h4>Versions <span class="count">{versions?.length ?? '…'}</span></h4>
+    <div class="row">
+      <input type="text" class="grow" bind:value={note} placeholder="What this version is (optional)" />
+      <button class="btn2" disabled={!canEdit || !!busy} onclick={makeVersion}>{busy === 'version' ? 'Making…' : 'Make a version'}</button>
+    </div>
+    {#if versions?.length}
+      <table class="tbl">
+        <thead><tr><th>Version</th><th>Code</th><th>Memory</th><th>Note</th><th>By</th><th>When</th></tr></thead>
+        <tbody>{#each versions as v (v.version)}<tr><td class="mono k">v{v.version}</td><td class="mono">{v.template?.id}@{v.template?.version}</td><td class="mono">{v.memory?.tag ?? '—'}</td><td>{v.note || '—'}</td><td class="mono">{v.created_by}</td><td class="when">{ago(v.created_at)}</td></tr>{/each}</tbody>
+      </table>
+    {:else if versions}<p class="dim">No versions yet. A version keeps its code version and a tag on its memory, to come back to.</p>{/if}
+
+    <h4>Branches <span class="count">{branches?.length ?? '…'}</span></h4>
+    <ul class="list">
+      {#each branches ?? [] as b (b.name)}
+        <li class="card">
+          <div class="row between">
+            <div class="row"><span class="tag dev">branch</span><b class="mono">{b.name}</b><span class="dim">{b.created_by}, {ago(Math.floor(b.point_ts / 1000))}</span></div>
+            <div class="acts">
+              <button class="btn2 primary" disabled={!canEdit || !!busy} onclick={() => review(b.name)}>Merge or promote…</button>
+              <button class="btn2 quiet" disabled={!canEdit || !!busy} onclick={() => drop(b.name)}>{busy === 'drop' ? '…' : 'Drop'}</button>
+            </div>
+          </div>
+          {#if open === b.name}
+            <div class="note">
+              {#if !check}Comparing it with its memory now…
+              {:else if check.conflicts === 0}
+                <span>Nothing conflicts{check.clean ? `; ${check.clean} change${check.clean === 1 ? '' : 's'} merge cleanly` : ''}. Merging adds what it learned (procedures) to {agent.name}.</span>
+                <span class="acts"><button class="btn2 primary" disabled={!!busy} onclick={() => merge(b.name)}>{busy === 'merge' ? 'Merging…' : 'Merge'}</button></span>
+              {:else}
+                <span>{check.conflicts} conflict{check.conflicts === 1 ? '' : 's'} with its memory now: it can't merge back. Promote it to a new agent instead (evolve).</span>
+              {/if}
+              {#if check}
+                <span class="acts"><input type="text" class="mono" bind:value={promoteName} aria-label="New agent's name" />
+                  <button class="btn2" disabled={!!busy || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(promoteName)} onclick={() => promote(b.name)}>{busy === 'promote' ? 'Promoting…' : 'Promote to a new agent'}</button>
+                  <button class="link" onclick={() => (open = '')}>Cancel</button></span>
+              {/if}
+            </div>
+          {/if}
+        </li>
+      {:else}
+        {#if branches}<li class="empty">No branches.</li>{/if}
       {/each}
-    </tbody>
-  </table>
+    </ul>
+  {/if}
 
   <h4>Forks <span class="count">{forks.length}</span></h4>
   <ul class="list">
@@ -158,13 +246,11 @@
 <style>
   .kv { grid-template-columns: 100px 1fr; }
   .card > .note { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .appr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }
-  .appr select { width: auto; }
   .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .list .card { gap: 8px; padding: 12px 14px; }
   .list .note { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .changes { margin: 0; padding-left: 18px; font-size: 12.5px; }
-  .changes .dim { list-style: none; margin-left: -18px; }
+  .grow { flex: 1 1 auto; }
+  .ok { color: var(--green, #1a7158); font-size: 12.5px; margin: 0; }
   .empty { border: 1px dashed var(--border); border-radius: 8px; }
   .when { white-space: nowrap; color: var(--text-4); width: 1%; }
   .pick { width: 100%; display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); cursor: pointer; font: inherit; font-size: 13px; text-align: left; }

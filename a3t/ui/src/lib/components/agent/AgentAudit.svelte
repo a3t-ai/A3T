@@ -18,7 +18,17 @@
 
   const f = $derived(factsOf(agent, templates));
   type View = 'all' | 'deny' | 'allow' | 'run' | 'err' | 'conv' | 'memory';
-  import { insight, type MemoryType } from './controlPlane';
+  import { insight, describeEvent, type MemoryType, type AgentEvent, type Turn, type TurnSummary } from './controlPlane';
+  /// Its own turns (the turn log) and its history (agent_events), from the control plane.
+  let own = $state<{ summary: TurnSummary; turns: Turn[] } | null>(null);
+  let history = $state<AgentEvent[] | null>(null);
+  let histErr = $state('');
+  $effect(() => {
+    const id = agent.id;
+    own = null; history = null; histErr = '';
+    insight.turns(id).then((r) => { if (r.ok && agent.id === id) own = r.data; });
+    insight.events(id).then((r) => { if (agent.id !== id) return; if (r.ok) history = r.data; else histErr = r.error ?? 'Its history could not be read.'; });
+  });
   let mem = $state<{ namespace: string; counts: Record<MemoryType, number>; memory: Record<MemoryType, any[]> } | null>(null);
   let memErr = $state('');
   let memOpen = $state<MemoryType>('working');
@@ -36,13 +46,20 @@
   let view = $state<View>(start ?? 'all');
   $effect(() => { if (view === 'memory') loadMemory(agent.id); });
   type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; err?: boolean; ic: string };
+  /// Its calls: a deployed agent's runs; otherwise its own turns — the serving
+  /// flow's runs are every agent's, not its own.
+  const deployed = $derived(!!live.placement?.stats);
+  const calls = $derived.by(() => deployed
+    ? live.runs.map((r) => ({ kind: 'run' as const, ic: 'RUN', ts: Date.parse(r.started), title: `${r.status} · ${dur(r.ms)}`, meta: `${r.flow} · ${r.id}${r.error ? ` · ${r.error.slice(0, 160)}` : ''}`, err: live.failed.includes(r) }))
+    : (own?.turns ?? []).map((t) => ({ kind: 'run' as const, ic: 'TURN', ts: Date.parse(t.at), title: `${t.outcome || 'answered'} · ${dur(Number(t.duration_ms) || null)}`,
+        meta: `session ${t.session_id}${Number(t.tool_calls) ? ` · ${t.tool_calls} tool calls` : ''}${t.degraded ? ` · degraded: ${t.degraded}` : ''}`, err: !!t.outcome && t.outcome !== 'answered' })));
   const items = $derived.by((): Item[] => {
     const all: Item[] = [
-      ...live.runs.map((r) => ({ kind: 'run' as const, ic: 'RUN', ts: Date.parse(r.started), title: `${r.status} · ${dur(r.ms)}`, meta: `${r.flow} · ${r.id}${r.error ? ` · ${r.error.slice(0, 160)}` : ''}`, err: live.failed.includes(r) })),
+      ...calls,
       ...live.convs.map((c) => ({ kind: 'conv' as const, ic: 'TEST', ts: Date.parse(c.updated_at), title: c.title || 'Test chat', meta: `${c.message_count} messages · ${c.session_id}` })),
       ...live.decisions.map((d) => ({ kind: d.allow ? 'allow' as const : 'deny' as const, ic: d.allow ? 'OK' : 'DENY', ts: d.ts, title: `${d.allow ? 'allowed' : 'blocked'}: ${d.action}`, meta: `${d.resource}${d.obo ? ` · on behalf of ${d.obo}` : ''}${d.reason ? ` · ${d.reason}` : ''}`, err: !d.allow })),
     ];
-    const keep = (i: Item) => view === 'all' || (view === 'err' ? i.kind === 'run' && i.err : i.kind === view);
+    const keep = (i: Item) => view === 'all' || (view === 'err' ? i.kind === 'run' && !!i.err : i.kind === view);
     return all.filter(keep).sort((a, b) => b.ts - a.ts).slice(0, 200);
   });
   const MEM = [
@@ -66,12 +83,19 @@
       <div class="tile" class:bad={s.refused > 0}><span class="v">{s.refused}</span><span class="k">Refused</span></div>
     </div>
     {#if s.lastError}<div class="note bad"><b>Last error</b> {s.lastError}</div>{/if}
-  {:else if !live.loading}
-    <div class="note">Not deployed, so it has no figures of its own. Below are the runs of its serving flow <span class="mono">{f.target || '—'}</span>, which other agents share (UI-2). <button class="link" onclick={() => ongo('releases')}>Deploy it →</button></div>
+  {:else if own}
+    <div class="tiles six">
+      <div class="tile"><span class="v">{own.summary.turns}</span><span class="k">Turns</span></div>
+      <div class="tile" class:bad={own.summary.failed > 0}><span class="v">{own.summary.failed}</span><span class="k">Failed</span></div>
+      <div class="tile"><span class="v">{own.summary.degraded}</span><span class="k">Degraded</span></div>
+      <div class="tile"><span class="v">{own.summary.tool_calls}</span><span class="k">Tool calls</span></div>
+      <div class="tile"><span class="v">{own.summary.turns ? dur(own.summary.avg_ms) : '—'}</span><span class="k">Average turn</span></div>
+      <div class="tile"><span class="v">{own.summary.last_at ? ago(own.summary.last_at) : '—'}</span><span class="k">Last</span></div>
+    </div>
   {/if}
 
   <div class="chips">
-    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${live.runs.length})`], ['err', `Errors (${live.failed.length})`], ['conv', `Test chats (${live.convs.length})`], ['memory', 'Memory']] as [k, label] (k)}
+    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${calls.length})`], ['err', `Errors (${calls.filter((c) => c.err).length})`], ['conv', `Test chats (${live.convs.length})`], ['memory', 'Memory']] as [k, label] (k)}
       <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
     {/each}
     <span class="grow"></span>
@@ -116,16 +140,17 @@
   {/if}
 
   <div class="card">
-    <div class="card-head"><h3>Changes</h3><span class="tag sample">sample</span><span>who changed it, what, and who approved</span></div>
-    <table class="tbl">
-      <thead><tr><th>When</th><th>Who</th><th>What</th><th>Approved by</th></tr></thead>
-      <tbody>
-        <tr><td class="k">2 d ago</td><td class="mono">{agent.created_by || '—'}</td><td>tools: + acme/jira</td><td class="dim">— (no rule then)</td></tr>
-        <tr><td class="k">5 d ago</td><td class="mono">{agent.created_by || '—'}</td><td>instructions edited (3 lines)</td><td class="dim">—</td></tr>
-        <tr><td class="k">{agent.created_at ? ago(agent.created_at) : '—'}</td><td class="mono">{agent.created_by || '—'}</td><td>created{f.template ? ` from ${f.template.name}@${f.template.version}` : ''}</td><td class="dim">—</td></tr>
-      </tbody>
-    </table>
-    <p class="dim">Only its creation is recorded today; edits are not (SRV-20). The rows above it show how changes will read.</p>
+    <div class="card-head"><h3>Changes</h3><span>who changed it and what, from its history</span></div>
+    {#if histErr}<p class="err">{histErr}</p>
+    {:else if !history}<p class="dim">…</p>
+    {:else if history.length}
+      <table class="tbl">
+        <thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead>
+        <tbody>{#each history as e, i (i)}<tr><td class="k">{ago(e.at)}</td><td class="mono">{e.by || '—'}</td><td>{describeEvent(e)}</td></tr>{/each}</tbody>
+      </table>
+    {:else}
+      <p class="dim">Nothing recorded yet. Every change through the control plane is kept here: edits, blocks, shares, merges.</p>
+    {/if}
   </div>
 </section>
 

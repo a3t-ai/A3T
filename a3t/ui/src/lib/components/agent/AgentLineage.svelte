@@ -88,7 +88,7 @@
             {#if up[0]}<span class="dim">{RELATION[up[0].relation] ?? up[0].relation} {up[0].kind === 'agent' ? nameOf(up[0].id) : up[0].id}</span>{/if}
           </div>
           {#if up[0]?.relation === 'inherit'}
-            <div class="sample"><b>Not yet</b><span>Its parent's hooks fire and its data goes back once FlowR runs hooks in the agent call (AH-1..4) and ADB links the memory spaces.</span></div>
+            <div class="note"><b>Not yet:</b> <span>Its parent's hooks fire and its data goes back once FlowR runs hooks in the agent call (AH-1..4) and ADB links the memory spaces.</span></div>
           {/if}
         </div>
         <div class="col">

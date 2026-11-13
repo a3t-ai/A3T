@@ -48,7 +48,43 @@ export const insight = {
     const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_memory', { id });
     return r.ok ? { ok: true as const, data: r.data as { namespace: string; counts: Record<MemoryType, number>; memory: Record<MemoryType, any[]> } } : { ok: false as const, error: r.error };
   },
+  /// Its history (agent_events), newest first: who changed what.
+  events: async (id: string) => {
+    const r = await agentTool('agent_a3t_agents', 'tool_a3t_agent_events', { id });
+    if (!r.ok) return { ok: false as const, error: r.error };
+    const rows = (Array.isArray(r.data) ? r.data : []) as { event_type: string; payload: string; created_at: string }[];
+    const evs: AgentEvent[] = rows.map((x) => {
+      let p: any = {}; try { p = JSON.parse(x.payload || '{}'); } catch { /* kept empty */ }
+      return { type: x.event_type, at: x.created_at, by: p.by ?? '', payload: p };
+    }).sort((a, b) => b.at.localeCompare(a.at));
+    return { ok: true as const, data: evs };
+  },
 };
+export interface AgentEvent { type: string; at: string; by: string; payload: any }
+
+/// Stop and start its data plane, through agent_a3t_agents. Blocked, every call to
+/// it (POST /chat, its webhook) is refused; its record and memory stay.
+export async function setBlocked(id: string, blocked: boolean, reason?: string) {
+  const s = getSession();
+  const r = await agentTool('agent_a3t_agents', blocked ? 'tool_a3t_agent_block' : 'tool_a3t_agent_unblock',
+    { org_id: s?.user?.org_id ?? 'org-default', id, ...(reason ? { reason } : {}) });
+  return r.ok ? { ok: true as const, status: (r.data as { status: string })?.status } : { ok: false as const, error: r.error };
+}
+
+/// One line for an event of its history.
+export function describeEvent(e: AgentEvent): string {
+  const p = e.payload ?? {};
+  switch (e.type) {
+    case 'created': return p.from?.kind === 'agent' ? `made from ${p.from.id} (${p.relation ?? 'copy'})` : `created from ${p.from?.id ?? p.template ?? 'its template'}`;
+    case 'updated': return (p.changed ?? []).length ? `changed ${(p.changed as string[]).map((c) => c.replace(/^values\./, '')).join(', ')}` : 'saved, no change';
+    case 'blocked': return `blocked${p.reason ? `: ${p.reason}` : ''}`;
+    case 'unblocked': return 'unblocked';
+    case 'shared': return `shared with ${p.target === '*' ? 'everyone (public)' : p.target}`;
+    case 'unshared': return `no longer shared with ${p.target === '*' ? 'everyone' : p.target}`;
+    case 'merged': return `procedures merged in from ${p.from} (${p.procedures ?? 0})`;
+    default: return e.type;
+  }
+}
 
 export const rightsOf = (s: Share): Rights => ({ call: s.can_call === 'true', inherit: s.can_inherit === 'true', fork: s.can_fork === 'true', merge_back: s.can_merge_back === 'true' });
 

@@ -9,7 +9,7 @@
   import AgentMetrics from './AgentMetrics.svelte';
 
   let { agent, templates, allAgents, live, me, llmLabel, ongo, onstudio, oncode, onlifecycle }: {
-    agent: AgentRec & { description?: string; created_by?: string };
+    agent: AgentRec & { description?: string; created_by?: string; status?: string };
     templates: TemplateRec[];
     allAgents: AgentRec[];
     live: AgentLive;
@@ -80,8 +80,8 @@
       <button class="tile" class:bad={p.stats.errorRate > 0.02} onclick={() => ongo('audit')}><span class="v">{(p.stats.errorRate * 100).toFixed(1)}%</span><span class="k">Errors</span></button>
       <button class="tile" onclick={() => ongo('releases')}><span class="v">{dur(p.stats.p95Ms)}</span><span class="k">p95 latency</span></button>
     {:else}
-      <button class="tile" onclick={() => ongo('audit')}><span class="v">{live.loading ? '…' : live.runsDay.length}</span><span class="k">Runs of its flow, 24 h</span></button>
-      <button class="tile" class:bad={live.failed.length > 0} onclick={() => ongo('audit')}><span class="v">{live.loading ? '…' : live.failed.length}</span><span class="k">Failed, its flow</span></button>
+      <button class="tile" class:bad={agent.status === 'blocked'} onclick={() => ongo('controls')}><span class="v">{agent.status === 'blocked' ? 'blocked' : 'open'}</span><span class="k">Its data plane</span></button>
+      <button class="tile" onclick={() => ongo('releases')}><span class="v">shared</span><span class="k">Runtime</span></button>
       <button class="tile" onclick={() => ongo('access')}><span class="v">{live.toolsLoading ? '…' : live.allowedTools.length}</span><span class="k">Tools it may call</span></button>
     {/if}
     <button class="tile" class:bad={live.denied.length > 0} onclick={() => ongo('audit')}><span class="v">{live.loading ? '…' : live.decErr ? '—' : live.denied.length}</span><span class="k">Blocked actions</span></button>
@@ -95,7 +95,7 @@
         {#if lineage.kind !== 'template'}<span class="dim"> · {lineage.kind === 'fork' ? 'forked from' : 'cloned from'} {lineage.from?.name}</span>{/if}</dd>
       <dt>Model</dt><dd><span class="mono">{f.llm || '—'}</span>{#if llmLabel}<span class="dim"> · {llmLabel.replace(/^.*\(|\)$/g, '')}</span>{/if}</dd>
       <dt>Tools</dt><dd>{f.mcp.length ? f.mcp.map((m) => m.split('/').pop()).join(', ') : 'none'}<span class="dim"> · {f.tools ? `limited to ${f.tools.length}` : 'not restricted'}</span> <button class="link" onclick={() => ongo('access')}>Access →</button></dd>
-      <dt>Called at</dt><dd>{#if f.endpoint}<span class="mono">/webhook{f.endpoint}</span><span class="dim"> · {live.trigger?.enabled === false ? 'blocked' : 'open'}</span> <button class="link" onclick={() => ongo('exposure')}>Exposure →</button>{:else}—{/if}</dd>
+      <dt>Called at</dt><dd><span class="mono">POST /chat</span><span class="dim"> · session {agent.id}:… · {agent.status === 'blocked' ? 'blocked' : 'open'}</span>{#if f.endpoint}<span class="dim"> · webhook </span><span class="mono">/webhook{f.endpoint}</span>{/if} <button class="link" onclick={() => ongo('exposure')}>Exposure →</button></dd>
       <dt>Memory</dt><dd>{agent.mode === 'persistent' ? 'kept across conversations' : agent.mode === 'session' ? 'per conversation' : agent.mode}</dd>
     </dl>
   </div>

@@ -150,8 +150,9 @@
       <div class="tg-chips">
         <span class="tg-chip"><b>Model</b>{facts.agent.model ?? 'chosen per agent'}</span>
         <span class="tg-chip"><b>Tools</b>{facts.agent.mcpServers.length + facts.agent.tools.length ? [...facts.agent.mcpServers, ...facts.agent.tools].join(', ') : 'none'}</span>
-        <span class="tg-chip"><b>Memory</b>{facts.agent.memory ? 'yes' : 'none'}</span>
-        <span class="tg-chip"><b>Hooks</b>{facts.hooks.length ? facts.hooks.join(', ') : 'none'}</span>
+        <span class="tg-chip"><b>Memory</b>{facts.agent.memory ? 'yes' : facts.onCore ? "each agent's own, on the org's ADB (the core's)" : 'none'}</span>
+        <span class="tg-chip"><b>Hooks</b>{facts.hooks.length ? facts.hooks.join(', ') : facts.onCore ? "the core's error handler (locked)" : 'none'}</span>
+        {#if facts.extends}<span class="tg-chip"><b>Extends</b>{facts.extends}</span>{/if}
       </div>
       <button class="link tg-more" onclick={() => onview?.('yaml')}>See its code →</button>
     </section>

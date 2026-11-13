@@ -36,10 +36,24 @@ export interface TemplateFacts {
   };
   /// Lifecycle hooks with something in them (use.extensions).
   hooks: string[];
+  /// It runs on the core agent (system/tmpl_system_agent_engine): it is the core,
+  /// extends it, or runs it or an A3T agent template. Its memory is then the
+  /// core's — each agent's own, on the org's ADB.
+  onCore: boolean;
+  /// What it extends (metadata.a3t.extends).
+  extends?: string;
   parseError?: string;
 }
 
-const empty = (): TemplateFacts => ({ inputs: [], outputs: [], agent: { present: false, tools: [], mcpServers: [] }, hooks: [] });
+const empty = (): TemplateFacts => ({ inputs: [], outputs: [], agent: { present: false, tools: [], mcpServers: [] }, hooks: [], onCore: false });
+
+const CORE = 'tmpl_system_agent_engine';
+/// Whether any task in the `do` tree runs one of these workflows.
+function runsWorkflow(tasks: any, names: string[]): boolean {
+  const list = Array.isArray(tasks) ? tasks : [];
+  return list.some((entry) => entry && typeof entry === 'object' && (Object.values(entry) as any[]).some((t) =>
+    names.includes(t?.run?.workflow?.name) || runsWorkflow(t?.do, names) || runsWorkflow(t?.try, names)));
+}
 
 /// JSON-schema properties (input.schema.document) or a contextSchema field list.
 function fieldsOf(schema: any): Field[] {
@@ -104,6 +118,12 @@ export function readTemplate(specYaml: string | undefined): TemplateFacts {
     if (!out.inputs.length && t.with) {
       for (const k of ['message', 'session_id']) if (k in t.with) out.inputs.push({ name: k, type: 'string', required: k === 'message' });
     }
+  }
+  out.extends = d.metadata?.a3t?.extends ?? undefined;
+  out.onCore = doc.name === CORE || String(out.extends ?? '').includes(CORE) || runsWorkflow(d.do, [CORE, 'tmpl_a3t_agent']);
+  if (out.onCore && !out.inputs.length) {
+    out.inputs = [{ name: 'message', type: 'string', required: true, description: 'What the caller says' },
+      { name: 'session_id', type: 'string', required: false, description: '<agent-id>:<conversation>' }];
   }
   const ext = Array.isArray(d.use?.extensions) ? d.use.extensions : [];
   for (const e of ext) for (const [name, h] of Object.entries(e ?? {}) as [string, any][]) {

@@ -33,16 +33,14 @@
     {#if kind === 'clone'}
       <p>A new agent with the same template, model, instructions and tools — <b>on its own from then on</b>. Changes to either never reach the other.</p>
     {:else}
-      <p>A new agent that <b>keeps its link</b> to <span class="mono">{name}</span>: it is listed as its fork, and you can see where it came from.</p>
-      <p class="dim">Taking the parent's later changes into the fork is not available yet.</p>
+      <p>A new agent that <b>keeps its link</b> to <span class="mono">{name}</span>: it is listed as its fork in Lineage. Nothing it learns goes back.</p>
     {/if}
     <label>Name<input type="text" bind:value={newName} spellcheck="false" /></label>
     {#if newName && !valid}<span class="err">Lower-case letters, digits and dashes.</span>{/if}
     <label>Project
       <select bind:value={project}>{#each projects as p (p)}<option value={p}>{p}</option>{/each}</select>
     </label>
-    <label class="off"><input type="checkbox" disabled /> Bring what it remembers <small>(not available yet)</small></label>
-    <p class="dim">It starts with no conversations and an endpoint of its own. It is not deployed.</p>
+    <p class="dim">It starts with no memory, its own memory space and its own endpoint; it is not deployed. To carry what {name} remembers, branch it in Releases and promote the branch.</p>
     {#if err}<p class="err">{err}</p>{/if}
     <div class="acts">
       <button class="btn-p" disabled={!valid || !project || busy} onclick={make}>{busy ? 'Making…' : kind === 'fork' ? 'Fork it' : 'Clone it'}</button>
@@ -60,8 +58,6 @@
   .err { font-size: 12.5px; color: var(--err, #b42318); }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
   label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
-  label.off { flex-direction: row; align-items: center; gap: 8px; color: var(--text-4); font-weight: 400; }
-  label.off input { width: auto; }
   .acts { display: flex; gap: 8px; margin-top: 4px; }
   .btn-p, .btn-s { height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 13px var(--font-sans); color: var(--text-1); cursor: pointer; }
   .btn-p { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }

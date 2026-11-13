@@ -61,9 +61,9 @@
     <div class="card-head"><h3>About it</h3></div>
     <div class="form">
       <label>Name<input type="text" class="mono" bind:value={bindings.name} spellcheck="false" /></label>
-      <label>Environment <small>where its owner puts it — prod agents need approval to change (Controls)</small>
+      <label>Environment <small>where its owner puts it — dev, test or prod</small>
         <select bind:value={bindings.environment}><option value="">— not set —</option><option value="dev">dev</option><option value="test">test</option><option value="prod">prod</option></select></label>
-      <label>Description <small>shown to reviewers, and in its MCP tool and A2A card</small>
+      <label>Description <small>what it is for — shown on its Overview and to reviewers</small>
         <textarea rows="3" bind:value={bindings.description} placeholder={f.purpose || 'One or two sentences'}></textarea></label>
     </div>
   </div>

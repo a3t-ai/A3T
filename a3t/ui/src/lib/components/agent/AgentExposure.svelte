@@ -1,38 +1,24 @@
 <script lang="ts">
-  /// Exposure — how the agent exposes itself, and who has called it. Its owner
-  /// chooses the interfaces: REST (its webhook — live today), MCP (it is a tool
-  /// to Claude Code, VS Code, apps, other agents) and A2A (other agents find it
-  /// by its agent card and send it tasks). MCP and A2A are Sample until the
-  /// server serves them (SRV-19); REST is open without a token today (SRV-16).
-  import { factsOf, ago, type AgentRec, type TemplateRec } from './agentData';
-  import { readTemplate } from '$lib/components/templates/templateSpec';
+  /// Exposure — the addresses it answers on, and who has called it. Every agent
+  /// has a data plane (POST /chat, streamed) and a control plane (the A3T agents'
+  /// tools, by its id); a webhook if its values give it one. Blocking it in
+  /// Controls closes its data plane and webhook.
+  import { ago, factsOf, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
+  import { addresses } from './controlPlane';
   import { endpointUrl, copy } from './agentApi';
-  import { mcpUrl, toolOf, connectSnippet, agentCard, cardUrl, type Client } from './agentMcp';
   import AgentApi from './AgentApi.svelte';
 
   let { agent, templates, live, ongo }: {
-    agent: AgentRec & { description?: string };
+    agent: AgentRec & { description?: string; status?: string };
     templates: (TemplateRec & { spec_yaml: string })[];
     live: AgentLive;
     ongo: (tab: string) => void;
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
-  const t = $derived(readTemplate(templates.find((x) => x.id === agent.template_id)?.spec_yaml));
-  const restOn = $derived(!!f.endpoint && live.trigger?.enabled !== false);
-  // Sample choices for the interfaces the server does not serve yet: not saved.
-  let mcpOn = $state(true);
-  let a2aOn = $state(false);
-
-  const murl = $derived(mcpUrl(agent.name, agent.namespace));
-  const tool = $derived(toolOf(agent, f.purpose, t.inputs, t.outputs));
-  let client = $state<Client>('claude');
-  const mcode = $derived(connectSnippet(client, agent.name, murl));
-  const card = $derived(agentCard(agent, f.purpose, f.template?.version ?? '1.0.0', t.inputs));
-  const curl = $derived(cardUrl(agent.name, agent.namespace));
-
-  let view = $state<'rest' | 'mcp' | 'a2a'>('mcp');
+  const a = $derived(addresses(agent.id));
+  const open = $derived(agent.status !== 'blocked');
   let copied = $state('');
   async function cp(k: string, s: string) { if (await copy(s)) { copied = k; setTimeout(() => (copied = ''), 1500); } }
 
@@ -52,68 +38,28 @@
 
 <section class="agt">
   <div class="card">
-    <div class="card-head"><h3>How it is exposed</h3><span>its owner chooses; each interface has its own address</span></div>
+    <div class="card-head"><h3>Where it answers</h3><span>its own addresses</span></div>
     <ul class="ifs">
-      <li class:sel={view === 'rest'}>
-        <button class="pick" onclick={() => (view = 'rest')}><b>REST</b><span class="dim">HTTP webhook — live</span></button>
-        <span class="st">{#if !f.endpoint}<span class="dim">no endpoint</span>{:else if !live.trigger}…{:else}<span class="tag" class:prod={restOn}>{restOn ? 'on' : 'blocked'}</span>{/if}</span>
-        <button class="link" onclick={() => ongo('controls')}>{restOn ? 'Block' : 'Unblock'} in Controls</button>
+      <li>
+        <div><b>Data plane</b><span class="dim mono">POST {a.data} · session {a.session}</span></div>
+        <span class="tag" class:prod={open}>{open ? 'open' : 'blocked'}</span>
+        <button class="link" onclick={() => ongo('controls')}>{open ? 'Block' : 'Unblock'} in Controls</button>
       </li>
-      <li class:sel={view === 'mcp'}>
-        <button class="pick" onclick={() => (view = 'mcp')}><b>MCP</b><span class="dim">a tool to Claude Code, VS Code, apps, agents</span></button>
-        <span class="st"><span class="tag sample">sample</span></span>
-        <label class="sw"><input type="checkbox" bind:checked={mcpOn} /> {mcpOn ? 'on' : 'off'}</label>
+      <li>
+        <div><b>Control plane</b><span class="dim mono">{a.control} · the A3T agents' tools with its id</span></div>
+        <span class="tag prod">on</span>
+        <button class="link" onclick={() => cp('ctl', a.control)}>{copied === 'ctl' ? 'Copied' : 'Copy'}</button>
       </li>
-      <li class:sel={view === 'a2a'}>
-        <button class="pick" onclick={() => (view = 'a2a')}><b>A2A</b><span class="dim">Agent2Agent — other agents send it tasks</span></button>
-        <span class="st"><span class="tag sample">sample</span></span>
-        <label class="sw"><input type="checkbox" bind:checked={a2aOn} /> {a2aOn ? 'on' : 'off'}</label>
+      <li>
+        <div><b>Webhook</b><span class="dim mono">{f.endpoint ? `POST ${endpointUrl(f.endpoint)}` : 'none — its values give it one (endpoint:)'}</span></div>
+        {#if f.endpoint}<span class="tag" class:prod={open}>{open ? 'open' : 'blocked'}</span>{:else}<span class="dim">—</span>{/if}
+        {#if f.endpoint}<button class="link" onclick={() => cp('wh', endpointUrl(f.endpoint))}>{copied === 'wh' ? 'Copied' : 'Copy'}</button>{:else}<span></span>{/if}
       </li>
     </ul>
-    <p class="dim">Every interface needs a user's sign-in or an app key — except REST today, which also takes calls with neither (SRV-16).</p>
+    <p class="dim">MCP and A2A addresses per agent are not served yet (SRV-19); an MCP client reaches it through the A3T agents' tools.</p>
   </div>
 
-  {#if view === 'rest'}
-    <div class="card">
-      <div class="card-head"><h3>REST</h3><span>live today</span></div>
-      {#if f.endpoint}
-        <div class="ep"><span class="verb">POST</span><span class="path">{endpointUrl(f.endpoint)}</span><button class="btn2" onclick={() => cp('rest', endpointUrl(f.endpoint))}>{copied === 'rest' ? 'Copied' : 'Copy'}</button></div>
-        {#if restOn}<div class="note bad">Accepts calls <b>without a token</b>: they run with no user (SRV-16).</div>{/if}
-        <AgentApi {agent} {templates} {ongo} />
-      {:else}
-        <p class="dim">It has no webhook. Its developers give it one in its values (<span class="mono">endpoint:</span>).</p>
-      {/if}
-    </div>
-  {:else if view === 'mcp'}
-    <div class="card">
-      <div class="card-head"><h3>MCP</h3><span class="tag sample">sample</span><span>{mcpOn ? 'it is one tool to whoever connects' : 'off — not offered over MCP'}</span></div>
-      {#if mcpOn}
-        <div class="ep"><span class="verb">MCP</span><span class="path">{murl}</span><button class="btn2" onclick={() => cp('murl', murl)}>{copied === 'murl' ? 'Copied' : 'Copy'}</button></div>
-        <dl class="kv">
-          <dt>Tool</dt><dd><b class="mono">{tool.name}</b> — {tool.description}</dd>
-          <dt>Takes</dt><dd class="mono">{Object.keys((tool.inputSchema as any).properties).join(', ')}</dd>
-          <dt>Sign-in</dt><dd>OAuth (the client opens a browser), or an app key for a service.</dd>
-        </dl>
-        <div class="row between">
-          <div class="seg">{#each [['claude', 'Claude Code'], ['vscode', 'VS Code'], ['ts', 'TypeScript app']] as [k, l] (k)}<button class:on={client === k} onclick={() => (client = k as Client)}>{l}</button>{/each}</div>
-          <button class="link" onclick={() => cp('tool', JSON.stringify(tool, null, 2))}>{copied === 'tool' ? 'Copied' : 'Copy the tool definition'}</button>
-        </div>
-        <pre class="code">{mcode}<button class="btn2 copy" onclick={() => cp('mcode', mcode)}>{copied === 'mcode' ? 'Copied' : 'Copy'}</button></pre>
-      {/if}
-      <p class="dim">Not served yet: each agent needs its own MCP endpoint on the server (SRV-19). The switch is not saved.</p>
-    </div>
-  {:else}
-    <div class="card">
-      <div class="card-head"><h3>A2A</h3><span class="tag sample">sample</span><span>{a2aOn ? 'other agents discover it by its card' : 'off — not offered to other agents'}</span></div>
-      {#if a2aOn}
-        <div class="ep"><span class="verb">CARD</span><span class="path">{curl}</span><button class="btn2" onclick={() => cp('curl', curl)}>{copied === 'curl' ? 'Copied' : 'Copy'}</button></div>
-        <pre class="code">{JSON.stringify(card, null, 2)}<button class="btn2 copy" onclick={() => cp('card', JSON.stringify(card, null, 2))}>{copied === 'card' ? 'Copied' : 'Copy'}</button></pre>
-      {:else}
-        <p class="dim">Turn it on to publish an agent card: its name, what it does, its skill, and how to sign in.</p>
-      {/if}
-      <p class="dim">Not served yet (SRV-19). The switch is not saved.</p>
-    </div>
-  {/if}
+  <AgentApi {agent} {templates} />
 
   <div class="card">
     <div class="card-head"><h3>Who has called it</h3><span>users its calls ran for, from the decision log</span></div>
@@ -134,6 +80,10 @@
 <style>
   .ifs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .ifs li { display: grid; grid-template-columns: 1fr auto 150px; gap: 12px; align-items: center; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+  .ifs li > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ifs li > div .mono { font-size: 11.5px; overflow-wrap: anywhere; }
+  .ifs b { font: 600 13px var(--font-sans); color: var(--text-1); }
+  .mono { font-family: var(--font-mono); }
   .ifs li.sel { border-color: var(--spec); background: var(--spec-bg); }
   .ifs .pick { display: flex; flex-direction: column; gap: 2px; border: 0; background: none; padding: 0; text-align: left; cursor: pointer; font: inherit; }
   .ifs .pick b { font: 600 13px var(--font-mono); color: var(--text-1); }
