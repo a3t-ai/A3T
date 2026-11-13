@@ -78,7 +78,8 @@
   const parent = $derived(lineage?.ancestors?.[0]);
   const lastBlock = $derived((events ?? []).find((e) => e.type === 'blocked' || e.type === 'unblocked'));
   const vars = $derived.by(() => { try { return typeof agent.variables === 'string' ? JSON.parse(agent.variables || '{}') : (agent.variables ?? {}); } catch { return {}; } });
-  const hookCount = $derived({ before: (vars.hooks?.before_turn ?? []).length, after: (vars.hooks?.after_turn ?? []).length });
+  /// Its hooks: phase → flows (the engine runs them).
+  const hookPhases = $derived(Object.entries((vars.hooks ?? {}) as Record<string, string[]>).filter(([, l]) => Array.isArray(l) && l.length));
   const RELATION: Record<string, string> = {
     template: 'Made from the template', inherit: 'Inherits from', clone: 'Cloned from', fork: 'Forked from', branch: 'Branched from', evolved: 'Evolved from',
   };
@@ -171,8 +172,8 @@
         {#if canEdit}<button class="btn2" onclick={() => ongo('tools')}>Change</button>{:else}<span></span>{/if}</li>
 
       <li><span class="k">Hooks</span>
-        <div>{hookCount.before || hookCount.after ? `${hookCount.before} before each turn, ${hookCount.after} after.` : 'None — nothing runs around its turns.'}</div>
-        <button class="btn2" onclick={() => ongo('hooks')}>{hookCount.before || hookCount.after ? 'Hooks' : 'Add a hook'}</button></li>
+        <div>{#if hookPhases.length}{#each hookPhases as [ph, l] (ph)}<span class="line"><span class="mono">{ph}</span>: {l.join(', ')}</span>{/each}{:else}None — no flow of its own runs in its turns.{/if}</div>
+        <button class="btn2" onclick={() => ongo('hooks')}>{hookPhases.length ? 'Hooks' : 'Add a hook'}</button></li>
 
       <li><span class="k">Lineage</span>
         <div>{#if parent}{RELATION[parent.relation] ?? parent.relation} <b class="mono">{parent.id}{parent.version ? '@' + parent.version : ''}</b> — {RELATION_MEANS[parent.relation] ?? ''}.{:else}Made from <span class="mono">{agent.template_id}@{agent.template_version}</span>.{/if}
@@ -193,7 +194,7 @@
     <div class="card go"><button class="ttl" onclick={() => ongo('secure')}>Secure it →</button>
       <span class="dim">Who can call it and what it may do.</span>
       <span class="links"><button class="link" onclick={() => ongo('keys')}>Keys</button><button class="link" onclick={() => ongo('sharing')}>Sharing</button><button class="link" onclick={() => ongo('controls')}>Controls</button><button class="link" onclick={() => ongo('audit')}>Audit</button></span></div>
-    <div class="card go"><button class="ttl" onclick={() => ongo('release')}>Evolve it →</button>
+    <div class="card go"><button class="ttl" onclick={() => ongo('versions')}>Evolve it →</button>
       <span class="dim">New versions, and new agents from it.</span>
       <span class="links"><button class="link" onclick={() => ongo('versions')}>Versions</button><button class="link" onclick={() => onlifecycle('branch')}>Branch its memory</button><button class="link" onclick={() => onlifecycle('fork')}>Fork</button><button class="link" onclick={() => onlifecycle('clone')}>Clone</button><button class="link" onclick={() => ongo('lineage')}>Lineage</button><button class="link" onclick={onstudio}>Studio</button></span></div>
   </div>

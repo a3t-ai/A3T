@@ -168,12 +168,14 @@
     { id: 'review', label: 'Review', hint: 'Check it, then create it. It is not deployed until you deploy it.' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    overview: 'Get it working: try it here, give your app a key, see it answer',
-    build: 'What it is made of: model, tools and MCP servers, hooks, memory, lineage',
-    secure: 'Who can call it and what it may do: keys, sharing, controls, endpoints, audit',
-    release: 'How it is doing and what runs: metrics, versions, branches, deployment',
+    overview: 'Its endpoints, a test, the code to call it, and its status',
+    build: 'Make it work and evolve it: model and tools, hooks, memory, versions, lineage',
+    secure: 'Who can call it and what it may do: keys, sharing, controls, endpoints',
+    audit: 'What it did and what changed: calls, decisions, changes',
+    metrics: 'How it is doing: its turns, failures, time and tool calls',
     settings: 'Name, description, environment, owner, delete',
   };
+
 
 
   /// An existing agent's tabs, in the order its maker works: get it working
@@ -183,22 +185,22 @@
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
     { id: 'build', label: 'Build', icon: '<path d="M5 2v6a3 3 0 006 0V5"/><path d="M9 7l2-2 2 2"/><circle cx="5" cy="13" r="1.6"/>' },
     { id: 'secure', label: 'Access', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
-    { id: 'release', label: 'Releases', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
+    { id: 'audit', label: 'Audit', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 5h5M5.5 8h5M5.5 11h3"/>' },
+    { id: 'metrics', label: 'Metrics', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
     { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
   /// The sections of each tab, in the order they are used.
   const SECTIONS: Record<string, { id: string; label: string }[]> = {
-    build: [{ id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'lineage', label: 'Lineage' }],
-    secure: [{ id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }, { id: 'audit', label: 'Audit' }],
-    release: [{ id: 'metrics', label: 'Metrics' }, { id: 'versions', label: 'Versions & deploy' }],
+    build: [{ id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'versions', label: 'Versions & deploy' }, { id: 'lineage', label: 'Lineage' }],
+    secure: [{ id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }],
   };
   const SECTION_TAB: Record<string, string> = Object.fromEntries(Object.entries(SECTIONS).flatMap(([t, ss]) => ss.map((x) => [x.id, t])));
-  let sub = $state<Record<string, string>>({ build: 'tools', secure: 'keys', release: 'metrics' });
+  let sub = $state<Record<string, string>>({ build: 'tools', secure: 'keys' });
   /// Names other pages and earlier versions link with.
   const TAB_ALIAS: Record<string, string> = {
     detail: 'overview', access: 'tools', config: 'tools', configure: 'tools', api: 'exposure', tokens: 'keys', token: 'keys',
     policy: 'controls', canvas: 'versions', deploy: 'versions', releases: 'versions', branches: 'versions',
-    health: 'audit', activity: 'audit', observe: 'audit', ownership: 'settings',
+    health: 'metrics', activity: 'audit', observe: 'metrics', release: 'versions', ownership: 'settings',
   };
   /// Open a tab, or a section (its tab, on that section), by name or alias.
   const goTab = (t: string) => {
@@ -496,7 +498,7 @@
       target: vars.target ?? '',
       ep_path: vars.ep_path ?? '',
       // Its own hook flows around each turn ("<project>/<flow>"), run by tmpl_a3t_agent.
-      hooks: { before_turn: [...(vars.hooks?.before_turn ?? [])], after_turn: [...(vars.hooks?.after_turn ?? [])] },
+      hooks: Object.fromEntries(Object.entries(vars.hooks ?? {}).map(([k, v]) => [k, Array.isArray(v) ? [...v] : []])),
       // Capability ceiling: an allow-list of tool names this agent may invoke.
       // null = unrestricted (every tool its MCP servers expose); a list, even an
       // empty one, = only those tools — the runtime denies the rest.
@@ -559,8 +561,8 @@
     vars.target = bindings.target;
     vars.ep_path = bindings.ep_path;
     vars.enabled_tools = bindings.enabled_tools ?? null;
-    const hooks = { before_turn: bindings.hooks?.before_turn ?? [], after_turn: bindings.hooks?.after_turn ?? [] };
-    if (hooks.before_turn.length || hooks.after_turn.length) vars.hooks = hooks; else delete vars.hooks;
+    const hooks = Object.fromEntries(Object.entries(bindings.hooks ?? {}).filter(([, v]) => Array.isArray(v) && v.length));
+    if (Object.keys(hooks).length) vars.hooks = hooks; else delete vars.hooks;
     const description = String(bindings.description ?? '').trim();
     if (description) vars.description = description; else delete vars.description;
     if (bindings.environment) vars.environment = bindings.environment; else delete vars.environment;
@@ -810,11 +812,11 @@
               <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} onreload={loadAgents} ongo={goTab} />
             {:else if propNode === 'secure' && sub.secure === 'exposure'}
               <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
-            {:else if propNode === 'secure' && sub.secure === 'audit'}
+            {:else if propNode === 'audit'}
               <AgentAudit {agent} {templates} live={live!} onstudio={studio} ongo={goTab} />
-            {:else if propNode === 'release' && sub.release === 'metrics'}
+            {:else if propNode === 'metrics'}
               <AgentMetrics id={agent.id} />
-            {:else if propNode === 'release' && sub.release === 'versions'}
+            {:else if propNode === 'build' && sub.build === 'versions'}
               <AgentReleases {agent} {templates} {allAgents} live={live!} canEdit={$canEditAgent} bind:branchForm
                 onopen={selectAgent} onmade={async (id) => { await loadAgents(); selectAgent(id); }} onchanged={() => deployRev++}>
                 {#snippet notDeployed()}

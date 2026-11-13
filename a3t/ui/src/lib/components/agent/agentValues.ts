@@ -7,8 +7,8 @@ import * as YAML from 'yaml';
 export type Bindings = {
   name: string; description: string; environment: string; mode: string; llm: string; target: string; ep_path: string;
   mcp_servers: string[]; enabled_tools: string[] | null; system_prompt: string; max_iterations: number; temperature: number;
-  /// Its own hook flows around each turn, "<project>/<flow>" (tmpl_a3t_agent runs them).
-  hooks?: { before_turn: string[]; after_turn: string[] };
+  /// Its own hook flows by phase (on_turn_start … on_turn_end), "<project>/<flow>"; the engine runs them.
+  hooks?: Record<string, string[]>;
 };
 
 export const MODES = ['session', 'persistent', 'ephemeral', 'reactive'] as const;
