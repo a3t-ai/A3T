@@ -56,13 +56,11 @@
 </script>
 
 <section class="agt">
-  <div class="row between">
-    <span></span>
-    <div class="acts">
-      <button class="btn2" onclick={() => onmake('branch')}>Branch</button>
-      <button class="btn2" onclick={() => onmake('fork')}>Fork</button>
-      <button class="btn2" onclick={() => onmake('clone')}>Clone</button>
-    </div>
+  <div class="ways">
+    <div class="way inherit"><b>Inherit</b><span>A child. The source's hooks fire first and its updates arrive.</span><em>data goes back</em></div>
+    <div class="way fork"><b>Fork</b><span>Its own agent from here on; it remembers where it came from.</span><em>nothing goes back</em></div>
+    <div class="way merge"><b>Merge</b><span>A fork that only learned procedures: they go into the source through ADB.</span><em>procedures go back</em></div>
+    <div class="way evolve"><b>Evolve</b><span>A fork that changed more becomes a new agent, linked as a descendant.</span><em>new agent</em></div>
   </div>
 
   <div class="card">
@@ -104,13 +102,6 @@
     {#if error}<p class="err">{error}</p>{/if}
   </div>
 
-  <div class="ways">
-    <div class="way inherit"><b>Inherit</b><span>A child. The source's hooks fire first and its updates arrive.</span><em>data goes back</em></div>
-    <div class="way fork"><b>Fork</b><span>Its own agent from here on; it remembers where it came from.</span><em>nothing goes back</em></div>
-    <div class="way merge"><b>Merge</b><span>A fork that only learned procedures: they go into the source through ADB.</span><em>procedures go back</em></div>
-    <div class="way evolve"><b>Evolve</b><span>A fork that changed more becomes a new agent, linked as a descendant.</span><em>new agent</em></div>
-  </div>
-
   {#if down.some((d) => d.relation === 'fork')}
     <div class="card">
       <div class="card-head"><h3>Forks that can come back</h3><span>the one move that fits each</span></div>
@@ -136,6 +127,15 @@
       {#if msg}<p class="ok">{msg}</p>{/if}
     </div>
   {/if}
+
+  <div class="row between">
+    <span></span>
+    <div class="acts">
+      <button class="btn2" onclick={() => onmake('branch')}>Branch</button>
+      <button class="btn2" onclick={() => onmake('fork')}>Fork</button>
+      <button class="btn2" onclick={() => onmake('clone')}>Clone</button>
+    </div>
+  </div>
 </section>
 
 <style>
