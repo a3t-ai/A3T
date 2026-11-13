@@ -77,14 +77,14 @@
   <div class="card">
     <div class="card-head"><h3>Test a policy</h3><span>what would be decided if it did this, now</span></div>
     <div class="sentence">
-      <span><b>{agent.name}</b>, called by</span>
+      <span>Called by</span>
       <input class="who" type="text" bind:value={caller} aria-label="Caller" />
-      <span>with role</span>
-      <select bind:value={role}>{#each ROLES as r (r)}<option>{r}</option>{/each}</select>
-      <span>, wants to</span>
-      <select bind:value={does}>{#each DOES as d (d.k)}<option value={d.k}>{d.t}</option>{/each}</select>
+      <span>as</span>
+      <select class="role" bind:value={role} aria-label="Role">{#each ROLES as r (r)}<option>{r}</option>{/each}</select>
+      <span>to</span>
+      <select class="does" bind:value={does} aria-label="What it does">{#each DOES as d (d.k)}<option value={d.k}>{d.t}</option>{/each}</select>
       {#if targets.length}
-        <select bind:value={target}>{#each targets as t (t)}<option>{t}</option>{/each}</select>
+        <select class="tgt-pick" bind:value={target}>{#each targets as t (t)}<option>{t}</option>{/each}</select>
       {:else}
         <input class="tgt" type="text" bind:value={target} placeholder={does === 'tool' ? 'tool name' : does === 'model' ? 'ns/model' : 'ns/flow'} />
       {/if}
@@ -112,10 +112,15 @@
   .grow { flex: 1 1 auto; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
   td.bad { color: var(--err); font-weight: 600; }
-  .sentence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13.5px; color: var(--text-2); }
-  .sentence select, .sentence input { width: auto; }
-  .sentence .who { width: 190px; }
-  .sentence .tgt { width: 200px; }
+  /* One line: the fields share it and shrink to fit; it wraps only on a phone. */
+  .sentence { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+  .sentence > span { white-space: nowrap; flex: 0 0 auto; }
+  .sentence select, .sentence input { width: auto; height: 30px; min-width: 0; padding-top: 0; padding-bottom: 0; font-size: 12.5px; }
+  .sentence .who { flex: 1 1 180px; min-width: 120px; }
+  .sentence .role { flex: 0 1 130px; min-width: 100px; }
+  .sentence .does { flex: 0 1 140px; min-width: 110px; }
+  .sentence .tgt, .sentence .tgt-pick { flex: 1 1 180px; min-width: 100px; }
+  @media (max-width: 700px) { .sentence { flex-wrap: wrap; } }
   .draft > summary { cursor: pointer; font-size: 12.5px; color: var(--spec); width: fit-content; }
   .draft textarea { width: 100%; margin-top: 8px; font: 12.5px/1.5 var(--font-mono); }
   .ck { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 400; }
