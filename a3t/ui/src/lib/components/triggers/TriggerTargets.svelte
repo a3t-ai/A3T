@@ -6,9 +6,10 @@
   import '$lib/components/agent/agent.css';
   import './triggers.css';
   import { BODY_OF, type SourceKind, type StoredTarget } from './triggerSpec';
+  import TriggerMapping, { type MapCtx } from './TriggerMapping.svelte';
 
   type Opt = { value: string; label: string };
-  let { targets = $bindable(), flows, agents, source, trigger }: {
+  let { targets = $bindable(), samples = $bindable(), flows, agents, source, trigger, ctx }: {
     targets: StoredTarget[];
     /// "<project>/<flow>"
     flows: Opt[];
@@ -16,7 +17,11 @@
     agents: Opt[];
     source: SourceKind;
     trigger: string;
+    /// Sample bodies (JSON text) the mappings are checked on.
+    samples: string[];
+    ctx: MapCtx;
   } = $props();
+  const agentName = (id?: string) => agents.find((a) => a.value === id)?.label ?? id ?? '';
 
   const KIND: Record<string, { name: string; does: string }> = {
     workflow: { name: 'Flow', does: 'runs the flow with the input below' },
@@ -39,8 +44,21 @@
 </script>
 
 <section class="agt">
-  <p class="dim">Each firing goes to every target below. Their fields are jq over the event
-    <span class="mono">{'{'} body, message, source, trigger, time {'}'}</span> — <span class="mono">.body</span> is {BODY_OF[source]}.</p>
+  <p class="dim">Each firing goes to every target below. Their mappings are jq over the event
+    <span class="mono">{'{'} body, message, source, trigger, time {'}'}</span> — <span class="mono">.body</span> is {BODY_OF[source]}.
+    Write them, or ask <b>agent_a3t_mapper</b> to: either way they are checked on the samples and approved before they are used. When the trigger fires, only the approved jq runs.</p>
+
+  <div class="card">
+    <div class="card-head"><h3>Sample events</h3><span>what the mappings are checked on, and what the mapper writes from — {source === 'webhook' ? 'bodies a caller would POST' : '.body as the source makes it'}</span></div>
+    {#each samples as _, k (k)}
+      <div class="smp">
+        <textarea rows="3" bind:value={samples[k]} spellcheck="false" placeholder={'{"order_id": "A-17", "amount": 4.5}'}></textarea>
+        <button class="btn2 quiet" onclick={() => (samples = samples.filter((_, j) => j !== k))} aria-label="Remove sample {k + 1}">Remove</button>
+      </div>
+    {/each}
+    <div class="acts"><button class="btn2" onclick={() => (samples = [...samples, ''])}>+ Sample</button>
+      <span class="dim">Use real shapes, with made-up values: samples go to the mapper's model.</span></div>
+  </div>
 
   {#each targets as t, i (i)}
     <div class="card">
@@ -55,9 +73,10 @@
               {#if t.namespace && t.name && !flows.some((f) => f.value === `${t.namespace}/${t.name}`)}<option value="{t.namespace}/{t.name}">{t.namespace}/{t.name}</option>{/if}
               {#each flows as f (f.value)}<option value={f.value}>{f.label}</option>{/each}
             </select></label>
-          <label class="fld full">Its input <small>jq over the event; empty: the body as it came</small>
-            <textarea rows="2" bind:value={targets[i].input_mapping} placeholder={'${ {order: .body.order_id, amount: .body.amount} }'}></textarea></label>
         </div>
+        <TriggerMapping bind:value={targets[i].input_mapping} field="input" label="Its input" hint="jq over the event; empty: the body as it came"
+          placeholder={'${ {order: .body.order_id, amount: .body.amount} }'} target="flow:{t.namespace}/{t.name}" flowRef={t.namespace && t.name ? `${t.namespace}/${t.name}` : undefined}
+          targetName="{t.namespace}/{t.name}" {ctx} />
       {:else if t.type === 'a3t_agent'}
         <div class="fields">
           <label class="fld full">Agent
@@ -66,11 +85,11 @@
               {#if t.agent_id && !agents.some((a) => a.value === t.agent_id)}<option value={t.agent_id}>{t.agent_id}</option>{/if}
               {#each agents as a (a.value)}<option value={a.value}>{a.label}</option>{/each}
             </select></label>
-          <label class="fld">Message <small>jq; empty: the trigger's message</small>
-            <textarea rows="2" bind:value={targets[i].message} placeholder={'${ "New order " + (.body.id | tostring) }'}></textarea></label>
-          <label class="fld">Conversation <small>jq; empty: trigger-{trigger || '<name>'}</small>
-            <textarea rows="2" bind:value={targets[i].conversation} placeholder={'${ .body.customer_id }'}></textarea></label>
         </div>
+        <TriggerMapping bind:value={targets[i].message} field="message" label="Message" hint="jq; empty: the trigger's message"
+          placeholder={'${ "New order " + (.body.id | tostring) }'} target="agent:{t.agent_id}" targetName={agentName(t.agent_id)} {ctx} />
+        <TriggerMapping bind:value={targets[i].conversation} field="conversation" label="Conversation" hint="jq; empty: trigger-{trigger || '<name>'}"
+          placeholder={'${ .body.customer_id }'} target="agent:{t.agent_id}" targetName={agentName(t.agent_id)} {ctx} />
         <p class="dim">The turn runs in conversation <span class="mono">{t.agent_id || '<agent>'}:&lt;conversation&gt;</span>; firings with the same conversation share its context.</p>
       {:else if t.type === 'webhook'}
         <div class="fields">
@@ -91,3 +110,9 @@
     <button class="btn2" onclick={() => add('webhook')}>+ URL</button>
   </div>
 </section>
+
+<style>
+  .smp { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; }
+  .smp textarea { width: 100%; box-sizing: border-box; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font: 12.5px/1.5 var(--font-mono); resize: vertical; outline: none; }
+  .smp textarea:focus { border-color: var(--spec); }
+</style>

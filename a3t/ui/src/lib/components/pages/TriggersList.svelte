@@ -14,6 +14,8 @@
   import '$lib/components/triggers/triggers.css';
   import TriggersGuide from '$lib/components/triggers/TriggersGuide.svelte';
   import TriggerTargets from '$lib/components/triggers/TriggerTargets.svelte';
+  import type { MapCtx } from '$lib/components/triggers/TriggerMapping.svelte';
+  import { listRecords, type MappingRecord } from '$lib/components/triggers/mapperApi';
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import { toYaml, fromYaml, BODY_OF, targetLabel, type StoredTarget, type SourceKind } from '$lib/components/triggers/triggerSpec';
@@ -302,6 +304,46 @@
 
   function closeEditor() { view = 'list'; saveError = ''; }
 
+  // ── Mappings: proposed by agent_a3t_mapper or hand-written, checked, approved ──
+  /// Sample bodies (JSON text) the mappings are checked on, for this editor session.
+  let mapSamples = $state<string[]>([]);
+  let mapRecords = $state<MappingRecord[]>([]);
+  let mapLoadedFor = '';
+  async function reloadMappings() {
+    const id = editingTrigger?.id;
+    if (!id) { mapRecords = []; return; }
+    const r = await listRecords(id);
+    mapRecords = r.ok ? r.records : [];
+    mapLoadedFor = id;
+  }
+  // The trigger's records, once per trigger opened; samples start from the Test body.
+  $effect(() => {
+    const id = editingTrigger?.id ?? '';
+    if (view !== 'editor') return;
+    untrack(() => {
+      if (!mapSamples.length) mapSamples = [testPayload];
+      if (id !== mapLoadedFor) void reloadMappings();
+    });
+  });
+  $effect(() => { if (view !== 'editor') untrack(() => { mapSamples = []; mapRecords = []; mapLoadedFor = ''; }); });
+  const mapCtx = $derived<MapCtx>({
+    triggerId: editingTrigger?.id ?? null,
+    trigger: formName,
+    source: formType,
+    samples: mapSamples,
+    records: mapRecords,
+    reload: reloadMappings,
+    ensureSaved: async () => {
+      if (editingTrigger) return editingTrigger.id;
+      await saveTrigger(true);
+      if (saveError) return null;
+      const found = triggers.find((t) => t.name === formName && (t.namespace || 'default') === (formNs || 'default'));
+      if (found) editingTrigger = found;
+      return found?.id ?? null;
+    },
+    persist: async () => { await saveTrigger(true); return !saveError; },
+  });
+
   // A trigger picked in the app's list (/triggers/<id>) opens in the editor —
   // once the list is in, and again on each pick (a new panel, even the same id).
   let focusedPanel = '';
@@ -519,7 +561,7 @@
     {/if}
 
     {#if step === 'destinations'}
-      <TriggerTargets bind:targets={formTargets} flows={flowOptions} agents={agentOptions} source={formType} trigger={formName} />
+      <TriggerTargets bind:targets={formTargets} bind:samples={mapSamples} ctx={mapCtx} flows={flowOptions} agents={agentOptions} source={formType} trigger={formName} />
     {/if}
 
     {#if step === 'yaml'}
@@ -542,6 +584,7 @@
           <div class="acts">
             <button class="btn2 primary" onclick={runTest} disabled={testRunning || !formTargets.length || !formPath}>{testRunning ? 'Firing…' : 'Fire it'}</button>
             {#if !formTargets.length}<span class="dim">Add a target in Send first.</span>{/if}
+            <button class="btn2 quiet" disabled={!testPayload.trim() || mapSamples.includes(testPayload)} onclick={() => (mapSamples = [...mapSamples.filter((x) => x.trim()), testPayload])}>{mapSamples.includes(testPayload) ? 'Kept as a sample' : 'Keep as a sample'}</button>
           </div>
           {#if testError}<div class="note bad">{testError}</div>{/if}
         </div>
