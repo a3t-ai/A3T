@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.0.2'
+  version: '1.0.3'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -45,6 +45,8 @@ do:
         - unshare: { when: '${ $context._in.action == "unshare" }', then: unshare }
         - shared_with: { when: '${ $context._in.action == "shared_with" }', then: shared_with }
         - forget: { when: '${ $context._in.action == "forget" }', then: forget }
+        - turns: { when: '${ $context._in.action == "turns" }', then: turns }
+        - memory: { when: '${ $context._in.action == "memory" }', then: memory }
         - unknown: { then: unknown }
 
   - unknown:
@@ -53,7 +55,7 @@ do:
           type: https://a3t.io/errors/input
           status: 400
           title: Unknown action
-          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with or forget." }'
+          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with, forget, turns or memory." }'
 
   # ═══ create ════════════════════════════════════════════════════════════════
   # { action: create, from: {kind: template|agent, id, version?}, mode?: template|inherit|clone,
@@ -655,5 +657,83 @@ do:
       set:
         ok: true
         id: '${ $context._in.id }'
+      then: end
+
+  # ═══ turns ═════════════════════════════════════════════════════════════════
+  # { action: turns, id, limit? }. The agent's own figures, from the core's turn log
+  # (a3t_agent_turns): its latest turns and a summary of them.
+  - turns:
+      call: lancedb
+      with:
+        operation: query
+        table: a3t_agent_turns
+        filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+        limit: '${ $context._in.limit // 200 }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: read
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+      output:
+        as: >-
+          ${ (if type == "array" then . else (.rows // .data // []) end | sort_by(.at) | reverse) as $t
+          | ($t | map((.duration_ms // "0") | tonumber)) as $ms
+          | {
+              ok: true,
+              id: $context._in.id,
+              summary: {
+                turns: ($t | length),
+                failed: ($t | map(select((.outcome // "") != "answered" and (.outcome // "") != "" and (.outcome // "") != "null")) | length),
+                degraded: ($t | map(select((.degraded // "") != "")) | length),
+                tool_calls: ($t | map((.tool_calls // "0") | tonumber) | add // 0),
+                avg_ms: (if ($ms | length) > 0 then (($ms | add) / ($ms | length) | floor) else 0 end),
+                last_at: ($t[0].at // null)
+              },
+              turns: ($t | .[0:50])
+            } }
+      then: end
+
+  # ═══ memory ════════════════════════════════════════════════════════════════
+  # { action: memory, id, namespace?, limit? }. What the agent remembers, by memory
+  # type, from its own namespace on the org ADB (the core keeps it under the agent's id).
+  - memory:
+      set:
+        _ns: '${ $context._in.namespace // $context._in.id // "" }'
+        _lim: '${ $context._in.limit // 20 }'
+        _mem: {}
+      export:
+        as: '${ $context + . }'
+  - memory_read:
+      for:
+        each: _type
+        in: '${ ["WORKING", "EPISODIC", "SEMANTIC", "PROCEDURAL"] }'
+        do:
+          - one_type:
+              try:
+                do:
+                  - recall:
+                      call: adb
+                      with:
+                        query: '${ "RECALL FROM " + $_type + " ALL NAMESPACE \"" + $context._ns + "\" LIMIT " + ($context._lim | tostring) }'
+                        _resource: '${ $context._in.memory_resource // "a3t/adb" }'
+                      export:
+                        as: '${ $context + {_mem: ($context._mem + {($_type | ascii_downcase): ((.data.records // .data.data.records // .records // []) | map(.data))})} }'
+                catch:
+                  do:
+                    - none:
+                        set:
+                          _mem: '${ $context._mem + {($_type | ascii_downcase): []} }'
+                        export:
+                          as: '${ $context + . }'
+  - memory_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+        namespace: '${ $context._ns }'
+        counts: '${ $context._mem | with_entries(.value |= length) }'
+        memory: '${ $context._mem }'
       then: end
 

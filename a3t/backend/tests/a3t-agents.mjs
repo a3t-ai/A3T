@@ -192,6 +192,10 @@ ${tableStep('create-agent-shares')}
   const stream = await chat.text();
   check('data plane: /chat streams an answer', chat.status === 200 && /stub answer/.test(stream), stream.slice(0, 300));
   check('  with the changed instructions', (prompts.at(-1) ?? '').startsWith('You are e2e, changed.'), (prompts.at(-1) ?? '').slice(0, 200));
+  t = await rest('POST', '/agents/agent_a3t_agents/tools/tool_a3t_agent_turns', { id: 'agt-e2e' });
+  check('metrics: tool_a3t_agent_turns counts the turn', t.status === 200 && t.body?.output?.summary?.turns >= 1, JSON.stringify(t.body).slice(0, 300));
+  t = await rest('POST', '/agents/agent_a3t_agents/tools/tool_a3t_agent_memory', { id: 'agt-e2e' });
+  check('memory: tool_a3t_agent_memory reads its working and episodic memory', t.status === 200 && (t.body?.output?.counts?.working ?? 0) >= 1 && (t.body?.output?.counts?.episodic ?? 0) >= 1, JSON.stringify(t.body?.output?.counts ?? t.body).slice(0, 300));
 } catch (e) {
   failures++;
   console.error(`✗ ${e.message}`);
