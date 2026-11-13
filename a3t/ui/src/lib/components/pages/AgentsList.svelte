@@ -794,7 +794,7 @@
             {#if propNode === 'overview'}
               <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} onreload={loadAgents} />
             {:else if propNode === 'build' && sub.build === 'code'}
-              <AgentCode {agent} {templates} oncode={openCode} ongo={goTab} />
+              <AgentCode {agent} {templates} oncode={openCode} />
             {:else if propNode === 'build' && sub.build === 'tools'}
               <AgentSetup {agent} bind:bindings {llmResources} {mcpResources} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings}>
