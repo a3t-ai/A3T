@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: system
   name: flow_system_install
-  version: 1.2.2
+  version: 1.2.3
   metadata:
     description: >
       Full A3T platform install: the schema, then the platform template rows
@@ -43,7 +43,7 @@ do:
         _missing: >-
           ${ [ {id: "tmpl_system_agent_engine", ns: "system", version: "2.1.0", published: "false",
                 tags: "core,lifecycle,multi-turn,tool-use,memory,knowledge,tool-catalogue,turn-log,rust-native"},
-               {id: "tmpl_a3t_agent", ns: "a3t", version: "4.3.0", published: "true",
+               {id: "tmpl_a3t_agent", ns: "a3t", version: "4.4.0", published: "true",
                 tags: "a3t,core,memory,knowledge,tools,turn-log"},
                {id: "tmpl_a3t_service", ns: "a3t", version: "1.0.0", published: "false",
                 tags: "a3t,service,control-plane"} ]
