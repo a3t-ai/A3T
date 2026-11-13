@@ -95,7 +95,7 @@
     { title: 'What is A3T?', sub: 'Ask the assistant to explain the platform', go: () => ask('What is A3T, and what can I do with it?', true) },
     { title: 'Create an agent', sub: 'Describe what it should do — it is built in this project', go: () => ask('Create an agent that ') },
     { title: 'Explore an agent', sub: 'What it does, remembers, and was blocked from', go: () => navigateTo('agents', 'Agents') },
-    { title: 'Review security', sub: 'Every allow and deny, who acted for whom', go: () => navigateTo('logs', 'Decision log') },
+    { title: 'Review security', sub: 'Every allow and deny, who acted for whom', go: () => navigateToDetail('logs', 'Decision log', 'all') },
     { title: 'Check health', sub: 'Runtimes, deployments, errors and latency', go: () => navigateTo('runtime', 'Runtimes') },
   ];
   function ask(text: string, send = false) {

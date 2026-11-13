@@ -328,13 +328,28 @@ async function loadAll(source: string): Promise<AppItem[]> {
       id: it.key, label: it.label, namespace: g.label, sub: it.ee ? 'Enterprise' : '',
     })));
   }
+  if (source === 'decision-views') {
+    return [
+      { id: 'all', label: 'All decisions', sub: 'every allow, deny and approval asked' },
+      { id: 'deny', label: 'Denials', sub: 'what was refused, and why' },
+      { id: 'ask', label: 'Approvals asked', sub: 'what waited for a person' },
+    ];
+  }
   if (source === 'security-sections') {
     // Fixed sections, like Resources' categories.
-    const badge = 'background:var(--spec-bg,#ede7ff);color:var(--spec,#5530a8)';
-    return [
-      { id: 'identity', label: 'Identity', sub: 'SSO connection & users', badge: 'I', badgeStyle: badge },
-      { id: 'policies', label: 'Policies', sub: 'Cedar authorization', badge: 'P', badgeStyle: badge },
-    ];
+    // Identity (the SSO realm, platform-wide), then each project's Cedar policies
+    // — only the projects in view — and the compiled baseline. InfoSec only: the
+    // server answers 403 to anyone else, and the menu does not offer it.
+    const { securityPolicies } = await import('$lib/services/api');
+    const out: AppItem[] = [{ id: 'identity', label: 'Identity', sub: 'sign-in provider and users · platform-wide', namespace: 'platform' }];
+    const r = await securityPolicies.list();
+    if (r.status === 403) throw new Error('Security is for SuperAdmin and SecurityAdmin.');
+    for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
+      if (!inContext(p.namespace, 'shared')) continue;
+      out.push({ id: `policy:${p.namespace}/${p.name}`, label: p.name, namespace: p.namespace, sub: p.description || 'Cedar policy' });
+    }
+    out.push({ id: 'baseline', label: 'baseline', namespace: 'platform', sub: 'compiled deny-by-default guardrails · read only' });
+    return out;
   }
   if (source === 'canvases') {
     const res = await canvasApi.list();

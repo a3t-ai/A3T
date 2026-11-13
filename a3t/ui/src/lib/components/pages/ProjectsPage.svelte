@@ -18,7 +18,7 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import { onMount, untrack } from 'svelte';
   import { getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { currentUser } from '$lib/stores/auth';
+  import { currentUser, isInfosec } from '$lib/stores/auth';
   import {
     getProjects, getShowPlatform, loadProjects, setProject, roleIn, isMine, getProfile, getMyOrgs, type Project,
   } from '$lib/stores/context.svelte.ts';
@@ -914,7 +914,7 @@
       <div class="ap">
         {@render membersBlock()}
         {@render policyBlock()}
-        <button class="ap-link" onclick={() => navigateTo('logs', 'Decision log', { q: info.namespace })}>See what was allowed and blocked in this project →</button>
+        {#if isInfosec()}<button class="ap-link" onclick={() => navigateToDetail('logs', 'Decision log', 'all', { q: info.namespace })}>See what was allowed and blocked in this project →</button>{/if}
       </div>
 
     {:else if tab === 'billing' && info}

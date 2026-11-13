@@ -4,14 +4,16 @@
  * Access rules:
  *   superadmin — sees all menu items (platform-level access)
  *   admin      — sees all menu items
- *   (per-item roles below; Security is admin-plus)
+ *   (per-item roles below; Security and the Decision log: SuperAdmin and SecurityAdmin only)
  */
 
 import type { UserRole, MenuGroup } from './types';
 
 const ALL_ROLES: UserRole[] = ['superadmin', 'securityadmin', 'admin', 'operator', 'viewer'];
-const ADMIN_PLUS: UserRole[] = ['superadmin', 'securityadmin', 'admin'];
 const OPERATOR_PLUS: UserRole[] = ['superadmin', 'admin', 'operator'];
+/// Platform InfoSec: Security and the Decision log are theirs alone (the server
+/// refuses anyone else too).
+const INFOSEC: UserRole[] = ['superadmin', 'securityadmin'];
 
 // Chat and Projects on top; agents and what they are built from; what they
 // know and keep; security and audit; runtime and logs; the Studio and
@@ -50,8 +52,8 @@ export const MENU_CONFIG: MenuGroup[] = [
     label: 'Security & audit',
     roles: ALL_ROLES,
     items: [
-      { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield', roles: ADMIN_PLUS },
-      { type: 'logs',       label: 'Decision log', tag: null, icon: 'decision', roles: ALL_ROLES },
+      { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield', roles: INFOSEC },
+      { type: 'logs',       label: 'Decision log', tag: null, icon: 'decision', roles: INFOSEC },
     ],
   },
   {

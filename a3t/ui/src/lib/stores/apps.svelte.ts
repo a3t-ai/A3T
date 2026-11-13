@@ -67,6 +67,8 @@ export const APP_CONTEXT: Record<string, { label: string; source: string; focuse
   knowledge: { label: 'Knowledge graphs', source: 'kg-dbs', focuses: true },
   // Fixed sections, like Resources' categories.
   security: { label: 'Security', source: 'security-sections', focuses: true },
+  // Views of the decision log; the selected project scopes them.
+  logs: { label: 'Decisions', source: 'decision-views', focuses: true },
   // Every Settings page is an item; the form opens in Details.
   settings: { label: 'Settings', source: 'settings-sections', focuses: true },
 };

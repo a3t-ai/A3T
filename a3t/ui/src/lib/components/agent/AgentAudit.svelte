@@ -2,7 +2,8 @@
   /// Audit — what it did and what changed: every decision about it (allowed
   /// and blocked), its calls and errors, test chats, memory, and the history of
   /// changes to it. Deep debugging is the Studio's.
-  import { navigateTo } from '$lib/stores/panels.svelte.ts';
+  import { navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { isInfosec } from '$lib/stores/auth';
   import { factsOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
 
@@ -55,7 +56,7 @@
     <span class="grow"></span>
     <button class="link" onclick={onstudio}>Debug in Studio →</button>
     <button class="link" onclick={() => navigateTo('executions', 'Executions')}>Executions →</button>
-    <button class="link" onclick={() => navigateTo('logs', 'Decision log', { q: agent.id })}>Decision log →</button>
+    {#if isInfosec()}<button class="link" onclick={() => navigateToDetail('logs', 'Decision log', 'all', { q: agent.id })}>Decision log →</button>{/if}
   </div>
 
   {#if !live.loading}

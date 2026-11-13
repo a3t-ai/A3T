@@ -428,8 +428,9 @@ export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' |
 // ── Audit / decision log (EE — the Cedar allow/deny record) ──
 export const audit = {
   /** Most-recent authorization decisions, newest-first. */
-  recent: (limit = 100, denialsOnly = false) =>
-    request(`/security/audit?limit=${limit}${denialsOnly ? '&denials_only=true' : ''}`, { method: 'GET' }),
+  /// `project`: that project's decisions; '-' the platform-wide ones; absent all.
+  recent: (limit = 100, denialsOnly = false, project?: string) =>
+    request(`/security/audit?limit=${limit}${denialsOnly ? '&denials_only=true' : ''}${project ? `&project=${encodeURIComponent(project)}` : ''}`, { method: 'GET' }),
 };
 
 export const state = {

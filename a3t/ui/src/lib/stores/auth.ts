@@ -234,3 +234,10 @@ import { getMenusForRole } from '$lib/core/auth/menu';
 export const menuGroups = derived(userRole, ($role) =>
   $role ? getMenusForRole($role) : []
 );
+
+/// SuperAdmin or SecurityAdmin: who may see Security and the Decision log (the
+/// server enforces it; this only keeps links to them away from everyone else).
+export function isInfosec(): boolean {
+  const r = getSession()?.user?.role;
+  return r === 'superadmin' || r === 'securityadmin';
+}
