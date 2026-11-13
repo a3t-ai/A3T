@@ -30,6 +30,23 @@ pub struct AuditRecord {
     pub decision: String,
     pub policy_ids: Vec<String>,
     pub reason: Option<String>,
+    /// The project (namespace) the decision was about, when the call names one:
+    /// a tool's `namespace` / `project` argument, a `ns/name` resource, or the
+    /// resource's own namespace. `None` for platform-wide calls.
+    pub project: Option<String>,
+}
+
+/// The project a request concerns, read from what the call itself names.
+pub fn project_of(req: &ExecutionRequest) -> Option<String> {
+    let s = |v: Option<&serde_json::Value>| v.and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
+    let p = &req.params;
+    let from = |o: &serde_json::Value| s(o.get("namespace")).or_else(|| s(o.get("project")))
+        .or_else(|| s(o.get("resource")).and_then(|r| r.split_once('/').map(|(ns, _)| ns.to_string())));
+    from(p)
+        .or_else(|| p.get("input").and_then(|i| from(i)))
+        .or_else(|| p.get("arguments").and_then(|i| from(i)))
+        .or_else(|| s(req.resource.attributes.get("namespace")))
+        .or_else(|| req.resource.id.split_once('/').map(|(ns, _)| ns.to_string()).filter(|ns| !ns.is_empty() && !ns.contains(':')))
 }
 
 /// Ring-buffer capacity (records; oldest evicted).
@@ -70,6 +87,7 @@ pub fn record(req: &ExecutionRequest, decision: &PolicyDecision) {
         decision: decision_s,
         policy_ids,
         reason,
+        project: project_of(req),
     };
     if let Ok(mut b) = buffer().lock() {
         if b.len() >= CAPACITY {
@@ -141,5 +159,24 @@ mod tests {
         assert_eq!(deny.resource_id, "call:rotate");
         assert_eq!(deny.policy_ids, vec!["policy3".to_string()]);
         assert!(recent_denials(10).iter().all(|r| r.decision == "deny"));
+    }
+}
+
+
+#[cfg(test)]
+mod project_tests {
+    use super::project_of;
+    use crate::{ExecutionRequest, Principal, Resource};
+    fn req(params: serde_json::Value, rid: &str) -> ExecutionRequest {
+        ExecutionRequest { principal: Principal::service("t"), action: crate::actions::tool_invoke(), resource: Resource::new("Tool", rid), context: Default::default(), attributes: Default::default(), params }
+    }
+    #[test]
+    fn the_project_is_what_the_call_names() {
+        assert_eq!(project_of(&req(serde_json::json!({"namespace": "acme"}), "list_flows")).as_deref(), Some("acme"));
+        assert_eq!(project_of(&req(serde_json::json!({"input": {"project": "acme"}}), "x")).as_deref(), Some("acme"));
+        assert_eq!(project_of(&req(serde_json::json!({"resource": "acme/claude"}), "call:llm")).as_deref(), Some("acme"));
+        assert_eq!(project_of(&req(serde_json::json!({}), "acme/flow_x")).as_deref(), Some("acme"));
+        assert_eq!(project_of(&req(serde_json::json!({}), "list_projects")), None);
+        assert_eq!(project_of(&req(serde_json::json!({}), "call:llm")), None);
     }
 }

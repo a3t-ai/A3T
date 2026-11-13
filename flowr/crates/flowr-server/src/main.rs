@@ -237,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
                 // layer. Both bypass the public routes (merged after). The audit
                 // endpoint sits behind the layer.
                 // EE policy-admin surface: list / hot-reload / dry-run test. All
-                // Admin-gated (see `is_policy_admin`), all behind the AuthN layer.
+                // InfoSec-gated (see `is_infosec`: SuperAdmin or SecurityAdmin), all behind the AuthN layer.
                 let policy_admin = PolicyAdminState {
                     storage: sec_storage,
                     policies_dir: policies_dir.clone(),
@@ -499,28 +499,25 @@ async fn audit_handler(
     principal: Option<axum::Extension<flowr_policy::Principal>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(100);
+    // The decision log names everyone's actions: Platform InfoSec only
+    // (SuperAdmin / SecurityAdmin). Anyone else is refused, not shown a subset.
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
+        return (axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({ "error": "The decision log is for SuperAdmin and SecurityAdmin." }))).into_response();
+    }
+    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(100).min(1000);
     let denials_only = params.get("denials_only").map(|s| s == "true").unwrap_or(false);
-    // The decision log names everyone's actions across every org. Platform
-    // InfoSec (SuperAdmin / SecurityAdmin) reads all of it; anyone else only the
-    // decisions about themselves (or agents acting for them).
-    let who = principal.map(|axum::Extension(p)| p);
-    let infosec = who.as_ref().is_some_and(|p| p.roles().iter().any(|r| r == "SuperAdmin" || r == "SecurityAdmin"));
-    let me = who.as_ref().and_then(|p| flowr_policy::namespace::acting_user(p).map(str::to_string));
-    let over = if infosec { limit } else { limit.saturating_mul(20).max(2000) };
-    let all = if denials_only {
-        flowr_policy::audit::recent_denials(over)
-    } else {
-        flowr_policy::audit::recent(over)
-    };
-    let mut records: Vec<_> = all.into_iter().filter(|r| {
-        infosec || me.as_deref().is_some_and(|m| {
-            let v = serde_json::to_value(r).unwrap_or_default();
-            v.get("principal_id").and_then(|x| x.as_str()) == Some(m) || v.get("on_behalf_of").and_then(|x| x.as_str()) == Some(m)
-        })
+    // `project=<ns>`: the decisions about that project; `project=-`: the
+    // platform-wide ones (no project). Absent: all.
+    let project = params.get("project").map(String::as_str).filter(|p| !p.is_empty());
+    let all = if denials_only { flowr_policy::audit::recent_denials(1000) } else { flowr_policy::audit::recent(1000) };
+    let mut records: Vec<_> = all.into_iter().filter(|r| match project {
+        None => true,
+        Some("-") => r.project.is_none(),
+        Some(p) => r.project.as_deref() == Some(p),
     }).collect();
     records.truncate(limit);
-    axum::Json(serde_json::json!({ "count": records.len(), "records": records }))
+    axum::Json(serde_json::json!({ "count": records.len(), "records": records, "scope": "this FlowR replica, in memory (newest 1000)" })).into_response()
 }
 
 /// `GET /edition` — reports the active edition and policy hook (public).
@@ -553,11 +550,12 @@ struct PolicyAdminState {
 /// layer via `roles::canonicalize`). Deliberately does NOT route through the
 /// Cedar hook: reload must stay reachable even if a bad policy set turned the
 /// hook deny-all, so an admin can always recover.
-fn is_policy_admin(principal: Option<&flowr_policy::Principal>) -> bool {
+/// Platform InfoSec: SuperAdmin or SecurityAdmin. Security (policies, identity)
+/// and the decision log are theirs alone — an Admin runs projects, not security.
+fn is_infosec(principal: Option<&flowr_policy::Principal>) -> bool {
     use flowr_policy::{roles, Principal};
     matches!(principal, Some(Principal::Human { roles: r, .. })
-        if r.iter().any(|role|
-            role == roles::SUPER_ADMIN || role == roles::SECURITY_ADMIN || role == roles::ADMIN))
+        if r.iter().any(|role| role == roles::SUPER_ADMIN || role == roles::SECURITY_ADMIN))
 }
 
 /// `GET /security/policies` — list InfoSec-owned Cedar policy resources
@@ -567,9 +565,9 @@ async fn policies_list_handler(
     Extension(state): Extension<PolicyAdminState>,
     principal: Option<Extension<flowr_policy::Principal>>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     let mut policies = Vec::new();
     for ns in &["system", "a3t", "default"] {
@@ -646,9 +644,9 @@ async fn policies_reload_handler(
     Extension(state): Extension<PolicyAdminState>,
     principal: Option<Extension<flowr_policy::Principal>>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     if state.hook_setting != "cedar" {
         return axum::Json(serde_json::json!({
@@ -728,9 +726,9 @@ async fn policies_test_handler(
     principal: Option<Extension<flowr_policy::Principal>>,
     axum::Json(body): axum::Json<PolicyTestRequest>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
@@ -854,9 +852,9 @@ async fn idp_status_handler(
     Extension(state): Extension<IdpAdminState>,
     principal: Option<Extension<flowr_policy::Principal>>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
@@ -892,9 +890,9 @@ async fn idp_list_users_handler(
     Extension(state): Extension<IdpAdminState>,
     principal: Option<Extension<flowr_policy::Principal>>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
@@ -937,9 +935,9 @@ async fn idp_create_user_handler(
     principal: Option<Extension<flowr_policy::Principal>>,
     axum::Json(body): axum::Json<IdpNewUser>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
@@ -1013,9 +1011,9 @@ async fn idp_get_user_handler(
     principal: Option<Extension<flowr_policy::Principal>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
@@ -1054,9 +1052,9 @@ async fn idp_update_user_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::Json(body): axum::Json<IdpUpdateUser>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
@@ -1087,9 +1085,9 @@ async fn idp_delete_user_handler(
     principal: Option<Extension<flowr_policy::Principal>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    if !is_policy_admin(principal.as_ref().map(|e| &e.0)) {
+    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
         return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "policy admin role required" }))).into_response();
+            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     #[cfg(feature = "ee")]
     {
