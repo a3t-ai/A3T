@@ -108,6 +108,10 @@ struct AgentSettings {
     /// requested from InfoSec rather than self-granted.
     #[serde(default)]
     owner: Option<String>,
+    /// The agent's own hook flows, by phase (AH-1): `{on_turn_start: ["<project>/<flow>", …], …}`.
+    /// See [`run_hooks`] for the phases and what each may change.
+    #[serde(default)]
+    hooks: HashMap<String, Vec<String>>,
 }
 
 fn default_system_prompt() -> String { "You are a helpful assistant.".to_string() }
@@ -447,7 +451,7 @@ impl TaskHandler for AgentHandler {
             _ => return Err(RuntimeError::task_failed(&task.name, "expected call task")),
         };
 
-        let config: AgentConfig = serde_json::from_value(with)
+        let mut config: AgentConfig = serde_json::from_value(with)
             .map_err(|e| RuntimeError::task_failed(&task.name, format!("invalid agent config: {}", e)))?;
 
         info!(task = %task.name, session = %config.session_id, "call:a3t:agent starting");
@@ -522,6 +526,17 @@ impl TaskHandler for AgentHandler {
         ctx.context = state.to_context_value(&config);
         fire_after(self, ctx, "load_session", "call:state:get").await;
 
+        // ── Its hooks: on_turn_start (may change the message, or refuse the turn) ──
+        let hooks = config.config.hooks.clone();
+        let hook_agent = crate::ops::agent_of_session(&config.session_id).unwrap_or_default().to_string();
+        let hook_session = config.session_id.clone();
+        let start_in = hook_input(&hook_agent, &hook_session, json!({ "message": config.message }));
+        match run_hooks(&storage, ctx, &hooks, "on_turn_start", start_in, &["message"]).await {
+            Ok((out, None)) => if let Some(m) = out.get("message").and_then(|v| v.as_str()) { config.message = m.to_string(); },
+            Ok((_, Some(why))) => return Err(RuntimeError::task_failed(&task.name, format!("refused by a hook: {why}"))),
+            Err(e) => return Err(RuntimeError::task_failed(&task.name, e)),
+        }
+
         // ── Phase 3: RECALL MEMORY ─────────────────────────
         // Only with `memory_resource` (an ADB resource): agent_memory.rs, F1–F2.
         fire_before(self, ctx, "recall_memory", "call:adb").await;
@@ -559,8 +574,16 @@ impl TaskHandler for AgentHandler {
         };
         let turn_started = std::time::Instant::now();
         let mut turn_usage = (0u64, 0u64);
+        // before_recall: what memory is searched with (`query`).
+        let mut recall_query = config.message.clone();
+        if memory.is_some() {
+            match run_hooks(&storage, ctx, &hooks, "before_recall", hook_input(&hook_agent, &hook_session, json!({ "message": config.message, "query": recall_query })), &["query"]).await {
+                Ok((out, _)) => if let Some(q) = out.get("query").and_then(|v| v.as_str()) { recall_query = q.to_string(); },
+                Err(e) => warn!(error = %e, "before_recall hook failed; recall uses the message"),
+            }
+        }
         let recalled = match &memory {
-            Some(m) => Some(m.recall(&config.config.memory_config, &config.message).await),
+            Some(m) => Some(m.recall(&config.config.memory_config, &recall_query).await),
             None => None,
         };
         if let Some(r) = &recalled {
@@ -705,6 +728,17 @@ impl TaskHandler for AgentHandler {
                 // Fire before_llm extension
                 ctx.context = state.to_context_value(&config);
                 fire_before(self, ctx, "call_llm", "call:llm").await;
+                // before_llm: replace the system prompt, or add to it for this call.
+                let mut call_prompt = state.system_prompt.clone();
+                match run_hooks(&storage, ctx, &hooks, "before_llm",
+                    hook_input(&hook_agent, &hook_session, json!({ "message": config.message, "iteration": state.iteration, "system_prompt": state.system_prompt })),
+                    &["system_prompt"]).await {
+                    Ok((out, _)) => {
+                        if let Some(sp) = out.get("system_prompt").and_then(|v| v.as_str()) { state.system_prompt = sp.to_string(); call_prompt = sp.to_string(); }
+                        if let Some(add) = out.get("add_to_prompt").and_then(|v| v.as_str()).filter(|a| !a.trim().is_empty()) { call_prompt = format!("{call_prompt}\n\n{add}"); }
+                    }
+                    Err(e) => warn!(error = %e, "before_llm hook failed; the model is called without it"),
+                }
 
                 // Call LLM — recorded (fine mode), so a resumed turn replays it.
                 let (llm_result, _) = swf_runtime::effects::effect(
@@ -714,7 +748,7 @@ impl TaskHandler for AgentHandler {
                         &http_client,
                         &storage,
                         llm_resource,
-                        &state.system_prompt,
+                        &call_prompt,
                         &state.messages,
                         &all_tools,
                         config.config.max_tokens,
@@ -737,6 +771,15 @@ impl TaskHandler for AgentHandler {
                 ctx.context = state.to_context_value(&config);
                 ctx.context["_llm_result"] = llm_result.clone();
                 fire_after(self, ctx, "call_llm", "call:llm").await;
+                // after_llm: sees what the model said and asked for (its text has streamed).
+                if hooks.get("after_llm").is_some_and(|h| !h.is_empty()) {
+                    let asked: Vec<Value> = llm_result.get("tool_calls").and_then(|v| v.as_array()).map(|a| a.iter()
+                        .map(|t| json!({ "tool": t.get("name"), "input": t.get("input") })).collect()).unwrap_or_default();
+                    if let Err(e) = run_hooks(&storage, ctx, &hooks, "after_llm",
+                        hook_input(&hook_agent, &hook_session, json!({ "iteration": state.iteration, "content": llm_result.get("content"), "tool_calls": asked })), &[]).await {
+                        warn!(error = %e, "after_llm hook failed");
+                    }
+                }
 
                 let tool_calls = llm_result.get("tool_calls")
                     .and_then(|v| v.as_array())
@@ -764,8 +807,16 @@ impl TaskHandler for AgentHandler {
 
                     for (call_no, tc) in tool_calls.iter().enumerate() {
                         let tool_name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        let tool_input = tc.get("input").cloned().unwrap_or(json!({}));
+                        let mut tool_input = tc.get("input").cloned().unwrap_or(json!({}));
                         let tool_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("tool");
+                        // on_tool_call: change its arguments, or refuse it (a failing hook refuses).
+                        let mut hook_refused: Option<String> = None;
+                        match run_hooks(&storage, ctx, &hooks, "on_tool_call",
+                            hook_input(&hook_agent, &hook_session, json!({ "tool": tool_name, "input": tool_input })), &["input"]).await {
+                            Ok((out, None)) => if let Some(i) = out.get("input").filter(|v| !v.is_null()) { tool_input = i.clone(); },
+                            Ok((_, Some(why))) => hook_refused = Some(why),
+                            Err(e) => hook_refused = Some(e),
+                        }
 
                         // Recorded (fine mode): a resumed turn replays it, and a
                         // call that started but never finished is not repeated.
@@ -775,7 +826,9 @@ impl TaskHandler for AgentHandler {
                             true => swf_runtime::effects::EffectKind::Read,
                             false => swf_runtime::effects::EffectKind::Effect,
                         };
-                        let (tool_result, replayed) = swf_runtime::effects::effect(
+                        let (tool_result, replayed) = if let Some(why) = &hook_refused {
+                            (Err(format!("refused by a hook: {why}")), false)
+                        } else { swf_runtime::effects::effect(
                             &format!("tool/{}.{call_no}", state.iteration),
                             kind,
                             || async {
@@ -808,10 +861,25 @@ impl TaskHandler for AgentHandler {
                                     call_mcp_tool(&http_client, &storage, &agent_principal, &config.session_id, mcp_resource, tool_name, &tool_input, ceiling_attrs).await
                                 }
                             },
-                        ).await?;
+                        ).await? };
                         if let Some(r) = tool_result.as_ref().err().and_then(|e| e.strip_prefix(TOOL_FLOW_HALTED)) {
                             return Err(RuntimeError::Halted(r.to_string()));
                         }
+                        // after_tool_call: change what the model sees (e.g. redact);
+                        // on_tool_error: give a result in place of the error.
+                        let tool_result = match tool_result {
+                            Ok(v) if hook_refused.is_none() => match run_hooks(&storage, ctx, &hooks, "after_tool_call",
+                                hook_input(&hook_agent, &hook_session, json!({ "tool": tool_name, "input": tool_input, "output": v.clone() })), &["output"]).await {
+                                Ok((out, _)) => Ok(out.get("output").cloned().unwrap_or(v)),
+                                Err(e) => { warn!(error = %e, "after_tool_call hook failed; the model sees the tool's own result"); Ok(v) }
+                            },
+                            Err(err) if hook_refused.is_none() => match run_hooks(&storage, ctx, &hooks, "on_tool_error",
+                                hook_input(&hook_agent, &hook_session, json!({ "tool": tool_name, "input": tool_input, "error": err.clone() })), &["output"]).await {
+                                Ok((out, _)) => match out.get("output").filter(|v| !v.is_null()) { Some(o) => Ok(o.clone()), None => Err(err) },
+                                Err(e) => { warn!(error = %e, "on_tool_error hook failed"); Err(err) }
+                            },
+                            other => other,
+                        };
 
                         let tool_ok = tool_result.is_ok();
                         // Text for widgets: a tool returning a JSON *string* (get_flow
@@ -1123,7 +1191,20 @@ impl TaskHandler for AgentHandler {
         }
         ctx.context = state.to_context_value(&config);
         fire_before(self, ctx, "store_memory", "call:adb").await;
-        if let Some(m) = &memory {
+        // before_store: what is remembered of this turn (`reply`), or nothing (`skip`).
+        let mut remembered = state.agent_response.clone().unwrap_or_default();
+        let mut skip_store = false;
+        if memory.is_some() {
+            match run_hooks(&storage, ctx, &hooks, "before_store",
+                hook_input(&hook_agent, &hook_session, json!({ "message": config.message, "reply": remembered })), &["reply"]).await {
+                Ok((out, refused)) => {
+                    if let Some(r) = out.get("reply").and_then(|v| v.as_str()) { remembered = r.to_string(); }
+                    skip_store = refused.is_some() || out.get("skip").and_then(|v| v.as_bool()).unwrap_or(false);
+                }
+                Err(e) => warn!(error = %e, "before_store hook failed; the turn is remembered as it is"),
+            }
+        }
+        if let Some(m) = memory.as_ref().filter(|_| !skip_store) {
             // Journaled (L39): a turn that runs again after a crash doesn't
             // write its episode twice (an interrupted write is not repeated).
             let (stored, _) = swf_runtime::effects::effect("memory/turn", swf_runtime::effects::EffectKind::Effect, || async {
@@ -1131,7 +1212,7 @@ impl TaskHandler for AgentHandler {
                     &config.config.memory_config,
                     config.config.ttl,
                     &config.message,
-                    state.agent_response.as_deref().unwrap_or_default(),
+                    &remembered,
                     state.tool_calls_made,
                     state.iteration,
                 )
@@ -1144,7 +1225,7 @@ impl TaskHandler for AgentHandler {
             }
             // F-L3: the exchange's lasting facts into SEMANTIC, after the turn (the
             // reply doesn't wait for it).
-            let reply = state.agent_response.clone().unwrap_or_default();
+            let reply = remembered.clone();
             if config.config.memory_config.reflect() && !state.procedural_hit && !reply.trim().is_empty() && !config.message.trim().is_empty() {
                 let said: Vec<(String, String)> = state
                     .messages
@@ -1229,6 +1310,14 @@ impl TaskHandler for AgentHandler {
         crate::token_stream::publish(&config.session_id, "done",
             state.agent_response.clone().unwrap_or_default());
 
+        // on_turn_end: the finished turn, after the caller has its answer.
+        if let Err(e) = run_hooks(&storage, ctx, &hooks, "on_turn_end", hook_input(&hook_agent, &hook_session, json!({
+            "message": config.message, "reply": state.agent_response, "tool_calls": state.tool_calls_made,
+            "iterations": state.iteration, "outcome": stopped_reason.clone().unwrap_or_else(|| "answered".into()),
+        })), &[]).await {
+            warn!(error = %e, "on_turn_end hook failed");
+        }
+
         fire_before(self, ctx, "emit_response", "set").await;
         ctx.context = state.to_context_value(&config);
         fire_after(self, ctx, "emit_response", "set").await;
@@ -1237,6 +1326,70 @@ impl TaskHandler for AgentHandler {
 
         Ok(TaskResult::new(response))
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// The agent's own hooks (AH-1)
+// ═══════════════════════════════════════════════════════════════════
+
+/// The phases an agent's hooks run at, in turn order. Each hook is a flow
+/// (`<project>/<flow>`) run as the caller, given the phase's input plus `phase`,
+/// `agent_id` and `session_id`. What it may return:
+///
+/// - `on_turn_start` {message}: `message` replaces it; `refuse` stops the turn. A failure stops it.
+/// - `before_recall` {message, query}: `query` is what memory is searched with.
+/// - `before_llm` {message, iteration, system_prompt}: `system_prompt` replaces it;
+///   `add_to_prompt` is added for this call.
+/// - `after_llm` {iteration, content, tool_calls}: observes (its text has streamed).
+/// - `on_tool_call` {tool, input}: `input` replaces the arguments; `refuse` (or a
+///   failure) means the tool is not called and the model is told why.
+/// - `after_tool_call` {tool, input, output}: `output` is what the model sees.
+/// - `on_tool_error` {tool, input, error}: `output` is used in place of the error.
+/// - `before_store` {message, reply}: `reply` is what is remembered; `skip` (or
+///   `refuse`) remembers nothing of the turn.
+/// - `on_turn_end` {message, reply, tool_calls, iterations, outcome}: observes.
+pub const HOOK_PHASES: [&str; 9] = ["on_turn_start", "before_recall", "before_llm", "after_llm", "on_tool_call", "after_tool_call", "on_tool_error", "before_store", "on_turn_end"];
+
+fn hook_input(agent_id: &str, session_id: &str, extra: Value) -> Value {
+    let mut v = json!({ "agent_id": agent_id, "session_id": session_id });
+    if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+        for (k, x) in e { o.insert(k.clone(), x.clone()); }
+    }
+    v
+}
+
+/// Run a phase's hooks in order, each given the input with what earlier hooks
+/// changed (`fields`; `add_to_prompt` accumulates). `Ok((input, Some(why)))` when
+/// one refused; `Err` when one failed.
+async fn run_hooks(
+    storage: &Arc<dyn StorageBackend>,
+    ctx: &mut ExecutionContext,
+    hooks: &HashMap<String, Vec<String>>,
+    phase: &str,
+    mut input: Value,
+    fields: &[&str],
+) -> std::result::Result<(Value, Option<String>), String> {
+    let Some(refs) = hooks.get(phase).filter(|r| !r.is_empty()) else { return Ok((input, None)) };
+    input["phase"] = json!(phase);
+    for r in refs {
+        let Some((ns, name)) = r.split_once('/') else { continue };
+        let out = execute_tool_flow(storage, ns, name, input.clone(), ctx).await
+            .map_err(|e| format!("hook {r} ({phase}) failed: {e}"))?;
+        info!(hook = %r, phase = %phase, "agent hook ran");
+        if let Some(why) = out.get("refuse").filter(|v| !v.is_null() && *v != &Value::Bool(false)) {
+            let why = why.as_str().map(str::to_string).unwrap_or_else(|| why.to_string());
+            return Ok((input, Some(format!("{r}: {why}"))));
+        }
+        for f in fields {
+            if let Some(v) = out.get(*f).filter(|v| !v.is_null()) { input[*f] = v.clone(); }
+        }
+        if let Some(add) = out.get("add_to_prompt").and_then(|v| v.as_str()) {
+            let cur = input.get("add_to_prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            input["add_to_prompt"] = json!(if cur.is_empty() { add.to_string() } else { format!("{cur}\n\n{add}") });
+        }
+        if out.get("skip").and_then(|v| v.as_bool()) == Some(true) { input["skip"] = json!(true); }
+    }
+    Ok((input, None))
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -12,7 +12,7 @@ document:
       A session with no agent is the A3T assistant. What the request carries wins
       over the record (llm_resource, enabled_tools, mcp_servers), as the Chat tab
       sends them. A blocked agent (status blocked) refuses the call. Its hooks
-      (values.hooks.before_turn / after_turn: "<project>/<flow>") run around the turn. Input: { message, session_id, llm_resource?, enabled_tools?,
+      (values.hooks: {<phase>: ["<project>/<flow>"]}) run inside the turn, in the engine. Input: { message, session_id, llm_resource?, enabled_tools?,
       mcp_servers?, context?, ui_context? }. Output: the core agent's.
 
 metadata:
@@ -115,6 +115,8 @@ do:
               max_iterations: ($context._vars.max_iterations // 10),
               memory_namespace: ($context._space // $context._agent_id // "a3t-assistant")
             }
+            + (if (($context._vars.hooks // {}) | type) == "object" and (($context._vars.hooks // {}) | length) > 0
+               then {hooks: ($context._vars.hooks | with_entries(.value |= ((. // []) | map(tostring) | map(select(contains("/"))))))} else {} end)
             + (if (($context._vars.tool_flows // {}) | length) > 0 then {tool_flows: $context._vars.tool_flows} else {} end)
             + (if ($context._in | has("enabled_tools")) then {enabled_tools: $context._in.enabled_tools}
                elif ($context._vars.enabled_tools != null) then {enabled_tools: $context._vars.enabled_tools}
@@ -125,106 +127,14 @@ do:
       export:
         as: '${ $context + . }'
 
-  # ═══ Its hooks (values.hooks): flows of its own around each turn ═══════════
-  # before_turn: each gets {agent_id, session_id, message}; it may return
-  # {message} (the turn takes that instead) or {refuse: "why"} (no turn). A hook
-  # that fails stops the turn. after_turn: each gets {agent_id, session_id,
-  # message, reply} once the answer is out (it has streamed: it can't change it);
-  # a failure there is reported and changes nothing. A hook is "<project>/<flow>".
-  - hooks_setup:
-      set:
-        _msg: '${ ($context._in.message // "") | tostring }'
-        _hooks: >-
-          ${ (($context._vars.hooks // {}) | if type == "object" then . else {} end) as $h
-          | {before: (($h.before_turn // []) | map(tostring | select(contains("/")))),
-             after: (($h.after_turn // []) | map(tostring | select(contains("/"))))} }
-      export:
-        as: '${ $context + . }'
-  - before_hooks:
-      for:
-        each: _h
-        in: '${ $context._hooks.before }'
-        do:
-          - before_pick:
-              set:
-                _cur: '${ $_h | split("/") | {namespace: .[0], name: (.[1:] | join("/"))} }'
-              export:
-                as: '${ $context + . }'
-          - before_run:
-              run:
-                workflow:
-                  namespace: '${ $context._cur.namespace }'
-                  name: '${ $context._cur.name }'
-                  input:
-                    agent_id: '${ $context._agent_id }'
-                    session_id: '${ $context._in.session_id }'
-                    message: '${ $context._msg }'
-              export:
-                as: >-
-                  ${ (if type == "object" then . else {} end) as $o
-                  | $context + {_msg: (($o.message // $context._msg) | tostring), _refused: ($o.refuse // null)} }
-          - before_refused:
-              if: '${ $context._refused != null }'
-              raise:
-                error:
-                  type: https://a3t.io/errors/authorization
-                  status: 403
-                  title: Refused by a hook
-                  detail: '${ ($context._cur.namespace + "/" + $context._cur.name) + " refused this message: " + ($context._refused | tostring) }'
-
   - turn:
       run:
         workflow:
           namespace: system
           name: tmpl_system_agent_engine
           input:
-            message: '${ $context._msg }'
+            message: '${ $context._in.message }'
             session_id: '${ $context._in.session_id }'
             ui_context: '${ $context._in.ui_context // null }'
             config: '${ $context._cfg }'
-      export:
-        as: '${ $context + {_out: .} }'
 
-  - after_hooks:
-      for:
-        each: _h
-        in: '${ $context._hooks.after }'
-        do:
-          - after_pick:
-              set:
-                _cur: '${ $_h | split("/") | {namespace: .[0], name: (.[1:] | join("/"))} }'
-              export:
-                as: '${ $context + . }'
-          - after_one:
-              try:
-                do:
-                  - after_run:
-                      run:
-                        workflow:
-                          namespace: '${ $context._cur.namespace }'
-                          name: '${ $context._cur.name }'
-                          input:
-                            agent_id: '${ $context._agent_id }'
-                            session_id: '${ $context._in.session_id }'
-                            message: '${ $context._msg }'
-                            reply: '${ ($context._out // {}).content // "" }'
-              catch:
-                do:
-                  - after_failed:
-                      run:
-                        workflow:
-                          namespace: system
-                          name: flow_system_error_handler
-                          input:
-                            error: '${ $context.error }'
-                            flow: a3t/tmpl_a3t_agent
-                            version: 4.4.0
-                            run_id: '${ (($workflow // {}).id // "") | tostring }'
-                            principal: '${ (($context._principal // {}).user // "") | tostring }'
-                            step: '${ "after_turn " + $context._cur.namespace + "/" + $context._cur.name }'
-
-  - answer:
-      set:
-        done: true
-      output:
-        as: '${ $context._out }'
