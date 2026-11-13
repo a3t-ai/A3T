@@ -9,7 +9,7 @@ package-mode = false
 python = "^3.12"
 fastapi = "^0.115.0"
 uvicorn = { extras = ["standard"], version = "^0.32.0" }
-claude-agent-sdk = ">=0.2.181"   # tools=[], strict_mcp_config, can_use_tool deny+interrupt
+claude-agent-sdk = ">=0.2.128"   # tools=[], strict_mcp_config, can_use_tool deny+interrupt
 
 [build-system]
 requires = ["poetry-core"]
