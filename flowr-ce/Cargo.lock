@@ -15,6 +15,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "ulid",
  "uuid",
 ]
@@ -39,6 +40,7 @@ dependencies = [
 name = "adb-embed"
 version = "0.1.0"
 dependencies = [
+ "adb-core",
  "fastembed",
  "half 2.7.1",
  "reqwest 0.12.28",
@@ -3234,15 +3236,18 @@ dependencies = [
  "flowr-ce-agents",
  "flowr-ce-storage",
  "flowr-core",
+ "flowr-expr",
  "flowr-mcp-core",
  "flowr-metrics",
  "flowr-policy",
  "flowr-storage",
  "flowr-types",
  "futures",
+ "jsonschema",
  "lancedb",
  "libc",
  "mlua",
+ "object_store 0.14.2",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "rquickjs",
@@ -3251,6 +3256,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
+ "suppaftp",
  "swf-parser",
  "swf-runtime",
  "tempfile",
@@ -5779,6 +5786,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy-regex"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bae91019476d3ec7147de9aa291cadb6d870abf2f3015d2da73a90325ac1496"
+dependencies = [
+ "lazy-regex-proc_macros",
+ "once_cell",
+ "regex",
+]
+
+[[package]]
+name = "lazy-regex-proc_macros"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4de9c1e1439d8b7b3061b2d209809f447ca33241733d9a3c01eabf2dc8d94358"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8073,7 +8103,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10155,6 +10185,18 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "suppaftp"
+version = "12.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b58fcf921745cca6f0127c9f822069947da8c6dbeff52e9004750bcc448171f"
+dependencies = [
+ "chrono",
+ "lazy-regex",
+ "log",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "swf-parser"

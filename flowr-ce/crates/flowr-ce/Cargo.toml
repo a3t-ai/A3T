@@ -48,6 +48,10 @@ tonic = "0.14"
 serde_yaml = "0.9"
 # Trigger mapping check: validate a mapped input against the flow's input schema.
 jsonschema = "0.29"
+# Files: browse storage resources. object_store is already built (via Lance) with these;
+# suppaftp is plain FTP (no TLS).
+object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
+suppaftp = { version = "12", default-features = false }
 rand = "0.8"
 sha2 = "0.10"
 

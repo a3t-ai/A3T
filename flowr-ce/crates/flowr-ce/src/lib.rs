@@ -15,6 +15,8 @@ pub mod approval;
 pub mod token_stream;
 pub mod canvas;
 pub mod ops;
+/// Files: browse a storage resource (s3, minio, gcs, azure, ftp).
+pub mod storage_browse;
 mod engine_worker;
 pub mod engine_adb;
 pub mod events;
@@ -377,6 +379,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let registry_routes = registry::registry_router(storage.clone());
     let canvas_routes = canvas::canvas_router(storage.clone());
     let ops_routes = ops::ops_router(storage.clone());
+    let storage_routes = storage_browse::router(storage.clone());
     let agent_space_routes = agent_space::router(storage.clone());
 
     let (tx, _) = broadcast::channel::<String>(100);
@@ -445,6 +448,8 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         .merge(Router::new().nest("/canvas", canvas_routes))
         // Runtime console: deployments, pause/resume, runtime state, metrics
         .merge(Router::new().nest("/ops", ops_routes))
+        // Files: list a bucket or directory, preview a file (read only)
+        .merge(Router::new().nest("/storage", storage_routes))
         // Agents as repos: an agent's memory space, branches, tags, layers, fork, promote
         .merge(agent_space_routes)
         // AO-1: this process's metrics (with an embedded ADB's in CE).
