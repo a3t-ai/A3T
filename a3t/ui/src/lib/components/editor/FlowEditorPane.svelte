@@ -623,8 +623,9 @@
     </div>
   {:else if part === 'form'}
     <div class="fep-part">{@render formView()}</div>
-  {:else if singleColumn}
-    <!-- Narrow host: one tab bar, one view at a time, full width. -->
+  {:else if singleColumn || readOnly}
+    <!-- Narrow host, or read-only: one tab bar, one view at a time, full width.
+         Read-only has no form: there is nothing to fill in. -->
     <div class="fep-solo">
       <div class="fep-toolbar">
         <div class="fep-tabs">
@@ -636,16 +637,18 @@
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3L1 8l4 5M11 3l4 5-4 5"/></svg>
             Code
           </button>
+          {#if !readOnly}
           <button class="fep-tab" class:active={soloMode === 'form'} onclick={() => soloMode = 'form'}>
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>
             Form
           </button>
+          {/if}
         </div>
       </div>
       <div class="fep-pane-body">
         {#if soloMode === 'graph'}
           {@render graphView(false)}
-        {:else if soloMode === 'code'}
+        {:else if soloMode === 'code' || readOnly}
           {@render codeView()}
         {:else}
           {@render formView()}

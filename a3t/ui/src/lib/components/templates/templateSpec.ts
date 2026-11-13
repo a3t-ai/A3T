@@ -42,10 +42,30 @@ export interface TemplateFacts {
   onCore: boolean;
   /// What it extends (metadata.a3t.extends).
   extends?: string;
+  /// What its steps reach: the flows it runs, the resources it names, the kinds
+  /// of call it makes (with how many steps make each). Fixed names only — a name
+  /// built at run time (`${…}`) is counted as dynamic.
+  reach: { flows: string[]; resources: string[]; calls: Record<string, number>; dynamic: number };
   parseError?: string;
 }
 
-const empty = (): TemplateFacts => ({ inputs: [], outputs: [], agent: { present: false, tools: [], mcpServers: [] }, hooks: [], onCore: false });
+const empty = (): TemplateFacts => ({ inputs: [], outputs: [], agent: { present: false, tools: [], mcpServers: [] }, hooks: [], onCore: false, reach: { flows: [], resources: [], calls: {}, dynamic: 0 } });
+
+/// Every task in the `do` tree (and in try/catch, for, switch bodies).
+function walk(tasks: any, visit: (t: any) => void) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    for (const t of Object.values(entry) as any[]) {
+      if (!t || typeof t !== 'object') continue;
+      visit(t);
+      walk(t.do, visit);
+      walk(Array.isArray(t.try) ? t.try : t.try?.do, visit);
+      walk(t.catch?.do, visit);
+      walk(t.for?.do, visit);
+    }
+  }
+}
 
 const CORE = 'tmpl_system_agent_engine';
 /// Whether any task in the `do` tree runs one of these workflows.
@@ -120,6 +140,17 @@ export function readTemplate(specYaml: string | undefined): TemplateFacts {
     }
   }
   out.extends = d.metadata?.a3t?.extends ?? undefined;
+  const flows = new Set<string>(), resources = new Set<string>(), calls: Record<string, number> = {};
+  let dynamic = 0;
+  const fixed = (v: unknown) => typeof v === 'string' && v && !v.includes('${');
+  walk(d.do, (t) => {
+    const w = t.run?.workflow;
+    if (w) { if (fixed(w.namespace) && fixed(w.name)) flows.add(`${w.namespace}/${w.name}`); else dynamic++; }
+    if (typeof t.call === 'string') calls[t.call] = (calls[t.call] ?? 0) + 1;
+    const r = t.with?._resource;
+    if (r != null) { if (fixed(r)) resources.add(String(r)); else dynamic++; }
+  });
+  out.reach = { flows: [...flows].sort(), resources: [...resources].sort(), calls, dynamic };
   out.onCore = doc.name === CORE || String(out.extends ?? '').includes(CORE) || runsWorkflow(d.do, [CORE, 'tmpl_a3t_agent']);
   if (out.onCore && !out.inputs.length) {
     out.inputs = [{ name: 'message', type: 'string', required: true, description: 'What the caller says' },

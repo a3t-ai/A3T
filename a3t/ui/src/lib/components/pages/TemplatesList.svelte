@@ -369,10 +369,10 @@ do:
       need: 'Name the template: lowercase letters, digits and dashes.' },
     { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
   ] : [
-    { id: 'about', icon: GUIDE_ICON.about, label: 'About', hint: 'What it is — and clone it, or use an agent built from it' },
+    { id: 'about', icon: GUIDE_ICON.about, label: 'Overview', hint: 'What it is for, what an agent made from it sets, what it runs — and make an agent from it' },
     { id: 'agents', icon: GUIDE_ICON.agents, label: 'Agents', hint: 'The agents built from it, and what each does' },
-    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Code', hint: readOnly ? 'How it is built: its graph, code and form — read-only' : 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
-    { id: 'versions', icon: GUIDE_ICON.versions, label: 'Versions', hint: 'Its releases, its copies and the agents built from it' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Code', hint: readOnly ? 'How it is built: its graph and code, read-only' : 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'versions', icon: GUIDE_ICON.versions, label: 'Versions', hint: 'Which version is live, the earlier ones, and its copies' },
     ...(readOnly ? [] : [
       { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
         need: 'Name the template: lowercase letters, digits and dashes.' },
@@ -388,6 +388,8 @@ do:
   }
 
   let propNode = $state<'about' | 'agents' | 'versions' | 'yaml' | 'detail'>('about');
+  /// Each template's live version, as FlowR reports it (its catalogue entry can lag).
+  let liveVersion = $state<Record<string, string>>({});
 
   // The chat's context: this template, the tab on screen, and its spec as
   // edited. Picking another template is a new key, so its spec is the saved one.
@@ -580,8 +582,8 @@ do:
             <div class="sp-tree-head">
               <div class="sp-tree-icon" style="background: {template.color}">{template.icon}</div>
               <div class="sp-tree-info">
-                <div class="sp-tree-name">{template.name ? template.name.split('-').map(w => (w[0]?.toUpperCase() ?? '') + w.slice(1)).join(' ') : 'New Template'}</div>
-                <div class="sp-tree-meta">v{template.activeVersion}</div>
+                <div class="sp-tree-name mono">{template.name || 'New template'}</div>
+                <div class="sp-tree-meta">v{liveVersion[`${template.namespace}/${template.name}`] ?? template.activeVersion}{liveVersion[`${template.namespace}/${template.name}`] ? ' · live' : ''}</div>
               </div>
               <DetailActionsBar />
             </div>
@@ -677,7 +679,8 @@ do:
               {:else if propNode === 'about' || propNode === 'agents' || propNode === 'versions'}
                 <TemplateGuide view={propNode} {template} {readOnly} agents={templateAgents} {agentsLoading} {allTemplates}
                   projects={copyProjects} {copyRequest} oncopy={copyTemplate} onview={(id) => (propNode = id as any)}
-                  onopentemplate={(t) => navigateToDetail('templates', 'Templates', t.name)} />
+                  onopentemplate={(t) => navigateToDetail('templates', 'Templates', t.name)}
+                  onlive={(v) => { if (template) liveVersion[`${template.namespace}/${template.name}`] = v; }} />
               {/if}
             </div>
             <WizardNav steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)}
