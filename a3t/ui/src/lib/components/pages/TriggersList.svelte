@@ -231,7 +231,7 @@
     { id: 'source', icon: '<path d="M9 1L3 9h5l-1 6 6-8H8z"/>', label: 'On', hint: 'What fires it: a webhook, a schedule, an ADB topic or a platform event', ok: formType === 'webhook' ? !!formPath.trim() : formType === 'cron' ? !!formCron.trim() : formType === 'adb_topic' ? !!formTopic.trim() && !!formTopicRes.trim() : !!formEventSource.trim(),
       need: formType === 'webhook' ? 'Give the webhook a path.' : formType === 'cron' ? 'Give the schedule a cron expression.' : formType === 'adb_topic' ? 'Name the ADB resource and topic.' : 'Name the event source.' },
     { id: 'destinations', icon: '<path d="M2 8h9M8 4l4 4-4 4"/><path d="M14 3v10"/>', label: 'Send', hint: 'The flows and agents each firing goes to, and the input each gets', ok: formTargets.length > 0 && formTargets.every(targetOk), need: 'Add a target, and pick its flow or agent.' },
-    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'YAML', hint: 'The whole trigger as YAML — the same text the Studio edits' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'YAML', hint: 'The trigger as code: a graph of what fires it and where it goes, and the YAML the Studio edits' },
     { id: 'test', icon: '<path d="M4 2l10 6-10 6z"/>', label: 'Test', hint: 'Fire it with a sample body and see what each target got', optional: true },
   ]);
 
@@ -448,6 +448,9 @@
     steps={trgSteps} wizard={!editingTrigger} activeNode={step}
     onselect={(id) => { step = id; if (id === 'test') showOutput = true; }} />
   <div class="panel-col te trg-ui" bind:this={editorContainer}>
+    <!-- As an agent's details: the pane scrolls; the page inside is --detail-w wide. -->
+    <div class="panel-content">
+    <div class="pf wide">
     {#if saveError}<div class="te-error" role="alert">Could not save: {saveError}</div>{/if}
     <!-- Details / Source -->
     {#if step === 'details' || step === 'source'}
@@ -523,7 +526,6 @@
     {#if step === 'yaml'}
       <div class="te-form">
         <WizardHead step={trgSteps.find((x) => x.id === step)} />
-        <p class="tf-note">The trigger as code, in the flow designer: Graph shows what fires it and where each firing goes; Code is the YAML — change it here or in the form, they are one. <span class="mono">on</span> is what fires it; <span class="mono">send</span> the targets, each with its <span class="mono">input</span> (a flow) or <span class="mono">message</span> and <span class="mono">conversation</span> (an agent), in jq over the event.</p>
         <div class="te-yaml">{#key yamlRev}
           <FlowEditorPane part="main" initialYaml={yamlDraft} onchange={applyYaml}>
             {#snippet toolbar()}<span class="grow"></span><span class="ver mono">{formNs || 'default'}/{formName || 'new trigger'}</span>
@@ -547,6 +549,8 @@
       </div>
     {/if}
 
+    </div>
+    </div>
     <!-- Output panel -->
     {#if step === 'test' && formType === 'webhook'}
       <div class="te-bottom-divider" class:dragging-bottom={draggingBottom} onmousedown={onBottomDragStart} role="separator"></div>
@@ -604,13 +608,12 @@
   .grow { flex: 1 1 auto; }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
   /* As an agent's Build › Code: the designer pane, framed. */
-  .te-yaml { height: max(480px, calc(100vh - 380px)); margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .te-yaml { height: max(480px, calc(100vh - 300px)); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
   .te-yaml > :global(*) { flex: 1; min-height: 0; }
-  .te-yaml .ver { font-size: 12px; color: var(--text-3); }
-  .te-yaml .link { border: 0; background: none; padding: 0 8px; color: var(--spec); cursor: pointer; font: 500 12.5px var(--font-sans); }
+  .te-yaml .ver { font-size: 12px; color: var(--text-3); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .te-yaml .link { border: 0; background: none; padding: 0 8px; color: var(--spec); cursor: pointer; font: 500 12.5px var(--font-sans); white-space: nowrap; flex: 0 0 auto; }
   .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
   .panel-col { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
-  @container details (max-width: 560px) { .te-form { padding: 16px 14px; } }
   .te-issues { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--err); }
   .tf-note { font-size: 12.5px; color: var(--text-3); line-height: 1.55; margin: 6px 0 0; }
   .te-form .row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
@@ -651,15 +654,18 @@
   .te-note { padding: 10px 16px; font-size: 12.5px; color: var(--text-3); background: var(--bg-subtle); border-top: 1px solid var(--border); }
 
   /* TOP: form — two columns side by side */
-  .te-form { padding: 24px 32px; flex: 1; min-height: 0; overflow-y: auto; max-width: var(--detail-w); }
+  .te-form { display: flex; flex-direction: column; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
   .tf-row-top { display: block; max-width: 640px; }
   .tf-col { display: flex; flex-direction: column; gap: 14px; }
 
   .tf-section-first { font-size: 9px; font-weight: 700; color: var(--text-3); letter-spacing: 0.06em; margin-bottom: 6px; }
 
-  .te-form label { display: flex; flex-direction: column; gap: 6px; }
-  .te-form label span { font-size: 10.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
-  .te-form input, .te-form select { padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r-sm, 6px); background: var(--bg-surface); color: var(--text-1); font-size: 13.5px; font-family: var(--font-sans); outline: none; }
+  .te-form label { display: flex; flex-direction: column; gap: 5px; }
+  .te-form label > span { font-size: 12px; color: var(--text-3); }
+  .te-form input, .te-form select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, var(--bg-surface)); color: var(--text-1); font-size: 13px; font-family: var(--font-sans); outline: none; }
   .te-form input:focus, .te-form select:focus { border-color: var(--spec); }
 
   .tf-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
