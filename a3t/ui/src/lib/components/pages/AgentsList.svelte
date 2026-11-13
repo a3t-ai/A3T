@@ -22,7 +22,7 @@
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
-  import { execFlow, mcpCall, canvasApi } from '$lib/services/api';
+  import { execFlow, mcpCall, canvasApi, agentTool } from '$lib/services/api';
   import { serverRef } from '$lib/services/mcpTools';
   import { readTemplate } from '$lib/components/templates/templateSpec';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
@@ -271,20 +271,20 @@
     if (!newAgent.name || !newAgent.template_id) return;
     creating = true;
     const id = `agt-${crypto.randomUUID().slice(0, 8)}`;
-    const target = newAgent.target || 'a3t/chat-agent';
+    const target = newAgent.target || 'a3t/tmpl_a3t_agent';
     // Endpoint: selected existing trigger path, else auto /agent/{id}/chat (created below).
     const usingExisting = !!newAgent.ep_path && triggerOptions.some(t => t.value === newAgent.ep_path);
     const epPath = newAgent.ep_path || `/agent/${id}/chat`;
     const vars = { target, ep_path: epPath, mcp_servers: newAgent.mcp_servers, enabled_tools: newAgent.enabled_tools ?? null };
-    const resource_bindings = JSON.stringify({ llm: newAgent.llm });
-    const res = await execFlow('flow_a3t_agents-create', 'a3t', {
-      org_id: 'org-default', user_id: $currentUser?.id ?? '', timestamp: new Date().toISOString(),
-      data: {
-        id, name: newAgent.name, namespace: newAgent.namespace,
-        template_id: newAgent.template_id, template_version: newAgent.template_version,
-        mode: newAgent.mode, resource_bindings,
-        variables: JSON.stringify(vars),
-      },
+    // Made by the control plane: agent_a3t_agents's tool_a3t_agent_create records the
+    // agent, where it came from (its template) and returns its endpoints.
+    const res = await agentTool('agent_a3t_agents', 'tool_a3t_agent_create', {
+      org_id: 'org-default', user_id: $currentUser?.id ?? '',
+      id, name: newAgent.name, project: newAgent.namespace,
+      from: { kind: 'template', id: newAgent.template_id, version: newAgent.template_version },
+      mode: 'template', agent_mode: newAgent.mode,
+      values: { ...vars, llm_resource: newAgent.llm },
+      resource_bindings: { llm: newAgent.llm },
     });
     if (res.ok) {
       // Deploy the agent's endpoint (webhook trigger → target flow) unless reusing an existing trigger.
@@ -310,6 +310,8 @@
   async function removeAgent(a: any): Promise<string | null> {
     const res = await execFlow('flow_a3t_agents-delete', 'a3t', { id: a.id, org_id: 'org-default' });
     if (!res.ok) return res.error ?? 'It was not deleted.';
+    // Its lineage and shares go with it.
+    await agentTool('agent_a3t_agents', 'tool_a3t_agent_forget', { org_id: 'org-default', id: a.id });
     const vars = parseJson(a.variables ?? '') || {};
     const ep = vars.ep_path || `/agent/${a.id}/chat`;
     // Its endpoint: the trigger made for it (by name), or the one on its path.

@@ -577,6 +577,61 @@ export function plainError(raw: string): string {
   return m ? m[1].trim() : raw;
 }
 
+// ── The A3T control plane: platform flows are tools of the A3T agents ──
+// Plan "A3T control plane as A3T agents": the dash reads and changes A3T through
+// the A3T agents' tools (FlowR AT-1, POST /agents/{agent}/tools/{tool}), not by
+// running platform flows itself. A call still names the flow and its action; this
+// table says which agent owns the flow and how the tool is named
+// (tool_a3t_<object>_<action>). `wrap`: the flow reads its arguments from `.input`.
+const A3T_TOOLS: Record<string, { agent: string; obj: string; wrap: boolean; dflt?: string }> = {
+  flow_a3t_agents: { agent: 'agent_a3t_agents', obj: 'agent', wrap: true },
+  flow_a3t_agent_control: { agent: 'agent_a3t_agents', obj: 'agent', wrap: false },
+  flow_a3t_templates: { agent: 'agent_a3t_templates', obj: 'template', wrap: true },
+  flow_a3t_projects: { agent: 'agent_a3t_projects', obj: 'project', wrap: false, dflt: 'list' },
+  flow_a3t_orgs: { agent: 'agent_a3t_projects', obj: 'org', wrap: false, dflt: 'list' },
+  flow_a3t_profile: { agent: 'agent_a3t_projects', obj: 'profile', wrap: false, dflt: 'get' },
+  flow_a3t_users: { agent: 'agent_a3t_projects', obj: 'user', wrap: true },
+  flow_a3t_resources: { agent: 'agent_a3t_resources', obj: 'resource', wrap: true },
+  flow_a3t_settings: { agent: 'agent_a3t_resources', obj: 'setting', wrap: true },
+  flow_a3t_canvas: { agent: 'agent_a3t_runtime', obj: 'canvas', wrap: true },
+  flow_a3t_releases: { agent: 'agent_a3t_runtime', obj: 'release', wrap: false, dflt: 'versions' },
+  flow_a3t_audit: { agent: 'agent_a3t_governance', obj: 'audit', wrap: true },
+  flow_a3t_early_access: { agent: 'agent_a3t_governance', obj: 'early_access', wrap: true, dflt: 'list' },
+  flow_a3t_knowledge: { agent: 'agent_a3t_knowledge', obj: 'knowledge', wrap: true },
+};
+/// Flows that are one tool, whatever their input.
+const A3T_ONE_TOOL: Record<string, { agent: string; tool: string }> = {
+  flow_a3t_error_log: { agent: 'agent_a3t_governance', tool: 'tool_a3t_error_list' },
+  flow_a3t_share: { agent: 'agent_a3t_runtime', tool: 'tool_a3t_share' },
+  flow_a3t_resource_test: { agent: 'agent_a3t_resources', tool: 'tool_a3t_resource_test' },
+};
+
+/// The agent, tool and arguments for a call to a platform flow, or null when the
+/// flow is not one of the A3T agents' tools.
+export function a3tToolFor(flow: string, input: any): { agent: string; tool: string; args: Record<string, any> } | null {
+  const one = A3T_ONE_TOOL[flow];
+  if (one) {
+    const { action: _a, ...args } = (input?.input ?? input ?? {}) as Record<string, any>;
+    return { agent: one.agent, tool: one.tool, args };
+  }
+  const m = A3T_TOOLS[flow];
+  if (!m) return null;
+  const src = ((m.wrap ? input?.input : input) ?? {}) as Record<string, any>;
+  const { action, ...args } = src;
+  const act = (action as string | undefined) ?? m.dflt;
+  if (!act) return null;
+  let tool = `tool_a3t_${m.obj}_${act}`;
+  if (flow === 'flow_a3t_agents' && act === 'create') tool = 'tool_a3t_agent_record_create';
+  if (flow === 'flow_a3t_agent_control' && act === 'get') tool = 'tool_a3t_agent_describe';
+  return { agent: m.agent, tool, args };
+}
+
+/// Call one of an agent's tools on its control plane (AT-1). Answers the tool's output.
+export async function agentTool(agent: string, tool: string, args: Record<string, any> = {}): Promise<ApiResponse> {
+  const r = await request<any>(`/agents/${encodeURIComponent(agent)}/tools/${encodeURIComponent(tool)}`, { method: 'POST', body: JSON.stringify(args) });
+  return r.ok ? { ...r, data: r.data?.output } : r;
+}
+
 export async function execFlow(
   flowName: string,
   namespace: string,
@@ -598,6 +653,18 @@ export async function execFlow(
     if (!input?.input?.action) {
       actualInput = { input: { action: actionMatch[2], ...input } };
     }
+  }
+
+  // A platform flow is a tool of an A3T agent: call it there.
+  const routed = a3tToolFor(actualFlowName, actualInput);
+  if (routed) {
+    const r = await agentTool(routed.agent, routed.tool, routed.args);
+    if (!r.ok) {
+      const err = plainError(r.error ?? `${routed.tool} failed`);
+      if (!silent) messages.error(err, { source: flowName });
+      return { ok: false, error: err };
+    }
+    return { ok: true, data: r.data };
   }
 
   // One span over the whole call: the polls in between keep it busy.
