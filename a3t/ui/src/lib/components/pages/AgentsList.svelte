@@ -15,7 +15,6 @@
   import { control } from '$lib/components/agent/controlPlane';
   import { liveFor } from '$lib/components/agent/agentLive.svelte';
   import '$lib/components/agent/agent.css';
-  import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
   import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
   import AgentCode from '$lib/components/agent/AgentCode.svelte';
@@ -385,7 +384,9 @@
   let branchForm = $state(false);
   function lifecycle(kind: 'clone' | 'fork' | 'inherit' | 'branch') {
     if (kind === 'branch') { branchForm = true; goTab('versions'); return; }
+    // Its form opens inline in Lineage, wherever it was asked for.
     makeKind = kind;
+    goTab('lineage');
   }
   async function makeFrom(name: string, project: string): Promise<string | null> {
     if (!agent || !makeKind) return null;
@@ -817,7 +818,8 @@
             {:else if propNode === 'build' && sub.build === 'memory'}
               <AgentMemory {agent} />
             {:else if propNode === 'build' && sub.build === 'lineage'}
-              <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle} />
+              <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle}
+                making={makeKind} projects={namespaceChoices(agent.namespace)} onmakefrom={makeFrom} oncancelmake={() => (makeKind = null)} />
             {:else if propNode === 'secure' && sub.secure === 'keys'}
               <AgentKeys {agent} canEdit={$canEditAgent} />
             {:else if propNode === 'secure' && sub.secure === 'sharing'}
@@ -864,10 +866,6 @@
           </div>
         {/if}
       </div>
-      {#if makeKind && !creatingNew}
-        <AgentMakeFrom kind={makeKind} name={agent.name} projects={namespaceChoices(agent.namespace)} current={agent.namespace}
-          onmake={makeFrom} oncancel={() => (makeKind = null)} />
-      {/if}
       <WizardNav steps={agentSteps} active={propNode} wizard={creatingNew} onselect={(id) => (propNode = id)}
         final={creatingNew ? createAgent : undefined}
         finalLabel={creatingNew ? 'Create agent' : 'Save'} finalBusy={creatingNew ? creating : savingBind}

@@ -5,12 +5,18 @@
   /// sequences each write); a fork that changed more evolves into its own agent.
   import { control, type Ancestor, type Descendant, type Compare } from './controlPlane';
   import type { AgentRec } from './agentData';
+  import AgentMakeFrom from './AgentMakeFrom.svelte';
 
-  let { agent, allAgents, onopen, onmake }: {
+  let { agent, allAgents, onopen, onmake, making = null, projects = [], onmakefrom, oncancelmake }: {
     agent: AgentRec;
     allAgents: AgentRec[];
     onopen: (id: string) => void;
     onmake: (kind: 'inherit' | 'fork' | 'branch') => void;
+    /// A new agent being made from this one: its form opens here, inline.
+    making?: 'clone' | 'fork' | 'inherit' | null;
+    projects?: string[];
+    onmakefrom?: (name: string, project: string) => Promise<string | null>;
+    oncancelmake?: () => void;
   } = $props();
 
   let up = $state<Ancestor[]>([]);
@@ -157,16 +163,22 @@
   <div class="row between">
     <span>{#if msg}<span class="ok">{msg}</span>{/if}</span>
     <div class="acts">
-      <button class="btn2" onclick={() => onmake('inherit')}>Inherit</button>
-      <button class="btn2" onclick={() => onmake('fork')}>Fork</button>
+      <button class="btn2" class:on={making === 'inherit'} onclick={() => onmake('inherit')}>Inherit</button>
+      <button class="btn2" class:on={making === 'fork'} onclick={() => onmake('fork')}>Fork</button>
       <button class="btn2" onclick={() => onmake('branch')}>Branch</button>
       <button class="btn2" disabled={!canMerge || busy === agent.id} title={canMerge ? `Merge into ${up[0] ? nameOf(up[0].id) : 'its source'}` : why || 'It changed more than procedures: evolve it instead.'} onclick={() => mergeSelf()}>{busy === agent.id && canMerge ? 'Merging…' : 'Merge'}</button>
       <button class="btn2" disabled={!canEvolve || busy === agent.id} title={canEvolve ? 'Make it its own agent' : why || 'It can merge: merge it instead.'} onclick={() => evolveSelf()}>{busy === agent.id && canEvolve ? 'Evolving…' : 'Evolve'}</button>
     </div>
   </div>
+  {#if making && onmakefrom}
+    {#key making}
+      <AgentMakeFrom kind={making} name={agent.name} {projects} current={agent.namespace} onmake={onmakefrom} oncancel={() => oncancelmake?.()} />
+    {/key}
+  {/if}
 </section>
 
 <style>
+  .btn2.on { border-color: var(--spec); color: var(--spec); }
   .fam { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
   .col { display: flex; flex-direction: column; gap: 8px; }
   .node { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-ivory); }

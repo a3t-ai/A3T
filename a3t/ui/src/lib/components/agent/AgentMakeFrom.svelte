@@ -30,41 +30,40 @@
   }
 </script>
 
-<div class="mk-scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget && !busy) oncancel(); }}>
-  <div class="mk" role="dialog" aria-modal="true" aria-label="{TITLE[kind]} {name}">
-    <h3>{TITLE[kind]} <span class="mono">{name}</span></h3>
-    {#if kind === 'inherit'}
-      <p>A new agent made from <span class="mono">{name}</span>, <b>listed as its child</b> in Lineage: its template, model, instructions and tools to start with.</p>
-    {:else if kind === 'clone'}
-      <p>A new agent with the same template, model, instructions and tools — <b>on its own from then on</b>. Changes to either never reach the other.</p>
-    {:else}
-      <p>A new agent that <b>keeps its link</b> to <span class="mono">{name}</span>: it is listed as its fork in Lineage. Nothing it learns goes back.</p>
-    {/if}
+<!-- Inline, where it was asked for (Lineage), like a template's copy form. -->
+<div class="card mk" role="group" aria-label="{TITLE[kind]} {name}">
+  <div class="card-head"><h3>{TITLE[kind]} <span class="mono">{name}</span></h3></div>
+  {#if kind === 'inherit'}
+    <p>A new agent made from <span class="mono">{name}</span>, <b>listed as its child</b> in Lineage: its template, model, instructions and tools to start with.</p>
+  {:else if kind === 'clone'}
+    <p>A new agent with the same template, model, instructions and tools — <b>on its own from then on</b>. Changes to either never reach the other.</p>
+  {:else}
+    <p>A new agent that <b>keeps its link</b> to <span class="mono">{name}</span>: it is listed as its fork in Lineage. Nothing it learns goes back.</p>
+  {/if}
+  <div class="fields">
     <label>Name<input type="text" bind:value={newName} spellcheck="false" /></label>
-    {#if newName && !valid}<span class="err">Use letters or digits.</span>{:else if full}<span class="dim mono">It will be named {full}</span>{/if}
-    <label>Project
+    <label>In project
       <select bind:value={project}>{#each projects as p (p)}<option value={p}>{p}</option>{/each}</select>
     </label>
-    <p class="dim">It starts with no memory, its own memory space and its own endpoint; it is not deployed. To carry what {name} remembers, branch it in Releases and promote the branch.</p>
-    {#if err}<p class="err">{err}</p>{/if}
-    <div class="acts">
-      <button class="btn-p" disabled={!valid || !project || busy} onclick={make}>{busy ? 'Making…' : kind === 'fork' ? 'Fork it' : kind === 'inherit' ? 'Make it' : 'Clone it'}</button>
-      <button class="btn-s" disabled={busy} onclick={oncancel}>Cancel</button>
-    </div>
+  </div>
+  {#if newName && !valid}<span class="err">Use letters or digits.</span>{:else if full}<span class="dim mono">It will be named {full}</span>{/if}
+  <p class="dim">It starts with no memory, its own memory space, its own endpoint and its own key; it is not deployed. To carry what {name} remembers, branch it and promote the branch.</p>
+  {#if err}<p class="err">{err}</p>{/if}
+  <div class="acts">
+    <button class="btn2 primary" disabled={!valid || !project || busy} onclick={make}>{busy ? 'Making…' : kind === 'fork' ? 'Fork it' : kind === 'inherit' ? 'Make it' : 'Clone it'}</button>
+    <button class="btn2" disabled={busy} onclick={oncancel}>Cancel</button>
   </div>
 </div>
 
 <style>
-  .mk-scrim { position: absolute; inset: 0; z-index: 30; display: grid; place-items: start center; padding-top: 70px; background: color-mix(in srgb, var(--bg-page) 55%, transparent); }
-  .mk { width: min(460px, calc(100% - 32px)); display: flex; flex-direction: column; gap: 10px; padding: 20px 22px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-surface); box-shadow: 0 12px 40px rgba(0,0,0,0.16); }
-  h3 { margin: 0 0 2px; font: 400 19px var(--font-serif); color: var(--text-1); }
+  .mk { gap: 10px; border-color: var(--spec); }
+  .mk h3 { margin: 0; }
   p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-2); }
   .dim { font-size: 12.5px; color: var(--text-3); }
   .err { font-size: 12.5px; color: var(--err, #b42318); }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @container details (max-width: 560px) { .fields { grid-template-columns: 1fr; } }
   label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
-  .acts { display: flex; gap: 8px; margin-top: 4px; }
-  .btn-p, .btn-s { height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 13px var(--font-sans); color: var(--text-1); cursor: pointer; }
-  .btn-p { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
-  .btn-p:disabled, .btn-s:disabled { opacity: 0.5; cursor: default; }
+  .acts { display: flex; gap: 8px; }
 </style>
