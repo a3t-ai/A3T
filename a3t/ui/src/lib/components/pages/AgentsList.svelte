@@ -3,7 +3,6 @@
   import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import AgentOverview from '$lib/components/agent/AgentOverview.svelte';
-  import AgentAccess from '$lib/components/agent/AgentAccess.svelte';
   import AgentExposure from '$lib/components/agent/AgentExposure.svelte';
   import AgentControls from '$lib/components/agent/AgentControls.svelte';
   import AgentConfig from '$lib/components/agent/AgentConfig.svelte';
@@ -19,6 +18,7 @@
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
   import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
+  import AgentSetup from '$lib/components/agent/AgentSetup.svelte';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import AgentMetrics from '$lib/components/agent/AgentMetrics.svelte';
   import { keepKey } from '$lib/components/agent/keyOnce';
@@ -495,6 +495,8 @@
       mcp_servers: mcp,
       target: vars.target ?? '',
       ep_path: vars.ep_path ?? '',
+      // Its own hook flows around each turn ("<project>/<flow>"), run by tmpl_a3t_agent.
+      hooks: { before_turn: [...(vars.hooks?.before_turn ?? [])], after_turn: [...(vars.hooks?.after_turn ?? [])] },
       // Capability ceiling: an allow-list of tool names this agent may invoke.
       // null = unrestricted (every tool its MCP servers expose); a list, even an
       // empty one, = only those tools — the runtime denies the rest.
@@ -557,12 +559,14 @@
     vars.target = bindings.target;
     vars.ep_path = bindings.ep_path;
     vars.enabled_tools = bindings.enabled_tools ?? null;
+    const hooks = { before_turn: bindings.hooks?.before_turn ?? [], after_turn: bindings.hooks?.after_turn ?? [] };
+    if (hooks.before_turn.length || hooks.after_turn.length) vars.hooks = hooks; else delete vars.hooks;
     const description = String(bindings.description ?? '').trim();
     if (description) vars.description = description; else delete vars.description;
     if (bindings.environment) vars.environment = bindings.environment; else delete vars.environment;
     const name = String(bindings.name ?? '').trim() || agent.name;
     const res = await execFlow('flow_a3t_agents-update', 'a3t', {
-      id: agent.id, org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString(),
+      id: agent.id, org_id: 'org-default', user_id: $currentUser?.id ?? '', timestamp: new Date().toISOString(),
       data: {
         name, template_id: agent.template_id, template_version: agent.template_version,
         mode: bindings.mode || agent.mode, namespace: agent.namespace, status: agent.status,
@@ -784,14 +788,16 @@
             {#if propNode === 'overview'}
               <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} />
             {:else if propNode === 'build' && sub.build === 'tools'}
-              <AgentAccess {agent} {templates} live={live!} {bindings} {llmLabel} canEdit={$canEditAgent} ongo={goTab}>
-                {#snippet editor()}
+              <AgentSetup {agent} bind:bindings {llmResources} {mcpResources} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
+                onsave={saveBindings} ondiscard={discardBindings}>
+                {#snippet yaml()}
                   <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
                     onsave={saveBindings} ondiscard={discardBindings} oncode={openCode} {llmResources} {mcpResources} {flowOptions} />
                 {/snippet}
-              </AgentAccess>
+              </AgentSetup>
             {:else if propNode === 'build' && sub.build === 'hooks'}
-              <AgentHooks {agent} {templates} />
+              <AgentHooks {agent} bind:bindings {flowOptions} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
+                onsave={saveBindings} ondiscard={discardBindings} />
             {:else if propNode === 'build' && sub.build === 'memory'}
               <AgentMemory {agent} ongo={goTab} />
             {:else if propNode === 'build' && sub.build === 'lineage'}
