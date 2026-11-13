@@ -6,19 +6,17 @@
   import { factsOf, ago, dur, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
 
-  let { agent, templates, live, start, onstudio, ongo }: {
+  let { agent, templates, live, onstudio, ongo }: {
     agent: AgentRec & { created_by?: string; created_at?: string };
     templates: TemplateRec[];
     live: AgentLive;
-    /// The view to open on (a deep link to its memory).
-    start?: 'memory';
     onstudio: () => void;
     ongo: (tab: string) => void;
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
-  type View = 'all' | 'deny' | 'allow' | 'run' | 'err' | 'conv' | 'memory';
-  import { insight, describeEvent, type MemoryType, type AgentEvent, type Turn, type TurnSummary } from './controlPlane';
+  type View = 'all' | 'deny' | 'allow' | 'run' | 'err' | 'conv';
+  import { insight, describeEvent, type AgentEvent, type Turn, type TurnSummary } from './controlPlane';
   /// Its own turns (the turn log) and its history (agent_events), from the control plane.
   let own = $state<{ summary: TurnSummary; turns: Turn[] } | null>(null);
   let history = $state<AgentEvent[] | null>(null);
@@ -29,22 +27,7 @@
     insight.turns(id).then((r) => { if (r.ok && agent.id === id) own = r.data; });
     insight.events(id).then((r) => { if (agent.id !== id) return; if (r.ok) history = r.data; else histErr = r.error ?? 'Its history could not be read.'; });
   });
-  let mem = $state<{ namespace: string; counts: Record<MemoryType, number>; memory: Record<MemoryType, any[]> } | null>(null);
-  let memErr = $state('');
-  let memOpen = $state<MemoryType>('working');
-  async function loadMemory(id: string) {
-    mem = null; memErr = '';
-    const r = await insight.memory(id);
-    if (r.ok) mem = r.data; else memErr = r.error ?? 'Memory could not be read.';
-  }
-  const memText = (e: any) => {
-    const t = e?.content ?? e?.text ?? e?.reply ?? e?.message ?? e?.pattern ?? e?.object ?? e;
-    const s = typeof t === 'string' ? t : JSON.stringify(t);
-    return s.length > 240 ? s.slice(0, 240) + '…' : s;
-  };
-  // svelte-ignore state_referenced_locally — where it opens; the chips take over
-  let view = $state<View>(start ?? 'all');
-  $effect(() => { if (view === 'memory') loadMemory(agent.id); });
+  let view = $state<View>('all');
   type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; err?: boolean; ic: string };
   /// Its calls: a deployed agent's runs; otherwise its own turns — the serving
   /// flow's runs are every agent's, not its own.
@@ -62,13 +45,6 @@
     const keep = (i: Item) => view === 'all' || (view === 'err' ? i.kind === 'run' && !!i.err : i.kind === view);
     return all.filter(keep).sort((a, b) => b.ts - a.ts).slice(0, 200);
   });
-  const MEM = [
-    { k: 'working', t: 'Working', d: 'The current conversation: task, recent turns.' },
-    { k: 'episodic', t: 'Episodic', d: 'Past conversations and runs, as events.' },
-    { k: 'semantic', t: 'Semantic', d: 'Facts and summaries, searched by meaning.' },
-    { k: 'procedural', t: 'Procedural', d: 'Steps and preferences it has learned.' },
-  ];
-  const keeps = $derived(agent.mode === 'persistent');
 </script>
 
 <section class="agt">
@@ -95,7 +71,7 @@
   {/if}
 
   <div class="chips">
-    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${calls.length})`], ['err', `Errors (${calls.filter((c) => c.err).length})`], ['conv', `Test chats (${live.convs.length})`], ['memory', 'Memory']] as [k, label] (k)}
+    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${calls.length})`], ['err', `Errors (${calls.filter((c) => c.err).length})`], ['conv', `Test chats (${live.convs.length})`]] as [k, label] (k)}
       <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
     {/each}
     <span class="grow"></span>
@@ -104,28 +80,7 @@
     <button class="link" onclick={() => navigateTo('logs', 'Decision log', { q: agent.id })}>Decision log →</button>
   </div>
 
-  {#if view === 'memory'}
-    <p class="dim"><b>memory: {agent.mode}</b> — {keeps ? 'it keeps what happened and what it learned across conversations.' : 'it keeps only the conversation it is in.'} <button class="link" onclick={() => ongo('config')}>Change in Config →</button></p>
-    {#if memErr}<p class="err">{memErr}</p>{/if}
-    <div class="mem">
-      {#each MEM as m (m.k)}
-        <button class="card" class:off={!keeps && m.k !== 'working'} class:sel={memOpen === m.k} onclick={() => (memOpen = m.k)}>
-          <b>{m.t}</b><span class="dim">{m.d}</span>
-          <em class="mono">{mem ? `${mem.counts?.[m.k as MemoryType] ?? 0} entries` : 'reading…'}</em>
-        </button>
-      {/each}
-    </div>
-    {#if mem}
-      <p class="dim">Namespace <span class="mono">{mem.namespace}</span> on the org's ADB.</p>
-      <ol class="memlist">
-        {#each (mem.memory?.[memOpen] ?? []).slice(0, 20) as e, i (i)}
-          <li class="mono">{memText(e)}</li>
-        {:else}
-          <li class="dim">Nothing in {memOpen} memory yet.</li>
-        {/each}
-      </ol>
-    {/if}
-  {:else if !live.loading}
+  {#if !live.loading}
     <ol class="tl">
       {#each items as it}
         <li class="ev" class:err={it.err}><span class="ic">{it.ic}</span><div><div class="t">{it.title}</div><div class="m mono">{it.meta}</div></div><time>{ago(it.ts)}</time></li>
@@ -156,12 +111,5 @@
 
 <style>
   .tiles.six { grid-template-columns: repeat(6, 1fr); }
-  .mem { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
-  .mem .card { gap: 6px; padding: 12px 14px; }
-  .mem .card.off { opacity: 0.55; }
-  .mem button.card { text-align: left; font: inherit; cursor: pointer; }
-  .mem .card.sel { border-color: var(--spec); background: var(--signal-bg); }
-  .memlist { margin: 0; padding: 0 0 0 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
-  .mem em { font-style: normal; font-size: 11px; color: var(--text-4); }
   .ic { font-size: 9.5px !important; }
 </style>

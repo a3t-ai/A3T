@@ -18,7 +18,10 @@
   import '$lib/components/agent/agent.css';
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
-  import { keepKey, peekKey } from '$lib/components/agent/keyOnce';
+  import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
+  import { bumpItems } from '$lib/stores/apps.svelte.ts';
+  import AgentMetrics from '$lib/components/agent/AgentMetrics.svelte';
+  import { keepKey } from '$lib/components/agent/keyOnce';
   import { updateAgent } from '$lib/studio-core/adapters/agents';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
   import { namespacesFor } from '$lib/stores/context.svelte.ts';
@@ -165,43 +168,44 @@
     { id: 'review', label: 'Review', hint: 'Check it, then create it. It is not deployed until you deploy it.' },
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
-    overview: 'What it is, how to call it, what needs attention',
-    hooks: 'Every phase of a turn, and the flows that run there: core, template, this agent',
-    lineage: 'Where it came from, what came from it, and what flows back',
-    sharing: 'Who can see it, and what each namespace may do with it',
-    access: 'Everything it can reach: identity, model, tools, data, memory',
-    exposure: 'How it exposes itself (REST, MCP, A2A) and who has called it',
-    controls: 'Stop it, and what governs it: hooks, policies, approvals',
-    audit: 'What it did and what changed',
-    releases: 'Where it runs and which version; branches and forks',
-    settings: 'Name, environment, owner, where it came from, delete',
+    overview: 'Get it working: try it here, give your app a key, see it answer',
+    build: 'What it is made of: model, tools and MCP servers, hooks, memory, lineage',
+    secure: 'Who can call it and what it may do: keys, sharing, controls, endpoints, audit',
+    release: 'How it is doing and what runs: metrics, versions, branches, deployment',
+    settings: 'Name, description, environment, owner, delete',
   };
 
-  /// An existing agent's tabs. The console's readers are mostly security and
-  /// governance teams (developers build in VS Code with Claude, over MCP), so
-  /// the tabs follow a review: what it is, what it can reach, who can reach it,
-  /// how to stop it, what it did, where it runs.
+
+  /// An existing agent's tabs, in the order its maker works: get it working
+  /// (Overview), build on it (Build), secure it (Access), run and release it
+  /// (Releases), and its settings. Each tab but Overview and Settings has sections.
   const treeNodes = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>' },
-    { id: 'hooks', label: 'Hooks', icon: '<path d="M5 2v6a3 3 0 006 0V5"/><path d="M9 7l2-2 2 2"/><circle cx="5" cy="13" r="1.6"/>' },
-    { id: 'lineage', label: 'Lineage', icon: '<circle cx="8" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="13" r="1.6"/><path d="M8 4.6V8M8 8l-4 3.4M8 8l4 3.4"/>' },
-    { id: 'sharing', label: 'Sharing', icon: '<circle cx="12" cy="4" r="2"/><circle cx="4" cy="8" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.8 7l4.4-2M5.8 9l4.4 2"/>' },
-    { id: 'access', label: 'Access', icon: '<circle cx="5.5" cy="8" r="3"/><path d="M8.5 8H15M12.5 8v3M14.5 8v2"/>' },
-    { id: 'keys', label: 'Keys', icon: '<circle cx="5" cy="8" r="3"/><path d="M8 8h7M12 8v3M14.5 8v2"/>' },
-    { id: 'exposure', label: 'Exposure', icon: '<circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13"/>' },
-    { id: 'controls', label: 'Controls', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
-    { id: 'audit', label: 'Audit', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
-    { id: 'releases', label: 'Releases', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
+    { id: 'build', label: 'Build', icon: '<path d="M5 2v6a3 3 0 006 0V5"/><path d="M9 7l2-2 2 2"/><circle cx="5" cy="13" r="1.6"/>' },
+    { id: 'secure', label: 'Access', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
+    { id: 'release', label: 'Releases', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
     { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
-  /// Tab names other pages (and earlier versions) link with.
-  const TAB_ALIAS: Record<string, string> = {
-    detail: 'overview', api: 'exposure', tokens: 'keys', token: 'keys', config: 'access', configure: 'access', policy: 'controls', canvas: 'releases', deploy: 'releases',
-    branches: 'releases', health: 'audit', activity: 'audit', observe: 'audit', memory: 'audit', ownership: 'settings',
+  /// The sections of each tab, in the order they are used.
+  const SECTIONS: Record<string, { id: string; label: string }[]> = {
+    build: [{ id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'lineage', label: 'Lineage' }],
+    secure: [{ id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }, { id: 'audit', label: 'Audit' }],
+    release: [{ id: 'metrics', label: 'Metrics' }, { id: 'versions', label: 'Versions & deploy' }],
   };
-  let activityStart = $state<'memory' | undefined>(undefined);
-  /// A tab link from inside a tab: by its name or an alias.
-  const goTab = (t: string) => { propNode = TAB_ALIAS[t] ?? t; };
+  const SECTION_TAB: Record<string, string> = Object.fromEntries(Object.entries(SECTIONS).flatMap(([t, ss]) => ss.map((x) => [x.id, t])));
+  let sub = $state<Record<string, string>>({ build: 'tools', secure: 'keys', release: 'metrics' });
+  /// Names other pages and earlier versions link with.
+  const TAB_ALIAS: Record<string, string> = {
+    detail: 'overview', access: 'tools', config: 'tools', configure: 'tools', api: 'exposure', tokens: 'keys', token: 'keys',
+    policy: 'controls', canvas: 'versions', deploy: 'versions', releases: 'versions', branches: 'versions',
+    health: 'audit', activity: 'audit', observe: 'audit', ownership: 'settings',
+  };
+  /// Open a tab, or a section (its tab, on that section), by name or alias.
+  const goTab = (t: string) => {
+    const x = TAB_ALIAS[t] ?? t;
+    if (SECTION_TAB[x]) { sub[SECTION_TAB[x]] = x; propNode = SECTION_TAB[x]; }
+    else if (treeNodes.some((n) => n.id === x)) propNode = x;
+  };
 
   async function loadAgents() {
     loading = true; error = '';
@@ -219,6 +223,8 @@
       }));
     } else { error = res.error ?? 'Failed to load agents'; }
     loading = false;
+    // The shell's Items list shows them too: made, deleted, blocked — it re-reads.
+    bumpItems();
   }
 
   async function loadTemplates() {
@@ -266,7 +272,6 @@
     selected = id;
     propNode = 'overview';
     makeKind = null;
-    if (peekKey(id)) propNode = 'keys';
     navigateToDetail('agents', 'Agents', id);
   }
 
@@ -322,9 +327,7 @@
     const id = out?.agent?.id;
     if (k?.key && id) keepKey(id, { name: k.name ?? 'default', key: k.key });
   }
-  // An agent with a key waiting to be copied opens on its Keys tab, whichever way
-  // it is opened after it is made (in place, or the page again).
-  $effect(() => { const id = selected; if (id) untrack(() => { if (peekKey(id)) propNode = 'keys'; }); });
+
 
   /// Delete an agent, its endpoint and its own canvas. An error, or null.
   async function removeAgent(a: any): Promise<string | null> {
@@ -371,7 +374,7 @@
   let makeKind = $state<'clone' | 'fork' | null>(null);
   let branchForm = $state(false);
   function lifecycle(kind: 'clone' | 'fork' | 'branch') {
-    if (kind === 'branch') { branchForm = true; propNode = 'releases'; return; }
+    if (kind === 'branch') { branchForm = true; goTab('versions'); return; }
     makeKind = kind;
   }
   async function makeFrom(name: string, project: string): Promise<string | null> {
@@ -597,7 +600,7 @@
 
   function openAgentCanvas(id: string) {
     selectAgent(id);
-    propNode = 'deploy';
+    goTab('versions');
     pickedPreset = ''; canvasMsg = '';
     loadCanvases();
   }
@@ -677,9 +680,7 @@
     } else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
       // "Open its memory", "Review its controls"… land on that tab.
-      const tab = TAB_ALIAS[panel.props.tab] ?? panel.props.tab;
-      if (tab && treeNodes.some((n) => n.id === tab)) propNode = tab;
-      activityStart = panel.props.tab === 'memory' ? 'memory' : undefined;
+      if (panel.props.tab) goTab(panel.props.tab);
     }
   });
 
@@ -775,29 +776,39 @@
           {@const studio = () => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}
           <div class="pf wide">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
+            {#if SECTIONS[propNode]}
+              <div class="subnav" role="tablist">
+                {#each SECTIONS[propNode] as x (x.id)}<button role="tab" class:on={sub[propNode] === x.id} aria-selected={sub[propNode] === x.id} onclick={() => (sub[propNode] = x.id)}>{x.label}</button>{/each}
+              </div>
+            {/if}
             {#if propNode === 'overview'}
-              <AgentOverview {agent} {templates} {allAgents} live={live!} me={$currentUser?.id ?? ''} {llmLabel}
-                ongo={goTab} onstudio={studio} oncode={openCode} onlifecycle={lifecycle} />
-            {:else if propNode === 'hooks'}
-              <AgentHooks {agent} {templates} />
-            {:else if propNode === 'lineage'}
-              <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle} />
-            {:else if propNode === 'sharing'}
-              <AgentSharing {agent} canEdit={$canEditAgent} />
-            {:else if propNode === 'access'}
+              <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} />
+            {:else if propNode === 'build' && sub.build === 'tools'}
               <AgentAccess {agent} {templates} live={live!} {bindings} {llmLabel} canEdit={$canEditAgent} ongo={goTab}>
                 {#snippet editor()}
                   <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
                     onsave={saveBindings} ondiscard={discardBindings} oncode={openCode} {llmResources} {mcpResources} {flowOptions} />
                 {/snippet}
               </AgentAccess>
-            {:else if propNode === 'exposure'}
-              <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
-            {:else if propNode === 'keys'}
+            {:else if propNode === 'build' && sub.build === 'hooks'}
+              <AgentHooks {agent} {templates} />
+            {:else if propNode === 'build' && sub.build === 'memory'}
+              <AgentMemory {agent} ongo={goTab} />
+            {:else if propNode === 'build' && sub.build === 'lineage'}
+              <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle} />
+            {:else if propNode === 'secure' && sub.secure === 'keys'}
               <AgentKeys {agent} canEdit={$canEditAgent} />
-            {:else if propNode === 'controls'}
+            {:else if propNode === 'secure' && sub.secure === 'sharing'}
+              <AgentSharing {agent} canEdit={$canEditAgent} />
+            {:else if propNode === 'secure' && sub.secure === 'controls'}
               <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} onreload={loadAgents} ongo={goTab} />
-            {:else if propNode === 'releases'}
+            {:else if propNode === 'secure' && sub.secure === 'exposure'}
+              <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
+            {:else if propNode === 'secure' && sub.secure === 'audit'}
+              <AgentAudit {agent} {templates} live={live!} onstudio={studio} ongo={goTab} />
+            {:else if propNode === 'release' && sub.release === 'metrics'}
+              <AgentMetrics id={agent.id} />
+            {:else if propNode === 'release' && sub.release === 'versions'}
               <AgentReleases {agent} {templates} {allAgents} live={live!} canEdit={$canEditAgent} bind:branchForm
                 onopen={selectAgent} onmade={async (id) => { await loadAgents(); selectAgent(id); }} onchanged={() => deployRev++}>
                 {#snippet notDeployed()}
@@ -821,8 +832,6 @@
                   {#if canvasMsg}<p class="err">{canvasMsg}</p>{/if}
                 {/snippet}
               </AgentReleases>
-            {:else if propNode === 'audit'}
-              <AgentAudit {agent} {templates} live={live!} start={activityStart} onstudio={studio} ongo={goTab} />
             {:else if propNode === 'settings'}
               <AgentSettings {agent} {templates} {allAgents} live={live!} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings} ongo={goTab} onopen={selectAgent}
@@ -914,6 +923,10 @@
 </div>
 
 <style>
+  .subnav { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 14px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-subtle); align-self: flex-start; }
+  .subnav button { border: 0; background: none; padding: 5px 12px; border-radius: 7px; font: 500 12.5px var(--font-sans); color: var(--text-3); cursor: pointer; }
+  .subnav button.on { background: var(--bg-surface); color: var(--text-1); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .subnav button:hover:not(.on) { color: var(--text-1); }
   .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
   .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
   .breadcrumb .sep { color: var(--text-5); }
