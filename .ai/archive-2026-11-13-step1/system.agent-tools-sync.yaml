@@ -1,0 +1,187 @@
+document:
+  dsl: '1.0.3'
+  namespace: system
+  name: agent-tools-sync
+  version: '1.0.0'
+  metadata:
+    description: >
+      Keeps the core agent's tool catalogue: PROCEDURAL memory, namespace
+      system-tools by default. It lists the tools of each MCP server (tools/list)
+      and keeps one record per tool, keyed tool:<server>:<name>, with kind "tool",
+      name, server, description, usage, a pattern (the words a request uses when the
+      tool fits) and the input schema as JSON. The live tool list still comes from
+      the servers on every turn (it carries the permissions); the catalogue is what
+      the agent recalls to pick tools. Running it again updates changed tools and
+      forgets tools a server no longer offers.
+      Input: { servers?: [], tools?: [{server, name, description, inputSchema?}],
+      complete_for?: [server], namespace?, resource? }. servers: MCP servers this
+      flow lists itself (call: mcp tools/list). tools: tools listed elsewhere, e.g. by
+      a3t/backend/scripts/load-core-agent-memory.mjs, which lists the platform's own
+      MCP server with the user's token (call: mcp can't reach it yet, request
+      CA-R13); complete_for names the servers that list fully covers, so their
+      missing tools are forgotten too. Output: { servers, tools, stored, updated,
+      forgotten, failed }.
+
+metadata:
+  a3t:
+    extends: system/a3t-base@1.0.0
+
+do:
+  - setup:
+      set:
+        _res: '${ .resource // "a3t/adb" }'
+        _ns: '${ .namespace // "system-tools" }'
+        _servers: '${ .servers // [] }'
+        _complete: '${ .complete_for // [] }'
+        _listed: '${ .tools // [] }'
+        stored: 0
+        updated: 0
+        forgotten: 0
+        failed: []
+      export:
+        as: '${ $context + . }'
+
+  - list_servers:
+      for:
+        each: _server
+        in: '${ $context._servers }'
+        do:
+          - list_one:
+              try:
+                do:
+                  - tools_list:
+                      call: mcp
+                      with:
+                        method: tools/list
+                        _resource: '${ $_server }'
+                      export:
+                        as: >-
+                          ${ $context + {_listed: ($context._listed + ((if type == "array" then . else (.tools // .result.tools // []) end)
+                             | map({server: $_server, name: .name, description: (.description // ""), inputSchema: (.inputSchema // .input_schema // {})})))} }
+                catch:
+                  do:
+                    - list_failed:
+                        set:
+                          failed: '${ $context.failed + [{key: ("server:" + $_server), error: ($context.error.detail // $context.error.title // "tools/list failed")}] }'
+                        export:
+                          as: '${ $context + . }'
+
+  - shape:
+      set:
+        # One record per tool. The pattern is the tool's name split into words plus
+        # its description: what PATTERN recall matches a request against.
+        _records: >-
+          ${ $context._listed | map(select(.name != null and .name != "")) | unique_by(.server + ":" + .name)
+          | map({key: ("tool:" + .server + ":" + .name), name, server, description,
+                 usage: ((.description // "") | split("\n")[0]),
+                 pattern: ((.name | gsub("[_\\-.]"; " ")) + " " + (.description // "")),
+                 schema: (.inputSchema | tojson)}) }
+      export:
+        as: '${ $context + . }'
+
+  - write_tools:
+      for:
+        each: _t
+        in: '${ $context._records }'
+        do:
+          - store_one:
+              try:
+                do:
+                  - store:
+                      call: adb
+                      with:
+                        # Values quoted here: AQL STORE takes no variables in its values yet (ADB-R1).
+                        query: >-
+                          ${ def q: "\"" + (tostring | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\"";
+                          "STORE INTO PROCEDURAL (key = " + ($_t.key | q) + ", kind = \"tool\", name = " + ($_t.name | q)
+                          + ", server = " + ($_t.server | q) + ", description = " + ($_t.description | q)
+                          + ", usage = " + ($_t.usage | q) + ", pattern = " + ($_t.pattern | q)
+                          + ", steps = " + (("call " + $_t.name) | q) + ", schema = " + ($_t.schema | q)
+                          + ") NAMESPACE " + ($context._ns | q) }
+                        _resource: '${ $context._res }'
+                      export:
+                        as: '${ $context + {stored: ($context.stored + 1)} }'
+                catch:
+                  do:
+                    - update_existing:
+                        if: '${ (($context.error.detail // "") + ($context.error.title // "")) | test("key_exists") }'
+                        try:
+                          do:
+                            - update:
+                                call: adb
+                                with:
+                                  query: >-
+                                    ${ def q: "\"" + (tostring | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\"";
+                                    "UPDATE INTO PROCEDURAL WHERE key = " + ($_t.key | q) + " (kind = \"tool\", name = " + ($_t.name | q)
+                                    + ", server = " + ($_t.server | q) + ", description = " + ($_t.description | q)
+                                    + ", usage = " + ($_t.usage | q) + ", pattern = " + ($_t.pattern | q)
+                                    + ", schema = " + ($_t.schema | q) + ") NAMESPACE " + ($context._ns | q) }
+                                  _resource: '${ $context._res }'
+                                export:
+                                  as: '${ $context + {updated: ($context.updated + 1)} }'
+                          catch:
+                            do:
+                              - update_failed:
+                                  set:
+                                    failed: '${ $context.failed + [{key: $_t.key, error: ($context.error.detail // $context.error.title // "update failed")}] }'
+                                  export:
+                                    as: '${ $context + . }'
+                    - store_failed:
+                        if: '${ ((($context.error.detail // "") + ($context.error.title // "")) | test("key_exists")) | not }'
+                        set:
+                          failed: '${ $context.failed + [{key: $_t.key, error: ($context.error.detail // $context.error.title // "store failed")}] }'
+                        export:
+                          as: '${ $context + . }'
+
+  # Tools a listed server no longer offers. A server that failed to list keeps
+  # its tools: an outage is not a removal.
+  - stale:
+      for:
+        each: _server
+        in: '${ ($context._servers | map(select(. as $s | ($context.failed | map(.key) | index("server:" + $s)) == null))) + $context._complete | unique }'
+        do:
+          - existing:
+              try:
+                do:
+                  - list_known:
+                      call: adb
+                      with:
+                        query: '${ "RECALL FROM PROCEDURAL WHERE server = $s NAMESPACE \"" + $context._ns + "\" LIMIT 1000" }'
+                        variables:
+                          s: '${ $_server }'
+                        _resource: '${ $context._res }'
+                      export:
+                        as: >-
+                          ${ $context + {_old: [((.data.records // .data.data.records // .records // [])[] | .data | select(.kind == "tool") | .key)
+                             | select(. as $k | ($context._records | map(.key) | index($k)) == null)]} }
+                  - forget_old:
+                      for:
+                        each: _k
+                        in: '${ $context._old }'
+                        do:
+                          - forget_one:
+                              call: adb
+                              with:
+                                query: '${ "FORGET FROM PROCEDURAL WHERE key = $k NAMESPACE \"" + $context._ns + "\"" }'
+                                variables:
+                                  k: '${ $_k }'
+                                _resource: '${ $context._res }'
+                              export:
+                                as: '${ $context + {forgotten: ($context.forgotten + 1)} }'
+                catch:
+                  do:
+                    - stale_failed:
+                        set:
+                          failed: '${ $context.failed + [{key: ("stale:" + $_server), error: ($context.error.detail // $context.error.title // "clean-up failed")}] }'
+                        export:
+                          as: '${ $context + . }'
+
+  - report:
+      set:
+        servers: '${ ($context._servers + $context._complete) | unique }'
+        tools: '${ $context._records | length }'
+        stored: '${ $context.stored }'
+        updated: '${ $context.updated }'
+        forgotten: '${ $context.forgotten }'
+        failed: '${ $context.failed }'
+

@@ -1,0 +1,23 @@
+{
+  "id": "a3t-early-access-webhook",
+  "name": "Early access requests (login page)",
+  "namespace": "a3t",
+  "config": {
+    "type": "webhook",
+    "path": "/a3t/early-access",
+    "method": "POST",
+    "secret": null,
+    "message_template": null
+  },
+  "targets": [
+    {
+      "type": "workflow",
+      "namespace": "a3t",
+      "name": "a3t-early-access",
+      "input_mapping": null
+    }
+  ],
+  "enabled": true,
+  "status": "active",
+  "description": "Public: the login page form posts here (no sign-in). Runs a3t/a3t-early-access with the form as input."
+}

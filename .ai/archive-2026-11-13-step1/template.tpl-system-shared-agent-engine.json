@@ -1,0 +1,25 @@
+Workflow execution completed.
+
+- Instance ID: `01a1d234-3943-7713-a78b-c9b42b02b0ee`
+- Workflow: a3t/flow_a3t_templates
+- Status: completed (transient)
+
+Output:
+[
+  {
+    "created_at": "2026-10-31T21:57:31Z",
+    "created_by": "usr-superadmin",
+    "digest": "",
+    "id": "tpl-system-shared-agent-engine",
+    "name": "agent-engine",
+    "org_id": "org-default",
+    "published": "false",
+    "signed_by": "",
+    "source": "shared",
+    "spec_yaml": "document:\n  dsl: 1.0.3\n  namespace: system-shared\n  name: agent-engine\n  version: 2.0.0\n  metadata:\n    description: >\n      Rust-native agent engine. Calls the call:a3t:agent handler which implements the full 10-phase lifecycle in native\n      code. Extensions defined here are the hook points — wrapper workflows can override them with before/after tasks.\nuse:\n  extensions:\n    - on_turn_start:\n        extend: all\n        when: ${ $task.name == \"init_turn\" }\n        before: []\n        after: []\n    - before_recall:\n        extend: all\n        when: ${ $task.name == \"recall_memory\" }\n        before: []\n        after: []\n    - before_llm:\n        extend: call\n        before: []\n        after: []\n    - on_llm_response:\n        extend: call\n        before: []\n        after: []\n    - on_tool_call:\n        extend: all\n        when: ${ $task.name == \"dispatch_tools\" }\n        before: []\n        after: []\n    - on_tool_error:\n        extend: all\n        when: ${ $task.name == \"dispatch_tools\" and $context._tool_error != null }\n        before: []\n        after: []\n    - before_store:\n        extend: all\n        when: ${ $task.name == \"store_memory\" }\n        before: []\n        after: []\n    - after_response:\n        extend: all\n        when: ${ $task.name == \"emit_response\" }\n        before: []\n        after: []\n    - on_turn_end:\n        extend: all\n        when: ${ $task.name == \"save_session\" }\n        before: []\n        after: []\ndo:\n  - run_agent:\n      call: a3t:agent\n      with:\n        config: ${\n          {\"llm_resource\":\"Deepseek\",\"mcp_servers\":[\"agent-memory-mcp\",\"agent-flows\"],\"enabled_tools\":[\"aql_query\",\"bind_canvas\",\"clear_agent_session\",\"clone_canvas\",\"delete_agent\",\"delete_flow\",\"delete_resource\",\"delete_trigger\",\"deploy_flow\",\"execute_flow\",\"forget\",\"get_agent\",\"get_agent_history\",\"get_agent_template\",\"get_canvas\",\"get_execution_status\",\"get_flow\",\"get_resource\",\"get_state\",\"get_stats\",\"get_task_type\",\"get_trigger\",\"link\",\"list_agent_templates\",\"list_agents\",\"list_canvas_presets\",\"list_deployments\",\"list_executions\",\"list_flows\",\"list_mcp_tools\",\"list_permissions\",\"list_resource_types\",\"list_resources\",\"list_runtimes\",\"list_task_types\",\"list_triggers\",\"preview_placement\",\"probe_deployment\",\"propose_edit\",\"propose_flow\",\"query_resource\",\"recall\",\"recall_memory\",\"remember\",\"resume_deployment\",\"send_message\",\"set_paused_response\",\"set_runtime_state\",\"set_state\",\"store_memory\"],\"memory_resource\":\"adb\",\"memory_config\":{\"semantic\":{\"write\":true},\"procedural\":{\"read\":true,\"write\":true}},\"memory_namespace\":\"adb-test\"}\n          + (.config // {}) }\n        session_id: ${ .session_id // \"default\" }\n        message: ${ .message }\n        ui_context: ${ .ui_context }\n",
+    "tags": "core,lifecycle,multi-turn,tool-use,memory,rust-native",
+    "updated_at": "2026-10-31T22:56:30.073109Z",
+    "version": "2.0.0",
+    "vertical": ""
+  }
+]
