@@ -18,6 +18,7 @@
   import AgentMakeFrom from '$lib/components/agent/AgentMakeFrom.svelte';
   import AgentKeys from '$lib/components/agent/AgentKeys.svelte';
   import AgentMemory from '$lib/components/agent/AgentMemory.svelte';
+  import AgentCode from '$lib/components/agent/AgentCode.svelte';
   import AgentSetup from '$lib/components/agent/AgentSetup.svelte';
   import AgentPolicies from '$lib/components/agent/AgentPolicies.svelte';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -170,7 +171,7 @@
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
     overview: 'Its endpoints, a test, the code to call it, and its status',
-    build: 'Make it work: model and tools, hooks, memory, lineage',
+    build: 'Make it work: its code, model and tools, hooks, memory, lineage',
     secure: 'Who can call it and what it may do: keys, sharing, controls, endpoints',
     audit: 'What it did and what changed: calls, decisions, changes',
     metrics: 'How it is doing: its turns, failures, time and tool calls',
@@ -194,11 +195,11 @@
   ];
   /// The sections of each tab, in the order they are used.
   const SECTIONS: Record<string, { id: string; label: string }[]> = {
-    build: [{ id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'lineage', label: 'Lineage' }],
+    build: [{ id: 'code', label: 'Code' }, { id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'lineage', label: 'Lineage' }],
     secure: [{ id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }],
   };
   const SECTION_TAB: Record<string, string> = Object.fromEntries(Object.entries(SECTIONS).flatMap(([t, ss]) => ss.map((x) => [x.id, t])));
-  let sub = $state<Record<string, string>>({ build: 'tools', secure: 'keys' });
+  let sub = $state<Record<string, string>>({ build: 'code', secure: 'keys' });
   /// Names other pages and earlier versions link with.
   const TAB_ALIAS: Record<string, string> = {
     detail: 'overview', access: 'tools', config: 'tools', configure: 'tools', api: 'exposure', tokens: 'keys', token: 'keys',
@@ -792,6 +793,8 @@
             {/if}
             {#if propNode === 'overview'}
               <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} onreload={loadAgents} />
+            {:else if propNode === 'build' && sub.build === 'code'}
+              <AgentCode {agent} {templates} oncode={openCode} ongo={goTab} />
             {:else if propNode === 'build' && sub.build === 'tools'}
               <AgentSetup {agent} bind:bindings {llmResources} {mcpResources} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings}>
