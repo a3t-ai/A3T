@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.0.1'
+  version: '1.0.2'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -44,6 +44,7 @@ do:
         - share: { when: '${ $context._in.action == "share" }', then: share }
         - unshare: { when: '${ $context._in.action == "unshare" }', then: unshare }
         - shared_with: { when: '${ $context._in.action == "shared_with" }', then: shared_with }
+        - forget: { when: '${ $context._in.action == "forget" }', then: forget }
         - unknown: { then: unknown }
 
   - unknown:
@@ -52,7 +53,7 @@ do:
           type: https://a3t.io/errors/input
           status: 400
           title: Unknown action
-          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare or shared_with." }'
+          detail: '${ "flow_a3t_agent_control: unknown action " + (($context._in.action // "none") | tostring) + ". Use create, get, lineage, relate, compare, merge, evolve, shares, share, unshare, shared_with or forget." }'
 
   # ═══ create ════════════════════════════════════════════════════════════════
   # { action: create, from: {kind: template|agent, id, version?}, mode?: template|inherit|clone,
@@ -103,6 +104,24 @@ do:
           status: 404
           title: Source not found
           detail: '${ "No " + $context._from.kind + " " + $context._from.id + " in this org." }'
+  - create_exists:
+      call: lancedb
+      with:
+        operation: query
+        table: agent_configs
+        filter: '${ "id = ''" + $context._id + "''" }'
+        limit: 1
+        _resource: a3t/a3t-platform-db
+      export:
+        as: '${ $context + {_exists: (((if type == "array" then . else (.rows // .data // []) end) | length) > 0)} }'
+  - create_unique:
+      if: '${ $context._exists }'
+      raise:
+        error:
+          type: https://a3t.io/errors/input
+          status: 409
+          title: Agent exists
+          detail: '${ "An agent with id " + $context._id + " already exists." }'
   - create_row:
       set:
         _row: >-
@@ -608,3 +627,33 @@ do:
       output:
         as: '${ {ok: true, namespace: $context._in.namespace, shares: (if type == "array" then . else (.rows // .data // []) end)} }'
       then: end
+
+  # ═══ forget ════════════════════════════════════════════════════════════════
+  # { action: forget, id }. After an agent is deleted: its relation and its shares.
+  - forget:
+      call: lancedb
+      with:
+        operation: delete
+        table: agent_relations
+        filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+        _resource: a3t/a3t-platform-db
+      metadata:
+        a3t:
+          policy:
+            op: delete
+            resource:
+              type: Agent
+              id: '${ $context._in.id }'
+  - forget_shares:
+      call: lancedb
+      with:
+        operation: delete
+        table: agent_shares
+        filter: '${ "agent_id = ''" + ($context._in.id // "") + "''" }'
+        _resource: a3t/a3t-platform-db
+  - forget_done:
+      set:
+        ok: true
+        id: '${ $context._in.id }'
+      then: end
+

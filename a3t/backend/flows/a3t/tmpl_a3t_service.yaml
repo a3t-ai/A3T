@@ -1,0 +1,31 @@
+document:
+  dsl: '1.0.3'
+  namespace: a3t
+  name: tmpl_a3t_service
+  version: '1.0.0'
+  metadata:
+    description: >
+      The template of A3T's own control-plane agents (agent_a3t_agents,
+      agent_a3t_templates, ...). Their work is their tools: each tool runs a
+      flow_a3t_* workflow, and backends and the dash call them directly through
+      the agent's control plane (POST /agents/{id}/tools/{tool}), with no model.
+      When someone chats with one, it runs as an A3T agent with only its own tools
+      (no MCP servers) at temperature 0. Routing first, with the LLM only on a
+      trigger, comes with the engine's routing (AR-1).
+      Input: { message, session_id, ui_context? }. Output: as tmpl_a3t_agent.
+
+metadata:
+  a3t:
+    extends: system/tmpl_system_agent_engine@2.1.0
+
+do:
+  - service:
+      run:
+        workflow:
+          namespace: a3t
+          name: tmpl_a3t_agent
+          input:
+            message: '${ .message // "" }'
+            session_id: '${ .session_id // "default" }'
+            ui_context: '${ .ui_context // null }'
+            mcp_servers: []
