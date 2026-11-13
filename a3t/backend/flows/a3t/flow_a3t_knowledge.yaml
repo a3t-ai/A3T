@@ -13,11 +13,16 @@
 #   entities      — paginated entity list with vector norms (Vectors tab)
 #   relations     — relation list with triple counts
 #   stats         — graph summary + 3D projection + edges (3D Graph tab)
+#   from_semantic — build the graph from a SEMANTIC space on ADB: each fact's
+#                   subject → predicate → object becomes a triple (confidence as
+#                   its weight), then RotatE trains over it. ADB stays the source
+#                   of truth; a3t-kg-db holds the derived embeddings.
+#                   { namespace (default a3t-usage), resource? (a3t/adb), limit?, epochs?, train? }
 document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_knowledge
-  version: 1.0.0
+  version: 1.1.0
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -57,6 +62,9 @@ do:
     - case:
         when: ${ .input.action == "stats" }
         then: stats
+    - case:
+        when: ${ .input.action == "from_semantic" }
+        then: from-semantic
 
 - ingest:
     call: rotate
@@ -155,4 +163,75 @@ do:
       sample: ${ .input.sample // 2000 }
       max_edges: ${ .input.max_edges // 8000 }
       _resource: a3t/a3t-kg-db
+    then: end
+
+- from-semantic:
+    set:
+      _ns: '${ (.input.namespace // "a3t-usage") | tostring }'
+      _res: '${ .input.resource // "a3t/adb" }'
+      _lim: '${ .input.limit // 5000 }'
+      _epochs: '${ .input.epochs // 300 }'
+      _train: '${ .input.train // true }'
+      _dim: '${ .input.dim // 256 }'
+      _lr: '${ .input.lr // 0.01 }'
+      _gamma: '${ .input.gamma // 12.0 }'
+      _neg: '${ .input.neg_samples // 8 }'
+    export:
+      as: '${ $context + . }'
+- from-semantic-name:
+    if: '${ $context._ns | test("^[a-z0-9][a-z0-9._-]{1,62}$") | not }'
+    raise:
+      error:
+        type: https://a3t.io/errors/input
+        status: 400
+        title: Which space?
+        detail: '${ "A semantic space name is lower case letters, digits, . _ - : " + $context._ns }'
+- from-semantic-read:
+    call: adb
+    with:
+      query: '${ "RECALL FROM SEMANTIC ALL NAMESPACE \"" + $context._ns + "\" LIMIT " + ($context._lim | tostring) }'
+      _resource: '${ $context._res }'
+    export:
+      as: >-
+        ${ $context + {_triples: ((.data.records // .data.data.records // .records // []) | map(.data // {})
+           | map(select((.subject // "") != "" and (.predicate // "") != "" and (.object // "") != ""))
+           | map({head: (.subject | tostring), relation: (.predicate | tostring), tail: (.object | tostring),
+                  weight: ((.confidence // 1) | tonumber? // 1),
+                  head_type: ((.subject_type // "") | tostring), tail_type: ((.object_type // "") | tostring)}))} }
+- from-semantic-some:
+    if: '${ ($context._triples | length) == 0 }'
+    raise:
+      error:
+        type: https://a3t.io/errors/input
+        status: 404
+        title: No facts
+        detail: '${ "There are no subject → predicate → object facts in the SEMANTIC space " + $context._ns + " on " + $context._res + "." }'
+- from-semantic-ingest:
+    call: rotate
+    with:
+      operation: ingest
+      triples: '${ $context._triples }'
+      dim: '${ $context._dim }'
+      _resource: a3t/a3t-kg-db
+    export:
+      as: '${ $context + {_ingest: .} }'
+- from-semantic-train:
+    if: '${ $context._train == true }'
+    call: rotate
+    with:
+      operation: train
+      epochs: '${ $context._epochs }'
+      lr: '${ $context._lr }'
+      gamma: '${ $context._gamma }'
+      neg_samples: '${ $context._neg }'
+      _resource: a3t/a3t-kg-db
+    export:
+      as: '${ $context + {_trained: .} }'
+- from-semantic-done:
+    set:
+      ok: true
+      namespace: '${ $context._ns }'
+      facts: '${ $context._triples | length }'
+      ingest: '${ $context._ingest }'
+      trained: '${ $context._trained // null }'
     then: end

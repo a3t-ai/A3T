@@ -63,7 +63,7 @@ AGENTS = [
                "tool_a3t_error_list": {"namespace": "a3t", "name": "flow_a3t_error_log", "input": {"action": "list"}, "description": "The platform error log."},
                **crud("flow_a3t_early_access", "early_access", ["list", "set"], True)}},
     {"id": "agent_a3t_knowledge", "name": "agent_a3t_knowledge", "prompt": "You manage the knowledge graph: ingest, look up, query and train.",
-     "tools": crud("flow_a3t_knowledge", "knowledge", ["ingest", "lookup", "entities", "relations", "neighbors", "predict_head", "predict_tail", "score", "stats", "train"], True)},
+     "tools": crud("flow_a3t_knowledge", "knowledge", ["ingest", "lookup", "entities", "relations", "neighbors", "predict_head", "predict_tail", "score", "stats", "train", "from_semantic"], True)},
     {"id": "agent_a3t_assistant", "name": "agent_a3t_assistant", "template": "tmpl_a3t_agent",
      "prompt": "You are the A3T assistant in the A3T console. Help people build, run and govern agents. Answer from the platform docs you are given; use your tools to read the real state; when the docs don't cover something, say so.",
      "tools": {}, "mcp": ["a3t/agent-flows"], "temperature": 0.4},

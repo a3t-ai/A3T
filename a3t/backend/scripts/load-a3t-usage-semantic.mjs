@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 /**
- * Sample A3T usage facts into a SEMANTIC space on a FlowR's ADB, as a knowledge graph:
+ * A3T facts into a SEMANTIC space on a FlowR's ADB, as a knowledge graph:
+ *   --source usage (default, namespace a3t-usage): sample facts about how A3T is used;
+ *   --source docs  (namespace a3t-docs): facts read from the A3T docs (a3t/wwwdocs):
+ *     page → in section → section, page → covers → its headings, a table's terms →
+ *     listed in → the heading (the row's text as the sentence), page → links to → page,
+ *     page → mentions → code terms two or more pages share.
+ * The Knowledge page builds its RotatE graph from either space (Build from ADB).
  * each fact is subject → predicate → object, with its sentence (content), a confidence
  * and where it came from. An agent sees them once the space is attached to it
  * (Build › Memory › Semantic › Attach, or tool_a3t_agent_memory_attach).
@@ -11,11 +17,15 @@
  * Safe to run again: an existing fact (same key) is updated in place. The token is read
  * from the file and never printed. --dry-run prints the AQL and calls nothing.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => (v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]?.startsWith('--') || all[i + 1] === undefined ? 'true' : all[i + 1]]] : a), []));
 const DRY = args['dry-run'] === 'true';
-const NS = args.namespace ?? 'a3t-usage';
+const SOURCE = args.source ?? 'usage';
+const NS = args.namespace ?? (SOURCE === 'docs' ? 'a3t-docs' : 'a3t-usage');
 const [RNS, RNAME] = (args.resource ?? 'a3t/adb').split('/');
 const URL_ = (args.url ?? 'https://console.dev.a3t.io').replace(/\/$/, '');
 
@@ -84,13 +94,72 @@ const FACTS = [
   ['claude-haiku', 'is a', 'model resource', 1, 'resources'],
 ];
 
+/// The kind of each entity, so the knowledge graph colours by it.
+const BOTS = ['support-bot', 'sales-researcher', 'invoice-checker'];
+const SPACES = ['system-knowledge', 'finance-docs', 'a3t-usage'];
+const PLATFORM = ['ADB', 'FlowR', 'Lance', 'Raft', 'AQL', 'MCP', 'A3T console', 'VS Code + Claude'];
+const kind = n => n.startsWith('agent_') || BOTS.includes(n) ? 'Agent' : n.startsWith('tmpl_') ? 'Template' : n.startsWith('tool_') ? 'Tool'
+  : n.startsWith('flow_') ? 'Flow' : n.startsWith('claude-') ? 'Model' : SPACES.includes(n) ? 'Space' : / memory$/.test(n) ? 'Memory'
+  : n.startsWith('org-') ? 'Org' : PLATFORM.includes(n) ? 'Platform' : n.includes('/') ? 'Resource' : 'Concept';
+
 const q = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
-const fact = ([subject, predicate, object, confidence, source], i) => {
-  const key = `usage-${String(i + 1).padStart(3, '0')}`;
-  const content = `${subject} ${predicate} ${object}.`;
-  const f = `subject = ${q(subject)}, predicate = ${q(predicate)}, object = ${q(object)}, content = ${q(content)}, confidence = ${confidence}, source = ${q(source)}, kind = "fact"`;
-  return { key, store: `STORE INTO SEMANTIC (key = ${q(key)}, ${f}) NAMESPACE ${q(NS)}`, update: `UPDATE INTO SEMANTIC WHERE key = ${q(key)} (${f}) NAMESPACE ${q(NS)}` };
+const usageFacts = () => FACTS.map(([subject, predicate, object, confidence, source], i) => ({
+  key: `usage-${String(i + 1).padStart(3, '0')}`, subject, predicate, object, confidence, source,
+  content: `${subject} ${predicate} ${object}.`, subject_type: kind(subject), object_type: kind(object) }));
+
+/// Facts from the docs' own structure: no model involved, the same answer every run.
+function docsFacts() {
+  const dir = args.docs ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'wwwdocs', 'src', 'content', 'docs');
+  const walk = d => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? walk(p) : /\.mdx?$/.test(f) ? [p] : []; });
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const clean = s => s.replace(/\*\*|__|`/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim();
+  const pages = walk(dir).sort().map(p => {
+    const raw = readFileSync(p, 'utf8'); const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+    const rel = relative(dir, p).replace(/\.mdx?$/, '');
+    return { rel, title: fm?.[1].match(/^title:\s*["']?(.+?)["']?\s*$/m)?.[1] ?? rel, body: (fm ? raw.slice(fm[0].length) : raw).replace(/```[\s\S]*?```/g, '') };
+  });
+  const byPath = new Map(pages.map(pg => [pg.rel, pg.title]));
+  const out = [], add = (subject, predicate, object, subject_type, object_type, content, source) =>
+    out.push({ subject, predicate, object, subject_type, object_type, confidence: 1, source, content: content || `${subject} ${predicate} ${object}.` });
+  const codeIn = new Map();
+  for (const pg of pages) {
+    const src = `docs/${pg.rel}`, section = pg.rel.includes('/') ? cap(pg.rel.split('/')[0].replace(/-/g, ' ')) : 'Overview';
+    add(pg.title, 'in section', section, 'Page', 'Section', '', src);
+    let head = null;
+    for (const line of pg.body.split('\n')) {
+      const h = line.match(/^##\s+(.+)/);
+      if (h) { head = `${pg.title} › ${clean(h[1])}`; add(pg.title, 'covers', head, 'Page', 'Topic', '', src); continue; }
+      const row = line.match(/^\|(.+)\|\s*$/);
+      if (row && head && !/^\s*:?-{2,}/.test(row[1])) {
+        const cells = row[1].split('|').map(clean);
+        const term = cells[0];
+        if (term && term.length <= 60 && !/^(type|mode|name|field|key|option|task|operation|tool|column|setting|parameter|action|kind|event|status)$/i.test(term)) {
+          add(term, 'listed in', head, /:/.test(term) ? 'TaskType' : 'Term', 'Topic', cells.slice(1).filter(Boolean).join(' — ').slice(0, 400) || '', src);
+        }
+      }
+    }
+    for (const m of pg.body.matchAll(/\]\((\/[^)#\s]+)\/?(?:#[^)]*)?\)/g)) {
+      const t = byPath.get(m[1].replace(/^\/|\/$/g, ''));
+      if (t && t !== pg.title) add(pg.title, 'links to', t, 'Page', 'Page', '', src);
+    }
+    for (const m of pg.body.matchAll(/`([a-z][a-z0-9_:.\/-]{2,40})`/g)) {
+      const c = m[1]; if (!codeIn.has(c)) codeIn.set(c, new Set()); codeIn.get(c).add(pg.title);
+    }
+  }
+  for (const [c, ts] of codeIn) if (ts.size >= 2) for (const t of ts) add(t, 'mentions', c, 'Page', /:/.test(c) ? 'TaskType' : 'Code', '', 'docs');
+  // One fact per subject → predicate → object; its key is a hash of the three.
+  const seen = new Set();
+  return out.filter(f => { const k = `${f.subject}|${f.predicate}|${f.object}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .map(f => ({ key: `doc-${createHash('sha1').update(`${f.subject}|${f.predicate}|${f.object}`).digest('hex').slice(0, 12)}`, ...f }));
+}
+
+const fact = f => {
+  const fields = ['subject', 'predicate', 'object', 'content', 'confidence', 'source', 'subject_type', 'object_type'];
+  const v = x => (typeof x === 'number' ? String(x) : q(x));
+  const body = fields.map(k => `${k} = ${v(f[k])}`).join(', ') + ', kind = "fact"';
+  return { key: f.key, store: `STORE INTO SEMANTIC (key = ${q(f.key)}, ${body}) NAMESPACE ${q(NS)}`, update: `UPDATE INTO SEMANTIC WHERE key = ${q(f.key)} (${body}) NAMESPACE ${q(NS)}` };
 };
+const ALL = SOURCE === 'docs' ? docsFacts() : usageFacts();
 
 const T = DRY ? '' : readFileSync(process.env.FLOWR_TOKEN_FILE ?? '', 'utf8').trim();
 async function aql(query) {
@@ -101,8 +170,9 @@ async function aql(query) {
 }
 
 let stored = 0, updated = 0, failed = 0;
-for (const [i, f] of FACTS.entries()) {
-  const x = fact(f, i);
+if (DRY) console.error(`${ALL.length} facts → ${NS}`);
+for (const f of ALL) {
+  const x = fact(f);
   if (DRY) { console.log(x.store); continue; }
   let r = await aql(x.store);
   if (!r.err) { stored++; continue; }
@@ -110,7 +180,7 @@ for (const [i, f] of FACTS.entries()) {
   failed++; console.log(`✗ ${x.key}: ${r.text.replace(/\s+/g, ' ').slice(0, 200)}`);
 }
 if (!DRY) {
-  const r = await aql(`RECALL FROM SEMANTIC ALL NAMESPACE ${q(NS)} LIMIT 500`);
+  const r = await aql(`RECALL FROM SEMANTIC ALL NAMESPACE ${q(NS)} LIMIT 5000`);
   const n = (r.text.match(/"subject"/g) ?? []).length;
   console.log(`${NS}: ${stored} stored, ${updated} updated, ${failed} failed; ${n} facts read back`);
   process.exit(failed ? 1 : 0);
