@@ -169,10 +169,11 @@
   ] : treeNodes.map((n) => ({ id: n.id, label: n.label, icon: n.icon, hint: AGENT_HINTS[n.id] })));
   const AGENT_HINTS: Record<string, string> = {
     overview: 'Its endpoints, a test, the code to call it, and its status',
-    build: 'Make it work and evolve it: model and tools, hooks, memory, versions, lineage',
+    build: 'Make it work: model and tools, hooks, memory, lineage',
     secure: 'Who can call it and what it may do: keys, sharing, controls, endpoints',
     audit: 'What it did and what changed: calls, decisions, changes',
     metrics: 'How it is doing: its turns, failures, time and tool calls',
+    versions: 'Its versions and memory branches, and where it runs',
     settings: 'Name, description, environment, owner, delete',
   };
 
@@ -187,11 +188,12 @@
     { id: 'secure', label: 'Access', icon: '<path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/>' },
     { id: 'audit', label: 'Audit', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 5h5M5.5 8h5M5.5 11h3"/>' },
     { id: 'metrics', label: 'Metrics', icon: '<path d="M1 8h3l2-5 3 10 2-5h4"/>' },
+    { id: 'versions', label: 'Versions & deploy', icon: '<circle cx="4" cy="3" r="1.6"/><circle cx="4" cy="13" r="1.6"/><circle cx="12" cy="5" r="1.6"/><path d="M4 4.6v6.8M12 6.6c0 3-3 3.4-8 4.8"/>' },
     { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/>' },
   ];
   /// The sections of each tab, in the order they are used.
   const SECTIONS: Record<string, { id: string; label: string }[]> = {
-    build: [{ id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'versions', label: 'Versions & deploy' }, { id: 'lineage', label: 'Lineage' }],
+    build: [{ id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'lineage', label: 'Lineage' }],
     secure: [{ id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }],
   };
   const SECTION_TAB: Record<string, string> = Object.fromEntries(Object.entries(SECTIONS).flatMap(([t, ss]) => ss.map((x) => [x.id, t])));
@@ -816,7 +818,7 @@
               <AgentAudit {agent} {templates} live={live!} onstudio={studio} ongo={goTab} />
             {:else if propNode === 'metrics'}
               <AgentMetrics id={agent.id} />
-            {:else if propNode === 'build' && sub.build === 'versions'}
+            {:else if propNode === 'versions'}
               <AgentReleases {agent} {templates} {allAgents} live={live!} canEdit={$canEditAgent} bind:branchForm
                 onopen={selectAgent} onmade={async (id) => { await loadAgents(); selectAgent(id); }} onchanged={() => deployRev++}>
                 {#snippet notDeployed()}
