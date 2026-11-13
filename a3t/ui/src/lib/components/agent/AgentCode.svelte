@@ -36,7 +36,7 @@
 </section>
 
 <style>
-  .code { display: flex; flex-direction: column; gap: 10px; max-width: none; }
+  .code { display: flex; flex-direction: column; gap: 10px; }
   .pane { height: max(480px, calc(100vh - 300px)); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
   .pane > :global(*) { flex: 1; min-height: 0; }
   .grow { flex: 1 1 auto; }

@@ -784,7 +784,7 @@
           </div>
         {:else}
           {@const studio = () => openInStudio('agent', agent.namespace ?? 'a3t', agent.name ?? agent.id, agent.id)}
-          <div class="pf wide" class:full={propNode === 'build' && sub.build === 'code'}>
+          <div class="pf wide">
             <WizardHead step={agentSteps.find((x) => x.id === propNode)} />
             {#if SECTIONS[propNode]}
               <div class="subnav" role="tablist">
@@ -976,8 +976,6 @@
   /* Panel forms */
   .pf { padding: 24px 32px; max-width: 704px; }
   .pf.wide { max-width: 980px; }
-  /* The code fills the panel, as wide as the tab bar above it. */
-  .pf.wide.full { max-width: none; }
   .pf-hint { font-size: 12px; color: var(--text-4); margin-bottom: 12px; }
 
 

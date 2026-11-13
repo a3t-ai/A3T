@@ -1,6 +1,6 @@
 /* The agent tabs (Overview, API, Config, Releases, Observe, Settings) share
    one look; every rule is under .agt, the page's wrapper of a tab. */
-.agt { display: flex; flex-direction: column; gap: 14px; max-width: 900px; font-size: 13px; color: var(--text-2); }
+.agt { display: flex; flex-direction: column; gap: 14px; font-size: 13px; color: var(--text-2); }
 .agt h4 { margin: 6px 0 -4px; font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-4); display: flex; gap: 8px; align-items: center; }
 .agt .mono { font-family: var(--font-mono); font-size: 12.5px; }
 .agt .dim { margin: 0; font-size: 12.5px; color: var(--text-3); }
