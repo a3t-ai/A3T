@@ -11,7 +11,7 @@
   import { openInStudio } from '$lib/stores/panels.svelte';
   import SemanticGraph, { type Fact } from './SemanticGraph.svelte';
 
-  let { agent, ongo }: { agent: AgentRec; ongo: (tab: string) => void } = $props();
+  let { agent }: { agent: AgentRec } = $props();
 
   type Entry = { key: string | null; at: string | null; data: Record<string, any>; space?: string };
   type Space = { namespace: string; entries: Entry[]; error?: string };
@@ -204,8 +204,7 @@
   <div class="card">
     <div class="card-head"><h3>Memory</h3><span>{keeps ? 'kept across conversations' : agent.mode === 'ephemeral' ? 'it remembers nothing' : 'only the conversation it is in'}</span><span class="grow"></span>
       <button class="link" onclick={() => load(agent.id)}>Refresh</button>
-      <button class="link" onclick={studio} title="Open the org's ADB in the Studio with this memory as AQL">Edit with AQL in Studio →</button>
-      <button class="link" onclick={() => ongo('tools')}>Change what it remembers →</button></div>
+      <button class="link" onclick={studio} title="Open the org's ADB in the Studio with this memory as AQL">Edit with AQL in Studio →</button></div>
     <div class="types" role="tablist">
       {#each TYPES as ty (ty.k)}
         <button role="tab" class:on={open === ty.k} aria-selected={open === ty.k} onclick={() => { open = ty.k; filter = ''; editing = null; adding = null; }}>

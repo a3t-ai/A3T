@@ -807,7 +807,7 @@
               <AgentHooks {agent} bind:bindings {flowOptions} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings} />
             {:else if propNode === 'build' && sub.build === 'memory'}
-              <AgentMemory {agent} ongo={goTab} />
+              <AgentMemory {agent} />
             {:else if propNode === 'build' && sub.build === 'lineage'}
               <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle} />
             {:else if propNode === 'secure' && sub.secure === 'keys'}
