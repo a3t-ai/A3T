@@ -6,6 +6,7 @@
   import type { AgentLive } from './agentLive.svelte';
   import { flagsOf } from './agentRisk';
   import AgentEndpoints from './AgentEndpoints.svelte';
+  import AgentMetrics from './AgentMetrics.svelte';
 
   let { agent, templates, allAgents, live, me, llmLabel, ongo, onstudio, oncode, onlifecycle }: {
     agent: AgentRec & { description?: string; created_by?: string };
@@ -46,6 +47,8 @@
   </div>
 
   <AgentEndpoints id={agent.id} />
+
+  <AgentMetrics id={agent.id} />
 
   <div class="card">
     <div class="card-head"><h3>Needs attention</h3>

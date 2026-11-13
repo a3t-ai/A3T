@@ -18,8 +18,23 @@
 
   const f = $derived(factsOf(agent, templates));
   type View = 'all' | 'deny' | 'allow' | 'run' | 'err' | 'conv' | 'memory';
+  import { insight, type MemoryType } from './controlPlane';
+  let mem = $state<{ namespace: string; counts: Record<MemoryType, number>; memory: Record<MemoryType, any[]> } | null>(null);
+  let memErr = $state('');
+  let memOpen = $state<MemoryType>('working');
+  async function loadMemory(id: string) {
+    mem = null; memErr = '';
+    const r = await insight.memory(id);
+    if (r.ok) mem = r.data; else memErr = r.error ?? 'Memory could not be read.';
+  }
+  const memText = (e: any) => {
+    const t = e?.content ?? e?.text ?? e?.reply ?? e?.message ?? e?.pattern ?? e?.object ?? e;
+    const s = typeof t === 'string' ? t : JSON.stringify(t);
+    return s.length > 240 ? s.slice(0, 240) + '…' : s;
+  };
   // svelte-ignore state_referenced_locally — where it opens; the chips take over
   let view = $state<View>(start ?? 'all');
+  $effect(() => { if (view === 'memory') loadMemory(agent.id); });
   type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; err?: boolean; ic: string };
   const items = $derived.by((): Item[] => {
     const all: Item[] = [
@@ -67,12 +82,25 @@
 
   {#if view === 'memory'}
     <p class="dim"><b>memory: {agent.mode}</b> — {keeps ? 'it keeps what happened and what it learned across conversations.' : 'it keeps only the conversation it is in.'} <button class="link" onclick={() => ongo('config')}>Change in Config →</button></p>
-    <div class="note">Its stored memories can't be read here yet (UI-1). This is what each kind holds.</div>
+    {#if memErr}<p class="err">{memErr}</p>{/if}
     <div class="mem">
       {#each MEM as m (m.k)}
-        <div class="card" class:off={!keeps && m.k !== 'working'}><b>{m.t}</b><span class="dim">{m.d}</span><em class="mono">{!keeps && m.k !== 'working' ? 'not kept' : 'entries: — (UI-1)'}</em></div>
+        <button class="card" class:off={!keeps && m.k !== 'working'} class:sel={memOpen === m.k} onclick={() => (memOpen = m.k)}>
+          <b>{m.t}</b><span class="dim">{m.d}</span>
+          <em class="mono">{mem ? `${mem.counts?.[m.k as MemoryType] ?? 0} entries` : 'reading…'}</em>
+        </button>
       {/each}
     </div>
+    {#if mem}
+      <p class="dim">Namespace <span class="mono">{mem.namespace}</span> on the org's ADB.</p>
+      <ol class="memlist">
+        {#each (mem.memory?.[memOpen] ?? []).slice(0, 20) as e, i (i)}
+          <li class="mono">{memText(e)}</li>
+        {:else}
+          <li class="dim">Nothing in {memOpen} memory yet.</li>
+        {/each}
+      </ol>
+    {/if}
   {:else if !live.loading}
     <ol class="tl">
       {#each items as it}
@@ -106,6 +134,9 @@
   .mem { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
   .mem .card { gap: 6px; padding: 12px 14px; }
   .mem .card.off { opacity: 0.55; }
+  .mem button.card { text-align: left; font: inherit; cursor: pointer; }
+  .mem .card.sel { border-color: var(--spec); background: var(--signal-bg); }
+  .memlist { margin: 0; padding: 0 0 0 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
   .mem em { font-style: normal; font-size: 11px; color: var(--text-4); }
   .ic { font-size: 9.5px !important; }
 </style>
