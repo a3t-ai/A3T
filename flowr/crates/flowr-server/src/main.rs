@@ -13,6 +13,7 @@ mod auth;
 mod auth_routes;
 mod sso;
 mod impersonate;
+mod forgot;
 mod config;
 
 use flowr_ce::flowr_storage::{SettingsStore, StorageBackend};
@@ -257,6 +258,11 @@ async fn main() -> anyhow::Result<()> {
                     admin_password: oidc_admin_password.clone(),
                     client: reqwest::Client::new(),
                 };
+                // "Forgot password" (forgot.rs): public, like /auth/login.
+                let forgot_routes = Router::new()
+                    .route("/auth/forgot", post(forgot::forgot_handler))
+                    .layer(Extension(idp_admin.clone()))
+                    .layer(Extension(auth_config.clone()));
                 let base = ce_router
                     .merge(Router::new().route("/security/audit", get(audit_handler)))
                     .merge(
@@ -320,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
                         .layer(middleware::from_fn(jwt_auth_middleware))
                         .layer(Extension(auth_config));
                 }
-                secured.merge(auth_routes)
+                secured.merge(auth_routes).merge(forgot_routes)
             };
 
             // Add UI routes

@@ -152,7 +152,7 @@ fn redirect(to: &str) -> Response {
 
 /// Origins the browser may be sent back to: this server's own URL, and those in
 /// `FLOWR_SSO_RETURN_ORIGINS` (comma-separated). Anything else is the default.
-fn return_origin(config: &AuthConfig, asked: Option<&str>) -> String {
+pub(crate) fn return_origin(config: &AuthConfig, asked: Option<&str>) -> String {
     let own = config.resource_uri.trim_end_matches('/').to_string();
     let allowed: Vec<String> = std::env::var("FLOWR_SSO_RETURN_ORIGINS").unwrap_or_default()
         .split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
