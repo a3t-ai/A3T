@@ -7,7 +7,7 @@ import * as act from '../adapters/act';
 import { fail, ok } from '../items';
 import { fromText, maskedPaths, toText } from '../config';
 import { listTriggers } from '../adapters/registry';
-import { toYaml as triggerYaml, fromYaml as triggerFromYaml } from '$lib/components/triggers/triggerSpec';
+import { toYaml as triggerYaml, fromYaml as triggerFromYaml } from '$lib/core/triggers/triggerSpec';
 import { startingConfig, categoryOf } from '../resourceTypes';
 import type { Doc } from '../workspace';
 import type { ItemKind, PanelDef } from './types';
@@ -81,7 +81,7 @@ export const triggerKind: ItemKind = {
     const name = n > 1 ? `new-trigger-${n}` : 'new-trigger';
     return {
       ref: { project, kind: 'trigger', name },
-      // A trigger is YAML (components/triggers/triggerSpec.ts), as on the Triggers page.
+      // A trigger is YAML (core/triggers/triggerSpec.ts), as on the Triggers page.
       text: triggerYaml({ name, namespace: project, enabled: true, description: '', config: { type: 'webhook', path: `/${name}`, method: 'POST' }, targets: [] }),
     };
   },

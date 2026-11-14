@@ -12,7 +12,7 @@
   import SaveBar from '../parts/SaveBar.svelte';
   import EditButton from '../parts/EditButton.svelte';
   import { flows as flowsApi, fromText, ITEM_MIME, setAt, type Doc, type Workspace } from '$lib/studio-core';
-  import { toYaml as triggerYaml, fromYaml as triggerFromYaml } from '$lib/components/triggers/triggerSpec';
+  import { toYaml as triggerYaml, fromYaml as triggerFromYaml } from '$lib/core/triggers/triggerSpec';
   import type { Studio } from '../layout.svelte.ts';
 
   let { doc, workspace, studio }: { doc: Doc; workspace: Workspace; studio: Studio } = $props();

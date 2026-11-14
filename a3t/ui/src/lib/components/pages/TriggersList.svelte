@@ -17,7 +17,7 @@
   import { listRecords, type MappingRecord } from '$lib/components/triggers/mapperApi';
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
-  import { toYaml, fromYaml, BODY_OF, targetLabel, type StoredTarget, type SourceKind } from '$lib/components/triggers/triggerSpec';
+  import { toYaml, fromYaml, BODY_OF, targetLabel, type StoredTarget, type SourceKind } from '$lib/core/triggers/triggerSpec';
   import { agentTool, getAccessToken } from '$lib/services/api';
   import '$lib/components/agent/agent.css';
   import { copy, endpointUrl } from '$lib/components/agent/agentApi';

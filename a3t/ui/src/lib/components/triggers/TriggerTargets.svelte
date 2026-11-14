@@ -5,7 +5,7 @@
   /// in the conversation trigger-<name>). On the agent tabs' system (.agt).
   import '$lib/components/agent/agent.css';
   import './triggers.css';
-  import { BODY_OF, type SourceKind, type StoredTarget } from './triggerSpec';
+  import { BODY_OF, type SourceKind, type StoredTarget } from '$lib/core/triggers/triggerSpec';
   import TriggerMapping, { type MapCtx } from './TriggerMapping.svelte';
 
   type Opt = { value: string; label: string };

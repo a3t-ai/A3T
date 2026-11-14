@@ -1,6 +1,6 @@
 <script lang="ts" module>
   import type { MappingRecord } from './mapperApi';
-  import type { SourceKind } from './triggerSpec';
+  import type { SourceKind } from '$lib/core/triggers/triggerSpec';
   /// What every mapping field of one trigger shares: its records, its samples,
   /// and how to save the trigger (approving writes the mapping into it).
   export interface MapCtx {
@@ -24,7 +24,7 @@
   /// agent_a3t_mapper, checked on sample events by FlowR, approved by a person.
   /// Only what is approved is written into the trigger; only that runs.
   import { tick } from 'svelte';
-  import { BODY_OF } from './triggerSpec';
+  import { BODY_OF } from '$lib/core/triggers/triggerSpec';
   import { MAPPER, askMapper, checkMapping, putRecord, standing, nextVersion, wrapJq, type Field, type Proposal, type CheckResult } from './mapperApi';
 
   let { value = $bindable(), field, label, hint, placeholder, target, flowRef, targetName, ctx }: {
