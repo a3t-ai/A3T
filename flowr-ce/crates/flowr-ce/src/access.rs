@@ -211,11 +211,42 @@ impl Snapshot {
 pub struct ProjectGuard {
     storage: Arc<dyn StorageBackend>,
     snapshot: RwLock<(Option<Instant>, Arc<Snapshot>)>,
+    /// When each namespace the snapshot didn't know last forced a re-read. A
+    /// namespace seen for the first time re-reads at once (a project made a
+    /// moment ago, maybe on another pod); asking again about one that doesn't
+    /// exist re-reads at most every UNKNOWN_RETRY, so it can't flood the DB.
+    unknown: std::sync::Mutex<HashMap<String, Instant>>,
+}
+
+/// Tables whose rows decide project access; a write to one drops the snapshot.
+pub const GUARD_TABLES: [&str; 3] = ["projects", "org_members", "orgs"];
+const UNKNOWN_RETRY: Duration = Duration::from_secs(2);
+
+/// Forget this pod's access snapshot; the next decision reads the tables again.
+pub fn invalidate() {
+    if let Some(g) = PROJECT_GUARD.get() {
+        g.snapshot.write().unwrap().0 = None;
+    }
 }
 
 impl ProjectGuard {
     pub fn new(storage: Arc<dyn StorageBackend>) -> Self {
-        ProjectGuard { storage, snapshot: RwLock::new((None, Arc::new(Snapshot::default()))) }
+        ProjectGuard { storage, snapshot: RwLock::new((None, Arc::new(Snapshot::default()))), unknown: Default::default() }
+    }
+
+    /// Whether to re-read for a namespace the snapshot doesn't know: yes the first
+    /// time it is asked about, then at most every UNKNOWN_RETRY.
+    fn retry_unknown(&self, ns: &str) -> bool {
+        let mut seen = self.unknown.lock().unwrap();
+        let now = Instant::now();
+        if seen.get(ns).is_some_and(|t| now.duration_since(*t) < UNKNOWN_RETRY) {
+            return false;
+        }
+        if seen.len() > 10_000 {
+            seen.retain(|_, t| now.duration_since(*t) < UNKNOWN_RETRY);
+        }
+        seen.insert(ns.to_string(), now);
+        true
     }
 
     async fn snapshot(&self) -> Arc<Snapshot> {
@@ -227,8 +258,8 @@ impl ProjectGuard {
     async fn snapshot_for(&self, namespace: Option<&str>) -> Arc<Snapshot> {
         {
             let (at, snap) = &*self.snapshot.read().unwrap();
-            let unknown = namespace.is_some_and(|ns| !PLATFORM.contains(&ns) && !snap.projects.contains_key(ns));
-            let fresh = at.is_some_and(|t| t.elapsed() < if unknown { Duration::from_millis(300) } else { REFRESH });
+            let unknown = namespace.filter(|ns| !PLATFORM.contains(ns) && !snap.projects.contains_key(*ns));
+            let fresh = at.is_some_and(|t| t.elapsed() < REFRESH) && !unknown.is_some_and(|ns| self.retry_unknown(ns));
             if fresh {
                 return snap.clone();
             }

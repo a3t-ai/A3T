@@ -314,6 +314,8 @@ async fn sync_membership(config: &AuthConfig, org: &OrgSso, user: &str, email: &
             "role": role, "added_by": SSO_ADDED_BY, "created_at": chrono::Utc::now().to_rfc3339(),
         })]).await?;
     }
+    // This pod decides with the new membership at once.
+    flowr_ce::access::invalidate();
     Ok(())
 }
 

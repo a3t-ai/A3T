@@ -48,6 +48,12 @@ impl TaskHandler for LanceDbHandler {
         info!(task = %task.name, op = %operation, table = %table_name, db = %db.describe(), "call:lancedb");
         let comm = RuntimeError::Communication;
 
+        // A write to the tables that say who may use which project: drop this
+        // pod's access snapshot, so a project made a moment ago is usable at once.
+        if matches!(operation, "insert" | "update" | "delete") && crate::access::GUARD_TABLES.contains(&table_name) {
+            crate::access::invalidate();
+        }
+
         match operation {
             "list_tables" => Ok(TaskResult::new(json!(db.list_tables().await.map_err(comm)?))),
 
