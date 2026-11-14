@@ -1,5 +1,6 @@
 <script lang="ts">
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import { execFlow } from '$lib/services/api';
   import { onMount } from 'svelte';
 
@@ -47,10 +48,7 @@
 </script>
 
 <div class="ea-page">
-  <PageBanner headline="Who wants in." highlightWord="wants"
-    subtitle="Early-access requests submitted from the sign-in page."
-    description="Every submission is persisted to the early_access_requests table. Reach out from here to onboard the right people."
-    accent="spec" />
+  <PageBanner {...bannerFor('early-access')} />
 
   <div class="ea-toolbar">
     <h3 class="ea-title">Early Access Requests</h3>

@@ -12,6 +12,7 @@
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
@@ -509,13 +510,7 @@
 </div>
 
 <div class="screen-body">
-  <PageBanner
-    headline="Organise work into projects."
-    highlightWord="projects"
-    subtitle="Yours, or your organisation's — each one a namespace with its members and rules."
-    description="A project you create lives under your handle (you-orders); an organisation's under its name (acme-orders). Make it private to keep it to yourself — or, in an org, to its members and admins. Pick one in the top bar and every page shows only its work."
-    accent="spec"
-  />
+  <PageBanner {...bannerFor('projects')} />
   <AppHome appType="projects" embedded />
 
   {#snippet projectCards(list: Project[])}

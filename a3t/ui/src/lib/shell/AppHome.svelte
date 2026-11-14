@@ -6,6 +6,7 @@
   /// Shown when an app is open with nothing selected. The context bar stays hidden
   /// here on purpose; choosing something from these lists is what reveals it, with
   /// that item selected.
+  import { appColor } from './appTheme';
   import { navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { APP_CONTEXT, contextLabel, trackOpen, getPins, isPinned, setPins, contextRev_ } from '$lib/stores/apps.svelte.ts';
   import { loadAppItems, type AppItem } from './appItems';
@@ -20,12 +21,8 @@
       /// Extra sections after Pinned and Latest, for pages without their own.
       sections?: Section[]; myLabel?: string; sharedLabel?: string } = $props();
 
-  /// Card colour per app, matching the accent the app's own cards use.
-  const COLOR: Record<string, string> = {
-    agents: '#1a7158', templates: '#5530a8', canvas: '#b45309', triggers: '#0f766e',
-    resources: '#3a5a85', 'flow-editor': '#5530a8', projects: '#5530a8', chat: '#3a5a85', executions: '#555',
-  };
-  const color = $derived(COLOR[appType] ?? '#555');
+  /// The app's own colour (shell/appTheme.ts).
+  const color = $derived(appColor(appType));
   const initials = (label: string) => label.replace(/[^a-z0-9]+/gi, ' ').trim().split(' ')
     .map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 

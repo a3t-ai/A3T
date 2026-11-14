@@ -10,6 +10,7 @@
   // Runtime pools (placement targets) are managed via the Runtimes popin.
   import { canvasApi, opsApi } from '$lib/services/api';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
@@ -161,10 +162,7 @@
 </div>
 
 <div class="screen-body">
-  <PageBanner headline="Deploy a flow with a canvas." highlightWord="canvas"
-    subtitle="A canvas is one flow's deployment file: where it loads, how it runs, what it depends on."
-    description="It is YAML next to its flow. Here you see which runtime takes it, deploy it, and watch it run."
-    accent="control" docsPath="/canvas" />
+  <PageBanner {...bannerFor('canvas')} />
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="canvas" embedded />

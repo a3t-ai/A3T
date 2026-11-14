@@ -2,6 +2,7 @@
   /// The per-app list: conversations in Chat, flows in the Studio, resources in
   /// Resources. It is the Items face of the shell's middle stack; the stack bar
   /// above it owns pinning, and selecting an item opens it in Details.
+  import { appColor } from './appTheme';
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import {
     APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, itemsRev_, getPins, isPinned, setPins,
@@ -38,13 +39,8 @@
   }
   const sorted = (list: AppItem[]) => sortBy === 'name' ? list.slice().sort((a, b) => a.label.localeCompare(b.label)) : list;
 
-  /// Row icon colour per app, matching the accent each app's own cards use.
-  const COLOR: Record<string, string> = {
-    agents: '#1a7158', templates: '#5530a8', canvas: '#b45309', triggers: '#c97c2e',
-    resources: '#3a5a85', projects: '#5530a8', chat: '#3a5a85', executions: '#55514a',
-    runtime: '#326ce5', security: '#6b5a3a',
-  };
-  const color = $derived(COLOR[appType] ?? '#8a8478');
+  /// The app's own colour (shell/appTheme.ts).
+  const color = $derived(appColor(appType));
   const initials = (label: string) => label.replace(/[^a-z0-9]+/gi, ' ').trim().split(' ')
     .filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '·';
   const crumb = $derived([getProject() || 'All projects', getActivePanel()?.title ?? contextLabel(appType)].join(' / '));

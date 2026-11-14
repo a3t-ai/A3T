@@ -12,6 +12,7 @@
     subtitle = '',
     description = '',
     accent = 'spec',
+    color = '',
     docsPath = '',
   }: {
     headline?: string;
@@ -20,6 +21,9 @@
     description?: string;
     /// One of the platform's four accent families.
     accent?: 'spec' | 'runtime' | 'control' | 'ephemeral';
+    /// The app's own colour (shell/appTheme.ts); it wins over `accent`.
+    color?: string;
+    /// A page on docs.a3t.io; without one there is no "Learn more".
     docsPath?: string;
   } = $props();
 
@@ -40,17 +44,19 @@
     control:   { color: 'var(--control, #c97c2e)',   bg: 'var(--control-bg, #fbf0e0)' },
     ephemeral: { color: 'var(--ephemeral, #3a7fff)', bg: 'var(--ephemeral-bg, #eaf1ff)' },
   };
-  const tone = $derived(ACCENTS[accent] ?? ACCENTS.spec);
+  /// The tint, border and highlighted word, all from one colour; mixed with the
+  /// theme's own surface and text so it reads on light and dark alike.
+  const tone = $derived(color
+    ? { color: `color-mix(in srgb, ${color} 78%, var(--text-1))`, bg: `color-mix(in srgb, ${color} 11%, var(--bg-surface))`, line: `color-mix(in srgb, ${color} 24%, var(--bg-surface))` }
+    : { ...(ACCENTS[accent] ?? ACCENTS.spec), line: (ACCENTS[accent] ?? ACCENTS.spec).bg });
 
-  const docsUrl = $derived(
-    docsPath ? `https://docs.a3t.io${docsPath.startsWith('/') ? '' : '/'}${docsPath}` : 'https://docs.a3t.io',
-  );
+  const docsUrl = $derived(docsPath ? `https://docs.a3t.io${docsPath.startsWith('/') ? '' : '/'}${docsPath}` : '');
 </script>
 
   <!-- Banners sit in panes, which have no close; only pop-ins do. -->
   <div
     class="page-banner"
-    style="background: linear-gradient(135deg, {tone.bg} 0%, var(--bg-subtle) 100%); border-color: {tone.bg};"
+    style="background: linear-gradient(135deg, {tone.bg} 0%, var(--bg-subtle) 100%); border-color: {tone.line};"
   >
 
     <h2 class="banner-headline">
@@ -60,12 +66,14 @@
     {#if subtitle}<p class="banner-subtitle">{subtitle}</p>{/if}
     {#if description}<p class="banner-desc">{description}</p>{/if}
 
+    {#if docsUrl}
     <a class="banner-docs" href={docsUrl} target="_blank" rel="noopener noreferrer" style="color: {tone.color};">
       Learn more
       <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
         <path d="M6 3h7v7M13 3L6 10" />
       </svg>
     </a>
+    {/if}
   </div>
 
 <style>

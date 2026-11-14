@@ -39,6 +39,7 @@
   import * as YAML from 'yaml';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
@@ -900,14 +901,7 @@
 
 <!-- Page Body -->
 <div class="screen-body">
-  <PageBanner
-    headline="Configure an agent."
-    highlightWord="agent"
-    subtitle="Bind a template to resources. Set mode, memory, and tools."
-    description="An agent is a template with frozen inputs — which LLM to use, which memory store, which MCP servers. Configure once, deploy to any Canvas."
-    accent="runtime"
-    docsPath="/agents"
-  />
+  <PageBanner {...bannerFor('agents')} />
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="agents" embedded />

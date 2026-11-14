@@ -7,6 +7,7 @@
   /// and the way back to it stay out of the way.
   const fromItems = !!detailsPane() && !!getActivePanel()?.props?.selectedId;
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import { onMount } from 'svelte';
   import { execFlow, getPlatformDb, switchPlatformDb, getAdbEmbedding, setAdbEmbedding, getAdbCache, setAdbCache, type PlatformDbStatus, type AdbEmbeddingStatus, type AdbEmbeddingSettings, type AdbCacheStatus, type AdbCacheRule, type AdbCacheKeep } from '$lib/services/api';
   import { currentUser } from '$lib/stores/auth';
@@ -409,14 +410,7 @@
     {/if}
 
     {#if !leaf}
-      <PageBanner
-        headline="Configure your platform."
-        highlightWord="platform"
-        subtitle="Identity, security, infrastructure and billing — all in one place."
-        description="Community Edition runs open — anyone who signs in can edit. Enterprise adds roles, Cedar policy, SSO and audit. Enterprise settings are marked EE."
-        accent="spec"
-        docsPath="/settings"
-      />
+      <PageBanner {...bannerFor('settings')} />
     {/if}
 
     {#if !leaf && active === 'all'}

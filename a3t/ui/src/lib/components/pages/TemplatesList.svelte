@@ -18,6 +18,7 @@
   import McpResourceForm from '$lib/components/editor/McpResourceForm.svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
@@ -691,14 +692,7 @@ do:
       </div>
     {/if}
 
-    <PageBanner
-      headline="Start with a template."
-      highlightWord="template"
-      subtitle="Give it memory, knowledge, and tools. Wire it into the Canvas."
-      description="Every A3T agent begins as a typed template. Templates encode domain expertise — bid pipelines, incident triage, payment review — so you configure rather than engineer."
-      accent="spec"
-      docsPath="/templates"
-    />
+    <PageBanner {...bannerFor('templates')} />
     <!-- Pinned and latest, under the banner: the section page leads with what
          it is for, then the items you actually return to. -->
     <AppHome appType="templates" embedded />

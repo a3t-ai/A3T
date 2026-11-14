@@ -14,6 +14,7 @@
   import DocsPanel from '$lib/shell/DocsPanel.svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
@@ -1239,14 +1240,7 @@ do:
 <div class="resources-layout">
   <div class="resources-body">
     {#if !loading}
-      <PageBanner
-        headline="Connect your resources."
-        highlightWord="resources"
-        subtitle="Databases, LLMs, MCP servers, memory — everything agents need."
-        description="Resources are named connections to external systems. Register them once, reference by name in any workflow or agent configuration."
-        accent="ephemeral"
-        docsPath="/resources"
-      />
+      <PageBanner {...bannerFor('resources')} />
       <!-- Pinned and latest, under the banner: the section page leads with what
            it is for, then the items you actually return to. -->
       <AppHome appType="resources" embedded />

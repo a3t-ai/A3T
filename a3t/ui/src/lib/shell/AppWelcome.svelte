@@ -1,64 +1,18 @@
 <script lang="ts">
-  /// What Details shows for a list app with nothing picked: the app's banner and
-  /// where to start.
+  /// What Details shows for a list app with nothing picked: the app's banner
+  /// (shell/appTheme.ts) and where to start.
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from './appTheme';
   import { contextLabel } from '$lib/stores/apps.svelte.ts';
 
-  type Accent = 'spec' | 'runtime' | 'control' | 'ephemeral';
   let { appType, title, onitems }: { appType: string; title: string; onitems?: () => void } = $props();
-
-  /// The banner each app's own page shows, kept short here.
-  const BANNER: Record<string, { headline: string; highlight: string; subtitle: string; description: string; accent: Accent }> = {
-    projects: { headline: 'Organise work into projects.', highlight: 'projects', accent: 'spec',
-      subtitle: 'Yours, or your organisation\'s — each one a namespace with its members and rules.',
-      description: 'A project you create lives under your handle; an organisation\'s under its name. Make it private to keep it to yourself or to its members.' },
-    templates: { headline: 'Start with a template.', highlight: 'template', accent: 'spec',
-      subtitle: 'A template is code: a flow that runs on the core agent, with its hooks and tools.',
-      description: 'Every agent is made from a template. The template says how a turn runs; the agent fills in its own values — model, instructions, tools, memory.' },
-    agents: { headline: 'Agents over an API.', highlight: 'agent', accent: 'runtime',
-      subtitle: 'Made from a template, or cloned, forked or branched from another agent.',
-      description: 'Each agent has a data plane (chat, streamed) for the apps that call it and a control plane for its config, runtime and memory — its own figures, history, versions and branches.' },
-    canvas: { headline: 'Deploy a flow with a canvas.', highlight: 'canvas', accent: 'control',
-      subtitle: 'A canvas is one flow\'s deployment file: where it loads, how it runs, what it depends on.',
-      description: 'It is YAML next to its flow. Here you see which runtime takes it, deploy it, and watch it run.' },
-    triggers: { headline: 'Start flows and agents from events.', highlight: 'events', accent: 'runtime',
-      subtitle: 'A webhook call, a schedule, a message on an ADB topic or a platform event — each firing goes to the flows and agents you name, with the input you map.',
-      description: 'A trigger is YAML: what fires it, and where each firing goes. Write it here or in the Studio; pause or rewire it without changing the flow.' },
-    datarooms: { headline: 'Files, where agents read and write them.', highlight: 'Files', accent: 'ephemeral',
-      subtitle: 'S3 and MinIO buckets, Google Cloud Storage, Azure containers, FTP servers — each one a storage resource.',
-      description: 'Pick one in Items: where it points, which agents and flows use it, and its files, browsed through its own driver.' },
-    knowledge: { headline: 'Knowledge graphs, built from what agents know.', highlight: 'Knowledge', accent: 'spec',
-      subtitle: 'Each one a LanceDB store of entities, relations and their RotatE embeddings, built from a semantic space in ADB.',
-      description: 'Pick one in Items: see what it holds, explore the whole graph, query triples and predict missing links, or build it again.' },
-    memory: { headline: 'What each agent remembers.', highlight: 'remembers', accent: 'spec',
-      subtitle: 'Working, episodic, semantic and procedural memory, kept in ADB — and the spaces each agent reads.',
-      description: 'Pick an agent in Items: see each kind of its memory, filter it, or read it with AQL. Changing what it remembers stays on the agent.' },
-    resources: { headline: 'Connect your resources.', highlight: 'resources', accent: 'ephemeral',
-      subtitle: 'Databases, LLMs, MCP servers, memory — everything agents need.',
-      description: 'Resources are named connections to external systems. Register them once, reference them by name in any workflow or agent.' },
-    security: { headline: 'Who may do what, project by project.', highlight: 'project', accent: 'spec',
-      subtitle: 'Cedar policies per project over the compiled baseline; identity from your sign-in provider. SuperAdmin and SecurityAdmin only.',
-      description: 'Pick Identity or a policy in Items: see what a policy permits and forbids, edit its Cedar (applied live), dry-run a decision, and see what it decided.' },
-    logs: { headline: 'Every decision, allowed or refused.', highlight: 'decision', accent: 'spec',
-      subtitle: 'Each call at a choke point — who, for whom, what, which policy, and why. SuperAdmin and SecurityAdmin only.',
-      description: 'Pick a view in Items. It follows the project in the top bar; choose All projects to see every one.' },
-    runtime: { headline: 'Operate what is running, where it runs.', highlight: 'running', accent: 'runtime',
-      subtitle: 'Hosts → runtimes → the agents and flows deployed on them.',
-      description: 'Pick a runtime or a deployment. Pause, resume, restart, undeploy or probe it; change how it deploys in its canvas.' },
-    executions: { headline: 'Every run, step by step.', highlight: 'run', accent: 'control',
-      subtitle: 'What ran, when, for whom, and how long each step took.',
-      description: 'Pick a run to see its steps, timeline, journal and input and output. Re-run it, or re-run it in debug to step through.' },
-    settings: { headline: 'Configure your platform.', highlight: 'platform', accent: 'spec',
-      subtitle: 'Identity, security, infrastructure and billing — all in one place.',
-      description: 'Community Edition runs open: anyone who signs in can edit. Enterprise adds roles, Cedar policy, SSO and audit, marked EE.' },
-  };
-  const b = $derived(BANNER[appType] ?? { headline: title, highlight: '', subtitle: '', description: '', accent: 'spec' as Accent });
+  const banner = $derived(bannerFor(appType, title));
   const what = $derived(contextLabel(appType).toLowerCase());
 
 </script>
 
 <div class="aw">
-  <PageBanner headline={b.headline} highlightWord={b.highlight} subtitle={b.subtitle} description={b.description} accent={b.accent} />
+  <PageBanner {...banner} />
 
   <div class="aw-start">
     <span>Pick from {what} in Items to open it here, or ask in Chat.</span>

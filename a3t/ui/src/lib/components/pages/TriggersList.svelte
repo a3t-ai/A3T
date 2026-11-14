@@ -24,6 +24,7 @@
 
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
   import { onMount, untrack } from 'svelte';
@@ -393,10 +394,7 @@
   </div>
 </div>
 <div class="trg-page">
-  <PageBanner headline="Start flows and agents from events." highlightWord="events"
-    subtitle="A webhook call, a schedule, a message on an ADB topic or a platform event — each firing goes to the flows and agents you name, with the input you map."
-    description="A trigger is YAML: what fires it, and where each firing goes. Write it here or in the Studio; pause or rewire it without changing the flow."
-    accent="runtime" />
+  <PageBanner {...bannerFor('triggers')} />
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="triggers" embedded />
