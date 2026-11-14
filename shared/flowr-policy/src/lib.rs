@@ -89,6 +89,10 @@ pub enum Principal {
         /// with the principal, so subflows, agents and gateway calls can't lose it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         memory_branch: Option<String>,
+        /// A SuperAdmin acting as this user (or as a role): their id. Everything
+        /// is decided as this user; the decision log records both.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        impersonated_by: Option<String>,
     },
     Agent {
         agent_id: AgentId,
@@ -150,7 +154,16 @@ impl Principal {
     /// the AuthN layer). `roles` come from the token; the policy — not this
     /// crate — decides what they grant.
     pub fn human(user_id: impl Into<String>, roles: Vec<String>) -> Self {
-        Principal::Human { user_id: user_id.into(), roles, memory_branch: None }
+        Principal::Human { user_id: user_id.into(), roles, memory_branch: None, impersonated_by: None }
+    }
+
+    /// The SuperAdmin acting as this principal, if any (a human's, or the human
+    /// an agent acts for is not tracked here).
+    pub fn impersonated_by(&self) -> Option<&str> {
+        match self {
+            Principal::Human { impersonated_by, .. } => impersonated_by.as_deref(),
+            _ => None,
+        }
     }
 
     /// Construct a service principal (an internal, non-user caller).

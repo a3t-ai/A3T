@@ -39,6 +39,29 @@ pub struct Claims {
     pub exp: usize,
     /// Issued at (unix timestamp)
     pub iat: usize,
+    /// Set when a SuperAdmin is acting as this user or role (RFC 8693 `act`):
+    /// who really holds the token. Such a token is short-lived and has no refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub act: Option<Actor>,
+}
+
+/// The real caller behind an impersonation token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Actor {
+    pub sub: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+/// The policy principal for a validated console token: the user (or role) the
+/// token is for, and — when a SuperAdmin is acting as them — who that is.
+pub fn principal_for(claims: &Claims) -> flowr_policy::Principal {
+    flowr_policy::Principal::Human {
+        user_id: claims.sub.clone(),
+        roles: flowr_policy::roles::canonicalize(&claims.role),
+        memory_branch: None,
+        impersonated_by: claims.act.as_ref().map(|a| a.sub.clone()),
+    }
 }
 
 /// Auth configuration
@@ -229,10 +252,7 @@ pub async fn jwt_auth_middleware(
         if let Some(config) = request.extensions().get::<Arc<AuthConfig>>().cloned() {
             if let Some(token) = extract_bearer_token(&headers) {
                 if let Ok(claims) = validate_token(&token, &config.jwt_secret, &config.resource_uri) {
-                    let principal = flowr_policy::Principal::human(
-                        claims.sub.clone(),
-                        flowr_policy::roles::canonicalize(&claims.role),
-                    );
+                    let principal = principal_for(&claims);
                     request.extensions_mut().insert(claims);
                     request.extensions_mut().insert(principal);
                 }
@@ -279,10 +299,7 @@ pub async fn jwt_auth_middleware(
             // Map the provider's role claim onto the canonical A3T role vocabulary
             // (CE contract) so Cedar policies check stable names, independent of how
             // any given IdP spells them. `superadmin` also grants `SecurityAdmin`.
-            let principal = flowr_policy::Principal::human(
-                claims.sub.clone(),
-                flowr_policy::roles::canonicalize(&claims.role),
-            );
+            let principal = principal_for(&claims);
             request.extensions_mut().insert(claims);
             request.extensions_mut().insert(principal);
             next.run(request).await
@@ -315,6 +332,7 @@ pub fn create_token(config: &AuthConfig, user_id: &str, org_id: &str, role: &str
         aud: config.resource_uri.clone(),
         exp: now + config.token_expiry_secs as usize,
         iat: now,
+        act: None,
     };
 
     encode(
@@ -531,10 +549,7 @@ pub async fn dual_auth_middleware(headers: HeaderMap, mut request: Request, next
         let Some(token) = extract_bearer_token(headers) else { return false };
         if let Some(config) = request.extensions().get::<Arc<AuthConfig>>().cloned() {
             if let Ok(claims) = validate_token(&token, &config.jwt_secret, &config.resource_uri) {
-                let principal = flowr_policy::Principal::human(
-                    claims.sub.clone(),
-                    flowr_policy::roles::canonicalize(&claims.role),
-                );
+                let principal = principal_for(&claims);
                 request.extensions_mut().insert(claims);
                 request.extensions_mut().insert(principal);
                 return true;

@@ -12,6 +12,7 @@
 mod auth;
 mod auth_routes;
 mod sso;
+mod impersonate;
 mod config;
 
 use flowr_ce::flowr_storage::{SettingsStore, StorageBackend};
@@ -271,6 +272,8 @@ async fn main() -> anyhow::Result<()> {
                             .route("/security/idp/users", get(idp_list_users_handler).post(idp_create_user_handler))
                             .route("/security/idp/users/:id",
                                 get(idp_get_user_handler).put(idp_update_user_handler).delete(idp_delete_user_handler))
+                            // A SuperAdmin acting as a user or a role (impersonate.rs).
+                            .route("/auth/impersonate", post(impersonate::impersonate_handler))
                             .layer(Extension(idp_admin)),
                     );
 
@@ -829,11 +832,11 @@ async fn policies_test_handler(
 /// State for the IdP-admin endpoints. Plain strings so it compiles in CE too;
 /// the ee handlers build `aesop_tower::oidc_admin::IdpAdminConfig` from them.
 #[derive(Clone)]
-struct IdpAdminState {
-    issuer: String,
-    admin_user: String,
-    admin_password: String,
-    client: reqwest::Client,
+pub(crate) struct IdpAdminState {
+    pub(crate) issuer: String,
+    pub(crate) admin_user: String,
+    pub(crate) admin_password: String,
+    pub(crate) client: reqwest::Client,
 }
 
 /// Body for `POST /security/idp/users` (kept local so it exists in CE builds).

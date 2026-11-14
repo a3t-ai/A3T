@@ -20,7 +20,7 @@ fn req(principal: Principal, destructive: bool) -> ExecutionRequest {
 }
 
 fn human() -> Principal {
-    Principal::Human { memory_branch: None, user_id: "sriram".into(), roles: vec!["admin".into()] }
+    Principal::Human { memory_branch: None, impersonated_by: None, user_id: "sriram".into(), roles: vec!["admin".into()] }
 }
 
 fn agent_for_user() -> Principal {
@@ -170,7 +170,7 @@ fn write_resource(principal: Principal, type_ref: &str) -> ExecutionRequest {
 
 fn user_with_roles(roles: &[&str]) -> Principal {
     Principal::Human {
-        memory_branch: None,
+        memory_branch: None, impersonated_by: None,
         user_id: "u1".into(),
         roles: roles.iter().map(|s| s.to_string()).collect(),
     }
@@ -204,7 +204,7 @@ async fn platform_superadmin_may_write_cedar_policy() {
     // canonical roles (`SuperAdmin` + `SecurityAdmin`); the guardrail honors those.
     let hook = CedarHook::baseline().unwrap();
     let roles = flowr_policy::roles::canonicalize("superadmin");
-    let principal = Principal::Human { memory_branch: None, user_id: "u1".into(), roles };
+    let principal = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles };
     let req = write_resource(principal, "cedar");
     assert!(matches!(hook.check(&req).await, PolicyDecision::Allow));
 }
@@ -430,7 +430,7 @@ async fn flow_ceiling_binds_any_principal_not_just_agents() {
     // the flow's declared surface is denied regardless of who runs it.
     let hook = CedarHook::baseline().unwrap();
     let tmpl = serde_json::json!({ "exposedTools": ["search_docs"] });
-    let human_flow = Principal::Human { memory_branch: None, user_id: "alice".into(), roles: vec![] };
+    let human_flow = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "alice".into(), roles: vec![] };
     assert!(matches!(
         hook.check(&tool_req_as(human_flow.clone(), "search_docs", tmpl.clone())).await,
         PolicyDecision::Allow
@@ -665,7 +665,7 @@ fn session_req(principal: Principal, action: flowr_policy::Action, owner: &str, 
 }
 
 fn viewer(id: &str) -> Principal {
-    Principal::Human { memory_branch: None, user_id: id.into(), roles: vec!["Viewer".into()] }
+    Principal::Human { memory_branch: None, impersonated_by: None, user_id: id.into(), roles: vec!["Viewer".into()] }
 }
 
 #[tokio::test]
@@ -694,7 +694,7 @@ async fn a_different_user_may_not_read_or_delete_someone_elses_session() {
 async fn infosec_may_read_any_session_for_audit() {
     let hook = CedarHook::baseline().unwrap();
     for role in ["SuperAdmin", "SecurityAdmin"] {
-        let p = Principal::Human { memory_branch: None, user_id: "auditor".into(), roles: vec![role.into()] };
+        let p = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "auditor".into(), roles: vec![role.into()] };
         assert!(matches!(
             hook.check(&session_req(p, actions::session_read(), "alice", false)).await,
             PolicyDecision::Allow
@@ -707,7 +707,7 @@ async fn infosec_read_access_does_not_extend_to_deleting_someone_elses_session()
     // The audit exception is read-only on purpose: an auditor reviewing a
     // transcript must not be able to destroy the evidence.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Human { memory_branch: None, user_id: "auditor".into(), roles: vec!["SuperAdmin".into()] };
+    let p = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "auditor".into(), roles: vec!["SuperAdmin".into()] };
     assert!(matches!(
         hook.check(&session_req(p, actions::session_delete(), "alice", false)).await,
         PolicyDecision::Deny { .. }
@@ -718,7 +718,7 @@ async fn infosec_read_access_does_not_extend_to_deleting_someone_elses_session()
 async fn plain_admin_is_not_an_auditor() {
     // Admin governs the registry, not other people's conversations.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Human { memory_branch: None, user_id: "ops".into(), roles: vec!["Admin".into()] };
+    let p = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "ops".into(), roles: vec!["Admin".into()] };
     assert!(matches!(
         hook.check(&session_req(p, actions::session_read(), "alice", false)).await,
         PolicyDecision::Deny { .. }
@@ -896,7 +896,7 @@ async fn dropping_the_ceiling_does_not_loosen_org_policy() {
 
 fn deployer(roles: &[&str]) -> Principal {
     Principal::Human {
-        memory_branch: None,
+        memory_branch: None, impersonated_by: None,
         user_id: "usr-sriram".into(),
         roles: roles.iter().map(|r| r.to_string()).collect(),
     }

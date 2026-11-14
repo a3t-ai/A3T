@@ -23,6 +23,9 @@ pub struct AuditRecord {
     pub principal_kind: String,
     pub principal_id: String,
     pub on_behalf_of: Option<String>,
+    /// A SuperAdmin acting as `principal_id`: who really made the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impersonated_by: Option<String>,
     pub action: String,
     pub resource_type: String,
     pub resource_id: String,
@@ -81,6 +84,7 @@ pub fn record(req: &ExecutionRequest, decision: &PolicyDecision) {
         principal_kind: req.principal.kind().to_string(),
         principal_id: req.principal.id().to_string(),
         on_behalf_of: req.principal.on_behalf_of().map(String::from),
+        impersonated_by: req.principal.impersonated_by().map(String::from),
         action: req.action.as_str().to_string(),
         resource_type: req.resource.type_name.clone(),
         resource_id: req.resource.id.clone(),
