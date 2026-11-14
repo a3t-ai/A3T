@@ -7,7 +7,7 @@
 
 import { mcpCall, fetchChatSessions, opsApi, canvasApi } from '$lib/services/api';
 import { RESOURCE_CATEGORIES, categorize } from '$lib/core/resources/categories';
-import { namespacesFor, inContext, canvasKind, projectOf, itemProject, getProjects, getShowPlatform, loadProjects, canSee, roleIn, type ListKind } from '$lib/stores/context.svelte.ts';
+import { namespacesFor, inContext, canvasKind, projectOf, itemProject, getProjects, getShowPlatform, getProfile, loadProjects, canSee, roleIn, type ListKind } from '$lib/stores/context.svelte.ts';
 
 export type AppItem = {
   /// What navigation addresses. For chat this is the *client* conversation id,
@@ -22,6 +22,9 @@ export type AppItem = {
   badgeStyle?: string;
   /// A heading row in a tree: picking it opens or closes its branch.
   group?: boolean;
+  /// The Items group it sits in, where that isn't its namespace (Projects: the
+  /// namespace that owns it, since each project is its own namespace).
+  section?: string;
   /// A conversation that exists only in this browser so far.
   pending?: boolean;
   /// Registry namespace. The list GROUPS by this, so it is kept as data rather
@@ -99,10 +102,10 @@ const PREFERRED = ['a3t', 'default', 'system'];
 /// `keepOrder`: groups in the order their items come (Settings' own order),
 /// not projects-first and alphabetical.
 export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: string; items: AppItem[] }[] | null {
-  if (!items.some((i) => i.namespace)) return null;
+  if (!items.some((i) => i.section ?? i.namespace)) return null;
   const map = new Map<string, AppItem[]>();
   for (const it of items) {
-    const k = it.namespace ?? '';
+    const k = it.section ?? it.namespace ?? '';
     (map.get(k) ?? map.set(k, []).get(k)!).push(it);
   }
   const rank = (ns: string) => {
@@ -145,13 +148,23 @@ async function loadAll(source: string): Promise<AppItem[]> {
 
   if (source === 'projects') {
     await loadProjects();
+    // Grouped by the namespace that owns them — your handle, then your orgs,
+    // then the platform's — with each owner's projects folded under it.
+    const me = getProfile()?.handle ?? '';
+    const owner = (p: { name: string; info?: { owner?: string } }) =>
+      p.info?.owner || (p.name.includes('-') ? p.name.slice(0, p.name.indexOf('-')) : p.name);
+    const rank = (p: { name: string; platform?: boolean; info?: { owner?: string } }) =>
+      p.platform ? 2 : owner(p) === me ? 0 : 1;
     return getProjects()
       .filter((p) => (p.platform ? getShowPlatform() : canSee(p)))
+      .sort((a, b) => rank(a) - rank(b) || owner(a).localeCompare(owner(b)) || a.name.localeCompare(b.name))
       .map((p) => ({
         id: p.name,
         label: p.info?.display_name || p.name,
         namespace: p.name,
-        sub: [roleIn(p) ?? (p.platform ? 'platform' : 'open to everyone'),
+        section: owner(p),
+        // Its namespace too, when the display name hides it ("Crawler" is adgn-crawler).
+        sub: [(p.info?.display_name && p.info.display_name !== p.name) ? p.name : '', roleIn(p) ?? (p.platform ? 'platform' : 'open to everyone'),
               `${p.flows ?? 0} flows · ${p.resources ?? 0} resources`].filter(Boolean).join(' · '),
       }));
   }

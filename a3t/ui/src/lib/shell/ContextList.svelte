@@ -104,7 +104,7 @@
 
   /// Rows grouped under their namespace, or null for lists that have none
   /// (conversations, resource categories) — those stay flat.
-  const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections' || spec?.source === 'resources'));
+  const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections' || spec?.source === 'resources' || spec?.source === 'projects'));
 
   /// Pinned items first, as their own group; they stay in their namespace too.
   const pinnedShown = $derived.by<Item[]>(() => {
@@ -312,7 +312,7 @@
   </div>
 {/snippet}
 
-<aside class="ctx" bind:this={asideEl}>
+<aside class="ctx" style="--app: {color}" bind:this={asideEl}>
   <div class="ctx-head">
     <div class="ctx-ht">
       <div class="ctx-crumb">{crumb}</div>
@@ -400,13 +400,17 @@
   .ctx-note { padding: 22px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 12px; text-align: center; font-size: 13px; color: var(--text-3); }
   .ctx-note.err { color: var(--err, #d15858); }
 
-  /* Groups: serif title and a count. */
-  .ctx-group + .ctx-group { margin-top: 10px; }
-  .ctx-ghead { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0 0 6px; padding: 0; border: 0; background: none; cursor: pointer; text-align: left; }
+  /* Groups: each project a thin white bar — serif name, count at the right; an
+     open one carries the app's colour down its left edge. */
+  .ctx-group + .ctx-group { margin-top: 6px; }
+  .ctx-ghead { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 6px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; background: var(--bg-surface); cursor: pointer; text-align: left; transition: border-color 0.12s; }
+  .ctx-ghead:hover { border-color: var(--border-strong, #d9d4c6); }
+  .ctx-ghead[aria-expanded='true'] { border-left-color: var(--app, var(--spec)); margin-bottom: 6px; }
   .ctx-chev { flex: 0 0 auto; color: var(--text-4); transition: transform 0.12s ease; }
-  .ctx-chev.open { transform: rotate(90deg); }
-  .ctx-gname { font: 400 15px var(--font-serif); color: var(--text-1); }
-  .ctx-gcount { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
+  .ctx-chev.open { transform: rotate(90deg); color: var(--app, var(--text-3)); }
+  .ctx-gname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 14.5px var(--font-serif); color: var(--text-1); }
+  .ctx-gcount { flex: 0 0 auto; font: 500 10.5px var(--font-mono); color: var(--text-3); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
+  .ctx-group:has(> .ctx-gitems) + .ctx-group { margin-top: 12px; }
   .ctx-gitems { display: flex; flex-direction: column; gap: 6px; }
   .ctx-body > .ctx-gitems + .ctx-group, .ctx-pinned + * { margin-top: 10px; }
 
