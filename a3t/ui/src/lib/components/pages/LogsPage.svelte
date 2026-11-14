@@ -20,6 +20,8 @@
 
   interface Rec {
     ts_ms: number; principal_kind: string; principal_id: string; on_behalf_of?: string | null;
+    /** A SuperAdmin acting as principal_id: who really made the call. */
+    impersonated_by?: string | null;
     action: string; resource_type: string; resource_id: string;
     decision: string; policy_ids: string[]; reason?: string | null; project?: string | null;
   }
@@ -68,8 +70,8 @@
   let who = $state('');
   let dec = $state('');
   const filtered = $derived(recs.filter((r) =>
-    (!dec || r.decision === dec) && (!who || r.principal_id === who || r.on_behalf_of === who) &&
-    (!q.trim() || `${r.principal_id} ${r.on_behalf_of ?? ''} ${r.action} ${r.resource_type} ${r.resource_id} ${r.reason ?? ''} ${(r.policy_ids ?? []).join(' ')} ${r.project ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()))));
+    (!dec || r.decision === dec) && (!who || r.principal_id === who || r.on_behalf_of === who || r.impersonated_by === who) &&
+    (!q.trim() || `${r.principal_id} ${r.on_behalf_of ?? ''} ${r.impersonated_by ?? ''} ${r.action} ${r.resource_type} ${r.resource_id} ${r.reason ?? ''} ${(r.policy_ids ?? []).join(' ')} ${r.project ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()))));
   let open = $state<Rec | null>(null);
 
   // ── Overview ──
@@ -146,7 +148,7 @@
                 <li class="ev" class:err={r.decision === 'deny'}>
                   <span class="ic">{mark(r.decision)}</span>
                   <button class="evb" onclick={() => (open = open === r ? null : r)}>
-                    <div class="t">{r.principal_id}{r.on_behalf_of ? ` for ${r.on_behalf_of}` : ''} · <span class="mono">{r.action}</span> {r.resource_type} <span class="mono">{r.resource_id}</span></div>
+                    <div class="t">{r.principal_id}{r.on_behalf_of ? ` for ${r.on_behalf_of}` : ''}{#if r.impersonated_by}<span class="imp" title="A SuperAdmin acting as this user"> · acted by {r.impersonated_by}</span>{/if} · <span class="mono">{r.action}</span> {r.resource_type} <span class="mono">{r.resource_id}</span></div>
                     {#if r.reason}<div class="m">{r.reason}</div>{/if}
                     {#if open === r}
                       <dl class="kv kvd">
@@ -185,4 +187,5 @@
   .fin.grow { flex: 1 1 240px; }
   .evb { all: unset; display: block; cursor: pointer; min-width: 0; }
   .kvd { margin-top: 8px; grid-template-columns: 100px 1fr; font-size: 12px; }
+  .imp { color: #a35a12; font-weight: 600; }
 </style>

@@ -292,7 +292,7 @@
               {#if decisions === null}<p class="dim">Reading the log…</p>
               {:else if decisions.length}
                 <ul class="tl">{#each decisions.slice(0, 100) as d, i (i)}<li class="ev" class:err={d.decision === 'deny'}><span class="ic">{d.decision === 'deny' ? '✕' : d.decision === 'ask' ? '?' : '✓'}</span>
-                  <div><div class="t">{d.principal_id}{d.on_behalf_of ? ` for ${d.on_behalf_of}` : ''} · <span class="mono">{d.action}</span> {d.resource_type} <span class="mono">{d.resource_id}</span></div>{#if d.reason}<div class="m">{d.reason}</div>{/if}</div><time>{when(d.ts_ms)}</time></li>{/each}</ul>
+                  <div><div class="t">{d.principal_id}{d.on_behalf_of ? ` for ${d.on_behalf_of}` : ''}{d.impersonated_by ? ` · acted by ${d.impersonated_by}` : ''} · <span class="mono">{d.action}</span> {d.resource_type} <span class="mono">{d.resource_id}</span></div>{#if d.reason}<div class="m">{d.reason}</div>{/if}</div><time>{when(d.ts_ms)}</time></li>{/each}</ul>
               {:else}<p class="empty">Nothing recent names it. Allows usually name no policy; denials and approvals do.</p>{/if}
             </div>
           {/if}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { currentUser, signOut } from '$lib/stores/auth';
+  import { currentUser, signOut, actingAs, stopActingAs } from '$lib/stores/auth';
   import { goto } from '$app/navigation';
   import ProfileModal from './ProfileModal.svelte';
   import NotificationsModal from './NotificationsModal.svelte';
@@ -68,6 +68,15 @@
     {#if unread > 0}<span class="badge" class:err={unreadError}>{unread > 99 ? '99+' : unread}</span>{/if}
   </button>
 
+  <!-- A SuperAdmin acting as someone else: who, and the way back. -->
+  {#if $actingAs}
+    <div class="acting" title={`You are ${$actingAs.by.email || $actingAs.by.sub}. Everything is done as ${$actingAs.as.name || $actingAs.as.email}, and the decision log records you too.`}>
+      <span class="acting-dot"></span>
+      <span class="acting-text">Acting as <b>{$actingAs.as.name || $actingAs.as.email}</b> · {$actingAs.as.role}</span>
+      <button class="acting-stop" onclick={stopActingAs}>Stop</button>
+    </div>
+  {/if}
+
   <!-- User menu -->
   <div class="user-area">
     <button class="avatar-btn" onclick={() => menuOpen = !menuOpen}>
@@ -91,6 +100,12 @@
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zM2.5 14a5.5 5.5 0 0111 0"/></svg>
           Profile
         </button>
+        {#if $actingAs}
+          <button class="ud-item" onclick={stopActingAs}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4L6 8l4 4"/></svg>
+            Back to {$actingAs.by.email || 'yourself'}
+          </button>
+        {/if}
         <button class="ud-item" onclick={handleSignOut}>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2H3a1 1 0 00-1 1v10a1 1 0 001 1h3M11 11l3-3-3-3M14 8H6"/></svg>
           Sign out
@@ -205,4 +220,10 @@
     position: fixed; inset: 0; background: transparent;
     border: none; z-index: 50; cursor: default;
   }
+  .acting { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 10px; margin-right: 8px; border-radius: 999px; background: #fdf0e1; border: 1px solid #f0c58f; color: #8a4b0f; font-size: 12px; white-space: nowrap; }
+  .acting-dot { width: 7px; height: 7px; border-radius: 50%; background: #d97706; }
+  .acting-text b { font-weight: 600; }
+  .acting-stop { height: 22px; padding: 0 10px; border-radius: 999px; border: 1px solid #d97706; background: #fff; color: #8a4b0f; font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+  .acting-stop:hover { background: #d97706; color: #fff; }
+  @media (max-width: 900px) { .acting-text { display: none; } }
 </style>

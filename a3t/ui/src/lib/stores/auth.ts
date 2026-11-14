@@ -20,9 +20,13 @@ export interface Session {
   access_token: string;
   refresh_token: string;
   expires_in: number;
+  /// Set while a SuperAdmin is acting as this user or role: who they really are.
+  act?: { sub: string; email: string };
 }
 
 const STORAGE_KEY = 'a3t_session';
+/// The SuperAdmin's own session, kept while they act as someone else.
+const OWN_KEY = 'a3t_session_own';
 
 // Core session store
 const sessionStore = writable<Session | null>(null);
@@ -32,6 +36,8 @@ export const isAuthenticated = derived(sessionStore, ($s) => !!$s);
 export const currentUser = derived(sessionStore, ($s) => $s?.user ?? null);
 export const userRole = derived(sessionStore, ($s) => $s?.user?.role ?? null);
 export const accessToken = derived(sessionStore, ($s) => $s?.access_token ?? null);
+/// While a SuperAdmin acts as someone: who they really are.
+export const actingAs = derived(sessionStore, ($s) => ($s?.act ? { as: $s.user, by: $s.act } : null));
 
 // Initialize from localStorage + sync tokens to API client
 export function initAuth(): boolean {
@@ -49,7 +55,7 @@ export function initAuth(): boolean {
     // Sync tokens to API client
     api.setTokens(session.access_token, session.refresh_token);
     // Handle token expiry — redirect to login
-    api.onTokenExpired(() => signOut());
+    api.onTokenExpired(() => (session.act ? stopActingAs() : signOut()));
     return true;
   } catch {
     localStorage.removeItem(STORAGE_KEY);
@@ -61,7 +67,7 @@ export function initAuth(): boolean {
 function saveSession(session: Session) {
   sessionStore.set(session);
   api.setTokens(session.access_token, session.refresh_token);
-  api.onTokenExpired(() => signOut());
+  api.onTokenExpired(() => (session.act ? stopActingAs() : signOut()));
   if (typeof window !== 'undefined') {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
   }
@@ -166,7 +172,37 @@ export function signOut() {
   api.clearTokens();
   if (typeof window !== 'undefined') {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(OWN_KEY);
   }
+}
+
+// ── A SuperAdmin acting as a user or a role ──
+// FlowR issues a short-lived token for them; their own session is kept aside and
+// put back by Stop (or when that token runs out). The page reloads each way, so
+// nothing from one identity lingers in the other's view.
+
+export async function actAs(target: { user_id: string } | { role: string }): Promise<{ ok: boolean; error?: string }> {
+  const own = get(sessionStore);
+  if (!own || own.act) return { ok: false, error: 'Stop acting as someone else first.' };
+  const res = await api.impersonateApi(target);
+  if (!res.ok || !res.data) return { ok: false, error: res.error || 'Could not act as them' };
+  const d = res.data;
+  try { localStorage.setItem(OWN_KEY, JSON.stringify(own)); } catch { return { ok: false, error: 'This browser cannot keep your own session aside.' }; }
+  saveSession({
+    user: { id: d.user.id, email: d.user.email, name: d.user.name, role: d.user.role as UserRole, org_id: d.user.org_id },
+    access_token: d.access_token, refresh_token: '', expires_in: d.expires_in, act: d.act,
+  });
+  try { localStorage.removeItem('a3t.context'); } catch { /* the project picked belongs to the SuperAdmin */ }
+  if (typeof window !== 'undefined') window.location.assign('/');
+  return { ok: true };
+}
+
+export function stopActingAs() {
+  let own: Session | null = null;
+  try { own = JSON.parse(localStorage.getItem(OWN_KEY) ?? 'null'); } catch { own = null; }
+  try { localStorage.removeItem(OWN_KEY); localStorage.removeItem('a3t.context'); } catch { /* */ }
+  if (own) saveSession(own); else signOut();
+  if (typeof window !== 'undefined') window.location.assign('/');
 }
 
 // Get current session (non-reactive)

@@ -387,7 +387,8 @@ export async function loadDirectory(): Promise<DirectoryUser[]> {
   try {
     const local = await execFlow('flow_a3t_users', 'a3t', { input: { action: 'list', org_id: 'org-default' } }, { silent: true });
     const rows = Array.isArray(local.data) ? local.data : (local.data?.rows ?? []);
-    for (const u of rows) if (u?.id) out.push({ id: u.id, email: u.email ?? '', name: u.name ?? '', source: 'local' });
+    // One entry per id: an install that seeded twice has duplicate rows.
+    for (const u of rows) if (u?.id && !out.some((x) => x.id === u.id)) out.push({ id: u.id, email: u.email ?? '', name: u.name ?? '', source: 'local' });
   } catch { /* not allowed, or no local users */ }
   try {
     const sso = await idp.users();
@@ -560,6 +561,12 @@ export interface IdpNewUser {
 export interface IdpUpdateUser {
   name?: string; email?: string; enabled?: boolean; password?: string; temporary?: boolean; roles?: string[];
 }
+/** A SuperAdmin acting as a user or a role: a short-lived token for them
+ *  (FlowR impersonate.rs; the decision log records the SuperAdmin too). */
+export const impersonateApi = (body: { user_id: string } | { role: string }) =>
+  request<{ access_token: string; expires_in: number; user: { id: string; email: string; name: string; role: string; org_id: string }; act: { sub: string; email: string } }>(
+    '/auth/impersonate', { method: 'POST', body: JSON.stringify(body) });
+
 export const idp = {
   /** Is Keycloak admin configured + reachable? */
   status: () => request('/security/idp/status', { method: 'GET' }),
