@@ -17,12 +17,6 @@
 
   let { children }: { children: Snippet } = $props();
 
-  // Pins are server-owned and per user; load once so every surface reads one copy.
-  onMount(() => {
-    if (!authed) return;
-    fetchPins().then((p) => { setPins(p); markPinsLoaded(); }).catch(() => {});
-  });
-
   // Register the current app in the taskbar. Done here rather than at each call
   // site so the rail, the palette, a deep link and a back/forward all count.
   $effect(() => {
@@ -38,42 +32,44 @@
 
   const publicPaths = ['/login', '/signup'];
 
+  // Start the signed-in app once: the first time there is a session, whether it
+  // was there at load or came from signing in on /login. (The layout stays mounted
+  // across pages, so returning early on the way to /login used to leave it never
+  // hearing about the sign-in — "Redirecting..." until a refresh.)
+  let started = false;
+  function startApp() {
+    if (started) return;
+    started = true;
+    // Pins are server-owned and per user; load once so every surface reads one copy.
+    fetchPins().then((p) => { setPins(p); markPinsLoaded(); }).catch(() => {});
+    // Restore from URL, else land on Chat, first in the menu.
+    // The project comes first: the panels read the rest of the same URL.
+    initContext();
+    const restored = !publicPaths.includes(window.location.pathname) && initFromUrl();
+    if (!restored) navigateTo('chat', 'AI Chat');
+    setupPopState();
+    // Initialize editor context (registry + ajv) in background
+    initEditorContext().then(ctx => {
+      if (ctx.error) {
+        console.warn('[layout] Editor context init warning:', ctx.error);
+      } else {
+        console.log(`[layout] Editor context ready: ${ctx.functions.size} functions loaded`);
+      }
+    });
+  }
+
   onMount(() => {
     const hasSession = initAuth();
-    authChecked = true;
     authed = hasSession;
-
-    if (!hasSession && !publicPaths.includes(window.location.pathname)) {
-      goto('/login');
-      return;
-    }
-
-    if (hasSession) {
-      // Restore from URL, else land on Chat, first in the menu.
-      // The project comes first: the panels read the rest of the same URL.
-      initContext();
-      const restored = initFromUrl();
-      if (!restored) {
-        navigateTo('chat', 'AI Chat');
-      }
-      setupPopState();
-      // Initialize editor context (registry + ajv) in background
-      initEditorContext().then(ctx => {
-        if (ctx.error) {
-          console.warn('[layout] Editor context init warning:', ctx.error);
-        } else {
-          console.log(`[layout] Editor context ready: ${ctx.functions.size} functions loaded`);
-        }
-      });
-    }
+    authChecked = true;
+    if (hasSession) startApp();
+    else if (!publicPaths.includes(window.location.pathname)) goto('/login');
 
     const unsub = isAuthenticated.subscribe(v => {
       authed = v;
-      if (v && authChecked && publicPaths.includes(window.location.pathname)) {
-        navigateTo('chat', 'AI Chat');
-      } else if (!v && authChecked && !publicPaths.includes(window.location.pathname)) {
-        goto('/login');
-      }
+      if (!authChecked) return;
+      if (v) startApp();
+      else if (!publicPaths.includes(window.location.pathname)) { started = false; goto('/login'); }
     });
     return unsub;
   });

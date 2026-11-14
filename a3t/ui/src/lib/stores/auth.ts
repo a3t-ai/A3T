@@ -51,11 +51,11 @@ export function initAuth(): boolean {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return false;
     const session: Session = JSON.parse(stored);
-    sessionStore.set(session);
-    // Sync tokens to API client
+    // Tokens to the API client before the store (see saveSession).
     api.setTokens(session.access_token, session.refresh_token);
     // Handle token expiry — redirect to login
     api.onTokenExpired(() => (session.act ? stopActingAs() : signOut()));
+    sessionStore.set(session);
     return true;
   } catch {
     localStorage.removeItem(STORAGE_KEY);
@@ -65,12 +65,14 @@ export function initAuth(): boolean {
 
 // Save session to store + localStorage + API client
 function saveSession(session: Session) {
-  sessionStore.set(session);
+  // The API client and storage first, the store last: subscribers (the layout
+  // starting the app) call the API the moment the store changes.
   api.setTokens(session.access_token, session.refresh_token);
   api.onTokenExpired(() => (session.act ? stopActingAs() : signOut()));
   if (typeof window !== 'undefined') {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
   }
+  sessionStore.set(session);
 }
 
 // ── Login — calls POST /auth/login ──

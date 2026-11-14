@@ -203,8 +203,10 @@ export function initFromUrl(): { type: string; title: string; props: Record<stri
   return null;
 }
 
+let popStateSet = false;
 export function setupPopState() {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || popStateSet) return;
+  popStateSet = true;
 
   window.addEventListener('popstate', () => {
     contextFromUrl();
