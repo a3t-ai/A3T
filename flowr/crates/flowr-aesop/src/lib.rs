@@ -245,8 +245,12 @@ fn as_approver_attributes(
 #[async_trait::async_trait]
 impl PolicyHook for CedarHook {
     async fn check(&self, req: &ExecutionRequest) -> PolicyDecision {
+        // The roles a user holds in the project this call touches, not their
+        // global ones (.ai/A3T_ORG_SSO_SPEC.md R6/R7): admin in their own org,
+        // viewer in another, whatever their Keycloak realm role says.
+        let scoped = flowr_policy::namespace::scoped_principal(req).await;
         let ctx = SecurityContext {
-            principal: to_aesop_principal(&req.principal),
+            principal: to_aesop_principal(&scoped),
             // E2 #2a: the flow/agent template data (`principal.template.*`) rides
             // here so InfoSec-owned policy resources can gate on it.
             attributes: req.attributes.clone(),

@@ -2,13 +2,20 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_orgs
-  version: 1.1.0
+  version: 1.2.1
   metadata:
     description: >
       Organisations and their members. A user is independent and can be in
       several orgs, as member, admin or securityadmin. Superadmin creates and
       deletes orgs; superadmin or the org's admins manage its members.
-      Input: { action: list | create | delete | set_member | remove_member | set_runtime | set_quota, ... }.
+      Input: { action: list | create | delete | set_member | remove_member | set_runtime | set_quota | set_sso, ... }.
+      Sign-in per org (set_sso { org, idp_alias, domains, role_map, default_role }):
+      superadmin or the org's admins. idp_alias names the org's identity provider in
+      Keycloak realm a3t; FlowR places a user who signs in through it in this org
+      only, with the role role_map gives their groups (else default_role; "" = none).
+      Members added at sign-in carry added_by "sso" and are rewritten at every
+      sign-in; members added here are invites and sign-in never touches them.
+      See .ai/A3T_ORG_SSO_SPEC.md.
       Org quota (set_quota { org, max_active_runs }): superadmin only. FlowR refuses new runs
       once the org has that many active across its projects (AC-18).
       Runtime policy (set_runtime { org, runtime: isolated | shared }): an
@@ -74,7 +81,8 @@ do:
                  my_role: $mine,
                  runtime: ((($o.settings // "{}") | fromjson).runtime // "shared"),
                  can_admin: ($context._super or $mine == "admin"),
-                 members: ($m | map({ user_id, email, name, role })) } ] }
+                 sso: (if ($context._super or $mine == "admin") then ((($o.settings // "{}") | fromjson).sso // null) else null end),
+                 members: ($m | map({ user_id, email, name, role, source: (if .added_by == "sso" then "sso" else "invite" end) })) } ] }
       _target: '${ $context._orgs | map(select(.slug == ($context._args.org // ""))) | .[0] // null }'
     export:
       as: "."
@@ -98,6 +106,9 @@ do:
     - set-quota:
         when: '${ $context._args.action == "set_quota" }'
         then: quota-check
+    - set-sso:
+        when: '${ $context._args.action == "set_sso" }'
+        then: sso-check
     - default:
         then: list
 - list:
@@ -400,3 +411,75 @@ do:
     set:
       ok: true
       runtime: '${ $context._args.runtime }'
+
+# ── sign-in per org (superadmin or the org's admins) ──
+- sso-check:
+    switch:
+    - missing:
+        when: '${ $context._target == null }'
+        then: no-org
+    - not-admin:
+        when: '${ (($context._view | map(select(.id == $context._target.id)) | .[0]) // {}).can_admin != true }'
+        then: need-admin
+    - bad-alias:
+        when: '${ ($context._args.idp_alias // "") | test("^([a-z0-9][a-z0-9-]{0,38}[a-z0-9])?$") | not }'
+        then: bad-alias
+    - alias-taken:
+        when: '${ ($context._args.idp_alias // "") != "" and ([ $context._orgs[] | select(.id != $context._target.id) | ((.settings // "{}") | if type == "string" then (fromjson? // {}) else (. // {}) end) | (.sso // {}).idp_alias // "" ] | index($context._args.idp_alias) != null) }'
+        then: alias-taken
+    - bad-domains:
+        when: '${ ($context._args.domains // []) | (type != "array") or (map(select(type != "string" or (test("^[a-z0-9.-]+\\.[a-z]{2,}$") | not))) | length > 0) }'
+        then: bad-domains
+    - bad-map:
+        when: '${ ($context._args.role_map // {}) | (type != "object") or ([.[] | select(["member", "admin", "securityadmin"] | index(.) == null)] | length > 0) }'
+        then: bad-map
+    - bad-default:
+        when: '${ ["member", ""] | index($context._args.default_role // "member") == null }'
+        then: bad-default
+    - default:
+        then: sso-write
+- bad-alias:
+    set:
+      ok: false
+      error: The identity provider alias is lowercase letters, digits and dashes (empty turns sign-in off).
+    then: end
+- alias-taken:
+    set:
+      ok: false
+      error: Another organisation already signs in through that identity provider.
+    then: end
+- bad-domains:
+    set:
+      ok: false
+      error: Domains are a list of email domains, like ["acme.com"].
+    then: end
+- bad-map:
+    set:
+      ok: false
+      error: The role map gives each group member, admin or securityadmin.
+    then: end
+- bad-default:
+    set:
+      ok: false
+      error: The default role is member, or empty for no membership.
+    then: end
+- sso-write:
+    call: lancedb
+    with:
+      operation: update
+      table: orgs
+      filter: id = "${ $context._target.id }"
+      values:
+        settings: >-
+          ${ ((($context._target.settings // "{}") | fromjson)
+              + { sso: (if ($context._args.idp_alias // "") == "" then null else
+                  { idp_alias: $context._args.idp_alias,
+                    domains: ($context._args.domains // []),
+                    role_map: ($context._args.role_map // {}),
+                    default_role: ($context._args.default_role // "member") } end) }) | tojson }
+        updated_at: '${ now | todate }'
+      _resource: a3t/a3t-platform-db
+- sso-done:
+    set:
+      ok: true
+    then: end

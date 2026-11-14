@@ -36,6 +36,10 @@ serde_json = "1.0"
 # JWT auth (EE feature)
 jsonwebtoken = "9"
 argon2 = "0.5"
+# Org SSO: PKCE (S256) and its verifier
+sha2 = "0.10"
+base64 = "0.22"
+uuid = { workspace = true }
 
 # LanceDB (for reading A3T users table) — use same versions as clawdflow
 lancedb = "0.41.0"

@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_projects
-  version: 1.0.0
+  version: 1.1.0
   metadata:
     description: >
       Projects: a namespace owned by a user (<handle>-<project>) or an org
@@ -272,7 +272,8 @@ do:
         display_name: '${ $context._args.display_name // $context._args.name }'
         description: '${ $context._args.description // "" }'
         private: '${ if $context._args.private == true then "true" else "false" end }'
-        members: '[]'
+        # Whoever creates an org project owns it, so a member can use what they made.
+        members: '${ if $context._args.owner_kind == "org" then ([{ id: $context._me, role: "owner" }] | tojson) else "[]" end }'
         policy: '{}'
         environments: '["dev","staging","prod"]'
         created_by: '${ $context._me }'

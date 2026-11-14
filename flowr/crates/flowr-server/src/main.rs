@@ -11,6 +11,7 @@
 
 mod auth;
 mod auth_routes;
+mod sso;
 mod config;
 
 use flowr_ce::flowr_storage::{SettingsStore, StorageBackend};
@@ -220,6 +221,9 @@ async fn main() -> anyhow::Result<()> {
                     .route("/auth/login", post(login_handler))
                     .route("/auth/signup", post(signup_handler))
                     .route("/auth/me", get(me_handler))
+                    // Sign-in per organisation (.ai/A3T_ORG_SSO_SPEC.md).
+                    .route("/auth/sso/start", get(sso::start_handler))
+                    .route("/auth/sso/callback", get(sso::callback_handler))
                     // E0.6: report active edition + policy hook (public).
                     .route("/edition", get(edition_handler))
                     .route(

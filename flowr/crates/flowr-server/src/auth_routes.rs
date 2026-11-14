@@ -112,7 +112,7 @@ fn split_issuer(issuer: &str) -> Option<(String, String)> {
 }
 
 /// Map a user's Keycloak realm roles to a single A3T role for menu/RBAC gating.
-fn pick_role(roles: &[String]) -> String {
+pub(crate) fn pick_role(roles: &[String]) -> String {
     let has = |r: &str| roles.iter().any(|x| x.eq_ignore_ascii_case(r));
     if has("superadmin") { "superadmin" }
     else if has("securityadmin") { "securityadmin" }

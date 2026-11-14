@@ -123,3 +123,129 @@ pub fn acting_user(principal: &Principal) -> Option<&str> {
 pub fn is_superadmin(principal: &Principal) -> bool {
     principal.roles().iter().any(|r| r == crate::roles::SUPER_ADMIN)
 }
+
+// ── Roles in the project a call touches (org SSO spec R6/R7) ──
+//
+// A user's tenant role is per org and per project, not global: the same person
+// can be admin in their own org and viewer in another. Cedar's baseline speaks
+// in roles (`Admin` may author, `Viewer` may only read), so before a decision
+// the principal's roles are replaced by what they hold IN THE PROJECT THE CALL
+// TOUCHES: write → Admin (the developer tier), run → Operator, read → Viewer.
+// Platform roles (SuperAdmin, SecurityAdmin) are kept. A global Keycloak
+// `viewer`/`operator`/`admin` thus neither caps nor widens access inside an
+// org's project; with no project in the call the global roles apply as before.
+
+/// The project (namespace) a policy request touches, if it names one: a
+/// `namespace` attribute or argument, a flow definition's `document.namespace`,
+/// or a `<namespace>/<name>` flow id.
+pub fn request_namespace(req: &crate::ExecutionRequest) -> Option<String> {
+    let s = |v: Option<&serde_json::Value>| v.and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(String::from);
+    if let Some(ns) = s(req.resource.attributes.get("namespace")) {
+        return Some(ns);
+    }
+    let p = &req.params;
+    if let Some(ns) = s(p.get("namespace")) {
+        return Some(ns);
+    }
+    if let Some(ns) = s(p.get("json").and_then(|j| j.get("document")).and_then(|d| d.get("namespace"))) {
+        return Some(ns);
+    }
+    if let Some(y) = p.get("yaml").and_then(|y| y.as_str()) {
+        if let Ok(doc) = serde_yaml::from_str::<serde_json::Value>(y) {
+            if let Some(ns) = s(doc.get("document").and_then(|d| d.get("namespace"))) {
+                return Some(ns);
+            }
+        }
+    }
+    if req.resource.type_name == "Flow" {
+        if let Some((ns, _)) = req.resource.id.split_once('/') {
+            if !ns.is_empty() {
+                return Some(ns.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The tenant roles that an access level carries.
+pub fn tier_roles(access: NsAccess) -> &'static [&'static str] {
+    use crate::roles::{ADMIN, OPERATOR, VIEWER};
+    match access {
+        NsAccess::Write => &[ADMIN, OPERATOR, VIEWER],
+        NsAccess::Run => &[OPERATOR, VIEWER],
+        NsAccess::Read => &[VIEWER],
+        NsAccess::None => &[],
+    }
+}
+
+/// Replace a principal's tenant roles by those it holds in `access`; platform
+/// roles stay.
+pub fn with_tier(principal: &Principal, access: NsAccess) -> Principal {
+    use crate::roles::{SECURITY_ADMIN, SUPER_ADMIN};
+    let scope = |roles: &[String]| -> Vec<String> {
+        let mut out: Vec<String> = roles.iter().filter(|r| *r == SUPER_ADMIN || *r == SECURITY_ADMIN).cloned().collect();
+        for r in tier_roles(access) {
+            if !out.iter().any(|x| x == r) {
+                out.push((*r).to_string());
+            }
+        }
+        out
+    };
+    let mut p = principal.clone();
+    match &mut p {
+        Principal::Human { roles, .. } | Principal::Agent { roles, .. } => *roles = scope(roles),
+        Principal::Service { .. } => {}
+    }
+    p
+}
+
+/// The principal as policy should see it for this request: scoped to the
+/// project the call touches when the installed guard enforces projects and the
+/// call names one; unchanged otherwise (no project, a service, CE).
+pub async fn scoped_principal(req: &crate::ExecutionRequest) -> Principal {
+    let guard = namespace_guard();
+    if !guard.enforcing() || acting_user(&req.principal).is_none() {
+        return req.principal.clone();
+    }
+    let Some(ns) = request_namespace(req) else {
+        return req.principal.clone();
+    };
+    let access = guard.access(&req.principal, &ns).await;
+    with_tier(&req.principal, access)
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn req(params: serde_json::Value) -> crate::ExecutionRequest {
+        crate::ExecutionRequest {
+            principal: Principal::Human { user_id: "u".into(), roles: vec!["Viewer".into()], memory_branch: None },
+            action: crate::actions::mcp_call(),
+            resource: crate::Resource::tool("create_flow"),
+            context: Default::default(),
+            attributes: Default::default(),
+            params,
+        }
+    }
+
+    #[test]
+    fn finds_the_namespace_a_call_touches() {
+        assert_eq!(request_namespace(&req(json!({"namespace": "acme-p1"}))).as_deref(), Some("acme-p1"));
+        let y = "document:\n  dsl: 1.0.0\n  namespace: acme-p1\n  name: f\n  version: 0.0.1\ndo: []\n";
+        assert_eq!(request_namespace(&req(json!({"yaml": y}))).as_deref(), Some("acme-p1"));
+        assert_eq!(request_namespace(&req(json!({"json": {"document": {"namespace": "b"}}}))).as_deref(), Some("b"));
+        assert_eq!(request_namespace(&req(json!({}))), None);
+    }
+
+    #[test]
+    fn the_project_role_replaces_the_global_tenant_role() {
+        let viewer = Principal::Human { user_id: "u".into(), roles: vec!["Viewer".into()], memory_branch: None };
+        assert_eq!(with_tier(&viewer, NsAccess::Write).roles(), ["Admin", "Operator", "Viewer"]);
+        let dev = Principal::Human { user_id: "u".into(), roles: vec!["Admin".into(), "Operator".into(), "Viewer".into()], memory_branch: None };
+        assert_eq!(with_tier(&dev, NsAccess::Read).roles(), ["Viewer"]);
+        let sec = Principal::Human { user_id: "u".into(), roles: vec!["SecurityAdmin".into()], memory_branch: None };
+        assert_eq!(with_tier(&sec, NsAccess::None).roles(), ["SecurityAdmin"]);
+    }
+}
