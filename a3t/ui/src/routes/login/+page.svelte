@@ -10,14 +10,54 @@
   let error = $state('');
   let loading = $state(false);
 
-  // Sign in through your organisation's own identity provider.
+  // Sign in through your organisation's own identity provider. Checked first, so
+  // an unknown organisation is said here, not on a bare error page.
+  let ssoOpen = $state(false);
   let orgId = $state('');
   let ssoLeaving = $state(false);
-  function ssoGo(e: Event) {
+  let ssoError = $state('');
+  async function ssoGo(e: Event) {
     e.preventDefault();
-    if (!orgId.trim()) return;
-    error = ''; ssoLeaving = true;
-    window.location.href = ssoStartUrl(orgId);
+    const v = orgId.trim();
+    if (!v) return;
+    error = ''; ssoError = ''; ssoLeaving = true;
+    const url = ssoStartUrl(v);
+    const res = await fetch(url, { redirect: 'manual' }).catch(() => null);
+    if (res && (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400))) { window.location.href = url; return; }
+    ssoLeaving = false;
+    if (!res) { ssoError = 'The sign-in service can\'t be reached. Try again in a moment.'; return; }
+    if (res.status === 404) {
+      ssoError = v.includes('@')
+        ? `No organisation signs in with single sign-on for ${v.split('@')[1]}. Use your email and password above, or ask your administrator.`
+        : `No organisation called "${v}" signs in with single sign-on. Check the name, or use your work email.`;
+      return;
+    }
+    const j = await res.json().catch(() => ({}));
+    ssoError = j.error ?? 'Single sign-on is not available right now.';
+  }
+
+  // Forgot password: Keycloak emails a link to set a new one. The answer is the
+  // same whether or not the account exists.
+  let forgotOpen = $state(false);
+  let forgotEmail = $state('');
+  let forgotBusy = $state(false);
+  let forgotSent = $state('');
+  let forgotError = $state('');
+  function openForgot() { forgotOpen = true; forgotEmail = email; forgotSent = ''; forgotError = ''; error = ''; }
+  async function sendReset(e: Event) {
+    e.preventDefault();
+    const v = forgotEmail.trim();
+    if (!v.includes('@')) { forgotError = 'Enter the email you sign in with.'; return; }
+    forgotBusy = true; forgotError = '';
+    const res = await fetch(`${API_BASE}/auth/forgot`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: v, return: window.location.origin }),
+    }).catch(() => null);
+    forgotBusy = false;
+    if (!res) { forgotError = 'The sign-in service can\'t be reached. Try again in a moment.'; return; }
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) { forgotError = j.error ?? 'Could not send the link. Try again later.'; return; }
+    forgotSent = v;
   }
 
   onMount(() => {
@@ -137,45 +177,84 @@
       <p class="auth-tagline">the agent platform</p>
     </div>
 
-    <h1>Sign in</h1>
-    <p class="auth-sub">Enter your credentials to access the platform.</p>
+    {#if forgotOpen}
+      <h1>Reset your password</h1>
+      <p class="auth-sub">We'll email you a link to set a new one.</p>
+      {#if forgotSent}
+        <div class="auth-ok">If <b>{forgotSent}</b> has an account, a link is on its way. It works for 30 minutes.</div>
+        <button type="button" class="auth-submit" onclick={() => (forgotOpen = false)}>Back to sign in</button>
+      {:else}
+        {#if forgotError}<div class="auth-error">{forgotError}</div>{/if}
+        <form onsubmit={sendReset}>
+          <div class="field">
+            <label for="forgot-email">Email</label>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input id="forgot-email" type="email" bind:value={forgotEmail} placeholder="you@company.com" required autocomplete="email" autofocus />
+          </div>
+          <button type="submit" class="auth-submit" disabled={forgotBusy}>
+            {#if forgotBusy}<span class="spinner"></span> Sending…{:else}Send reset link{/if}
+          </button>
+        </form>
+        <p class="auth-hint">Sign in with your organisation? Reset your password there — A3T never holds it.</p>
+        <button type="button" class="link-btn back" onclick={() => (forgotOpen = false)}>← Back to sign in</button>
+      {/if}
+    {:else}
+      <h1>Sign in</h1>
+      <p class="auth-sub">Enter your credentials to access the platform.</p>
 
-    {#if error}
-      <div class="auth-error">{error}</div>
+      {#if error}
+        <div class="auth-error">{error}</div>
+      {/if}
+
+      <form onsubmit={handleSubmit}>
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" bind:value={email} placeholder="you@company.com" required autocomplete="email" />
+        </div>
+        <div class="field">
+          <div class="label-row">
+            <label for="password">Password</label>
+            <button type="button" class="link-btn small" onclick={openForgot}>Forgot password?</button>
+          </div>
+          <input id="password" type="password" bind:value={password} placeholder="Password" required autocomplete="current-password" />
+        </div>
+        <button type="submit" class="auth-submit" disabled={loading}>
+          {#if loading}
+            <span class="spinner"></span> Signing in...
+          {:else}
+            Sign in
+          {/if}
+        </button>
+      </form>
+
+      <div class="sso-or"><span>or</span></div>
+      {#if !ssoOpen}
+        <button type="button" class="sso-submit" onclick={() => { ssoOpen = true; ssoError = ''; }}>
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="5" cy="8" r="3"/><path d="M8 8h7M12.5 8v2.5M14.5 8v2"/></svg>
+          Sign in with single sign-on
+        </button>
+      {:else}
+        <form class="sso" onsubmit={ssoGo}>
+          <div class="field">
+            <label for="org">Work email or organisation</label>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input id="org" bind:value={orgId} placeholder="you@yourcompany.com" autocomplete="email" autofocus class:bad={!!ssoError} oninput={() => (ssoError = '')} />
+            {#if ssoError}<div class="field-error">{ssoError}</div>{:else}<div class="field-hint">You'll sign in on your organisation's own page.</div>{/if}
+          </div>
+          <div class="sso-actions">
+            <button type="submit" class="sso-submit primary" disabled={ssoLeaving || !orgId.trim()}>
+              {#if ssoLeaving}<span class="spinner dark"></span> Opening your organisation…{:else}Continue{/if}
+            </button>
+            <button type="button" class="link-btn" onclick={() => { ssoOpen = false; ssoError = ''; }}>Cancel</button>
+          </div>
+        </form>
+      {/if}
     {/if}
 
-    <form onsubmit={handleSubmit}>
-      <div class="field">
-        <label for="email">Email</label>
-        <input id="email" type="email" bind:value={email} placeholder="you@company.com" required autocomplete="email" />
-      </div>
-      <div class="field">
-        <label for="password">Password</label>
-        <input id="password" type="password" bind:value={password} placeholder="Password" required autocomplete="current-password" />
-      </div>
-      <button type="submit" class="auth-submit" disabled={loading}>
-        {#if loading}
-          <span class="spinner"></span> Signing in...
-        {:else}
-          Sign in
-        {/if}
-      </button>
-    </form>
-
-    <div class="sso-or"><span>or</span></div>
-    <form class="sso" onsubmit={ssoGo}>
-      <div class="field">
-        <label for="org">Sign in with your organisation</label>
-        <input id="org" bind:value={orgId} placeholder="Work email or organisation name" autocomplete="email" />
-      </div>
-      <button type="submit" class="sso-submit" disabled={ssoLeaving || !orgId.trim()}>
-        {ssoLeaving ? 'Opening your organisation\'s sign-in…' : 'Continue'}
-      </button>
-    </form>
-
-    <div class="auth-footer">
-      <span>Don't have access yet?</span>
-      <button type="button" class="link-btn" onclick={openForm}>Request early access</button>
+    <!-- On a phone the side panel (and its big button) is hidden: the same button here. -->
+    <div class="phone-cta">
+      <button type="button" class="cta-btn" onclick={openForm}>Request Early Access <span class="cta-arrow">→</span></button>
+      <span class="cta-note">Invite-only during private beta.</span>
     </div>
   </div>
 
@@ -242,11 +321,11 @@
   <div class="auth-aside">
     <div class="aside-content">
       <h2>Build agents that think, remember, and act.</h2>
-      <p>A3T is the infrastructure layer for autonomous AI agents — templates, memory, tools, and orchestration in one platform.</p>
+      <p>A3T runs your AI agents behind an API, gives each one a memory that lasts, and governs what every agent and person may do.</p>
       <div class="aside-features">
-        <div class="af"><span class="af-ico">T</span> Templates — CNCF Serverless Workflow specs</div>
-        <div class="af"><span class="af-ico">A</span> Agents — containers with memory &amp; lifecycle</div>
-        <div class="af"><span class="af-ico">C</span> Canvas — K8s CRDs for multi-agent orchestration</div>
+        <div class="af"><span class="af-ico">A</span> Agents — called over an API; versioned, branched and cloned like code</div>
+        <div class="af"><span class="af-ico">M</span> Memory — working, episodic, semantic and procedural, kept per agent</div>
+        <div class="af"><span class="af-ico">G</span> Governance — sign-in per organisation, a role per project, every decision logged</div>
       </div>
       <div class="aside-cta">
         <button type="button" class="cta-btn" onclick={openForm}>
@@ -370,20 +449,11 @@
   .spinner.dark { border-color: var(--border); border-top-color: var(--spec); }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  .auth-footer {
-    margin-top: 24px;
-    font-size: 13px;
-    color: var(--text-3);
-    display: flex;
-    gap: 6px;
-  }
-  .auth-footer a,
   .link-btn {
     color: var(--spec);
     font-weight: 500;
     text-decoration: none;
   }
-  .auth-footer a:hover,
   .link-btn:hover { text-decoration: underline; }
   .link-btn {
     background: none;
@@ -593,6 +663,24 @@
   /* Small phone */
   @media (max-width: 400px) {
     .auth-card { padding: 24px 18px; }
+  }
+    .label-row { display: flex; align-items: baseline; justify-content: space-between; }
+  .link-btn.small { font-size: 12px; }
+  .link-btn.back { margin-top: 14px; font-size: 13px; }
+  .auth-ok { margin-bottom: 16px; padding: 10px 12px; border-radius: 8px; background: #ecf6f0; border: 1px solid #b9dcc6; color: #1f5b3a; font-size: 13px; line-height: 1.5; }
+  .auth-hint { margin: 14px 0 0; font-size: 12px; color: var(--text-4, #8a8578); line-height: 1.5; }
+  .field-hint { margin-top: 4px; font-size: 12px; color: var(--text-4, #8a8578); }
+  .field-error { margin-top: 6px; font-size: 12.5px; color: #b42318; line-height: 1.45; }
+  .field input.bad { border-color: #e3a29a; }
+  .sso-submit { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  .sso-submit.primary { background: var(--text-1, #1c1b19); border-color: var(--text-1, #1c1b19); color: #fff; }
+  .sso-submit.primary:hover:not(:disabled) { opacity: .9; }
+  .sso-actions { display: flex; align-items: center; gap: 14px; }
+  .sso-actions .sso-submit { flex: 1; }
+  .phone-cta { display: none; }
+  @media (max-width: 768px) {
+    .phone-cta { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--border, #e5e1d8); }
+    .phone-cta .cta-btn { width: 100%; justify-content: center; }
   }
   .sso-or { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; color: var(--text-3, #8a8578); font-size: 12px; }
   .sso-or::before, .sso-or::after { content: ''; flex: 1; height: 1px; background: var(--border, #e5e1d8); }
