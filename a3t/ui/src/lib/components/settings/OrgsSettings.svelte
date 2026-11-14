@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import { userRole, currentUser } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
-  import { orgsApi, loadDirectory, type OrgInfo, type OrgRole, type DirectoryUser } from '$lib/services/api';
+  import { orgsApi, loadDirectory, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser } from '$lib/services/api';
 
   const ROLES: OrgRole[] = ['member', 'admin', 'securityadmin'];
   const HANDLE = /^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$/;
@@ -26,6 +26,37 @@
   let addRole = $state<OrgRole>('member');
 
   const org = $derived(orgs.find((o) => o.handle === selected));
+
+  // Sign-in through the org's own identity provider: the form for the org shown.
+  let ssoFor = '';
+  let sso = $state({ alias: '', domains: '', map: '', dflt: 'member' as 'member' | '' });
+  $effect(() => {
+    if (!org || ssoFor === org.handle) return;
+    ssoFor = org.handle;
+    const s = org.sso;
+    sso = {
+      alias: s?.idp_alias ?? '',
+      domains: (s?.domains ?? []).join(', '),
+      map: Object.entries(s?.role_map ?? {}).map(([g, r]) => `${g} = ${r}`).join('\n'),
+      dflt: s ? s.default_role : 'member',
+    };
+  });
+  async function saveSso(o: OrgInfo) {
+    const role_map: Record<string, OrgRole> = {};
+    for (const line of sso.map.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const [g, r] = line.split('=').map((x) => x.trim());
+      if (!g || !ROLES.includes(r as OrgRole)) { say(`"${line}": write each line as group = member, admin or securityadmin`); return; }
+      role_map[g] = r as OrgRole;
+    }
+    const body: OrgSso = { idp_alias: sso.alias.trim(), domains: sso.domains.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean), role_map, default_role: sso.dflt };
+    busy = true;
+    const res = await orgsApi.setSso(o.handle, body);
+    busy = false;
+    if (!res.ok) { say(res.error ?? 'Could not save sign-in'); return; }
+    say(body.idp_alias ? `${o.handle} now signs in through "${body.idp_alias}".` : `Sign-in through a provider is off for ${o.handle}.`, true);
+    ssoFor = '';
+    await refresh();
+  }
 
   function say(text: string, ok = false) { message = text; messageOk = ok; }
 
@@ -160,7 +191,7 @@
       <tbody>
         {#each org.members as m (m.user_id)}
           <tr>
-            <td>{m.name || m.email || m.user_id}<div class="dim mono">{m.email || m.user_id}</div></td>
+            <td>{m.name || m.email || m.user_id}{#if m.source === 'sso'} <span class="pill" title="From the organisation's sign-in: set by their groups at every sign-in">SSO</span>{/if}<div class="dim mono">{m.email || m.user_id}</div></td>
             <td>
               <select value={m.role} disabled={!org.can_admin} onchange={(e) => setRole(m.user_id, m.email, m.name, e.currentTarget.value as OrgRole)}>
                 {#each ROLES as r}<option value={r}>{r}</option>{/each}
@@ -182,6 +213,24 @@
       </div>
     {/if}
   </div>
+
+  {#if org.can_admin}
+    <div class="card">
+      <div class="card-head"><h2>{org.display_name} — sign-in</h2></div>
+      <p class="card-sub">People sign in through the organisation's own identity provider (Entra ID, Okta, Google, its own Keycloak…), connected to A3T's Keycloak under the name below. They land in this organisation only, with the role their groups give them, checked at every sign-in. People added by hand above are not changed by sign-in.</p>
+      <div class="sso-grid">
+        <label for="sso-alias">Identity provider</label>
+        <input id="sso-alias" class="mono" bind:value={sso.alias} placeholder="its name in Keycloak, e.g. acme (empty: off)" />
+        <label for="sso-domains">Email domains</label>
+        <input id="sso-domains" bind:value={sso.domains} placeholder="acme.com, acme.co.uk" />
+        <label for="sso-map">Groups → role</label>
+        <textarea id="sso-map" class="mono" rows="3" bind:value={sso.map} placeholder={'a3t-admins = admin\nsecurity = securityadmin'}></textarea>
+        <label for="sso-default">Anyone else</label>
+        <select id="sso-default" bind:value={sso.dflt}><option value="member">member</option><option value="">no access</option></select>
+      </div>
+      <div class="row"><button class="btn primary" onclick={() => saveSso(org)} disabled={busy}>Save sign-in</button></div>
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -208,4 +257,9 @@
   .right .btn + .btn { margin-left: 6px; }
   .link { border: none; background: none; padding: 0; color: var(--text-1); font-size: 13px; cursor: pointer; text-align: left; }
   .link:hover { color: var(--spec); }
+  .sso-grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: center; font-size: 13px; }
+  .sso-grid label { color: var(--text-2); }
+  .sso-grid textarea { font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-1); }
+  .pill { font-size: 10.5px; padding: 1px 6px; border-radius: 99px; background: var(--bg-muted, #eeeae2); color: var(--text-2); }
+  @container (max-width: 560px) { .sso-grid { grid-template-columns: 1fr; } }
 </style>

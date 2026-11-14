@@ -2,6 +2,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import * as api from '$lib/services/api';
+import { API_BASE } from '$lib/config';
 
 export interface User {
   id: string;
@@ -35,6 +36,11 @@ export const accessToken = derived(sessionStore, ($s) => $s?.access_token ?? nul
 // Initialize from localStorage + sync tokens to API client
 export function initAuth(): boolean {
   if (typeof window === 'undefined') return false;
+  // Back from an organisation's sign-in: that is the session (or why it failed,
+  // which the login page shows).
+  const sso = completeSso();
+  if (sso?.ok) return true;
+  if (sso?.error) { try { sessionStorage.setItem('a3t_sso_error', sso.error); } catch { /* private mode */ } }
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return false;
@@ -86,6 +92,42 @@ export async function login(email: string, password: string): Promise<{ ok: bool
   }
 
   return { ok: false, error: res.error || 'Login failed' };
+}
+
+// ── Sign in with your organisation (.ai/A3T_ORG_SSO_SPEC.md) ──
+// FlowR sends the browser to the organisation's own identity provider (through
+// Keycloak) and back here with the A3T token in the URL fragment, which never
+// reaches a server.
+
+/// Where to send the browser to sign in through an organisation: a work email
+/// (its domain picks the org) or the org's handle.
+export function ssoStartUrl(orgOrEmail: string): string {
+  const v = orgOrEmail.trim();
+  const q = new URLSearchParams(v.includes('@') ? { email: v } : { org: v.toLowerCase() });
+  if (typeof window !== 'undefined') q.set('return', window.location.origin);
+  return `${API_BASE}/auth/sso/start?${q}`;
+}
+
+/// Back from the organisation's sign-in: turn `#sso=…` into the session.
+/// `null` when this page load isn't a return from it.
+export function completeSso(): { ok: boolean; error?: string } | null {
+  if (typeof window === 'undefined' || !/[#&](sso|sso_error)=/.test(window.location.hash)) return null;
+  const h = new URLSearchParams(window.location.hash.slice(1));
+  history.replaceState(null, '', window.location.pathname + window.location.search);
+  if (h.get('sso_error')) return { ok: false, error: h.get('sso_error') ?? 'Sign-in failed' };
+  const token = h.get('sso') ?? '';
+  try {
+    const c = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    saveSession({
+      user: { id: c.sub, email: c.email, name: c.name || c.email, role: c.role as UserRole, org_id: c.org },
+      access_token: token,
+      refresh_token: h.get('sso_refresh') ?? '',
+      expires_in: Number(h.get('expires_in') ?? 0),
+    });
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'The sign-in returned an unreadable token.' };
+  }
 }
 
 // ── Signup — calls POST /auth/signup ──

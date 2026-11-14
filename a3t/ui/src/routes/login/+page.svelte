@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { login, isAuthenticated } from '$lib/stores/auth';
+  import { login, isAuthenticated, ssoStartUrl, completeSso } from '$lib/stores/auth';
   import { API_BASE } from '$lib/config';
   import { onMount } from 'svelte';
   import { startEarlyAccess, finishEarlyAccess, providersAvailable, PROVIDER_LABEL, type Provider, type Identity } from '$lib/core/auth/earlyAccess';
@@ -10,7 +10,21 @@
   let error = $state('');
   let loading = $state(false);
 
+  // Sign in through your organisation's own identity provider.
+  let orgId = $state('');
+  let ssoLeaving = $state(false);
+  function ssoGo(e: Event) {
+    e.preventDefault();
+    if (!orgId.trim()) return;
+    error = ''; ssoLeaving = true;
+    window.location.href = ssoStartUrl(orgId);
+  }
+
   onMount(() => {
+    // Back from the organisation's sign-in?
+    const sso = completeSso();
+    if (sso && !sso.ok) error = sso.error ?? 'Sign-in failed';
+    try { const e = sessionStorage.getItem('a3t_sso_error'); if (e) { error = e; sessionStorage.removeItem('a3t_sso_error'); } } catch { /* private mode */ }
     // Already logged in? Redirect to app
     const unsub = isAuthenticated.subscribe(v => { if (v) goto('/'); });
     // Back from LinkedIn: file the request with the verified identity.
@@ -145,6 +159,17 @@
         {:else}
           Sign in
         {/if}
+      </button>
+    </form>
+
+    <div class="sso-or"><span>or</span></div>
+    <form class="sso" onsubmit={ssoGo}>
+      <div class="field">
+        <label for="org">Sign in with your organisation</label>
+        <input id="org" bind:value={orgId} placeholder="Work email or organisation name" autocomplete="email" />
+      </div>
+      <button type="submit" class="sso-submit" disabled={ssoLeaving || !orgId.trim()}>
+        {ssoLeaving ? 'Opening your organisation\'s sign-in…' : 'Continue'}
       </button>
     </form>
 
@@ -569,4 +594,10 @@
   @media (max-width: 400px) {
     .auth-card { padding: 24px 18px; }
   }
+  .sso-or { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; color: var(--text-3, #8a8578); font-size: 12px; }
+  .sso-or::before, .sso-or::after { content: ''; flex: 1; height: 1px; background: var(--border, #e5e1d8); }
+  .sso .field { margin-bottom: 10px; }
+  .sso-submit { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border, #d9d4c8); background: var(--bg-surface, #fff); color: var(--text-1, #222); font: inherit; font-weight: 600; cursor: pointer; }
+  .sso-submit:hover:not(:disabled) { border-color: var(--text-2, #555); }
+  .sso-submit:disabled { opacity: .55; cursor: default; }
 </style>

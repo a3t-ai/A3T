@@ -309,8 +309,13 @@ export type OrgInfo = {
   my_role: OrgRole | null; can_admin: boolean;
   /// Where the org's flows run: its own runtimes only, or the shared ones.
   runtime: 'isolated' | 'shared';
-  members: { user_id: string; email?: string; name?: string; role: OrgRole }[];
+  /// Sign-in through the org's own identity provider (admins see it); null = off.
+  sso?: OrgSso | null;
+  /// `sso`: made at sign-in from the org's groups (rewritten each time);
+  /// `invite`: added here by an admin.
+  members: { user_id: string; email?: string; name?: string; role: OrgRole; source?: 'sso' | 'invite' }[];
 };
+export type OrgSso = { idp_alias: string; domains: string[]; role_map: Record<string, OrgRole>; default_role: 'member' | '' };
 export type ProfileInfo = { handle: string; user_id: string; email?: string; name?: string };
 
 /// Run one of the project flows; a flow's own refusal ({ ok: false, error })
@@ -370,6 +375,8 @@ export const orgsApi = {
     projectFlow('flow_a3t_orgs', { action: 'set_member', org, role, ...user }),
   removeMember: (org: string, user_id: string) => projectFlow('flow_a3t_orgs', { action: 'remove_member', org, user_id }),
   setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('flow_a3t_orgs', { action: 'set_runtime', org, runtime }),
+  /** Sign-in per org (.ai/A3T_ORG_SSO_SPEC.md); an empty idp_alias turns it off. */
+  setSso: (org: string, sso: OrgSso) => projectFlow('flow_a3t_orgs', { action: 'set_sso', org, ...sso }),
 };
 
 /// Everyone who can be added to an org or project: local users and, in EE, the
