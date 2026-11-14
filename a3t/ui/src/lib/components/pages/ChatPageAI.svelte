@@ -25,7 +25,9 @@
   import CanvasPresetCards from '$lib/components/chat/CanvasPresetCards.svelte';
   import CanvasPlacementCard from '$lib/components/chat/CanvasPlacementCard.svelte';
   import PermissionsPanel from '$lib/components/chat/PermissionsPanel.svelte';
-  import { listPendingApprovals, type PendingApproval } from '$lib/services/api';
+  import { listPendingApprovals, orgsApi, type PendingApproval } from '$lib/services/api';
+  import { userRole } from '$lib/stores/auth';
+  import { get } from 'svelte/store';
   import ListWidget from '$lib/components/chat/ListWidget.svelte';
   import { ARTIFACTS, LIST_KIND_TO_ITEM, toEditorText, type ArtifactKind } from '$lib/components/chat/artifacts';
   import { bumpItems, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
@@ -423,7 +425,18 @@
     return () => { mo.disconnect(); ro.disconnect(); cancelAnimationFrame(raf); };
   });
 
+  /// Who may choose the chat's agent: a SuperAdmin, or an admin of the A3T
+  /// platform org. Everyone else always talks to the default A3T agent and never
+  /// sees the picker (an agent chosen earlier on this browser doesn't stick).
+  let canPickAgent = $state(false);
+  async function resolveAgentPicking() {
+    if (get(userRole) === 'superadmin') { canPickAgent = true; return; }
+    const res = await orgsApi.list();
+    canPickAgent = !!res.ok && (res.data?.orgs ?? []).some((o: any) => o.handle === 'a3t' && o.my_role === 'admin');
+  }
+
   async function loadAgents() {
+    await resolveAgentPicking();
     const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     if (!res.ok) return;
     const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
@@ -446,8 +459,12 @@
       enabled_tools: Array.isArray(r.enabled_tools) ? r.enabled_tools : undefined,
       mcp_servers: mcpServerRefs(r.mcp_servers ?? variablesOf(r).mcp_servers, r.namespace),
     }));
-    if (!selectedAgent && agents.length > 0) {
-      selectedAgent = (agents.find(a => a.system_default) ?? agents[0]).id;
+    const fallback = (agents.find(a => a.system_default) ?? agents[0])?.id ?? '';
+    if (!canPickAgent) {
+      agents = agents.filter(a => a.id === fallback);
+      selectedAgent = fallback;
+    } else if (!selectedAgent && agents.length > 0) {
+      selectedAgent = fallback;
     }
   }
 
@@ -1063,7 +1080,10 @@
             </div>
           {/if}
 
-          <!-- Agent: a pill sized to its own label, opening an in-place picker. -->
+          <!-- Agent: a pill sized to its own label, opening an in-place picker.
+               Only for a SuperAdmin or an A3T admin; everyone else talks to the
+               default A3T agent. -->
+          {#if canPickAgent}
           <div class="agent-pick">
             <button
               class="agent-chip"
@@ -1092,6 +1112,7 @@
               </div>
             {/if}
           </div>
+          {/if}
 
           <span class="bar-spacer"></span>
           {#if awaitingApproval}
