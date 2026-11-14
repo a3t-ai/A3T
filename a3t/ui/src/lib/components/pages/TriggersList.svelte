@@ -12,7 +12,6 @@
   import { mcpCall } from '$lib/services/api';
   import { createTrigger, putTrigger } from '$lib/studio-core/adapters/config';
   import '$lib/components/triggers/triggers.css';
-  import TriggersGuide from '$lib/components/triggers/TriggersGuide.svelte';
   import TriggerTargets from '$lib/components/triggers/TriggerTargets.svelte';
   import type { MapCtx } from '$lib/components/triggers/TriggerMapping.svelte';
   import { listRecords, type MappingRecord } from '$lib/components/triggers/mapperApi';
@@ -398,7 +397,6 @@
     subtitle="A webhook call, a schedule, a message on an ADB topic or a platform event — each firing goes to the flows and agents you name, with the input you map."
     description="A trigger is YAML: what fires it, and where each firing goes. Write it here or in the Studio; pause or rewire it without changing the flow."
     accent="runtime" />
-  <div class="trg-how"><TriggersGuide oncreate={openCreate} /></div>
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="triggers" embedded />
@@ -633,7 +631,6 @@
   onconfirm={() => deleteTrigger(deleteTarget!)} oncancel={() => deleteTarget = null} />
 
 <style>
-  .trg-how { margin: 16px 0 20px; }
   .grow { flex: 1 1 auto; }
   .mono { font-family: var(--font-mono); font-size: 0.92em; }
   /* As an agent's Build › Code: the designer pane, framed. */

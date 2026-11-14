@@ -14,7 +14,6 @@
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import CanvasDesigner from '$lib/components/editor/CanvasDesigner.svelte';
-  import CanvasGuide from '$lib/components/canvas/CanvasGuide.svelte';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { onMount, untrack } from 'svelte';
@@ -166,7 +165,6 @@
     subtitle="A canvas is one flow's deployment file: where it loads, how it runs, what it depends on."
     description="It is YAML next to its flow. Here you see which runtime takes it, deploy it, and watch it run."
     accent="control" docsPath="/canvas" />
-  <div class="cv-how"><CanvasGuide oncreate={newCanvas} /></div>
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="canvas" embedded />
@@ -230,7 +228,6 @@
   .status-msg { padding: 20px; text-align: center; color: var(--text-4); font-size: 14px; }
   .status-msg.err { color: var(--err, #d44); font-family: var(--font-mono); font-size: 12px; }
 
-  .cv-how { margin: 16px 0 20px; }
   .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 
 </style>

@@ -2,8 +2,6 @@
   /// What Details shows for a list app with nothing picked: the app's banner and
   /// where to start.
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
-  import TriggersGuide from '$lib/components/triggers/TriggersGuide.svelte';
-  import CanvasGuide from '$lib/components/canvas/CanvasGuide.svelte';
   import { contextLabel } from '$lib/stores/apps.svelte.ts';
 
   type Accent = 'spec' | 'runtime' | 'control' | 'ephemeral';
@@ -61,8 +59,6 @@
 
 <div class="aw">
   <PageBanner headline={b.headline} highlightWord={b.highlight} subtitle={b.subtitle} description={b.description} accent={b.accent} />
-  <!-- An app with a concept to learn before its first item shows it here. -->
-  {#if appType === 'triggers'}<TriggersGuide />{:else if appType === 'canvas'}<CanvasGuide />{/if}
 
   <div class="aw-start">
     <span>Pick from {what} in Items to open it here, or ask in Chat.</span>
