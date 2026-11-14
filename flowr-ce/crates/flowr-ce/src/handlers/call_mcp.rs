@@ -81,6 +81,15 @@ impl TaskHandler for McpHandler {
 
         info!(task = %task.name, method = %method, tool = %tool_name, server = %server_url, "calling MCP");
 
+        // FlowR's own MCP surface: its tool list is this process's catalogue. Over
+        // HTTP the call carried no token and got 401, which read as "no tools".
+        if method == "tools/list" && flowr_mcp_core::is_self_mcp_url(&server_url) {
+            let tools: Vec<Value> = flowr_mcp_core::get_tools().into_iter()
+                .map(|t| json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema }))
+                .collect();
+            return Ok(TaskResult::new(json!(tools)));
+        }
+
         let mcp_request = if method == "tools/list" {
             json!({
                 "jsonrpc": "2.0",
@@ -107,8 +116,18 @@ impl TaskHandler for McpHandler {
             .await
             .map_err(|e| RuntimeError::Communication(format!("MCP call failed: {}", e)))?;
 
+        // A refusal or a JSON-RPC error is an error, not an empty answer.
+        let status = resp.status();
         let resp_body: Value = resp.json().await
-            .map_err(|e| RuntimeError::Communication(format!("MCP response parse error: {}", e)))?;
+            .map_err(|e| RuntimeError::Communication(format!("MCP server {server_url} answered {status} with no JSON: {e}")))?;
+        if !status.is_success() {
+            let why = resp_body.get("error").map(|e| e.as_str().map(String::from).unwrap_or_else(|| e.to_string())).unwrap_or_default();
+            return Err(RuntimeError::Communication(format!("MCP server {server_url} answered {status}{}", if why.is_empty() { String::new() } else { format!(": {why}") })));
+        }
+        if let Some(e) = resp_body.get("error") {
+            let msg = e.get("message").and_then(|m| m.as_str()).map(String::from).unwrap_or_else(|| e.to_string());
+            return Err(RuntimeError::Communication(format!("MCP server {server_url}: {msg}")));
+        }
 
         // Extract result from MCP response
         let result = if method == "tools/list" {

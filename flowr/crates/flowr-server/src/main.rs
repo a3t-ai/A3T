@@ -14,6 +14,7 @@ mod auth_routes;
 mod sso;
 mod impersonate;
 mod forgot;
+mod directory;
 mod config;
 
 use flowr_ce::flowr_storage::{SettingsStore, StorageBackend};
@@ -280,6 +281,8 @@ async fn main() -> anyhow::Result<()> {
                                 get(idp_get_user_handler).put(idp_update_user_handler).delete(idp_delete_user_handler))
                             // A SuperAdmin acting as a user or a role (impersonate.rs).
                             .route("/auth/impersonate", post(impersonate::impersonate_handler))
+                            // People a member can be picked from, for project owners and org admins (directory.rs).
+                            .route("/directory/users", get(directory::directory_users_handler))
                             .layer(Extension(idp_admin)),
                     );
 

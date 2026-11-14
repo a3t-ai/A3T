@@ -369,7 +369,14 @@ struct SharedResources {
 fn parse_resource(row: &Value) -> Option<Resource> {
     let config: Value = serde_json::from_str(row.get("config")?.as_str()?).ok()?;
     let ns = row.get("namespace")?.as_str()?;
-    Some(Resource::new(row.get("name")?.as_str()?, row.get("type_ref")?.as_str()?, config).with_namespace(ns))
+    let mut r = Resource::new(row.get("name")?.as_str()?, row.get("type_ref")?.as_str()?, config).with_namespace(ns);
+    // The stored times, not "now": Resource::new stamps the moment it is built,
+    // so every read reported a fresh created_at.
+    let at = |k: &str| row.get(k).and_then(|v| v.as_str())
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&chrono::Utc));
+    if let Some(t) = at("created_at") { r.created_at = t; }
+    if let Some(t) = at("updated_at") { r.updated_at = t; }
+    Some(r)
 }
 
 #[async_trait]
@@ -398,6 +405,10 @@ impl ResourceStore for SharedResources {
     async fn create(&self, resource: Resource) -> FlowResult<Resource> {
         let config = serde_json::to_string(&resource.config)
             .map_err(|e| FlowError::Storage(format!("Failed to serialize config: {e}")))?;
+        // One row per (namespace, name): creating one that exists made a duplicate.
+        if self.exists(&resource.namespace, &resource.name).await? {
+            return Err(FlowError::Validation(format!("Resource {}/{} already exists", resource.namespace, resource.name)));
+        }
         let t = now();
         insert(&*self.db, RESOURCES, json!({
             "namespace": resource.namespace, "name": resource.name, "type_ref": resource.type_ref,
@@ -428,7 +439,9 @@ impl ResourceStore for SharedResources {
         values.insert("config".into(), json!(serde_json::to_string(&config).unwrap_or_default()));
         values.insert("updated_at".into(), json!(now()));
         self.db.update(RESOURCES, &flow_filter(namespace, name), &values).await.map_err(storage_err)?;
-        Ok(Resource::new(name, existing.type_ref, config).with_namespace(namespace))
+        let mut r = Resource::new(name, existing.type_ref, config).with_namespace(namespace);
+        r.created_at = existing.created_at;
+        Ok(r)
     }
 
     async fn delete(&self, namespace: &str, name: &str) -> FlowResult<()> {

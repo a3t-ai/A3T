@@ -151,6 +151,8 @@ async fn delete_canvas(State(st): State<Arc<ApiState>>, Path((ns, name)): Path<(
             info!(namespace = %ns, name = %name, "deleted Canvas via HTTP");
             Json(json!({ "deleted": true, "namespace": ns, "name": name })).into_response()
         }
+        // Already gone is 404, so a caller can tell it from a failure.
+        Err(kube::Error::Api(ae)) if ae.code == 404 => (StatusCode::NOT_FOUND, Json(json!({ "deleted": false, "error": ae.message }))).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "deleted": false, "error": e.to_string() }))).into_response(),
     }
 }

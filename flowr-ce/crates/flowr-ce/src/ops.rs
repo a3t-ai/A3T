@@ -68,6 +68,10 @@ pub struct Deployment {
     /// default canvas.
     #[serde(default)]
     pub canvas: String,
+    /// The Canvas CR the deploy pushed to the controller (`ns/name`), so undeploy
+    /// removes exactly that. Empty: the one named after the flow.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub controller_cr: String,
     pub runtime: String,
     pub namespace: String,
     pub mode: String,
@@ -473,6 +477,7 @@ pub async fn record_deploy(
         flow_ref,
         agent_ref,
         canvas: stored.as_ref().map(|(n, c, _)| format!("{n}/{c}")).unwrap_or_default(),
+        controller_cr: previous.as_ref().map(|p| p.controller_cr.clone()).unwrap_or_default(),
         runtime: runtime.to_string(),
         namespace: namespace.to_string(),
         mode: mode.to_string(),
@@ -495,6 +500,13 @@ pub async fn record_deploy(
     store(storage, &d).await?;
     info!(deployment = %id, runtime = %runtime, by = %by, "deployment recorded");
     Ok(d)
+}
+
+/// Record which Canvas CR a deploy pushed (`ns/name`), for undeploy.
+pub async fn set_controller_cr(storage: &dyn StorageBackend, id: &str, cr: &str) -> Result<(), String> {
+    let Some(mut d) = cached(id) else { return Err(not_found(id)) };
+    d.controller_cr = cr.to_string();
+    store(storage, &d).await
 }
 
 /// Find a deployment by id, or by what it deploys (`ns/name` or an agent id) —
@@ -583,24 +595,22 @@ pub async fn restart(storage: &dyn StorageBackend, id: &str, by: &str) -> Result
 
 pub async fn undeploy(storage: &dyn StorageBackend, id: &str, by: &str) -> Result<Value, String> {
     let d = resolve(id).ok_or_else(|| not_found(id))?;
-    storage
-        .resources()
-        .delete(LEDGER_NS, &d.id)
-        .await
-        .map_err(|e| format!("failed to remove deployment {}: {e}", d.id))?;
-    ledger().write().unwrap().deployments.remove(&d.id);
-    info!(deployment = %d.id, by = %by, "undeployed");
-    // EE: the deploy route pushed a Canvas CR named after the flow; remove it so
-    // the controller garbage-collects what it created. Best effort, and reported —
-    // the ledger entry is gone either way, and saying so is better than hiding a
-    // CR that outlived its deployment.
+    // EE: remove the Canvas CR the deploy pushed FIRST, so a CR the controller
+    // could not remove keeps its deployment record (and can be undeployed again)
+    // instead of outliving it unseen (CA-36). The CR is the one recorded at deploy
+    // (a canvas resource's own name), else the one named after the flow.
     let controller = match std::env::var("A3T_CONTROLLER_URL").ok().filter(|u| !u.is_empty()) {
         None => Value::Null,
         Some(url) => {
-            // The CR is `ns/<cr_name(flow)>` — the name the deploy route gave it.
-            let (fns, fname) = d.flow_ref.split_once('/').unwrap_or(("default", d.flow_ref.as_str()));
+            let (cns, cname) = match d.controller_cr.split_once('/') {
+                Some((n, c)) if !n.is_empty() && !c.is_empty() => (n.to_string(), c.to_string()),
+                _ => {
+                    let (fns, fname) = d.flow_ref.split_once('/').unwrap_or(("default", d.flow_ref.as_str()));
+                    (fns.to_string(), crate::canvas::cr_name(fname))
+                }
+            };
             let mut req = reqwest::Client::new()
-                .delete(format!("{}/v1/canvas/{}/{}", url.trim_end_matches('/'), fns, crate::canvas::cr_name(fname)))
+                .delete(format!("{}/v1/canvas/{}/{}", url.trim_end_matches('/'), cns, cname))
                 .timeout(std::time::Duration::from_secs(5));
             if let Ok(tok) = std::env::var("A3T_CONTROLLER_TOKEN") {
                 if !tok.is_empty() {
@@ -608,12 +618,29 @@ pub async fn undeploy(storage: &dyn StorageBackend, id: &str, by: &str) -> Resul
                 }
             }
             match req.send().await {
-                Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::NOT_FOUND => json!({ "removed": true }),
-                Ok(r) => json!({ "removed": false, "error": format!("controller returned {}", r.status()) }),
-                Err(e) => json!({ "removed": false, "error": e.to_string() }),
+                Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::NOT_FOUND => json!({ "removed": true, "canvas": format!("{cns}/{cname}") }),
+                Ok(r) => {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    // Older controllers answer 502 for every delete error; "not
+                    // found" there means it is already gone.
+                    if body.contains("NotFound") {
+                        json!({ "removed": true, "canvas": format!("{cns}/{cname}") })
+                    } else {
+                        return Err(format!("the controller could not remove canvas {cns}/{cname} ({status}); the deployment is kept — try again"));
+                    }
+                }
+                Err(e) => return Err(format!("the controller is unreachable ({e}); the deployment is kept — try again")),
             }
         }
     };
+    storage
+        .resources()
+        .delete(LEDGER_NS, &d.id)
+        .await
+        .map_err(|e| format!("failed to remove deployment {}: {e}", d.id))?;
+    ledger().write().unwrap().deployments.remove(&d.id);
+    info!(deployment = %d.id, by = %by, "undeployed");
     Ok(json!({
         "undeployed": true,
         "deployment": d.id,

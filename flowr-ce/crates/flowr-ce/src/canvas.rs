@@ -1027,8 +1027,15 @@ async fn deploy_canvas_resource(
         Ok(applied) => {
             tracing::info!(canvas = %format!("{ns}/{name}"), flow = %spec.flow_ref, "canvas resource deployed to controller (EE)");
             if let Some((fns, fname)) = spec.flow_ref.split_once('/') {
-                if let Err(e) = record_deployment(&*state.storage, &principal.id(), fns, fname, None).await {
-                    tracing::warn!(error = %e, "deployment not recorded");
+                match record_deployment(&*state.storage, &principal.id(), fns, fname, None).await {
+                    // The CR is this canvas's own (`ns/cr_name(name)`), not the
+                    // flow's: say so on the record, for undeploy (CA-36).
+                    Ok(d) => if let Some(id) = d.get("id").and_then(|v| v.as_str()) {
+                        if let Err(e) = crate::ops::set_controller_cr(&*state.storage, id, &format!("{ns}/{}", cr_name(&name))).await {
+                            tracing::warn!(error = %e, "deployment's canvas not recorded");
+                        }
+                    },
+                    Err(e) => tracing::warn!(error = %e, "deployment not recorded"),
                 }
             }
             Json(json!({ "deployed": true, "edition": "ee", "canvas": format!("{ns}/{name}"), "flowRef": spec.flow_ref, "agentRef": spec.agent_ref, "controller": applied })).into_response()

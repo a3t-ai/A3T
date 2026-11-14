@@ -751,6 +751,11 @@ pub async fn rest_write(principal: &Principal, ns: &str) -> Result<(), (axum::ht
     match g.access(principal, ns).await {
         NsAccess::Write => Ok(()),
         NsAccess::None => Err((axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": format!("no project '{ns}' that you can see") })))),
-        _ => Err((axum::http::StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": format!("changing project '{ns}' needs write access") })))),
+        // Not "changing": some of these are reads only writers may make (an
+        // agent's keys), so say what is needed and what the caller has.
+        has => {
+            let level = if has == NsAccess::Run { "run" } else { "read" };
+            Err((axum::http::StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": format!("this needs write access to project '{ns}'; you have {level}") }))))
+        }
     }
 }
