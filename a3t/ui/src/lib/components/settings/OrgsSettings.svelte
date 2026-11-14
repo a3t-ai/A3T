@@ -242,7 +242,7 @@
   .msg { padding: 8px 12px; border-radius: var(--r-sm); background: var(--err-bg, #fde8e8); color: var(--err, #b42318); font-size: 12.5px; }
   .msg.ok { background: var(--spec-bg); color: var(--spec); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
-  .row input, .row select, .tbl select { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-page); color: var(--text-1); font-size: 13px; }
+  .row input, .row select, .tbl select, .sso-grid input, .sso-grid select { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-page); color: var(--text-1); font-size: 13px; }
   .row input { flex: 1; min-width: 160px; }
   .btn { padding: 6px 12px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; color: var(--text-1); cursor: pointer; }
   .btn:hover:not(:disabled) { border-color: var(--spec); color: var(--spec); }
@@ -259,7 +259,7 @@
   .link:hover { color: var(--spec); }
   .sso-grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: center; font-size: 13px; }
   .sso-grid label { color: var(--text-2); }
-  .sso-grid textarea { font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-1); }
+  .sso-grid textarea { font-size: 12.5px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-page); color: var(--text-1); }
   .pill { font-size: 10.5px; padding: 1px 6px; border-radius: 99px; background: var(--bg-muted, #eeeae2); color: var(--text-2); }
   @container (max-width: 560px) { .sso-grid { grid-template-columns: 1fr; } }
 </style>
