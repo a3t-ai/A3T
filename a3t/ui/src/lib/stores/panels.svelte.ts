@@ -40,7 +40,6 @@ const TYPE_TO_PATH: Record<string, string> = {
   'db-console': '/db-console',
   inputs: '/inputs',
   'early-access': '/early-access',
-  errors: '/errors',
   settings: '/settings',
   security: '/security',
 };
@@ -68,7 +67,6 @@ const PATH_TO_TYPE: Record<string, { type: string; title: string }> = {
   '/db-console': { type: 'db-console', title: 'Query Console' },
   '/inputs': { type: 'inputs', title: 'Inputs' },
   '/early-access': { type: 'early-access', title: 'Early Access Requests' },
-  '/errors': { type: 'errors', title: 'Errors' },
   '/settings': { type: 'settings', title: 'Settings' },
   '/security': { type: 'security', title: 'Security' },
 };

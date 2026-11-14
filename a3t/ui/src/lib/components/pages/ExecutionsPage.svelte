@@ -1,346 +1,98 @@
 <script lang="ts">
-  import { inBackground } from '$lib/core/status/activity';
-  import { inContext, itemProject } from '$lib/stores/context.svelte.ts';
-  import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
-  // Executions — the run history persisted in the storage backend. Lists recent
-  // workflow instances (list_executions), with a detail drawer per run
-  // (get_execution_status: input / output / error / timing).
-  import { executions, runsApi } from '$lib/services/api';
-  import { getProject } from '$lib/stores/context.svelte.ts';
-  import { contextRev_ } from '$lib/stores/apps.svelte.ts';
-  import RunView from '$lib/components/run/RunView.svelte';
-  import { onMount, onDestroy, untrack } from 'svelte';
-  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
+  /// Executions — every run in the run store. Items lists them (newest first, in
+  /// the project picked in the top bar); the one picked opens here in the agents'
+  /// frame: Overview (status, why it failed, what ran, run it again), Steps,
+  /// Timeline, Journal, Resume points, Input & output. A failed run's Overview
+  /// carries the A3T error log's classification of it (Admin and SuperAdmin —
+  /// the error log flow refuses anyone else); this replaced the Errors app.
+  import { untrack } from 'svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
-  import { detailsPane } from '$lib/shell/detailsPane';
-  import { getActivePanel, navigateTo, openInStudio } from '$lib/stores/panels.svelte.ts';
-  /// Inside the shell a run picked in Items opens in the Details pane.
-  const pane = detailsPane();
+  import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import RunView from '$lib/components/run/RunView.svelte';
+  import '$lib/components/agent/agent.css';
+  import '$lib/components/triggers/triggers.css';
+  import { execFlow } from '$lib/services/api';
+  import { hasRole } from '$lib/stores/auth';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
+  import { bumpItems } from '$lib/stores/apps.svelte.ts';
+  import { getActivePanel, navigateTo, navigateToDetail, openInStudio } from '$lib/stores/panels.svelte.ts';
 
-  interface Exec {
-    instance_id: string; namespace: string; name: string; version?: string;
-    status: string; started_at?: number | string; completed_at?: number | string;
-    duration_us?: number; current_step?: string; input?: any; output?: any; error?: string | null;
-  }
-
-  let rows = $state<Exec[]>([]);
-  let loading = $state(true);
-  let error = $state('');
-  let limit = $state(50);
-  let fNamespace = $state('');
-  let fName = $state('');
-  let fStatus = $state('all');
-  let auto = $state(false);
-  let selected = $state<Exec | null>(null);
-  let detail = $state<Exec | null>(null);
-  let detailLoading = $state(false);
-  let timer: any = null;
-
-  /// The run store (newest first, filtered on the server, paged); servers
-  /// before it answer with the execution list.
-  let runsMode = $state(true);
-  let cursor = $state<string | null>(null);
-  const PHASES: Record<string, string[]> = { running: ['running', 'pending'], completed: ['completed'], failed: ['faulted'], queued: ['pending'], paused: ['suspended'], waiting: ['waiting'] };
-
-  function fromRun(r: any): Exec {
-    const status = ({ suspended: 'paused', faulted: 'failed', pending: 'queued' } as Record<string, string>)[r.phase] ?? r.phase;
-    return { instance_id: r.run_id, namespace: r.namespace, name: r.flow, version: r.version, status, started_at: r.started_at ?? r.created_at,
-             completed_at: r.completed_at, duration_us: r.duration_us ?? undefined, current_step: r.current_step ?? undefined, error: r.error };
-  }
-
-  async function load(more = false) {
-    loading = true; error = '';
-    if (runsMode) {
-      const project = getProject();
-      const r = await runsApi.list({
-        limit,
-        ...(fNamespace.trim() ? { namespace: fNamespace.trim() } : project ? { namespace: project } : {}),
-        ...(fName.trim() ? { name: fName.trim() } : {}),
-        ...(fStatus !== 'all' ? { status: PHASES[fStatus] ?? [fStatus] } : {}),
-        ...(more && cursor ? { cursor } : {}),
-      });
-      if (r.ok && Array.isArray(r.data?.runs)) {
-        const page = r.data.runs.map(fromRun);
-        rows = more ? [...rows, ...page] : page;
-        cursor = r.data.next ?? null;
-        loading = false;
-        return;
-      }
-      runsMode = false;
-    }
-    const res = await executions.list({
-      limit,
-      namespace: fNamespace.trim() || undefined,
-      name: fName.trim() || undefined,
-    });
-    if (res.ok) {
-      const data = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
-      rows = data as Exec[];
-    } else {
-      error = res.error || 'Failed to load executions';
-    }
-    loading = false;
-  }
-
-  // Runs of users' flows saved in `a3t` before projects are `default`'s.
-  let shown = $derived(rows.filter(r => inContext(itemProject('execution', (r as any).namespace, r as any))
-    && (fStatus === 'all' || r.status?.toLowerCase() === fStatus)));
-
-  async function openDetail(r: Exec) {
-    selected = r; detail = r; detailLoading = true;
-    const res = await executions.get(r.instance_id);
-    if (res.ok && res.data) {
-      detail = { ...r, ...(typeof res.data === 'object' ? res.data : {}) };
-    }
-    detailLoading = false;
-  }
-
-  function closeDetail() { selected = null; detail = null; }
-
-  // The chat's context: the run on screen (read-only — nothing to edit).
-  trackActiveItem(() => detail ? {
-    kind: 'run', namespace: (detail as any).namespace || undefined,
-    name: `${(detail as any).name || 'run'} (${detail.instance_id})`, id: detail.instance_id,
-  } : null);
-
-  function toggleAuto() {
-    auto = !auto;
-    if (auto) { timer = setInterval(() => void inBackground(() => load()), 4000); } else { clearInterval(timer); timer = null; }
-  }
-
-  onMount(async () => {
-    // A run picked in the shell's Items list: open it once the list says what
-    // it is (its flow, project and status), or by id alone if it isn't listed.
-    const id = getActivePanel()?.props?.selectedId as string | undefined;
-    await load();
-    if (id) openById(id);
-  });
-  function openById(id: string) {
-    void openDetail(rows.find((r) => r.instance_id === id) ?? ({ instance_id: id, name: '', namespace: '', status: '' } as unknown as Exec));
-  }
-
-  // Another item picked in Items: the page stays mounted and opens it in place,
-  // from the list it already has — no reload, no flash of this page.
-  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  type View = 'overview' | 'steps' | 'timeline' | 'journal' | 'checkpoints' | 'io';
+  let id = $state('');
+  let tab = $state<View>('overview');
+  let run = $state<any>(null);
+  let failure = $state<any>(null);
+  let shown = '';
   $effect(() => {
-    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    const sel = (getActivePanel()?.props?.selectedId as string | undefined) ?? '';
     untrack(() => {
-      if (id === shownSel) return;
-      shownSel = id;
-      if (id) openById(id);
+      if (sel && sel !== shown) { shown = sel; id = sel; tab = 'overview'; run = null; failure = null; }
+      else if (!sel) { shown = ''; id = ''; }
     });
   });
-  /// Closing a run opened from Items goes back to the list's empty Details.
-  function closeRun() {
-    closeDetail();
-    if (pane && getActivePanel()?.props?.selectedId) navigateTo('executions', 'Executions');
-  }
-  // Another project (or "show platform") is another list.
-  let loadedRev = contextRev_();
-  $effect(() => {
-    const rev = contextRev_();
-    if (rev === loadedRev) return;
-    loadedRev = rev;
-    void load();
-  });
-  onDestroy(() => { if (timer) clearInterval(timer); });
+  const close = () => navigateTo('executions', 'Executions');
+  const openRun = (rid: string) => navigateToDetail('executions', 'Executions', rid);
 
-  // ── formatting ──
-  function ms(v: number | string | undefined): number | null {
-    if (v == null) return null;
-    if (typeof v === 'number') return v < 1e12 ? v * 1000 : v; // secs → ms heuristic
-    const t = Date.parse(v); return isNaN(t) ? null : t;
-  }
-  function ago(v: number | string | undefined): string {
-    const t = ms(v); if (t == null) return '—';
-    const d = Date.now() - t;
-    if (d < 0) return 'just now';
-    const s = Math.floor(d / 1000);
-    if (s < 60) return `${s}s ago`;
-    const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
-    return `${Math.floor(h / 24)}d ago`;
-  }
-  function when(v: number | string | undefined): string {
-    const t = ms(v); return t == null ? '—' : new Date(t).toLocaleString();
-  }
-  function dur(r: Exec): string {
-    if (r.duration_us != null) {
-      const msv = r.duration_us / 1000;
-      if (msv < 1000) return `${Math.round(msv)}ms`;
-      return `${(msv / 1000).toFixed(2)}s`;
+  /// The error log's row for a failed run, read once per run.
+  let classified = '';
+  function onrun(r: any) {
+    run = r;
+    if (r.phase === 'faulted' && classified !== r.run_id && hasRole('admin')) {
+      classified = r.run_id;
+      void execFlow('flow_a3t_error_log', 'a3t', { action: 'list', run_id: r.run_id, limit: 1 }, { silent: true }).then((res) => {
+        if (res.ok && res.data?.ok !== false && id === r.run_id) failure = res.data?.errors?.[0] ?? null;
+      });
     }
-    const a = ms(r.started_at), b = ms(r.completed_at);
-    if (a != null && b != null) return `${((b - a) / 1000).toFixed(2)}s`;
-    return '—';
-  }
-  function cls(status: string): string {
-    const s = (status || '').toLowerCase();
-    if (s === 'completed') return 'ok';
-    if (s === 'failed') return 'err';
-    if (s === 'running' || s === 'queued' || s === 'pending') return 'run';
-    return 'idle';
-  }
-  function pretty(v: any): string {
-    if (v == null) return '';
-    if (typeof v === 'string') { try { return JSON.stringify(JSON.parse(v), null, 2); } catch { return v; } }
-    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
   }
 
-  const STATUSES = ['all', 'running', 'paused', 'waiting', 'completed', 'failed', 'queued'];
+  // The chat's context: the run on screen (read-only).
+  trackActiveItem(() => run ? { kind: 'run', namespace: run.namespace || undefined, name: `${run.flow || 'run'} (${run.run_id})`, id: run.run_id } : null);
+
+  const PHASE: Record<string, string> = { completed: 'completed', faulted: 'failed', cancelled: 'cancelled', running: 'running', pending: 'queued', waiting: 'waiting', suspended: 'paused' };
+  const I = {
+    overview: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>',
+    steps: '<path d="M3 4h10M3 8h10M3 12h6"/><circle cx="13" cy="12" r="1.2"/>',
+    timeline: '<path d="M2 4h6M5 8h8M3 12h5"/>',
+    journal: '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/>',
+    checkpoints: '<path d="M4 14V2M4 3h8l-2 3 2 3H4"/>',
+    io: '<path d="M2 5h8M7 2l3 3-3 3M14 11H6M9 8l-3 3 3 3"/>',
+  };
+  const steps = $derived([
+    { id: 'overview', label: 'Overview', icon: I.overview, hint: 'Its status, why it failed, what ran — and run it again' },
+    { id: 'steps', label: 'Steps', icon: I.steps, hint: 'Each step it ran: its input, output and the context after it' },
+    { id: 'timeline', label: 'Timeline', icon: I.timeline, hint: 'Where its time went: waiting for a worker, running, paused, each step' },
+    { id: 'journal', label: 'Journal', icon: I.journal, hint: 'Every record the engine wrote for it, in order' },
+    { id: 'checkpoints', label: 'Resume points', icon: I.checkpoints, hint: 'Each completed step — re-run from one in debug' },
+    { id: 'io', label: 'Input & output', icon: I.io, hint: 'What it was started with, and what it returned' },
+  ]);
+  const meta = $derived(run ? `run · ${PHASE[run.phase] ?? run.phase} · ${run.namespace}` : 'run');
 </script>
 
-{#snippet runDetail()}
-{#if detail}
-        <div class="dr-head">
-          <span class="pill {cls(detail.status)}">{detail.status}</span>
-          {#if !pane}<button class="x" onclick={closeDetail} aria-label="Close">✕</button>{/if}
-        </div>
-        <h2>{detail.namespace}/{detail.name}</h2>
-        <div class="kv"><span>Instance</span><code>{detail.instance_id}</code></div>
-        <div class="kv"><span>Started</span><span>{when(detail.started_at)}</span></div>
-        <div class="kv"><span>Completed</span><span>{when(detail.completed_at)}</span></div>
-        <div class="kv"><span>Duration</span><span>{dur(detail)}</span></div>
-        {#if detail.current_step}<div class="kv"><span>Current step</span><span>{detail.current_step}</span></div>{/if}
-        {#if runsMode}
-          <RunView runId={detail.instance_id} onrerun={(id) => { void load(); openDetail({ ...detail!, instance_id: id }); }} />
-        {:else}
-
-
-        {#if detail.error}
-          <h3 class="err-h">Error</h3>
-          <pre class="code err-box">{detail.error}</pre>
-        {/if}
-        <h3>Input</h3>
-        <pre class="code">{pretty(detail.input) || '—'}</pre>
-        <h3>Output</h3>
-        <pre class="code">{pretty(detail.output) || '—'}</pre>
-        {/if}
-{/if}
-{/snippet}
-
-{#if pane}
-  <!-- In the Details pane a run is an item like any other: its header, its
-       actions in the action bar, the run view's tabs straight below. -->
-  <SlidePanel open={!!(selected && detail)} onclose={closeRun}>
-    {#if detail}
-      {#if runsMode}
-        <RunView runId={detail.instance_id} crumb={`Executions${detail.namespace ? ' · ' + detail.namespace : ''}`}
-          title={detail.name || 'Run'} onopen={detail.name ? () => openInStudio('flow', detail!.namespace || 'a3t', detail!.name) : undefined}
-          onrerun={(id) => { void load(); openDetail({ ...detail!, instance_id: id }); }} />
-      {:else}
-        <div class="drawer in-pane">{@render runDetail()}</div>
-      {/if}
-    {/if}
-  </SlidePanel>
-{/if}
-
-<div class="execs">
-  <header class="head">
-    <div class="head-title">
-      <SubmenuToggle appType="executions" />
-      <div>
-      <h1>Executions</h1>
-      <p class="sub">Recent workflow runs from the storage backend. Click a run for its input, output, and errors.</p>
-      </div>
+<SlidePanel open={!!id} onclose={close}>
+  {#if id}
+    <div class="panel-layout">
+      <PropertiesTree icon={run?.phase === 'faulted' ? '✕' : run?.phase === 'completed' ? '✓' : '▶'}
+        color={run?.phase === 'faulted' ? '#b42318' : run?.phase === 'completed' ? '#1a7158' : '#55514a'}
+        name={run?.flow ?? 'Run'} {meta} nodes={[]} {steps} activeNode={tab} onselect={(v) => (tab = v as View)} />
+      <div class="panel-col"><div class="panel-content"><div class="pf">
+        <WizardHead step={steps.find((s) => s.id === tab)} />
+        <section class="agt">
+          {#key id}
+            <RunView runId={id} view={tab} {failure} {onrun} onview={(v) => (tab = v as View)}
+              onopen={run?.flow ? () => openInStudio('flow', run.namespace || 'a3t', run.flow) : undefined}
+              onparent={openRun} onrerun={(rid) => { bumpItems(); openRun(rid); }} />
+          {/key}
+        </section>
+      </div></div></div>
     </div>
-    <div class="head-actions">
-      <label class="auto"><input type="checkbox" checked={auto} onchange={toggleAuto} /> Auto-refresh</label>
-      <button class="btn" onclick={() => load()} disabled={loading}>↻ Refresh</button>
-    </div>
-  </header>
-
-  <div class="filters">
-    <input class="inp" placeholder="namespace" bind:value={fNamespace} onchange={() => load()} />
-    <input class="inp" placeholder="flow name" bind:value={fName} onchange={() => load()} />
-    <select class="inp" bind:value={fStatus} onchange={() => load()}>{#each STATUSES as s}<option value={s}>{s}</option>{/each}</select>
-    <select class="inp" bind:value={limit} onchange={() => load()}>
-      {#each [25, 50, 100, 200] as n}<option value={n}>{n} rows</option>{/each}
-    </select>
-    <span class="count">{shown.length} shown</span>
-  </div>
-
-  <div class="body" class:split={!!selected}>
-    <div class="table-wrap">
-      {#if error}
-        <div class="state err">{error}</div>
-      {:else if loading && rows.length === 0}
-        <!-- the header bar shows loading -->
-      {:else if shown.length === 0}
-        <div class="state">No executions{fStatus !== 'all' ? ` with status "${fStatus}"` : ''} yet.</div>
-      {:else}
-        <table class="tbl">
-          <thead>
-            <tr><th>Status</th><th>Flow</th><th>Started</th><th>Duration</th><th>Step</th></tr>
-          </thead>
-          <tbody>
-            {#each shown as r}
-              <tr class:active={selected?.instance_id === r.instance_id} onclick={() => openDetail(r)}>
-                <td><span class="pill {cls(r.status)}">{r.status}</span></td>
-                <td class="flow"><span class="fn">{r.namespace}/{r.name}</span>{#if r.version}<span class="ver">v{r.version}</span>{/if}<span class="iid">{r.instance_id}</span></td>
-                <td title={when(r.started_at)}>{ago(r.started_at)}</td>
-                <td>{dur(r)}</td>
-                <td class="step">{r.current_step ?? '—'}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-        {#if runsMode && cursor}<button class="btn more" onclick={() => load(true)} disabled={loading}>Older runs…</button>{/if}
-      {/if}
-    </div>
-
-    {#if selected && detail && !pane}
-      <aside class="drawer">{@render runDetail()}</aside>
-    {/if}
-  </div>
-</div>
+  {/if}
+</SlidePanel>
 
 <style>
-  .execs { display: flex; flex-direction: column; height: 100%; overflow: hidden; color: var(--text-1); }
-  .head { display: flex; justify-content: space-between; align-items: flex-start; padding: 20px 24px 14px; border-bottom: 1px solid var(--border); }
-  .head-title { display: flex; align-items: flex-start; gap: 10px; }
-  .head h1 { font-family: var(--font-serif, serif); font-size: 24px; font-weight: 500; }
-  .sub { font-size: 13px; color: var(--text-3); margin-top: 4px; }
-  .head-actions { display: flex; align-items: center; gap: 12px; }
-  .more { margin: 10px auto; display: block; }
-  .auto { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); }
-  .btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-2); font-size: 13px; cursor: pointer; }
-  .btn:hover { background: var(--bg-subtle); }
-  .btn:disabled { opacity: 0.5; cursor: default; }
-  .filters { display: flex; align-items: center; gap: 10px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
-  .inp { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, var(--bg-surface)); color: var(--text-1); font-size: 13px; }
-  .count { margin-left: auto; font-size: 12px; color: var(--text-4); }
-  .body { flex: 1; overflow: hidden; display: grid; grid-template-columns: 1fr; }
-  .body.split { grid-template-columns: 1fr minmax(420px, 58%); }
-  .table-wrap { overflow: auto; }
-  .state { padding: 40px; text-align: center; color: var(--text-4); }
-  .state.err { color: var(--warn, #d66); }
-  .state.sm { padding: 12px; font-size: 12px; }
-  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .tbl th { text-align: left; padding: 10px 16px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-4); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-surface); }
-  .tbl td { padding: 10px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  .tbl tbody tr { cursor: pointer; }
-  .tbl tbody tr:hover { background: var(--bg-subtle); }
-  .tbl tbody tr.active { background: var(--bg-subtle); }
-  .flow { display: flex; flex-direction: column; gap: 2px; }
-  .fn { font-weight: 600; }
-  .ver { font-size: 11px; color: var(--text-4); }
-  .iid { font-size: 10.5px; color: var(--text-4); font-family: var(--font-mono, monospace); }
-  .step { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-3); }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); }
-  .pill.ok { background: rgba(60,180,110,0.14); border-color: rgba(60,180,110,0.4); color: #2fa46b; }
-  .pill.err { background: rgba(210,90,90,0.14); border-color: rgba(210,90,90,0.4); color: #d25a5a; }
-  .pill.run { background: rgba(90,140,230,0.14); border-color: rgba(90,140,230,0.4); color: #5a8ce6; }
-  .pill.idle { color: var(--text-3); }
-  .drawer.in-pane { border-left: 0; height: 100%; box-sizing: border-box; padding: 18px 22px; }
-  .drawer { border-left: 1px solid var(--border); overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-surface); }
-  .dr-head { display: flex; justify-content: space-between; align-items: center; }
-  .x { background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 14px; }
-  .drawer h2 { font-size: 15px; font-weight: 600; word-break: break-all; }
-  .drawer h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-4); margin-top: 10px; }
-  .drawer h3.err-h { color: var(--warn, #d66); }
-  .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--text-3); }
-  .kv code { font-family: var(--font-mono, monospace); font-size: 11px; color: var(--text-2); word-break: break-all; }
-  .code { padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken, #12141c); color: var(--text-1); font-family: var(--font-mono, monospace); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
-  .code.err-box { border-color: rgba(210,90,90,0.4); color: #e08; }
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+  .panel-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
 </style>

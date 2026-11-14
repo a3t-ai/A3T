@@ -1,22 +1,22 @@
 <script lang="ts">
+  /// Runtimes — where live systems are operated. Items is the drill-down (host →
+  /// runtime → the agents and flows deployed on it); the one picked opens here in
+  /// the agents' frame. Configuration lives in Canvas; this is operations:
+  /// whether each thing is serving, which pool has a worker, and pause / resume /
+  /// restart / undeploy / terminate. A runtime's state is its owner's to change
+  /// (a shared runtime is SuperAdmin's; the server says so in `canControl`).
+  import { untrack, onDestroy } from 'svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
+  import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import '$lib/components/agent/agent.css';
+  import '$lib/components/triggers/triggers.css';
+  import { opsApi, canvasApi, mcpCall } from '$lib/services/api';
   import { inBackground } from '$lib/core/status/activity';
-  import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
-  /// The Runtime console — where live systems are operated.
-  ///
-  /// Same shell as Agents and Templates: the side list is the drill-down
-  /// (host → runtime → deployed agents and flows) and this page shows whatever is
-  /// selected there. Configuration lives in Canvas; this is operations — whether
-  /// each thing is serving, and pause / resume / restart / undeploy. Runtime state
-  /// (hibernate / pause / resume) is an admin action because a runtime hosts other
-  /// teams' work too.
-  import { onMount, onDestroy } from 'svelte';
-  import { opsApi, executions, canvasApi, mcpCall } from '$lib/services/api';
-  import NewButton from '$lib/components/shared/NewButton.svelte';
   import { hasRole } from '$lib/stores/auth';
-  import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
+  import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { namespacesFor } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
-  import PageBanner from '$lib/components/shared/PageBanner.svelte';
 
   interface Stats {
     runs: number; inFlight: number; failed: number; refused: number; completed: number;
@@ -32,787 +32,514 @@
   interface Host {
     host: string; note: string;
     memory: { usedBytes?: number; limitBytes?: number };
-    cpu: { coresUsed?: number; limitCores?: number };
+    cpu: { coresUsed?: number | null; limitCores?: number };
     disk?: { path: string; totalBytes: number; freeBytes: number; usedBytes: number };
   }
   interface Rt {
-    runtime: { name: string; namespace: string; labels: Record<string, string>; url?: string; default?: boolean };
-    state: 'active' | 'hibernated' | 'paused'; pausedResponse: number; deployments: Row[];
-    /// From the server: whether you may restart / pause / terminate it. A shared
-    /// runtime is superadmin's; an org's own (label a3t.io/org) its admins'.
-    canControl?: boolean;
+    runtime: { name: string; namespace: string; labels: Record<string, string>; url?: string | null; default?: boolean };
+    state: 'active' | 'hibernated' | 'paused'; pausedResponse: number; deployments: Row[]; canControl?: boolean;
   }
-  /// Whose runtime it is: an org's own, one project's, or shared by everyone.
+  interface Pool { pool: string; live: boolean; served_here: boolean; queued: number }
+
+  const isAdmin = hasRole('admin');
+  const controls = (rt: Rt) => rt.canControl ?? isAdmin;
   function ownerOf(rt: Rt): string {
     const l = rt.runtime.labels ?? {};
-    return l['a3t.io/org'] ? `org ${l['a3t.io/org']}` : l['a3t.io/project'] ? `project ${l['a3t.io/project']}` : 'shared';
+    return l['a3t.io/org'] ? `org ${l['a3t.io/org']}` : l['a3t.io/project'] ? `project ${l['a3t.io/project']}` : 'shared by every project';
   }
-  /// The server's answer when it gives one; before that, the old admin rule.
-  const controls = (rt: Rt) => rt.canControl ?? isAdmin;
 
-  // ── What is selected in the side tree ──
-  const selectedId: string = getActivePanel()?.props?.selectedId ?? '';
-  const view: 'host' | 'runtime' | 'deployment' =
-    selectedId.startsWith('dep:') ? 'deployment' : selectedId.startsWith('rt:') ? 'runtime' : 'host';
-  const selKey = selectedId.replace(/^(host|rt|dep):/, '');
+  // ── What is picked in Items ──
+  let sel = $state('');
+  let view = $derived<'host' | 'runtime' | 'deployment' | null>(
+    sel.startsWith('dep:') ? 'deployment' : sel.startsWith('rt:') ? 'runtime' : sel.startsWith('host:') ? 'host' : null);
+  let key = $derived(sel.replace(/^(host|rt|dep):/, ''));
+  let tab = $state('overview');
+  let creating = $state(false);
+  let shown = '';
+  $effect(() => {
+    const p = getActivePanel()?.props ?? {};
+    const id = (p.selectedId as string | undefined) ?? '';
+    untrack(() => {
+      if (p.create && !id) { creating = true; sel = ''; shown = ''; resetNew(); return; }
+      if (id && id !== shown) { creating = false; shown = id; sel = id; tab = 'overview'; resetActs(); void load(); }
+      else if (!id) { shown = ''; sel = ''; }
+    });
+  });
+  const close = () => navigateTo('runtime', 'Runtimes');
+  const open = (id: string) => navigateToDetail('runtime', 'Runtimes', id);
 
+  // ── Data ──
   let runtimes = $state<Rt[]>([]);
   let unplaced = $state<Row[]>([]);
   let host = $state<Host | null>(null);
   let controller = $state<'none' | 'reachable' | 'unreachable'>('none');
-  let loading = $state(true);
-  let error = $state('');
-  let busy = $state<string>('');
-  let toast = $state<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  let pools = $state<Pool[]>([]);
   let probe = $state<any>(null);
-  const isAdmin = hasRole('admin');
-
-  // Expanded runs (input / output), kept across the 5s refresh by instance id.
-  let openRuns = $state<Record<string, any>>({});
-  async function toggleRun(id: string) {
-    if (openRuns[id]) { const { [id]: _, ...rest } = openRuns; openRuns = rest; return; }
-    openRuns = { ...openRuns, [id]: { loading: true } };
-    const res = await executions.get(id);
-    openRuns = { ...openRuns, [id]: res.ok && typeof res.data === 'object' ? res.data : { error: res.error || 'Could not load this run' } };
-  }
-  function pretty(v: any): string {
-    if (v == null) return '';
-    if (typeof v === 'string') { try { return JSON.stringify(JSON.parse(v), null, 2); } catch { return v; } }
-    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
-  }
-  async function copy(text: string) { try { await navigator.clipboard.writeText(text); flash('ok', 'Copied'); } catch {} }
-
-  // Terminate-runtime dialog: the plan first, then a typed confirmation.
-  let terminating = $state<{ rt: Rt; plan: any | null; error?: string } | null>(null);
-  let terminateConfirm = $state('');
-  async function openTerminate(rt: Rt) {
-    terminating = { rt, plan: null };
-    terminateConfirm = '';
-    const res = await opsApi.terminatePlan(rt.runtime.name);
-    terminating = res.ok ? { rt, plan: res.data.impact } : { rt, plan: null, error: res.error || 'Could not plan the termination' };
-  }
-  async function confirmTerminate() {
-    if (!terminating || terminateConfirm !== terminating.rt.runtime.name) return;
-    const name = terminating.rt.runtime.name;
-    busy = `rt:${name}:terminate`;
-    const res = await opsApi.terminate(name);
-    busy = '';
-    terminating = null;
-    if (res.ok) flash('ok', res.data?.note || `Runtime ${name} terminated`);
-    else flash('err', res.status === 403 ? (res.error || 'You may not control this runtime.') : res.error || 'Failed');
-    bumpItems();
-    if (res.ok && !res.data?.recreated) { navigateTo('runtime', 'Runtimes'); return; }
-    await load();
-  }
-
-  // New runtime dialog
-  let newRt = $state<{ name: string; namespace: string; labels: string; url: string; isDefault: boolean } | null>(null);
-  let newRtErr = $state('');
-  async function createRuntime() {
-    if (!newRt) return;
-    const name = newRt.name.trim();
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) { newRtErr = "Name: letters, digits, '-' or '_'"; return; }
-    const labels: Record<string, string> = {};
-    for (const part of newRt.labels.split(',').map((x) => x.trim()).filter(Boolean)) {
-      const [k, v] = part.split('=').map((x) => x?.trim());
-      if (!k || !v) { newRtErr = `Label "${part}" must be key=value`; return; }
-      labels[k] = v;
-    }
-    busy = 'rt:create';
-    const res = await canvasApi.createRuntime(newRt.namespace.trim() || 'default', name, { labels, url: newRt.url.trim() || undefined, default: newRt.isDefault });
-    busy = '';
-    if (!res.ok) { newRtErr = res.error || 'Could not create the runtime'; return; }
-    newRt = null;
-    flash('ok', `Runtime ${name} created`);
-    bumpItems();
-    await load();
-  }
-
-  // Pause dialog
-  let pausing = $state<Row | null>(null);
-  let pauseReason = $state('');
-
-  const allRows = $derived([...runtimes.flatMap((r) => r.deployments), ...unplaced]);
-  const currentRt = $derived(
-    view === 'runtime'
-      ? selKey === '__unplaced'
-        ? ({ runtime: { name: 'Unplaced', namespace: '', labels: {} }, state: 'active', pausedResponse: 503, deployments: unplaced } as Rt)
-        : runtimes.find((r) => r.runtime.name === selKey) ?? null
-      : null,
-  );
-  const currentRow = $derived(view === 'deployment' ? allRows.find((r) => r.deployment.id === selKey) ?? null : null);
-  const totals = $derived({
-    deployments: allRows.length,
-    notServing: allRows.filter((d) => d.serving !== 'serving' && d.serving !== 'hibernated').length,
-    inFlight: allRows.reduce((n, d) => n + d.stats.inFlight, 0),
-  });
-
-  /// Work pools: which have a worker claiming runs (through the engine
-  /// gateway, or this console's own) and how much is queued on each.
-  let pools = $state<{ pool: string; live: boolean; served_here: boolean; queued: number }[]>([]);
+  let loaded = $state(false);
+  let err = $state('');
+  let busy = $state('');
+  let done = $state<{ ok: boolean; text: string } | null>(null);
 
   async function load() {
     void mcpCall('list_pools', {}).then((r) => { pools = r.ok && Array.isArray(r.data?.pools) ? r.data.pools : []; });
     const res = await opsApi.overview();
-    loading = false;
-    if (!res.ok) { error = res.error || 'Could not load runtimes'; return; }
-    error = '';
+    loaded = true;
+    if (!res.ok) { err = res.error || 'Runtimes could not be read.'; return; }
+    err = '';
     runtimes = res.data?.runtimes ?? [];
     unplaced = res.data?.unplaced ?? [];
     host = res.data?.host ?? null;
     controller = res.data?.controller ?? 'none';
-    if (view === 'deployment') {
-      const p = await opsApi.probe(selKey);
-      probe = p.ok ? p.data : null;
-    }
+    if (view === 'deployment') { const p = await opsApi.probe(key); probe = p.ok ? p.data : null; }
   }
-
-  // Live: refresh while the tab is visible. CPU needs two samples, so the second
-  // refresh is also what fills in the CPU figure.
-  let timer: ReturnType<typeof setInterval> | undefined;
-  onMount(() => {
-    load();
-    // The shell's "New runtime".
-    if (getActivePanel()?.props?.create) { newRt = { name: '', namespace: 'default', labels: '', url: '', isDefault: false }; newRtErr = ''; }
-    timer = setInterval(() => { if (!document.hidden && !busy && !pausing && !terminating && !newRt) void inBackground(load); }, 5000);
-  });
+  // Live while something is open: CPU needs two samples, so the second read fills it in.
+  const timer = setInterval(() => { if (sel && !document.hidden && !busy && !confirming) void inBackground(load); }, 5000);
   onDestroy(() => clearInterval(timer));
 
-  function open(id: string) { navigateToDetail('runtime', 'Runtimes', id); }
+  const allRows = $derived([...runtimes.flatMap((r) => r.deployments), ...unplaced]);
+  const rt = $derived<Rt | null>(view === 'runtime'
+    ? key === '__unplaced'
+      ? ({ runtime: { name: 'Unplaced', namespace: '', labels: {} }, state: 'active', pausedResponse: 503, deployments: unplaced } as Rt)
+      : runtimes.find((r) => r.runtime.name === key) ?? null
+    : null);
+  const row = $derived(view === 'deployment' ? allRows.find((r) => r.deployment.id === key) ?? null : null);
+  const poolOf = (name: string) => pools.find((p) => p.pool === name);
+  const notServing = (rows: Row[]) => rows.filter((d) => d.serving !== 'serving' && d.serving !== 'hibernated').length;
+  const sum = (rows: Row[], f: (s: Stats) => number) => rows.reduce((n, d) => n + f(d.stats), 0);
 
-  function flash(kind: 'ok' | 'err', text: string) {
-    toast = { kind, text };
-    setTimeout(() => { if (toast?.text === text) toast = null; }, 5000);
-  }
+  // ── Actions ──
+  /// The action waiting for its inline confirmation: `pause` takes a reason,
+  /// `terminate-rt` the runtime's name typed in.
+  let confirming = $state<'' | 'pause' | 'undeploy' | 'terminate' | 'pause-rt' | 'terminate-rt'>('');
+  let reason = $state('');
+  let typed = $state('');
+  let plan = $state<any>(null);
+  let planErr = $state('');
+  function resetActs() { confirming = ''; reason = ''; typed = ''; plan = null; planErr = ''; done = null; probe = null; }
+  function flash(ok: boolean, text: string) { done = { ok, text }; }
 
-  async function act(row: Row, action: 'pause' | 'resume' | 'restart' | 'undeploy' | 'terminate', reason?: string) {
-    if (action === 'undeploy' && !confirm(`Undeploy ${row.deployment.target}? Runs in progress finish; the flow and its canvas are kept.`)) return;
-    if (action === 'terminate' && !confirm(`Terminate ${row.deployment.target} now? Runs in progress (${row.stats.inFlight}) are cancelled and it is undeployed. The flow and its canvas are kept.`)) return;
-    busy = `${row.deployment.id}:${action}`;
-    const res = await opsApi.deployment(row.deployment.id, action, reason);
-    busy = '';
-    if (res.ok) flash('ok', res.data?.note || `${action} done`);
-    else flash('err', res.status === 403 ? `Not allowed: ${res.error}` : res.error || 'Failed');
-    bumpItems(); // the side tree's status dots
-    if (res.ok && (action === 'undeploy' || action === 'terminate') && view === 'deployment') { open(`rt:${row.deployment.runtime}`); return; }
+  async function act(r: Row, action: 'pause' | 'resume' | 'restart' | 'undeploy' | 'terminate') {
+    busy = action; done = null;
+    const res = await opsApi.deployment(r.deployment.id, action, action === 'pause' ? reason.trim() || undefined : undefined);
+    busy = ''; confirming = ''; reason = '';
+    flash(res.ok, res.ok ? res.data?.note || `${action} done` : res.status === 403 ? `Not allowed: ${res.error}` : res.error || 'It failed.');
+    bumpItems();
+    if (res.ok && (action === 'undeploy' || action === 'terminate')) { open(`rt:${r.deployment.runtime}`); return; }
     await load();
   }
-
-  async function confirmPause() {
-    if (!pausing) return;
-    const row = pausing;
-    pausing = null;
-    await act(row, 'pause', pauseReason.trim() || undefined);
-    pauseReason = '';
-  }
-
-  async function runtimeAct(rt: Rt, action: 'hibernate' | 'pause' | 'resume') {
-    if (action === 'pause' && !confirm(`Pause runtime ${rt.runtime.name}? Everything deployed on it (${rt.deployments.length}) stops serving until it is resumed.`)) return;
-    busy = `rt:${rt.runtime.name}:${action}`;
-    const res = await opsApi.runtime(rt.runtime.name, action);
-    busy = '';
-    if (res.ok) flash('ok', res.data?.note || 'Done');
-    else flash('err', res.status === 403 ? 'Only an admin can change a runtime’s state.' : res.error || 'Failed');
+  async function rtAct(r: Rt, action: 'hibernate' | 'pause' | 'resume') {
+    busy = action; done = null;
+    const res = await opsApi.runtime(r.runtime.name, action);
+    busy = ''; confirming = '';
+    flash(res.ok, res.ok ? res.data?.note || 'Done.' : res.status === 403 ? 'Only its owner may change this runtime’s state.' : res.error || 'It failed.');
     bumpItems();
     await load();
   }
-
-  async function setPausedResponse(rt: Rt, status: 503 | 404) {
-    const res = await opsApi.pausedResponse(rt.runtime.name, status);
-    if (!res.ok) flash('err', res.error || 'Failed');
+  async function setPausedResponse(r: Rt, status: 503 | 404) {
+    const res = await opsApi.pausedResponse(r.runtime.name, status);
+    if (!res.ok) flash(false, res.error || 'It failed.');
     await load();
   }
-
+  async function planTerminate(r: Rt) {
+    confirming = 'terminate-rt'; typed = ''; plan = null; planErr = '';
+    const res = await opsApi.terminatePlan(r.runtime.name);
+    if (res.ok) plan = res.data?.impact ?? null; else planErr = res.error || 'The plan could not be worked out.';
+  }
+  async function terminateRt(r: Rt) {
+    if (typed !== r.runtime.name) return;
+    busy = 'terminate';
+    const res = await opsApi.terminate(r.runtime.name);
+    busy = ''; confirming = '';
+    flash(res.ok, res.ok ? res.data?.note || `Runtime ${r.runtime.name} terminated.` : res.status === 403 ? res.error || 'You may not control this runtime.' : res.error || 'It failed.');
+    bumpItems();
+    if (res.ok && !res.data?.recreated) { close(); return; }
+    await load();
+  }
   function editCanvas(d: Deployment) {
     const name = d.canvas.split('/')[1];
-    if (name) navigateTo('canvas', 'Canvas', { editCanvas: name });
+    if (name) navigateToDetail('canvas', 'Canvas', name);
   }
 
-  // ── formatting ──
-  const SERVING: Record<string, { label: string; cls: string; hint: string }> = {
-    serving: { label: 'Serving', cls: 'ok', hint: 'Taking requests' },
-    paused: { label: 'Paused', cls: 'bad', hint: 'Refuses every request until resumed' },
-    'runtime-paused': { label: 'Runtime paused', cls: 'bad', hint: 'Its runtime is paused by an admin' },
-    hibernated: { label: 'Hibernated', cls: 'idle', hint: 'Asleep — the next request wakes the runtime' },
-    unplaced: { label: 'Unplaced', cls: 'warn', hint: 'Its runtime no longer exists' },
-  };
-  const RT_STATE: Record<string, string> = { active: 'ok', hibernated: 'idle', paused: 'bad' };
+  // ── New runtime ──
+  let nName = $state(''), nNs = $state('default'), nLabels = $state(''), nUrl = $state(''), nDefault = $state(false), nErr = $state('');
+  function resetNew() { nName = ''; nNs = 'default'; nLabels = ''; nUrl = ''; nDefault = false; nErr = ''; }
+  async function createRuntime() {
+    const name = nName.trim();
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) { nErr = "Name: letters, digits, '-' or '_'."; return; }
+    const labels: Record<string, string> = {};
+    for (const part of nLabels.split(',').map((x) => x.trim()).filter(Boolean)) {
+      const [k, v] = part.split('=').map((x) => x?.trim());
+      if (!k || !v) { nErr = `Label “${part}” must be key=value.`; return; }
+      labels[k] = v;
+    }
+    busy = 'create';
+    const res = await canvasApi.createRuntime(nNs.trim() || 'default', name, { labels, url: nUrl.trim() || undefined, default: nDefault });
+    busy = '';
+    if (!res.ok) { nErr = res.error || 'The runtime was not created.'; return; }
+    creating = false; bumpItems(); open(`rt:${name}`);
+  }
 
+  // ── Formatting ──
+  const SERVING: Record<string, { label: string; dot: string; hint: string }> = {
+    serving: { label: 'Serving', dot: 'ok', hint: 'taking requests' },
+    paused: { label: 'Paused', dot: 'err', hint: 'refuses every request until resumed' },
+    'runtime-paused': { label: 'Runtime paused', dot: 'err', hint: 'its runtime is paused' },
+    hibernated: { label: 'Hibernated', dot: '', hint: 'asleep — the next request wakes it' },
+    unplaced: { label: 'Unplaced', dot: 'warn', hint: 'its runtime no longer exists' },
+  };
+  const RT_DOT: Record<string, string> = { active: 'ok', hibernated: '', paused: 'err' };
   function bytes(n?: number) {
     if (n == null) return '—';
-    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0; let v = n;
+    const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; let v = n;
     while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
     return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
   }
-  function pct(a?: number, b?: number) { return a != null && b ? Math.min(100, (a / b) * 100) : null; }
+  const pct = (a?: number | null, b?: number) => (a != null && b ? Math.min(100, (a / b) * 100) : null);
   function ago(iso?: string) {
     if (!iso) return '—';
     const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-    if (s < 60) return `${Math.round(s)}s ago`;
-    if (s < 3600) return `${Math.round(s / 60)}m ago`;
-    if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-    return `${Math.round(s / 86400)}d ago`;
+    return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
   }
-  function ms(v?: number) { return v == null ? '—' : v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)} s`; }
+  const msf = (v?: number) => (v == null ? '—' : v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)} s`);
+  const labelsOf = (l: Record<string, string>) => Object.entries(l ?? {}).map(([k, v]) => `${k}=${v}`).join(' · ') || 'none';
+
+  const I = {
+    overview: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>',
+    pools: '<rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/><circle cx="5" cy="5" r=".6"/><circle cx="5" cy="11" r=".6"/>',
+    deployed: '<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>',
+    controls: '<circle cx="8" cy="8" r="6"/><path d="M6.5 5.5v5M9.5 5.5v5"/>',
+    health: '<path d="M1.5 8h3l2-4 3 8 2-4h3"/>',
+    runs: '<path d="M4 3l9 5-9 5z"/>',
+  };
+  const steps = $derived(
+    view === 'host' ? [
+      { id: 'overview', label: 'Overview', icon: I.overview, hint: 'What this host has, and the runtimes on it' },
+      { id: 'pools', label: 'Work pools', icon: I.pools, hint: 'Which pools have a worker claiming runs, and what is queued on each' },
+    ] : view === 'runtime' ? [
+      { id: 'overview', label: 'Overview', icon: I.overview, hint: 'Its state, who owns it, and its worker' },
+      { id: 'deployed', label: 'Deployed', icon: I.deployed, hint: 'The agents and flows placed on it' },
+      ...(key === '__unplaced' ? [] : [{ id: 'controls', label: 'Controls', icon: I.controls, hint: 'Hibernate, pause, resume or terminate it, and what callers get while it is paused' }]),
+    ] : [
+      { id: 'overview', label: 'Overview', icon: I.overview, hint: 'Whether it is serving, its figures, and where it runs' },
+      { id: 'health', label: 'Health', icon: I.health, hint: 'Its checks, and the triggers that feed it' },
+      { id: 'runs', label: 'Runs', icon: I.runs, hint: 'Its latest runs — open one in Executions' },
+      { id: 'controls', label: 'Controls', icon: I.controls, hint: 'Pause, resume, restart, undeploy or terminate it' },
+    ]);
+  const title = $derived(view === 'host' ? key : view === 'runtime' ? (rt?.runtime.name ?? key) : (row?.deployment.target ?? key));
+  const meta = $derived(view === 'host' ? 'host · shared by every runtime on it'
+    : view === 'runtime' ? (rt ? `runtime · ${rt.state}${rt.runtime.namespace ? ` · ${rt.runtime.namespace}` : ''}` : 'runtime')
+    : row ? `${row.deployment.kind} · ${SERVING[row.serving]?.label.toLowerCase() ?? row.serving} · on ${row.deployment.runtime}` : 'deployment');
 </script>
 
-<!-- Page Header — same shape as Agents / Templates -->
-<div class="screen-header">
-  <div class="breadcrumb">
-    <button class="crumb" onclick={() => navigateTo('runtime', 'Runtimes')}>Runtimes</button>
-    {#if view !== 'host'}
-      {@const rtName = view === 'runtime' ? selKey : currentRow?.deployment.runtime}
-      <span class="sep">/</span>
-      {#if view === 'deployment' && rtName}
-        <button class="crumb" onclick={() => open(`rt:${rtName}`)}>{rtName}</button>
-        <span class="sep">/</span> {currentRow?.deployment.target ?? selKey}
-      {:else}
-        {rtName === '__unplaced' ? 'Unplaced' : rtName}
-      {/if}
-    {:else}
-      <span class="sep">/</span> {host?.host ?? 'Host'}
-    {/if}
-  </div>
-  <div class="screen-title-row">
-    <div class="title-block">
-      <SubmenuToggle appType="runtime" />
-      <h1 class="screen-title">
-        {#if view === 'host'}Hosts &amp; Runtimes
-        {:else if view === 'runtime'}{currentRt?.runtime.name ?? selKey}
-          {#if currentRt && selKey !== '__unplaced'}<span class="chip {RT_STATE[currentRt.state]}">{currentRt.state}</span>{/if}
-        {:else}<span class="kind {currentRow?.deployment.kind ?? 'flow'}">{currentRow?.deployment.kind ?? ''}</span> {currentRow?.deployment.target ?? selKey}
-          {#if currentRow}{@const sv = SERVING[currentRow.serving] ?? SERVING.serving}<span class="chip {sv.cls}" title={sv.hint}>{sv.label}</span>{/if}
-        {/if}
-      </h1>
-    </div>
-    <div class="screen-actions">
-      {#if view === 'host' && isAdmin}
-        <NewButton label="New runtime" accent="runtime" onclick={() => { newRt = { name: '', namespace: 'default', labels: '', url: '', isDefault: false }; newRtErr = ''; }} />
-      {:else if view === 'runtime' && currentRt && selKey !== '__unplaced'}
-        {@render runtimeActions(currentRt)}
-      {:else if view === 'deployment' && currentRow}
-        {@render depActions(currentRow, true)}
-      {/if}
-    </div>
-  </div>
-</div>
-
-<div class="screen-body">
-  {#if toast}<div class="toast {toast.kind}">{toast.text}</div>{/if}
-
-  {#if loading}
-    <!-- the header bar shows loading -->
-  {:else if error}
-    <p class="err">{error}</p>
-
-  <!-- ═══ HOST ═══ -->
-  {:else if view === 'host'}
-    <PageBanner
-      headline="Operate what is running, where it runs."
-      highlightWord="running"
-      subtitle="Hosts → runtimes → the agents and flows deployed on them."
-      description="Pick a runtime or a deployment in the list. Pause, resume, restart, undeploy or probe it here; change how it deploys in its canvas."
-      accent="runtime"
-    />
-    {#if host}{@render hostCard(host)}{/if}
-    {#if pools.length}
-      <h3 class="sec">Work pools</h3>
-      <table class="pools">
-        <thead><tr><th>Pool</th><th>Worker</th><th>Queued</th></tr></thead>
-        <tbody>
-          {#each pools as p (p.pool)}
-            <tr>
-              <td class="mono">{p.pool}</td>
-              <td>{#if p.live}<span class="ok">● claiming{p.served_here ? ' (this console)' : ''}</span>{:else}<span class="dim">○ none</span>{/if}</td>
-              <td>{p.queued}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {/if}
-    <h3 class="sec">Runtimes on this host</h3>
-    {#if runtimes.length === 0}
-      <div class="empty"><p>No runtimes are registered yet.</p>
-        <button class="btn" onclick={() => navigateTo('canvas', 'Canvas')}>Create one in Canvas</button></div>
-    {:else}
-      <div class="rt-grid">
-        {#each runtimes as rt (rt.runtime.name)}
-          {@const notServing = rt.deployments.filter((d) => d.serving !== 'serving' && d.serving !== 'hibernated').length}
-          <button class="rt-card" onclick={() => open(`rt:${rt.runtime.name}`)}>
-            <div class="rt-top">
-              <span class="dot {RT_STATE[rt.state]}"></span>
-              <span class="rt-name">{rt.runtime.name}</span>
-              <span class="chip {RT_STATE[rt.state]}">{rt.state}</span>
+<SlidePanel open={!!sel || creating} onclose={close}>
+  {#if creating}
+    <div class="panel-layout">
+      <PropertiesTree icon="+" color="#0f766e" name={nName || 'New runtime'} meta="runtime" nodes={[]} steps={[{ id: 'new', label: 'Runtime', hint: 'A pool canvases place work into', icon: I.pools }]} activeNode="new" onselect={() => {}} />
+      <div class="panel-col"><div class="panel-content"><div class="pf">
+        <WizardHead step={{ id: 'new', label: 'New runtime', hint: 'A pool canvases place work into — its labels are what placement selects on' }} />
+        <section class="agt">
+          <div class="card">
+            <div class="card-head"><h3>1 · Name</h3><span>canvases and the run store call its pool by this name</span></div>
+            <div class="fields">
+              <label class="fld">Name<input class="mono" bind:value={nName} placeholder="rt-staging" /></label>
+              <label class="fld">Project<select bind:value={nNs}>{#each [...new Set([nNs, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}</select></label>
             </div>
-            <div class="labels">
-              <span class="ns">{rt.runtime.namespace}</span>
-              {#each Object.entries(rt.runtime.labels ?? {}) as [k, v]}<span class="lbl">{k}={v}</span>{/each}
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>2 · Placement</h3><span>what a canvas selects it by</span></div>
+            <div class="fields">
+              <label class="fld">Labels<input class="mono" bind:value={nLabels} placeholder="tier=test, class=cpu" /></label>
+              <label class="fld">URL <small>optional</small><input class="mono" bind:value={nUrl} placeholder="http://runtime-gpu.a3t.svc:3002" /></label>
             </div>
-            <div class="rt-sub">
-              {rt.deployments.length} deployed · {rt.deployments.reduce((n, d) => n + d.stats.runsLastHour, 0)} runs/h
-              {#if notServing} · <span class="alert">{notServing} not serving</span>{/if}
-            </div>
-          </button>
-        {/each}
-      </div>
-    {/if}
-
-  <!-- ═══ RUNTIME ═══ -->
-  {:else if view === 'runtime'}
-    {#if !currentRt}
-      <p class="muted">Runtime “{selKey}” is not registered any more.</p>
-    {:else}
-      <p class="lede">
-        {#if selKey === '__unplaced'}Deployments whose runtime was removed after they were placed. Restart re-places them from their canvas; undeploy removes them.
-        {:else if currentRt.state === 'hibernated'}Asleep — the first request for anything here wakes it.
-        {:else if currentRt.state === 'paused'}Paused by an admin — everything here refuses requests until the runtime is resumed.
-        {:else}Serving.{/if}
-        {#if selKey !== '__unplaced'}
-          {#if controller === 'reachable'}<span class="tag">EE controller connected</span>
-          {:else if controller === 'unreachable'}<span class="tag warn">controller unreachable · logical placement</span>
-          {:else}<span class="tag">CE · logical placement</span>{/if}
-          <span class="labels inline"><span class="ns">ns {currentRt.runtime.namespace}</span>{#each Object.entries(currentRt.runtime.labels ?? {}) as [k, v]}<span class="lbl">{k}={v}</span>{/each}</span>
-        {/if}
-      </p>
-      {@render table(currentRt.deployments)}
-    {/if}
-
-  <!-- ═══ DEPLOYMENT ═══ -->
-  {:else}
-    {#if !currentRow}
-      <p class="muted">“{selKey}” is not deployed any more.</p>
-    {:else}
-      {@const d = currentRow.deployment}
-      <p class="lede">
-        On <button class="link" onclick={() => open(`rt:${d.runtime}`)}>{d.runtime}</button> · {d.mode} · ns {d.namespace}
-        · {d.canvas ? `canvas ${d.canvas}` : 'default canvas'}{#if d.kind === 'agent'} · runs {d.flowRef}{/if}
-        · deployed {ago(d.deployedAt)}
-      </p>
-      {#if d.state === 'paused'}
-        <div class="paused-note">
-          Paused {ago(d.pausedAt)}{d.pauseReason ? ` — “${d.pauseReason}”` : ''}. Trigger callers get <b>HTTP {currentRow.callersGetWhenPaused}</b>; every other request is refused until resumed.
-        </div>
-      {/if}
-
-      <div class="kpis">
-        <div><b>{currentRow.stats.runsLastHour}</b><span>runs / h</span></div>
-        <div><b>{currentRow.stats.inFlight}</b><span>in flight</span></div>
-        <div><b class:alert={currentRow.stats.failed > 0}>{Math.round(currentRow.stats.errorRate * 100)}%</b><span>errors</span></div>
-        <div><b>{ms(currentRow.stats.p50Ms)}</b><span>p50</span></div>
-        <div><b>{ms(currentRow.stats.p95Ms)}</b><span>p95</span></div>
-        <div><b>{currentRow.stats.refused}</b><span>refused</span></div>
-      </div>
-
-      {#if probe}
-        <div class="two">
-          <section class="card">
-            <h4>Health</h4>
-            <ul class="checks">
-              {#each probe.checks as c}
-                <li class:bad={!c.ok}><span class="dot {c.ok ? 'ok' : 'bad'}"></span>{c.check}{#if c.target}<span class="mono muted tgt-ref">{c.target}</span>{/if}{#if c.detail && !c.ok} — {c.detail}{/if}</li>
-              {/each}
-            </ul>
-          </section>
-          <section class="card">
-            <h4>Triggers</h4>
-            {#if probe.triggers.length === 0}
-              <p class="muted small">No triggers feed this deployment — it runs on demand or from chat.</p>
-            {:else}
-              <ul class="trig">
-                {#each probe.triggers as t}
-                  <li><span class="chip {t.enabled ? 'ok' : 'idle'}">{t.config?.type}</span>
-                    <span class="mono">{t.config?.path ?? t.config?.expression ?? t.config?.source ?? ''}</span>
-                    <span class="muted">{t.name}</span></li>
-                {/each}
-              </ul>
-            {/if}
-          </section>
-        </div>
-
-        <section class="card">
-          <h4>Recent runs</h4>
-          {#if probe.recentRuns.length === 0}
-            <p class="muted small">No runs yet.</p>
-          {:else}
-            <table class="runs">
-              <tbody>
-                {#each probe.recentRuns as r (r.instanceId)}
-                  {@const refused = (r.error ?? '').startsWith('refused: ')}
-                  {@const ex = openRuns[r.instanceId]}
-                  <tr class="run-row" class:open={!!ex} onclick={() => toggleRun(r.instanceId)} title="Show input and output">
-                    <td><svg class="twist" class:open={!!ex} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg><span class="dot {refused ? 'idle' : r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'bad' : 'run'}"></span>{refused ? 'refused' : r.status}</td>
-                    <td class="muted">{ago(r.startedAt)}</td>
-                    <td class="num">{ms(r.durationMs)}</td>
-                    <td class="small" class:err={!refused} class:muted={refused}>{refused ? r.error.slice(9) : (r.error ?? '')}</td>
-                  </tr>
-                  {#if ex}
-                    <tr class="run-detail"><td colspan="4">
-                      {#if ex.loading}
-                        <!-- the header bar shows loading -->
-                      {:else}
-                        <div class="io-meta mono muted">{r.instanceId}{#if ex.current_step} · step {ex.current_step}{/if}</div>
-                        {#if ex.error && !refused}<div class="io-err">{ex.error}</div>{/if}
-                        <div class="io">
-                          <div>
-                            <div class="io-h">Input <button class="io-copy" onclick={(e) => { e.stopPropagation(); copy(pretty(ex.input)); }}>copy</button></div>
-                            <pre>{pretty(ex.input) || '—'}</pre>
-                          </div>
-                          <div>
-                            <div class="io-h">Output <button class="io-copy" onclick={(e) => { e.stopPropagation(); copy(pretty(ex.output)); }}>copy</button></div>
-                            <pre>{pretty(ex.output) || (refused ? 'refused — never ran' : '—')}</pre>
-                          </div>
-                        </div>
-                      {/if}
-                    </td></tr>
-                  {/if}
-                {/each}
-              </tbody>
-            </table>
-            <button class="btn sm ghost" onclick={() => navigateTo('executions', 'Executions')}>All executions →</button>
-          {/if}
+            <label class="chk"><input type="checkbox" bind:checked={nDefault} /> The default runtime — used when a canvas selects no labels</label>
+          </div>
+          {#if nErr}<div class="note bad">{nErr}</div>{/if}
+          <div class="acts"><button class="btn2 primary" disabled={!nName.trim() || !!busy} onclick={createRuntime}>{busy ? 'Creating…' : 'Create runtime'}</button><button class="btn2 quiet" onclick={close}>Cancel</button></div>
         </section>
-      {/if}
-    {/if}
-  {/if}
-</div>
-
-{#snippet hostCard(h: Host)}
-  {@const mem = pct(h.memory.usedBytes, h.memory.limitBytes)}
-  {@const cpu = pct(h.cpu.coresUsed, h.cpu.limitCores)}
-  {@const disk = h.disk ? pct(h.disk.usedBytes, h.disk.totalBytes) : null}
-  <section class="host" title={h.note}>
-    <div class="host-id">
-      <span class="k">Host</span>
-      <span class="mono">{h.host || 'flowr'}</span>
-      <span class="shared">shared by all runtimes</span>
+      </div></div></div>
     </div>
-    <div class="meters">
-      <div class="meter"><span class="k">CPU</span><div class="bar"><i style="width:{cpu ?? 0}%" class:hot={(cpu ?? 0) > 80}></i></div>
-        <span class="v">{h.cpu.coresUsed != null ? h.cpu.coresUsed.toFixed(2) : '…'} / {h.cpu.limitCores ?? '—'} cores</span></div>
-      <div class="meter"><span class="k">Memory</span><div class="bar"><i style="width:{mem ?? 0}%" class:hot={(mem ?? 0) > 80}></i></div>
-        <span class="v">{bytes(h.memory.usedBytes)} / {bytes(h.memory.limitBytes)}</span></div>
-      {#if h.disk}
-        <div class="meter"><span class="k">Disk</span><div class="bar"><i style="width:{disk ?? 0}%" class:hot={(disk ?? 0) > 85}></i></div>
-          <span class="v">{bytes(h.disk.usedBytes)} / {bytes(h.disk.totalBytes)} <em>({bytes(h.disk.freeBytes)} free)</em></span></div>
-      {/if}
-    </div>
-    <div class="totals">
-      <span><b>{runtimes.length}</b> runtimes</span>
-      <span><b>{totals.deployments}</b> deployed</span>
-      <span><b>{totals.inFlight}</b> in flight</span>
-      <span class:alert={totals.notServing > 0}><b>{totals.notServing}</b> not serving</span>
-    </div>
-  </section>
-{/snippet}
+  {:else if view}
+    <div class="panel-layout">
+      <PropertiesTree icon={view === 'host' ? 'H' : view === 'runtime' ? 'R' : row?.deployment.kind === 'agent' ? 'A' : 'F'}
+        color={view === 'deployment' ? (row?.deployment.kind === 'agent' ? '#b45309' : '#5530a8') : view === 'host' ? '#3a5a85' : '#0f766e'}
+        name={title} {meta} nodes={[]} {steps} activeNode={tab} onselect={(id) => { tab = id; confirming = ''; }} />
+      <div class="panel-col"><div class="panel-content"><div class="pf">
+        <WizardHead step={steps.find((s) => s.id === tab)} />
+        <section class="agt">
+        {#if err}<div class="note bad">{err}</div>
+        {:else if !loaded}<p class="dim">Reading…</p>
+        {:else}
+          {#if done}<div class="note" class:bad={!done.ok}>{done.text}</div>{/if}
 
-{#snippet runtimeActions(rt: Rt)}
-  <label class="pr" title="What a trigger caller gets while a deployment here is paused. A canvas can override it.">
-    While paused, callers get
-    <select disabled={!controls(rt)} value={rt.pausedResponse}
-      onchange={(e) => setPausedResponse(rt, Number((e.target as HTMLSelectElement).value) as 503 | 404)}>
-      <option value={503}>503 Unavailable</option>
-      <option value={404}>404 Not found</option>
-    </select>
-  </label>
-  <span class="owner-tag" title="Shared runtimes run every org's work that isn't isolated; only superadmin controls them. An org's own runtime is its admins'.">{ownerOf(rt)}</span>
-  {#if controls(rt)}
-    {#if rt.state !== 'active'}<button class="btn sm runtime" disabled={!!busy} onclick={() => runtimeAct(rt, 'resume')}>Resume runtime</button>{/if}
-    {#if rt.state === 'active'}<button class="btn sm" disabled={!!busy} onclick={() => runtimeAct(rt, 'hibernate')}>Hibernate</button>{/if}
-    {#if rt.state !== 'paused'}<button class="btn sm outline-danger" disabled={!!busy} onclick={() => runtimeAct(rt, 'pause')}>Pause runtime</button>{/if}
-    <button class="btn sm ghost text-danger" disabled={!!busy} onclick={() => openTerminate(rt)} title="Kill this runtime's container and reschedule what runs on it">Terminate</button>
-  {:else}
-    <span class="muted small">{ownerOf(rt) === 'shared' ? 'A shared runtime is controlled by superadmin.' : "Controlled by the org's admins."}</span>
-  {/if}
-{/snippet}
-
-{#snippet depActions(row: Row, full: boolean)}
-  {@const d = row.deployment}
-  {#if d.state === 'paused'}
-    <button class="btn sm runtime" disabled={!!busy} onclick={() => act(row, 'resume')}>Resume</button>
-  {:else}
-    <button class="btn sm" disabled={!!busy} onclick={() => { pausing = row; pauseReason = ''; }}>Pause</button>
-  {/if}
-  <button class="btn sm ghost" disabled={!!busy || d.state === 'paused'} title={d.state === 'paused' ? 'Resume before restarting' : 'Re-place from the current canvas'} onclick={() => act(row, 'restart')}>Restart</button>
-  {#if !full}<button class="btn sm ghost" onclick={() => open(`dep:${d.id}`)}>Probe</button>{/if}
-  {#if d.canvas}<button class="btn sm ghost" onclick={() => editCanvas(d)}>Edit canvas</button>{/if}
-  <button class="btn sm ghost" disabled={!!busy} title="Remove the deployment; runs in progress finish" onclick={() => act(row, 'undeploy')}>Undeploy</button>
-  <button class="btn sm ghost text-danger" disabled={!!busy} title="Cancel runs in progress now, then undeploy" onclick={() => act(row, 'terminate')}>Terminate</button>
-{/snippet}
-
-{#snippet table(rows: Row[])}
-  {#if rows.length === 0}
-    <div class="empty">
-      <p>Nothing is deployed on this runtime.</p>
-      <p class="muted small">Deploy from a canvas, or ask in AI Chat: “deploy my flow to {selKey}”.</p>
-    </div>
-  {:else}
-    <div class="card flush">
-      <table class="deps">
-        <thead>
-          <tr><th>Deployed</th><th>State</th><th class="num">Runs/h</th><th class="num">In flight</th><th class="num">Errors</th><th class="num">p50 / p95</th><th>Last run</th><th></th></tr>
-        </thead>
-        <tbody>
-          {#each rows as row (row.deployment.id)}
-            {@const d = row.deployment}
-            {@const sv = SERVING[row.serving] ?? SERVING.serving}
-            <tr class:dim={row.serving !== 'serving' && row.serving !== 'hibernated'}>
-              <td>
-                <div class="tgt">
-                  <span class="kind {d.kind}">{d.kind}</span>
-                  <button class="link mono" onclick={() => open(`dep:${d.id}`)}>{d.target}</button>
+          <!-- ═══ Host ═══ -->
+          {#if view === 'host'}
+            {#if tab === 'overview'}
+              {#if host}
+                {@const cpu = pct(host.cpu.coresUsed, host.cpu.limitCores)}
+                {@const mem = pct(host.memory.usedBytes, host.memory.limitBytes)}
+                {@const disk = host.disk ? pct(host.disk.usedBytes, host.disk.totalBytes) : null}
+                <div class="card">
+                  <div class="card-head"><h3>1 · Resources</h3><span>{host.note}</span></div>
+                  <ul class="rows meters">
+                    <li><span class="lbl">CPU</span><span class="val"><span class="bar"><i style="width:{cpu ?? 0}%" class:hot={(cpu ?? 0) > 80}></i></span>{host.cpu.coresUsed != null ? host.cpu.coresUsed.toFixed(2) : '…'} of {host.cpu.limitCores ?? '—'} cores</span><span></span></li>
+                    <li><span class="lbl">Memory</span><span class="val"><span class="bar"><i style="width:{mem ?? 0}%" class:hot={(mem ?? 0) > 80}></i></span>{bytes(host.memory.usedBytes)} of {bytes(host.memory.limitBytes)}</span><span></span></li>
+                    {#if host.disk}<li><span class="lbl">Disk</span><span class="val"><span class="bar"><i style="width:{disk ?? 0}%" class:hot={(disk ?? 0) > 85}></i></span>{bytes(host.disk.usedBytes)} of {bytes(host.disk.totalBytes)} · {bytes(host.disk.freeBytes)} free · <span class="mono">{host.disk.path}</span></span><span></span></li>{/if}
+                  </ul>
                 </div>
-                <div class="muted small">{d.canvas ? `canvas ${d.canvas}` : 'default canvas'} · {d.mode}</div>
-              </td>
-              <td>
-                <span class="chip {sv.cls}" title={sv.hint}>{sv.label}</span>
-                {#if d.state === 'paused'}<div class="muted small">{d.pauseReason ? `“${d.pauseReason}” · ` : ''}{ago(d.pausedAt)}</div>{/if}
-              </td>
-              <td class="num">{row.stats.runsLastHour}</td>
-              <td class="num">{row.stats.inFlight || '—'}</td>
-              <td class="num" title={row.stats.lastError ?? ''}>
-                {#if row.stats.failed}<span class="alert">{Math.round(row.stats.errorRate * 100)}%</span>{:else}—{/if}
-                {#if row.stats.refused}<div class="muted small">{row.stats.refused} refused</div>{/if}
-              </td>
-              <td class="num">{ms(row.stats.p50Ms)} / {ms(row.stats.p95Ms)}</td>
-              <td>{ago(row.stats.lastRunAt)}</td>
-              <td class="acts">{@render depActions(row, false)}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-{/snippet}
+              {/if}
+              <div class="card">
+                <div class="card-head"><h3>2 · Runtimes on it</h3><span>{runtimes.length} registered · {allRows.length} deployed · {sum(allRows, (s) => s.inFlight)} in flight</span>
+                  {#if isAdmin}<span class="grow"></span><button class="btn2 rm" onclick={() => navigateTo('runtime', 'Runtimes', { create: Date.now() })}>New runtime</button>{/if}</div>
+                {#if runtimes.length}
+                  <ul class="rows">
+                    {#each runtimes as r (r.runtime.name)}
+                      {@const p = poolOf(r.runtime.name)}
+                      <li><span class="lbl"><span class="dot {RT_DOT[r.state]}"></span> <span class="mono">{r.runtime.name}</span></span>
+                        <span class="val">{r.state} · {r.deployments.length} deployed · {labelsOf(r.runtime.labels)}{#if p && !p.live} · <span class="err">no worker on its pool</span>{/if}{#if notServing(r.deployments)} · <span class="err">{notServing(r.deployments)} not serving</span>{/if}</span>
+                        <button class="btn2" onclick={() => open(`rt:${r.runtime.name}`)}>Open</button></li>
+                    {/each}
+                  </ul>
+                {:else}<p class="empty">No runtimes are registered yet.</p>{/if}
+              </div>
+              <div class="card">
+                <div class="card-head"><h3>3 · Controller</h3><span>what turns a placement into pods</span></div>
+                <p class="dim">{controller === 'reachable' ? 'The EE controller answers: each runtime gets its own pods, and it rolls them on restart.' : controller === 'unreachable' ? 'The EE controller is configured but does not answer — placement is logical until it does.' : 'No controller: this is CE, so every runtime runs inside this one FlowR process and placement is logical.'}</p>
+              </div>
 
-<!-- Terminate runtime: show the reschedule plan, warn on isolated, confirm by name -->
-{#if terminating}
-  {@const pl = terminating.plan}
-  <div class="modal-bg" role="presentation" onclick={() => (terminating = null)}></div>
-  <div class="modal wide" role="dialog" aria-label="Terminate runtime">
-    <h3>Terminate runtime <span class="mono">{terminating.rt.runtime.name}</span></h3>
-    <p>Like killing its container: runs on it are cancelled and the runtime is removed. What is deployed here is <b>rescheduled</b>, not lost.</p>
-    {#if terminating.error}
-      <p class="err">{terminating.error}</p>
-    {:else if !pl}
-      <p class="muted">Working out the plan…</p>
-    {:else}
-      {#if pl.warnings.length}
-        <div class="warn-box">
-          {#each pl.warnings as w}<div>⚠ {w}</div>{/each}
-        </div>
-      {/if}
-      {#if pl.plan.length === 0}
-        <p class="callers">Nothing is deployed here — the runtime is simply removed.</p>
-      {:else}
-        <table class="plan">
-          <thead><tr><th>Deployed</th><th>Mode</th><th>Goes to</th></tr></thead>
-          <tbody>
-            {#each pl.plan as r}
-              <tr class:isolated={r.mode === 'isolated'}>
-                <td><span class="kind {r.kind}">{r.kind}</span> <span class="mono">{r.target}</span>
-                  {#if r.runsInFlight}<div class="small err">{r.runsInFlight} run(s) cancelled</div>{/if}</td>
-                <td>{r.mode} · {r.session}</td>
-                <td>{#if r.action === 'move'}→ <b>{r.to}</b>{:else}↻ fresh <b>{r.to}</b>{/if}
-                  {#if r.note}<div class="small muted">{r.note}</div>{/if}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-        {#if pl.recreatesRuntime}<p class="small muted">↻ = the runtime is recreated fresh (same name, labels and namespace) because something can only run there.</p>{/if}
-      {/if}
-      <label>Type <b class="mono">{terminating.rt.runtime.name}</b> to confirm
-        <input bind:value={terminateConfirm} placeholder={terminating.rt.runtime.name} onkeydown={(e) => e.key === 'Enter' && confirmTerminate()} />
-      </label>
-    {/if}
-    <div class="modal-acts">
-      <button class="btn" onclick={() => (terminating = null)}>Cancel</button>
-      <button class="btn danger" disabled={!pl || terminateConfirm !== terminating.rt.runtime.name || !!busy} onclick={confirmTerminate}>Terminate</button>
-    </div>
-  </div>
-{/if}
+            {:else}
+              <div class="card">
+                <div class="card-head"><h3>1 · Work pools</h3><span>runs wait in a pool until a worker claims them</span><span class="grow"></span><button class="btn2 quiet rm" onclick={load}>Refresh</button></div>
+                {#if pools.length}
+                  <ul class="rows">
+                    {#each pools as p (p.pool)}
+                      <li><span class="lbl"><span class="dot {p.live ? 'ok' : p.queued ? 'err' : ''}"></span> <span class="mono">{p.pool}</span></span>
+                        <span class="val">{p.live ? `a worker is claiming${p.served_here ? ' (this FlowR)' : ''}` : 'no worker'} · {p.queued} queued</span>
+                        {#if runtimes.some((r) => r.runtime.name === p.pool)}<button class="btn2" onclick={() => open(`rt:${p.pool}`)}>Open</button>{:else}<span></span>{/if}</li>
+                    {/each}
+                  </ul>
+                {:else}<p class="empty">No pools answered.</p>{/if}
+                {#if pools.some((p) => !p.live && p.queued)}<div class="note bad">Work is queued on a pool no worker claims — it waits until one does.</div>{/if}
+              </div>
+              <div class="card">
+                <div class="card-head"><h3>2 · Where pools come from</h3></div>
+                <ul class="notes">
+                  <li><span class="mono">default</span> — the FlowR servers' own pool: anything not placed elsewhere runs here.</li>
+                  <li>A registered runtime's pool has its name; it needs a worker (the EE controller's runtime pod) to claim it.</li>
+                  <li>Other live pools are workers that joined through the engine gateway without a registered runtime.</li>
+                </ul>
+              </div>
+            {/if}
 
-<!-- New runtime -->
-<!-- A new runtime opens like any other item: in the Details pane inside the
-     shell, sliding in elsewhere. -->
-<SlidePanel open={!!newRt} onclose={() => (newRt = null)} onsave={newRt?.name.trim() && !busy ? createRuntime : undefined}>
-  {#if newRt}
-    <div class="rt-new">
-      <h3>New runtime</h3>
-      <p>A pool canvases place work into. Its labels are what placement selects on.</p>
-      <label>Name <input bind:value={newRt.name} placeholder="rt-staging" /></label>
-      <label>Namespace <input bind:value={newRt.namespace} placeholder="default" /></label>
-      <label>Labels <input bind:value={newRt.labels} placeholder="tier=test, class=cpu" onkeydown={(e) => e.key === 'Enter' && createRuntime()} /></label>
-      <label><span>URL <span class="muted">(optional)</span></span> <input bind:value={newRt.url} placeholder="http://runtime-gpu.a3t.svc:3002" /></label>
-      <label class="chk"><input type="checkbox" bind:checked={newRt.isDefault} /> Default pool <span class="muted">— used when a canvas selects no labels</span></label>
-      {#if newRtErr}<p class="err">{newRtErr}</p>{/if}
-      <div class="modal-acts">
-        <button class="btn" onclick={() => (newRt = null)}>Cancel</button>
-        <button class="btn runtime" disabled={!!busy || !newRt.name.trim()} onclick={createRuntime}>Create runtime</button>
-      </div>
+          <!-- ═══ Runtime ═══ -->
+          {:else if view === 'runtime'}
+            {#if !rt}<div class="note warn">Runtime “{key}” is not registered any more.</div>
+            {:else if tab === 'overview'}
+              {@const p = poolOf(rt.runtime.name)}
+              {#if key === '__unplaced'}<div class="note warn">Deployments whose runtime was removed after they were placed. Restart re-places one from its canvas; undeploy removes it.</div>{/if}
+              <div class="card">
+                <div class="card-head"><h3>1 · State</h3><span>{rt.state === 'hibernated' ? 'asleep — the first request wakes it' : rt.state === 'paused' ? 'paused — everything on it refuses requests until resumed' : 'serving'}</span></div>
+                <div class="tiles">
+                  <button class="tile" onclick={() => (tab = 'deployed')}><span class="v">{rt.deployments.length}</span><span class="k">deployed</span></button>
+                  <div class="tile"><span class="v">{sum(rt.deployments, (s) => s.inFlight)}</span><span class="k">in flight</span></div>
+                  <div class="tile"><span class="v">{sum(rt.deployments, (s) => s.runsLastHour)}</span><span class="k">runs in the last hour</span></div>
+                  <div class="tile" class:bad={notServing(rt.deployments) > 0}><span class="v">{notServing(rt.deployments)}</span><span class="k">not serving</span></div>
+                </div>
+              </div>
+              {#if key !== '__unplaced'}
+                <div class="card">
+                  <div class="card-head"><h3>2 · What it is</h3></div>
+                  <ul class="rows">
+                    <li><span class="lbl">Owner</span><span class="val">{ownerOf(rt)}{controls(rt) ? ' · you may control it' : ''}</span><span></span></li>
+                    <li><span class="lbl">Project</span><span class="val mono">{rt.runtime.namespace}</span><span></span></li>
+                    <li><span class="lbl">Labels</span><span class="val mono">{labelsOf(rt.runtime.labels)}</span><span></span></li>
+                    <li><span class="lbl">Default</span><span class="val">{rt.runtime.default ? 'yes — canvases that select no labels land here' : 'no'}</span><span></span></li>
+                    {#if rt.runtime.url}<li><span class="lbl">URL</span><span class="val mono">{rt.runtime.url}</span><span></span></li>{/if}
+                  </ul>
+                </div>
+                <div class="card">
+                  <div class="card-head"><h3>3 · Worker</h3><span>pool <span class="mono">{rt.runtime.name}</span></span></div>
+                  {#if !p}<p class="dim">The pool did not answer.</p>
+                  {:else if p.live}<p class="ok">A worker is claiming its runs{p.served_here ? ' (this FlowR)' : ''} · {p.queued} queued.</p>
+                  {:else}<div class="note warn">No worker claims this pool{p.queued ? ` and ${p.queued} run${p.queued === 1 ? ' waits' : 's wait'}` : ''}. {controller === 'reachable' ? 'The controller has not started a pod for it.' : 'On CE, runs placed here are served by FlowR itself.'}</div>{/if}
+                </div>
+              {/if}
+
+            {:else if tab === 'deployed'}
+              <div class="card">
+                <div class="card-head"><h3>1 · Deployed here</h3><span>{rt.deployments.length} · each serving, paused or hibernated</span></div>
+                {#if rt.deployments.length}
+                  <ul class="rows wide">
+                    {#each rt.deployments as r (r.deployment.id)}
+                      {@const sv = SERVING[r.serving] ?? SERVING.serving}
+                      <li><span class="lbl"><span class="dot {sv.dot}"></span> <span class="mono">{r.deployment.target}</span></span>
+                        <span class="val">{r.deployment.kind} · {sv.label} · {r.stats.runsLastHour} runs/h · {r.stats.inFlight} in flight</span>
+                        <button class="btn2" onclick={() => open(`dep:${r.deployment.id}`)}>Open</button></li>
+                    {/each}
+                  </ul>
+                {:else}<p class="empty">Nothing is deployed here. Deploy from a canvas.</p>
+                  <div class="acts"><button class="btn2" onclick={() => navigateTo('canvas', 'Canvas')}>Open Canvas</button></div>{/if}
+              </div>
+
+            {:else}
+              {#if !controls(rt)}<div class="note">{ownerOf(rt).startsWith('shared') ? 'A shared runtime is controlled by SuperAdmin.' : "It is controlled by its org's admins."} You can see it, not change it.</div>{/if}
+              <div class="card">
+                <div class="card-head"><h3>1 · State</h3><span>now {rt.state}</span></div>
+                <ul class="rows wide">
+                  {#if rt.state !== 'active'}<li><span class="lbl">Resume</span><span class="val">everything on it serves again</span><button class="btn2 primary" disabled={!controls(rt) || !!busy} onclick={() => rtAct(rt!, 'resume')}>Resume</button></li>{/if}
+                  {#if rt.state === 'active'}<li><span class="lbl">Hibernate</span><span class="val">sleep until the next request wakes it</span><button class="btn2" disabled={!controls(rt) || !!busy} onclick={() => rtAct(rt!, 'hibernate')}>Hibernate</button></li>{/if}
+                  {#if rt.state !== 'paused'}<li><span class="lbl">Pause</span><span class="val">all {rt.deployments.length} deployed here refuse requests until resumed</span>
+                    {#if confirming === 'pause-rt'}<span class="acts"><button class="btn2 danger" disabled={!!busy} onclick={() => rtAct(rt!, 'pause')}>Pause it</button><button class="btn2 quiet" onclick={() => (confirming = '')}>Cancel</button></span>
+                    {:else}<button class="btn2" disabled={!controls(rt) || !!busy} onclick={() => (confirming = 'pause-rt')}>Pause</button>{/if}</li>{/if}
+                </ul>
+              </div>
+              <div class="card">
+                <div class="card-head"><h3>2 · While paused</h3><span>what a trigger caller gets — a canvas can override it</span></div>
+                <div class="seg" role="tablist">
+                  <button role="tab" class:on={rt.pausedResponse === 503} disabled={!controls(rt)} onclick={() => setPausedResponse(rt!, 503)}>503 Unavailable</button>
+                  <button role="tab" class:on={rt.pausedResponse === 404} disabled={!controls(rt)} onclick={() => setPausedResponse(rt!, 404)}>404 Not found</button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="card-head"><h3>3 · Terminate</h3><span>like killing its container: runs on it are cancelled; what is deployed is rescheduled</span>
+                  {#if confirming !== 'terminate-rt'}<span class="grow"></span><button class="btn2 rm" disabled={!controls(rt) || !!busy} onclick={() => planTerminate(rt!)}>Plan it</button>{/if}</div>
+                {#if confirming === 'terminate-rt'}
+                  {#if planErr}<div class="note bad">{planErr}</div>
+                  {:else if !plan}<p class="dim">Working out the plan…</p>
+                  {:else}
+                    {#if plan.warnings?.length}<div class="note warn"><ul class="notes">{#each plan.warnings as w}<li>{w}</li>{/each}</ul></div>{/if}
+                    {#if !plan.plan?.length}<p class="dim">Nothing is deployed here — the runtime is simply removed.</p>
+                    {:else}
+                      <ul class="rows wide">
+                        {#each plan.plan as p}
+                          <li><span class="lbl mono">{p.target}</span><span class="val">{p.kind} · {p.mode} → {p.action === 'move' ? `moves to ${p.to}` : `fresh ${p.to}`}{p.runsInFlight ? ` · ${p.runsInFlight} run(s) cancelled` : ''}{p.note ? ` · ${p.note}` : ''}</span><span></span></li>
+                        {/each}
+                      </ul>
+                      {#if plan.recreatesRuntime}<p class="dim">The runtime is recreated fresh (same name, labels and project) because something can only run there.</p>{/if}
+                    {/if}
+                    <div class="fields"><label class="fld">Type <b class="mono">{rt.runtime.name}</b> to confirm<input class="mono" bind:value={typed} placeholder={rt.runtime.name} /></label></div>
+                    <div class="acts"><button class="btn2 danger" disabled={typed !== rt.runtime.name || !!busy} onclick={() => terminateRt(rt!)}>Terminate</button><button class="btn2 quiet" onclick={() => (confirming = '')}>Cancel</button></div>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
+
+          <!-- ═══ Deployment ═══ -->
+          {:else}
+            {#if !row}<div class="note warn">“{key}” is not deployed any more.</div>
+            {:else}
+              {@const d = row.deployment}
+              {@const sv = SERVING[row.serving] ?? SERVING.serving}
+              {#if d.state === 'paused'}<div class="note warn">Paused {ago(d.pausedAt)}{d.pausedBy ? ` by ${d.pausedBy}` : ''}{d.pauseReason ? ` — “${d.pauseReason}”` : ''}. Trigger callers get HTTP {row.callersGetWhenPaused}; every other request is refused until it is resumed.</div>{/if}
+              {#if tab === 'overview'}
+                <div class="card">
+                  <div class="card-head"><h3>1 · {sv.label}</h3><span>{sv.hint}</span></div>
+                  <div class="tiles">
+                    <div class="tile"><span class="v">{row.stats.runsLastHour}</span><span class="k">runs in the last hour</span></div>
+                    <div class="tile"><span class="v">{row.stats.inFlight}</span><span class="k">in flight</span></div>
+                    <div class="tile" class:bad={row.stats.failed > 0}><span class="v">{Math.round(row.stats.errorRate * 100)}%</span><span class="k">failed</span></div>
+                    <div class="tile"><span class="v">{msf(row.stats.p95Ms)}</span><span class="k">p95 · p50 {msf(row.stats.p50Ms)}</span></div>
+                  </div>
+                  {#if row.stats.lastError}<div class="note bad">Last error: {row.stats.lastError}</div>{/if}
+                </div>
+                <div class="card">
+                  <div class="card-head"><h3>2 · Where it runs</h3></div>
+                  <ul class="rows">
+                    <li><span class="lbl">Runtime</span><span class="val mono">{d.runtime}</span><button class="btn2" onclick={() => open(`rt:${d.runtime}`)}>Open</button></li>
+                    <li><span class="lbl">Mode</span><span class="val">{d.mode}</span><span></span></li>
+                    <li><span class="lbl">Canvas</span><span class="val mono">{d.canvas || 'the default canvas'}</span>{#if d.canvas}<button class="btn2" onclick={() => editCanvas(d)}>Open</button>{:else}<span></span>{/if}</li>
+                    {#if d.kind === 'agent'}<li><span class="lbl">Runs flow</span><span class="val mono">{d.flowRef}</span><span></span></li>{/if}
+                    <li><span class="lbl">Deployed</span><span class="val">{ago(d.deployedAt)}{d.deployedBy ? ` by ${d.deployedBy}` : ''}</span><span></span></li>
+                    <li><span class="lbl">Refused</span><span class="val">{row.stats.refused} request{row.stats.refused === 1 ? '' : 's'} refused by policy or pause</span><span></span></li>
+                  </ul>
+                </div>
+              {:else if tab === 'health'}
+                <div class="card">
+                  <div class="card-head"><h3>1 · Checks</h3><span>{probe ? `${probe.checks.filter((c: any) => c.ok).length} of ${probe.checks.length} pass` : 'probing…'}</span><span class="grow"></span><button class="btn2 quiet rm" onclick={load}>Probe again</button></div>
+                  {#if probe}
+                    <ul class="rows wide">
+                      {#each probe.checks as c}
+                        <li><span class="lbl"><span class="dot {c.ok ? 'ok' : 'err'}"></span> {c.check}</span><span class="val">{#if c.target}<span class="mono">{c.target}</span>{/if}{#if c.detail && !c.ok} — <span class="err">{c.detail}</span>{/if}</span><span></span></li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+                <div class="card">
+                  <div class="card-head"><h3>2 · Triggers</h3><span>what starts it</span></div>
+                  {#if probe?.triggers?.length}
+                    <ul class="rows">
+                      {#each probe.triggers as t}
+                        <li><span class="lbl"><span class="dot {t.enabled ? 'ok' : ''}"></span> {t.name}</span><span class="val">{t.config?.type} · <span class="mono">{t.config?.path ?? t.config?.expression ?? t.config?.source ?? ''}</span></span><button class="btn2" onclick={() => navigateToDetail('triggers', 'Triggers', t.id ?? t.name)}>Open</button></li>
+                      {/each}
+                    </ul>
+                  {:else}<p class="empty">No trigger feeds it — it runs on demand, from chat or from other agents.</p>{/if}
+                </div>
+              {:else if tab === 'runs'}
+                <div class="card">
+                  <div class="card-head"><h3>1 · Latest runs</h3><span>{probe?.recentRuns?.length ?? 0}</span><span class="grow"></span><button class="btn2 quiet rm" onclick={() => navigateTo('executions', 'Executions')}>All executions</button></div>
+                  {#if probe?.recentRuns?.length}
+                    <ul class="tl">
+                      {#each probe.recentRuns as r (r.instanceId)}
+                        {@const refused = (r.error ?? '').startsWith('refused: ')}
+                        <li class="ev" class:err={!!r.error && !refused}>
+                          <span class="ic">{r.error ? (refused ? '–' : '✕') : '✓'}</span>
+                          <button class="evb" onclick={() => navigateToDetail('executions', 'Executions', r.instanceId)}>
+                            <div class="t mono">{r.instanceId}</div>
+                            <div class="m">{msf(r.durationMs)}{r.error ? ` · ${refused ? r.error.slice(9) : r.error}` : ''}</div>
+                          </button>
+                          <time>{ago(r.startedAt)}</time>
+                        </li>
+                      {/each}
+                    </ul>
+                  {:else}<p class="empty">No runs yet.</p>{/if}
+                </div>
+              {:else}
+                <div class="card">
+                  <div class="card-head"><h3>1 · Serving</h3><span>now {sv.label.toLowerCase()}</span></div>
+                  <ul class="rows wide">
+                    {#if d.state === 'paused'}
+                      <li><span class="lbl">Resume</span><span class="val">it takes requests again</span><button class="btn2 primary" disabled={!!busy} onclick={() => act(row!, 'resume')}>Resume</button></li>
+                    {:else}
+                      <li><span class="lbl">Pause</span><span class="val">every new request is refused — triggers, manual runs, chat, other agents; runs in progress finish. Trigger callers get HTTP {row.callersGetWhenPaused}.</span>
+                        {#if confirming !== 'pause'}<button class="btn2" disabled={!!busy} onclick={() => { confirming = 'pause'; reason = ''; }}>Pause</button>{:else}<span></span>{/if}</li>
+                    {/if}
+                    <li><span class="lbl">Restart</span><span class="val">place it again from the current canvas</span><button class="btn2" disabled={!!busy || d.state === 'paused'} title={d.state === 'paused' ? 'Resume before restarting' : ''} onclick={() => act(row!, 'restart')}>Restart</button></li>
+                  </ul>
+                  {#if confirming === 'pause'}
+                    <div class="fields"><label class="fld">Reason <small>shown to whoever finds it paused</small><input bind:value={reason} placeholder="investigating bad outputs" /></label></div>
+                    <div class="acts"><button class="btn2 danger" disabled={!!busy} onclick={() => act(row!, 'pause')}>Pause it</button><button class="btn2 quiet" onclick={() => (confirming = '')}>Cancel</button></div>
+                  {/if}
+                </div>
+                <div class="card">
+                  <div class="card-head"><h3>2 · Remove</h3><span>the flow and its canvas are kept</span></div>
+                  <ul class="rows wide">
+                    <li><span class="lbl">Undeploy</span><span class="val">runs in progress finish, then it is removed</span>
+                      {#if confirming === 'undeploy'}<span class="acts"><button class="btn2 danger" disabled={!!busy} onclick={() => act(row!, 'undeploy')}>Undeploy</button><button class="btn2 quiet" onclick={() => (confirming = '')}>Cancel</button></span>
+                      {:else}<button class="btn2" disabled={!!busy} onclick={() => (confirming = 'undeploy')}>Undeploy</button>{/if}</li>
+                    <li><span class="lbl">Terminate</span><span class="val">cancel the {row.stats.inFlight} run{row.stats.inFlight === 1 ? '' : 's'} in progress now, then undeploy</span>
+                      {#if confirming === 'terminate'}<span class="acts"><button class="btn2 danger" disabled={!!busy} onclick={() => act(row!, 'terminate')}>Terminate</button><button class="btn2 quiet" onclick={() => (confirming = '')}>Cancel</button></span>
+                      {:else}<button class="btn2" disabled={!!busy} onclick={() => (confirming = 'terminate')}>Terminate</button>{/if}</li>
+                  </ul>
+                </div>
+              {/if}
+            {/if}
+          {/if}
+        {/if}
+        </section>
+      </div></div></div>
     </div>
   {/if}
 </SlidePanel>
 
-<!-- Pause dialog: says exactly what callers will get -->
-{#if pausing}
-  <div class="modal-bg" role="presentation" onclick={() => (pausing = null)}></div>
-  <div class="modal" role="dialog" aria-label="Pause deployment">
-    <h3>Pause {pausing.deployment.kind} <span class="mono">{pausing.deployment.target}</span></h3>
-    <p>Every new request is refused until someone resumes it — triggers, manual runs, chat and other agents. Runs already in progress finish.</p>
-    <p class="callers">Trigger callers will get <b>HTTP {pausing.callersGetWhenPaused}</b>
-      <span class="muted">({pausing.callersGetWhenPaused === 404 ? 'endpoint hidden' : 'unavailable'} — set on the runtime{#if pausing.deployment.canvas}, overridable in the canvas{/if})</span></p>
-    <label>Reason <span class="muted">(shown to whoever finds it paused)</span>
-      <input bind:value={pauseReason} placeholder="e.g. investigating bad outputs" onkeydown={(e) => e.key === 'Enter' && confirmPause()} />
-    </label>
-    <div class="modal-acts">
-      <button class="btn" onclick={() => (pausing = null)}>Cancel</button>
-      <button class="btn danger" onclick={confirmPause}>Pause</button>
-    </div>
-  </div>
-{/if}
-
 <style>
-  .muted { color: var(--text-4); }
-  .small { font-size: 12px; }
-  .err { color: var(--err); }
-  .alert { color: var(--err); }
-  .mono { font-family: var(--font-mono); font-size: 12.5px; }
-  /* Header / body — the same shape as Agents and Templates. */
-  .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
-  .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
-  .breadcrumb .sep { color: var(--text-5); margin: 0 2px; }
-  .screen-title-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-  .title-block { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .screen-body { flex: 1; overflow-y: auto; padding: 20px 32px 40px; }
-  .crumb { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font: inherit; }
-  .crumb:hover { text-decoration: underline; }
-  .screen-title { font-family: var(--font-serif); font-size: 24px; font-weight: 500; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; margin: 0; }
-  .screen-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .lede { font-size: 13px; color: var(--text-3); margin: 0 0 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .sec { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-4); font-weight: 500; margin: 20px 0 8px; }
-  .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-3); border: 1px solid var(--border); }
-  .tag.warn { color: var(--warn); border-color: var(--warn); }
-  .card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; margin-bottom: 14px; }
-  .card.flush { padding: 4px 8px; overflow-x: auto; }
-  .card h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-4); font-weight: 500; }
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
-  .paused-note { padding: 10px 12px; border-radius: var(--r-sm); background: var(--err-bg); color: var(--err); font-size: 13px; margin-bottom: 14px; }
-
-  /* Host */
-  .host { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); }
-  .host-id { display: flex; align-items: baseline; gap: 8px; }
-  .host .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-4); min-width: 52px; }
-  .shared { font-size: 11px; color: var(--text-4); font-style: italic; }
-  .meters { display: flex; flex-wrap: wrap; gap: 10px 32px; }
-  .meter { display: flex; align-items: center; gap: 8px; }
-  .bar { width: 120px; height: 6px; background: var(--bg-subtle); border-radius: 3px; overflow: hidden; }
-  .bar i { display: block; height: 100%; background: var(--runtime, #0f766e); transition: width .4s; }
-  .bar i.hot { background: var(--err); }
-  .meter .v { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-  .meter em { color: var(--text-4); font-style: normal; }
-  .totals { display: flex; gap: 18px; font-size: 12.5px; color: var(--text-3); }
-  .totals b { color: var(--text-1); font-variant-numeric: tabular-nums; }
-
-  .rt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-  .rt-card { text-align: left; padding: 12px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; display: flex; flex-direction: column; gap: 8px; }
-  .rt-card:hover { border-color: var(--runtime, #0f766e); }
-  .rt-top { display: flex; align-items: center; gap: 8px; }
-  .rt-name { font-weight: 600; color: var(--text-1); font-size: 13.5px; flex: 1; }
-  .rt-sub { font-size: 12px; color: var(--text-3); }
-  .labels { display: flex; flex-wrap: wrap; gap: 4px; }
-  .labels.inline { display: inline-flex; }
-  .lbl, .ns { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-subtle); color: var(--text-3); }
-  .ns { background: var(--runtime-bg, #e6f4f1); color: var(--runtime, #0f766e); }
-
-  .toast { margin: 0 0 12px; padding: 8px 12px; border-radius: var(--r-sm); font-size: 13px; }
-  .toast.ok { background: var(--ok-bg, #e7f6ec); color: var(--ok); }
-  .toast.err { background: var(--err-bg); color: var(--err); }
-
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; margin-right: 6px; background: var(--text-5); }
-  .dot.ok { background: var(--ok); } .dot.bad { background: var(--err); } .dot.warn { background: var(--warn); }
-  .dot.run { background: var(--signal, #2563eb); } .dot.idle { background: var(--text-5, #bbb); }
-  .chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; font-family: var(--font-sans); font-weight: 400; }
-  .chip.ok { color: var(--ok); } .chip.bad { color: var(--err); } .chip.warn { color: var(--warn); } .chip.idle { color: var(--text-4); }
-  .kind { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 4px; background: var(--spec-bg); color: var(--spec); font-family: var(--font-sans); font-weight: 500; }
-  .kind.agent { background: var(--ephemeral-bg, #fff4e5); color: var(--ephemeral, #b45309); }
-
-  .pr { font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 6px; }
-  .pr select { font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); }
-  .btn.runtime { background: var(--runtime, #0f766e); color: white; border-color: var(--runtime, #0f766e); }
-  .btn.outline-danger { color: var(--err); border-color: var(--err); background: var(--bg-surface); }
-  .btn.outline-danger:hover { background: var(--err-bg); }
-  .btn.text-danger { color: var(--err); background: transparent; border-color: transparent; box-shadow: none; }
-  .btn.text-danger:hover { background: var(--err-bg); }
-
-  table.deps { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .deps th { text-align: left; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: var(--text-4); padding: 8px; border-bottom: 1px solid var(--border); }
-  .deps td { padding: 10px 8px; border-bottom: 1px solid var(--divider, var(--border)); vertical-align: top; }
-  .deps tr:last-child td { border-bottom: 0; }
-  .deps tr.dim td:not(.acts) { opacity: .75; }
-  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .tgt { display: flex; align-items: center; gap: 6px; }
-  .link { background: none; border: 0; padding: 0; color: var(--text-1); cursor: pointer; text-decoration: underline dotted; font: inherit; }
-  .acts { white-space: nowrap; text-align: right; }
-
-  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 14px; }
-  @media (max-width: 700px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
-  .kpis div { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px; display: flex; flex-direction: column; align-items: center; }
-  .kpis b { font-size: 16px; font-variant-numeric: tabular-nums; }
-  .kpis span { font-size: 10.5px; color: var(--text-4); }
-  .checks, .trig { list-style: none; padding: 0; margin: 0; font-size: 13px; display: flex; flex-direction: column; gap: 5px; }
-  .checks li.bad { color: var(--err); }
-  .tgt-ref { margin-left: 6px; }
-  .trig li { display: flex; gap: 8px; align-items: center; }
-  table.runs { width: 100%; font-size: 12.5px; border-collapse: collapse; margin-bottom: 6px; }
-  .runs td { padding: 5px 6px; border-bottom: 1px solid var(--divider, var(--border)); }
-  .run-row { cursor: pointer; }
-  .run-row:hover td, .run-row.open td { background: var(--bg-subtle); }
-  .twist { margin-right: 6px; color: var(--text-4); transition: transform .12s; vertical-align: middle; }
-  .twist.open { transform: rotate(90deg); }
-  .run-detail td { background: var(--bg-subtle); padding: 4px 10px 12px 24px; }
-  .io-meta { font-size: 11px; margin-bottom: 6px; }
-  .io-err { color: var(--err); font-size: 12.5px; margin-bottom: 8px; white-space: pre-wrap; }
-  .io { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  @media (max-width: 900px) { .io { grid-template-columns: 1fr; } }
-  .io-h { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-4); margin-bottom: 4px; display: flex; justify-content: space-between; }
-  .io-copy { background: none; border: 0; color: var(--text-4); cursor: pointer; font-size: 11px; text-transform: none; letter-spacing: 0; }
-  .io-copy:hover { color: var(--text-1); }
-  .io pre { margin: 0; padding: 8px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-
-  .empty { padding: 32px; text-align: center; color: var(--text-3); }
-
-  .rt-new { max-width: 560px; padding: 22px 24px; display: flex; flex-direction: column; overflow-y: auto; height: 100%; box-sizing: border-box; }
-  .rt-new h3 { margin: 0 0 8px; font: 400 20px var(--font-serif); }
-  .rt-new p { font-size: 13px; color: var(--text-2); margin: 0 0 10px; }
-  .rt-new label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-2); }
-  .rt-new label + label { margin-top: 10px; }
-  .rt-new label.chk { flex-direction: row; align-items: center; gap: 8px; }
-  .rt-new label.chk input { width: auto; }
-  .rt-new input { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 13px; }
-  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 50; }
-  .modal { position: fixed; z-index: 51; top: 20vh; left: 50%; transform: translateX(-50%); width: min(480px, calc(100vw - 32px)); background: var(--bg-surface); border-radius: var(--r); box-shadow: var(--shadow-lg); padding: 20px; }
-  .modal h3 { margin: 0 0 8px; font-size: 16px; }
-  .modal p { font-size: 13px; color: var(--text-2); margin: 0 0 10px; }
-  .modal .callers { padding: 8px 10px; background: var(--bg-subtle); border-radius: var(--r-sm); }
-  .modal label + label { margin-top: 10px; }
-  .modal label.chk { flex-direction: row; align-items: center; gap: 8px; }
-  .modal label.chk input { width: auto; }
-  .modal label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: normal; font-weight: 400; }
-  .modal input { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 13px; }
-  .modal.wide { width: min(640px, calc(100vw - 32px)); top: 12vh; }
-  .warn-box { background: var(--warn-bg, #fff8e6); color: var(--warn, #b45309); border: 1px solid var(--warn, #b45309); border-radius: var(--r-sm); padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
-  table.plan { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 10px; }
-  .plan th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-4); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
-  .plan td { padding: 6px; border-bottom: 1px solid var(--divider, var(--border)); vertical-align: top; }
-  .plan tr.isolated td { background: var(--warn-bg, #fff8e6); }
-  .modal-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-  .owner-tag { font-family: var(--font-mono); font-size: 10.5px; padding: 2px 8px; border-radius: 10px; background: var(--bg-subtle); color: var(--text-3); border: 1px solid var(--border); }
-  .pools { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 14px; }
-  .pools th { text-align: left; font-weight: 500; color: var(--text-3); padding: 4px 8px; border-bottom: 1px solid var(--border); }
-  .pools td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
-  .pools .mono { font-family: var(--font-mono); }
-  .pools .ok { color: var(--ok, #15803d); }
-  .pools .dim { color: var(--text-4); }
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+  .panel-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
+  .meters .val { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .bar { position: relative; display: inline-block; width: 140px; height: 6px; border-radius: 3px; background: var(--bg-subtle); overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; background: var(--runtime, #0f766e); border-radius: 3px; }
+  .bar i.hot { background: var(--err, #b42318); }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+  .evb { all: unset; display: block; cursor: pointer; min-width: 0; }
 </style>

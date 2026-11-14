@@ -22,7 +22,6 @@
   import DataRoomsPage from '$lib/components/pages/DataRoomsPage.svelte';
   import TestBench from '$lib/components/pages/TestBench.svelte';
   import EarlyAccessRequests from '$lib/components/pages/EarlyAccessRequests.svelte';
-  import ErrorsPage from '$lib/components/pages/ErrorsPage.svelte';
   import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
   import SecurityPage from '$lib/components/pages/SecurityPage.svelte';
   import ProjectsPage from '$lib/components/pages/ProjectsPage.svelte';
@@ -84,8 +83,6 @@
       <TestBench />
     {:else if activePanel.type === 'early-access'}
       <EarlyAccessRequests />
-    {:else if activePanel.type === 'errors'}
-      <ErrorsPage />
     {:else if activePanel.type === 'settings'}
       <SettingsPage />
     {:else if activePanel.type === 'security'}

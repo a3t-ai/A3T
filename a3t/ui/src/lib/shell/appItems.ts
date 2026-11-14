@@ -377,13 +377,15 @@ async function loadAll(source: string): Promise<AppItem[]> {
     }));
   }
   if (source === 'executions') {
-    const res = await mcpCall('list_executions', { limit: 100 });
-    if (!res.ok) throw new Error(res.error ?? 'list_executions failed');
-    return rows(res.data, 'executions').map((r: any) => ({
-      id: r.instance_id, label: r.name ?? r.instance_id,
+    // The run store, newest first; the shell narrows it to the top bar's project.
+    const res = await mcpCall('list_runs', { limit: 200 });
+    if (!res.ok) throw new Error(res.error ?? 'list_runs failed');
+    const PH: Record<string, string> = { faulted: 'failed', pending: 'queued', suspended: 'paused' };
+    return rows(res.data, 'runs').map((r: any) => ({
+      id: r.run_id, label: r.flow ?? r.run_id,
       namespace: itemProject('execution', r.namespace || undefined, r),
-      sub: [r.status, r.started_at ? relTime(r.started_at) : ''].filter(Boolean).join(' · '),
-      status: r.status ? String(r.status).toLowerCase() : undefined,
+      sub: [r.trigger, r.started_at || r.created_at ? relTime(r.started_at ?? r.created_at) : '', r.duration_us ? dur(r.duration_us) : '', r.error ? String(r.error).slice(0, 80) : ''].filter(Boolean).join(' · '),
+      status: PH[r.phase] ?? r.phase,
     }));
   }
   return [];
@@ -408,6 +410,11 @@ const BADGE = {
 /// namespace can't hold the whole list back.
 function within<T>(p: Promise<T>, ms = 12000): Promise<T | null> {
   return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+}
+
+function dur(us: number): string {
+  const ms = us / 1000;
+  return ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60000)} min`;
 }
 
 async function runtimeTree(): Promise<AppItem[]> {
