@@ -157,7 +157,9 @@ export function actionKind(action: unknown): Kind {
 
 /// An agent tool's verb: tool_<namespace>_<object>_<action> (tool_a3t_agent_memory_put
 /// → memory_put, tool_a3t_knowledge_stats → stats, tool_a3t_share → share).
-const TOOL_READS = /^(memory|turns|events|lineage|shares|shared_with|compare|lookup|entities|relations|neighbors|predict_head|predict_tail|score|describe|tools)$/i;
+/// `test` probes a resource or runs a RECALL through it (Memory, Knowledge) and
+/// changes nothing, so it loads; it must not end in "Saved".
+const TOOL_READS = /^(test|memory|turns|events|lineage|shares|shared_with|compare|lookup|entities|relations|neighbors|predict_head|predict_tail|score|describe|tools)$/i;
 export function toolKind(tool: string): Kind {
   const rest = tool.replace(/^tool_[a-z0-9]+_/i, '');
   const action = rest.includes('_') ? rest.slice(rest.indexOf('_') + 1) : rest;
