@@ -21,13 +21,15 @@
   import { fullSpec, specYaml, selectorText, textSelector, verdicts, placedOn, problems as problemsOf, around, servingLabel, triggerLabel,
     type CanvasSpec, type Around, type OnDown } from '$lib/components/canvas/canvasModel';
 
-  let { open = false, canvas = null, onclose, onsaved, embedded = false, readonly = false, onsavespec }:
+  let { open = false, canvas = null, onclose, onsaved, embedded = false, readonly = false, readonlyNote = '', onsavespec }:
     {
       open?: boolean; canvas?: any; onclose: () => void; onsaved?: () => void;
       /// Inline (the chat pane) instead of a slide-in panel.
       embedded?: boolean;
       /// View only — a shared preset is copied, not edited in place.
       readonly?: boolean;
+      /// Why it is read-only, when not because it is a shared preset.
+      readonlyNote?: string;
       /// Save through the caller (the chat pane: update_canvas, Cedar-gated).
       onsavespec?: (spec: any) => Promise<{ ok: boolean; error?: string }>;
     } = $props();
@@ -392,7 +394,7 @@
   <!-- The chat pane: every section, one under another; saved through the caller. -->
   <div class="cd-embedded">
     <div class="cd-embar">
-      <span class="dim">{readonly ? 'Shared preset — view only. Copy it to make your own.' : spec.flowRef ? `Deploys ${spec.flowRef}` : 'Your copy — not bound to a flow yet'}</span>
+      <span class="dim">{readonly ? (readonlyNote || 'Shared preset — view only. Copy it to make your own.') : spec.flowRef ? `Deploys ${spec.flowRef}` : 'Your copy — not bound to a flow yet'}</span>
       {#if !readonly && onsavespec}<button class="btn2 primary" onclick={() => save(true)} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>{/if}
     </div>
     <div class="cd-embody"><fieldset disabled={readonly}><section class="agt">
@@ -411,7 +413,7 @@
         <WizardHead step={steps.find((x) => x.id === step)} />
         <fieldset disabled={readonly}><section class="agt">
           {#if msg}<div class="note bad" role="alert">{msg}</div>{/if}
-          {#if readonly}<div class="note">A shared preset: view only. Copy it to make a canvas of your own.</div>{/if}
+          {#if readonly}<div class="note">{readonlyNote || 'A shared preset: view only. Copy it to make a canvas of your own.'}</div>{/if}
           {#if step === 'details'}{@render details()}{@render status()}
           {:else if step === 'placement'}{@render placement()}
           {:else if step === 'lifecycle'}{@render lifecycle()}

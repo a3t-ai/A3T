@@ -44,14 +44,13 @@
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import { currentUser } from '$lib/stores/auth';
-  import { getProject, getProjects, inContext, projectOf, EXPOSED_ROLES } from '$lib/stores/context.svelte.ts';
+  import { getProject, getProjects, inContext, projectOf, EXPOSED_ROLES, canWriteIn } from '$lib/stores/context.svelte.ts';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import DeleteConfirm from '$lib/components/shared/DeleteConfirm.svelte';
   import ResourceSelect from '$lib/components/editor/ResourceSelect.svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
 
   const canCreate = can('create', 'agent');
-  const canEditAgent = can('update', 'agent');
 
   let loading = $state(true);
   let error = $state('');
@@ -138,6 +137,10 @@
       // use its id. Accept either.
       : (selected ? (allAgents.find(a => a.id === selected) ?? allAgents.find(a => a.name === selected) ?? null) : null)
   );
+  /// May this user change the agent on screen: whether they can write in its
+  /// project — the role they hold there, not their global one (as the server
+  /// decides; .ai/A3T_ORG_SSO_SPEC.md R6).
+  const writable = $derived(!!agent && canWriteIn(agent.namespace));
 
   // Delete state
   let deleteTarget = $state<{ id: string; name: string } | null>(null);
@@ -802,11 +805,11 @@
               </SwipeStrip>
             {/if}
             {#if propNode === 'overview'}
-              <AgentOverview {agent} {templates} canEdit={$canEditAgent} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} onreload={loadAgents} />
+              <AgentOverview {agent} {templates} canEdit={writable} ongo={goTab} onstudio={studio} onlifecycle={lifecycle} onopen={selectAgent} onreload={loadAgents} />
             {:else if propNode === 'build' && sub.build === 'code'}
               <AgentCode {agent} {templates} oncode={openCode} />
             {:else if propNode === 'build' && sub.build === 'tools'}
-              <AgentSetup {agent} bind:bindings {llmResources} {mcpResources} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
+              <AgentSetup {agent} bind:bindings {llmResources} {mcpResources} canEdit={writable} dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings}>
                 {#snippet yaml()}
                   <AgentConfig {agent} {templates} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
@@ -814,7 +817,7 @@
                 {/snippet}
               </AgentSetup>
             {:else if propNode === 'build' && sub.build === 'hooks'}
-              <AgentHooks {agent} bind:bindings {flowOptions} canEdit={$canEditAgent} dirty={bindDirty} saving={savingBind} saveError={saveErr}
+              <AgentHooks {agent} bind:bindings {flowOptions} canEdit={writable} dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings} />
             {:else if propNode === 'build' && sub.build === 'memory'}
               <AgentMemory {agent} />
@@ -822,11 +825,11 @@
               <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle}
                 making={makeKind} projects={namespaceChoices(agent.namespace)} onmakefrom={makeFrom} oncancelmake={() => (makeKind = null)} />
             {:else if propNode === 'secure' && sub.secure === 'keys'}
-              <AgentKeys {agent} canEdit={$canEditAgent} />
+              <AgentKeys {agent} canEdit={writable} />
             {:else if propNode === 'secure' && sub.secure === 'sharing'}
-              <AgentSharing {agent} canEdit={$canEditAgent} />
+              <AgentSharing {agent} canEdit={writable} />
             {:else if propNode === 'secure' && sub.secure === 'controls'}
-              <AgentControls {agent} {templates} live={live!} canAdmin={$canEditAgent} onrevoke={revokeTools} onchanged={() => deployRev++} onreload={loadAgents} ongo={goTab} />
+              <AgentControls {agent} {templates} live={live!} canAdmin={writable} onrevoke={revokeTools} onchanged={() => deployRev++} onreload={loadAgents} ongo={goTab} />
             {:else if propNode === 'secure' && sub.secure === 'exposure'}
               <AgentExposure {agent} {templates} live={live!} ongo={goTab} />
             {:else if propNode === 'audit'}
@@ -836,7 +839,7 @@
             {:else if propNode === 'metrics'}
               <AgentMetrics id={agent.id} />
             {:else if propNode === 'versions'}
-              <AgentReleases {agent} {templates} {allAgents} live={live!} canEdit={$canEditAgent} bind:branchForm
+              <AgentReleases {agent} {templates} {allAgents} live={live!} canEdit={writable} bind:branchForm
                 onopen={selectAgent} onmade={async (id) => { await loadAgents(); selectAgent(id); }} onchanged={() => deployRev++}>
                 {#snippet notDeployed()}
                   {#if boundCanvas}
@@ -860,7 +863,7 @@
                 {/snippet}
               </AgentReleases>
             {:else if propNode === 'settings'}
-              <AgentSettings {agent} {templates} {allAgents} live={live!} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
+              <AgentSettings {agent} {templates} {allAgents} live={live!} canEdit={writable} bind:bindings dirty={bindDirty} saving={savingBind} saveError={saveErr}
                 onsave={saveBindings} ondiscard={discardBindings} ongo={goTab} onopen={selectAgent}
                 onupgrade={upgradeTemplate} ondelete={deleteCurrent} />
             {/if}

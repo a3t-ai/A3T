@@ -38,10 +38,11 @@
   let fresh = $state<{ name: string; key: string } | null>(null);
   let err = $state('');
   async function load(id: string) {
-    const [t, k, m, l, e] = await Promise.all([insight.turns(id), agentSpaceApi.keys(id), insight.memory(id), control.lineage(id), insight.events(id)]);
+    // Its keys only for whoever may change it: the server refuses anyone else.
+    const [t, k, m, l, e] = await Promise.all([insight.turns(id), canEdit ? agentSpaceApi.keys(id) : Promise.resolve({ ok: true, data: { keys: null } } as any), insight.memory(id), control.lineage(id), insight.events(id)]);
     if (agent.id !== id) return;
     turns = t.ok ? t.data.summary : null;
-    keys = k.ok ? k.data?.keys ?? [] : null;
+    keys = k.ok ? (canEdit ? k.data?.keys ?? [] : null) : null;
     memTotal = m.ok ? Object.values(m.data.counts ?? {}).reduce((x: number, y) => x + Number(y || 0), 0) : null;
     memCounts = m.ok ? m.data.counts : null;
     events = e.ok ? e.data : null;
@@ -112,6 +113,7 @@
         {#if fresh}
           <span class="mono url">{fresh.key}</span><button class="btn2 primary" onclick={() => cp('key', fresh!.key)}>{copied === 'key' ? 'Copied' : 'Copy'}</button>
           <span class="dim sub">Key <b>{fresh.name}</b> — copy it now, it is not shown again. <button class="link" onclick={saved}>I have saved it</button></span>
+        {:else if !canEdit}<span class="dim">Its keys are kept by those who can change its project.</span><span></span>
         {:else if keys === null}<span class="dim">…</span><span></span>
         {:else if live.length}
           <span>{live.map((k) => `${k.name} (${k.prefix}…)`).join(', ')}</span><button class="btn2" onclick={() => ongo('keys')}>Manage</button>
@@ -152,9 +154,9 @@
         {#if canEdit}{#if blocked}<button class="btn2" disabled={blocking} onclick={() => toggleBlock(false)}>{blocking ? '…' : 'Unblock'}</button>{:else if !askBlock}<button class="btn2 danger" onclick={() => (askBlock = true)}>Block</button>{:else}<span></span>{/if}{:else}<span></span>{/if}</li>
 
       <li class:bad={keys !== null && !live.length}><span class="k">Keys</span>
-        <div>{#if keys === null}…{:else if !live.length}<b>None</b> — apps can't call it.{:else}
+        <div>{#if !canEdit}<span class="dim">Seen by those who can change its project.</span>{:else if keys === null}…{:else if !live.length}<b>None</b> — apps can't call it.{:else}
           {#each live as k (k.id)}<span class="line"><b>{k.name}</b> <span class="mono">{k.prefix}…</span> — made by {k.created_by} {ago(k.created_at)}, {k.last_used_at ? `last used ${ago(k.last_used_at)}` : 'never used'}</span>{/each}{/if}</div>
-        <button class="btn2" onclick={() => ongo('keys')}>{keys !== null && !live.length ? 'Make a key' : 'Manage keys'}</button></li>
+        {#if canEdit}<button class="btn2" onclick={() => ongo('keys')}>{keys !== null && !live.length ? 'Make a key' : 'Manage keys'}</button>{:else}<span></span>{/if}</li>
 
       <li class:bad={(turns?.failed ?? 0) > 0}><span class="k">Answers</span>
         <div>{#if !turns}…{:else if !turns.turns}<b>None yet</b> — test it above.{:else}

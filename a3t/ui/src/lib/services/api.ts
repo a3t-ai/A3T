@@ -391,11 +391,14 @@ export async function loadDirectory(): Promise<DirectoryUser[]> {
     for (const u of rows) if (u?.id && !out.some((x) => x.id === u.id)) out.push({ id: u.id, email: u.email ?? '', name: u.name ?? '', source: 'local' });
   } catch { /* not allowed, or no local users */ }
   try {
-    const sso = await idp.users();
+    // The full IdP list is InfoSec's; a project owner or org admin gets the
+    // narrower directory (id, name, email) to pick members from.
+    let sso = await idp.users();
+    if (!sso.ok && sso.status === 403) sso = await request('/directory/users', { method: 'GET' });
     for (const u of sso.ok ? (sso.data?.users ?? []) : []) {
       if (u?.id && !out.some((x) => x.email && x.email === u.email)) out.push({ id: u.id, email: u.email ?? u.username ?? '', name: u.name ?? u.username ?? '', source: 'sso' });
     }
-  } catch { /* CE, or not an admin */ }
+  } catch { /* CE, or no one to pick from */ }
   return out;
 }
 

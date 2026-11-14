@@ -5,6 +5,7 @@
 // (see .ai/A3T_UI_LIMITATIONS.md, UI-n) rather than faked.
 import * as YAML from 'yaml';
 import { audit, fetchChatSessions, opsApi, runsApi, type ChatSessionSummary } from '$lib/services/api';
+import { isInfosec } from '$lib/stores/auth';
 
 export type AgentRec = {
   id: string; name: string; namespace: string; mode: string; status: string;
@@ -91,8 +92,10 @@ export type Decision = { ts: number; allow: boolean; principal: string; obo: str
 /// behalf of someone, or as the resource. Read from the latest `limit` records of
 /// the whole log and filtered here (UI-3: no server-side filter yet).
 export async function decisionsFor(agent: AgentRec, limit = 500): Promise<{ list: Decision[]; error: string; scanned: number }> {
+  // The decision log is SuperAdmin and SecurityAdmin only: don't ask for it otherwise.
+  if (!isInfosec()) return { list: [], error: 'Its allowed and blocked decisions are shown to SuperAdmin and SecurityAdmin.', scanned: 0 };
   const r = await audit.recent(limit);
-  if (!r.ok) return { list: [], error: r.status === 403 ? 'The decision log needs an admin or security role.' : (r.error ?? 'Decision log unavailable'), scanned: 0 };
+  if (!r.ok) return { list: [], error: r.status === 403 ? 'Its allowed and blocked decisions are shown to SuperAdmin and SecurityAdmin.' : (r.error ?? 'Decision log unavailable'), scanned: 0 };
   const rows: any[] = Array.isArray(r.data) ? r.data : (r.data?.records ?? r.data?.decisions ?? []);
   const id = agent.id.toLowerCase();
   const hit = (s: unknown) => typeof s === 'string' && s.toLowerCase().includes(id);

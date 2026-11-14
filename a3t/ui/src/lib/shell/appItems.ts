@@ -342,6 +342,10 @@ async function loadAll(source: string): Promise<AppItem[]> {
     })));
   }
   if (source === 'decision-views') {
+    // SuperAdmin and SecurityAdmin only (the server refuses anyone else): say so
+    // here, as Security does, rather than list views that can only fail.
+    const { isInfosec } = await import('$lib/stores/auth');
+    if (!isInfosec()) throw new Error('The decision log is for SuperAdmin and SecurityAdmin.');
     return [
       { id: 'all', label: 'All decisions', sub: 'every allow, deny and approval asked' },
       { id: 'deny', label: 'Denials', sub: 'what was refused, and why' },

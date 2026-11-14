@@ -3,8 +3,8 @@
   /// the project picked in the top bar); the one picked opens here in the agents'
   /// frame: Overview (status, why it failed, what ran, run it again), Steps,
   /// Timeline, Journal, Resume points, Input & output. A failed run's Overview
-  /// carries the A3T error log's classification of it (Admin and SuperAdmin —
-  /// the error log flow refuses anyone else); this replaced the Errors app.
+  /// carries the A3T error log's classification of it (the authoring tier —
+  /// operator, admin, SuperAdmin; the error log flow refuses anyone else); this replaced the Errors app.
   import { untrack } from 'svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
@@ -38,7 +38,7 @@
   let classified = '';
   function onrun(r: any) {
     run = r;
-    if (r.phase === 'faulted' && classified !== r.run_id && hasRole('admin')) {
+    if (r.phase === 'faulted' && classified !== r.run_id && hasRole('operator')) {
       classified = r.run_id;
       void execFlow('flow_a3t_error_log', 'a3t', { action: 'list', run_id: r.run_id, limit: 1 }, { silent: true }).then((res) => {
         if (res.ok && res.data?.ok !== false && id === r.run_id) failure = res.data?.errors?.[0] ?? null;

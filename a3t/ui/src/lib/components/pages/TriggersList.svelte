@@ -1,7 +1,7 @@
 <script lang="ts">
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
-  import { inContext, namespacesFor, isPlatform, itemProject, getProject } from '$lib/stores/context.svelte.ts';
+  import { inContext, namespacesFor, isPlatform, itemProject, getProject, canWriteIn } from '$lib/stores/context.svelte.ts';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
   import { contextRev_, bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -49,6 +49,9 @@
   const sharedTriggers = $derived(triggers.filter((t: any) => isPlatform(t.project)));
   let availableFlows = $state<FlowSummary[]>([]);
   let editingTrigger = $state<Trigger | null>(null);
+  /// Read-only where you can't write in its project: no save, pause, fire or remove.
+  const nsOfTrigger = (t: Trigger) => ((t as any).project ?? t.namespace) as string;
+  const trgRO = $derived(!!editingTrigger && !canWriteIn(nsOfTrigger(editingTrigger)));
   let deleteTarget = $state<Trigger | null>(null);
 
   // ── Form state ──
@@ -428,6 +431,7 @@
           </div>
           <span class="trg-status" class:active={t.enabled}>{t.enabled ? 'active' : 'paused'}</span>
           <div class="trg-actions" onclick={(e) => e.stopPropagation()}>
+            {#if canWriteIn(nsOfTrigger(t))}
             <button class="trg-act" onclick={() => toggleEnabled(t)} title={t.enabled ? 'Pause' : 'Resume'}>
               {#if t.enabled}<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg>
               {:else}<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><polygon points="3,2 13,8 3,14"/></svg>{/if}
@@ -438,6 +442,7 @@
             <button class="trg-act danger" onclick={() => deleteTarget = t} title="Delete">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 4L4 12M4 4l8 8"/></svg>
             </button>
+            {/if}
           </div>
         </div>
       {/each}
@@ -464,7 +469,7 @@
 
 <!-- ═══════════ EDITOR (SlidePanel pop-in) ═══════════ -->
 <!-- Open in Studio once it is saved: the Studio opens a trigger by its id. -->
-<SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={() => saveTrigger()}
+<SlidePanel open={view === 'editor'} onclose={closeEditor} onsave={trgRO ? undefined : () => saveTrigger()}
   onopenineditor={editingTrigger ? () => openInStudio('trigger', editingTrigger!.namespace || 'default', editingTrigger!.name, editingTrigger!.id) : undefined}>
   <!-- The same frame as an agent's or a template's details: header and steps
        (PropertiesTree), then the step's page at the details width. -->
@@ -481,6 +486,8 @@
     <WizardHead step={trgSteps.find((x) => x.id === step)} />
     <section class="agt">
     {#if saveError}<div class="note bad" role="alert">Could not save: {saveError}</div>{/if}
+    {#if trgRO}<div class="note">You can see this trigger, but not change, pause or fire it: that needs write access to project <b class="mono">{nsOfTrigger(editingTrigger!)}</b>.</div>{/if}
+    <fieldset class="ro-fs" disabled={trgRO}>
 
     {#if step === 'details'}
       <div class="card">
@@ -614,11 +621,12 @@
         </div>
       {/if}
     {/if}
+    </fieldset>
     </section>
     </div>
     </div>
     <WizardNav steps={trgSteps} active={step} wizard={!editingTrigger} onselect={(id) => (step = id)}
-      final={() => saveTrigger()} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
+      final={trgRO ? undefined : () => saveTrigger()} finalLabel={editingTrigger ? 'Save' : 'Create trigger'} finalBusy={saving} busyLabel={editingTrigger ? 'Saving…' : 'Creating…'} />
   </div>
   </div>
 </SlidePanel>
@@ -695,4 +703,5 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  .ro-fs { border: 0; margin: 0; padding: 0; min-width: 0; display: contents; }
 </style>

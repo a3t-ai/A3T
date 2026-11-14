@@ -22,7 +22,7 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
-  import { inContext, projectOf, getProject, getProjects, canAdminNamespace, isReleaseProject } from '$lib/stores/context.svelte.ts';
+  import { inContext, projectOf, getProject, getProjects, canAdminNamespace, canWriteIn, isReleaseProject } from '$lib/stores/context.svelte.ts';
 
   // Stacked sub-editors (unlimited depth)
   interface SubEditor { type: string; data?: any; closing?: boolean }
@@ -353,7 +353,9 @@ do:
   /// Base templates are never edited in place: anything that is not yours
   /// (platform, shared, training, community, inherited) is read-only — you
   /// clone it and change your copy.
-  const readOnly = $derived(!!template?.readOnly || (!draftTemplate?.isNew && !!template && template.source !== 'my'));
+  const readOnly = $derived(!!template?.readOnly || (!draftTemplate?.isNew && !!template && template.source !== 'my')
+    // …and wherever you can't write in its project (the server would refuse).
+    || (!draftTemplate?.isNew && !!template && !canWriteIn((template as any).namespace)));
 
   /// The pop-in's steps. A new template needs a name before its spec; agents are
   /// made from a saved one, so that step is not there while it is new.

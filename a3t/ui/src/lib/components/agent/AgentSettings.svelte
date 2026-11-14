@@ -5,7 +5,9 @@
   import type { AgentLive } from './agentLive.svelte';
   import type { Bindings } from './agentValues';
 
-  let { agent, templates, allAgents, live, bindings = $bindable(), dirty, saving, saveError, onsave, ondiscard, ongo, onopen, onupgrade, ondelete }: {
+  let { agent, templates, allAgents, live, bindings = $bindable(), dirty, saving, saveError, onsave, ondiscard, ongo, onopen, onupgrade, ondelete, canEdit = true }: {
+    /// False when you can't change things in this agent's project.
+    canEdit?: boolean;
     agent: AgentRec & { created_by?: string; created_at?: string };
     templates: TemplateRec[];
     allAgents: AgentRec[];
@@ -49,7 +51,7 @@
 </script>
 
 <section class="agt">
-  {#if dirty || saveError}
+  {#if canEdit && (dirty || saveError)}
     <div class="dirty" class:bad={!!saveError}>
       <span>{saveError ? `Not saved: ${saveError}` : 'Unsaved changes'}</span>
       <span class="acts"><button class="btn2 quiet" disabled={saving} onclick={ondiscard}>Discard</button>
@@ -80,7 +82,7 @@
       <dt>Owner</dt><dd>{agent.created_by || 'unowned'}</dd>
       {#if agent.created_at}<dt>Created</dt><dd>{new Date(agent.created_at).toLocaleString()}</dd>{/if}
     </dl>
-    {#if newer}
+    {#if newer && canEdit}
       <div class="note row">
         <span>Its template has a newer release, <b class="mono">{newer.name}@{newer.version}</b>.</span>
         <button class="btn2" disabled={upgrading} onclick={upgrade}>{upgrading ? 'Moving…' : `Move to ${newer.version}`}</button>
@@ -90,6 +92,7 @@
     <p class="dim">To move it to another project, clone it there and delete this one. Who may change it is set by its project's access.</p>
   </div>
 
+  {#if canEdit}
   <div class="card danger">
     <div class="card-head"><h3>Delete this agent</h3></div>
     {#if live.loading}
@@ -112,6 +115,9 @@
       </div>
     {/if}
   </div>
+  {:else}
+    <p class="dim">You can see this agent, but not change it: that needs write access to project <b class="mono">{agent.namespace}</b>.</p>
+  {/if}
 </section>
 
 <style>

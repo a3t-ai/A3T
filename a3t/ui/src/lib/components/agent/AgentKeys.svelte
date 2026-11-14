@@ -23,6 +23,8 @@
 
   async function load(id: string) {
     keys = null; err = '';
+    // Its keys are for whoever may change it (the server refuses anyone else).
+    if (!canEdit) return;
     const r = await agentSpaceApi.keys(id);
     if (agent.id !== id) return;
     if (r.ok) keys = r.data?.keys ?? []; else err = r.error ?? 'Its keys could not be read.';
@@ -74,9 +76,10 @@
         <input type="text" class="grow" bind:value={name} placeholder="What uses it, e.g. web-app or billing-service" />
         <button class="btn2 primary" disabled={!!busy} onclick={make}>{busy === 'make' ? 'Making…' : 'New key'}</button>
       </div>
-    {:else}<p class="dim">Only its project's admins make and revoke its keys.</p>{/if}
+    {:else}<p class="dim">Its keys are shown to, and made by, those who can change project <b class="mono">{agent.namespace}</b>.</p>{/if}
     {#if err}<p class="err">{err}</p>{/if}
-    {#if !keys}<p class="dim">…</p>
+    {#if !canEdit}
+    {:else if !keys}<p class="dim">…</p>
     {:else if live.length}
       <table class="tbl">
         <thead><tr><th>Name</th><th>Key</th><th>Made</th><th>Last used</th><th></th></tr></thead>

@@ -220,7 +220,8 @@ const ROLE_HIERARCHY: Record<UserRole, number> = {
   // hasRole() checks; its actual capabilities come from ROLE_PERMISSIONS below.
   securityadmin: 90,
   admin: 100,
-  operator: 60,
+  // The developer tier ranks with admin, as on the server (canonicalize).
+  operator: 100,
   viewer: 20,
 };
 
@@ -265,12 +266,15 @@ const ROLE_PERMISSIONS: Record<UserRole, Record<ResourceType, Action[]>> = {
     memory: ['read'],
     settings: ['read', 'update'],
   },
+  // `operator` is the developer tier: the server gives it Admin, Operator and
+  // Viewer (flowr-policy roles::canonicalize), so it authors like an admin —
+  // within the projects it can write (canWriteIn), never the InfoSec seam.
   operator: {
-    template: ['read', 'deploy'],
+    template: ['create', 'read', 'update', 'delete', 'deploy'],
     agent: ['create', 'read', 'update', 'delete', 'execute'],
-    canvas: ['read', 'deploy'],
-    resource: ['read'],
-    flow: ['read', 'execute'],
+    canvas: ['create', 'read', 'update', 'delete', 'deploy'],
+    resource: ['create', 'read', 'update', 'delete'],
+    flow: ['create', 'read', 'update', 'delete', 'execute'],
     memory: ['read'],
     settings: ['read'],
   },

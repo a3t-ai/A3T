@@ -9,6 +9,7 @@
 
 import { mcpCall, projectsApi, type ProjectInfo, type ProfileInfo, type OrgRole } from '$lib/services/api';
 import { bumpContext } from './apps.svelte.ts';
+import { getSession } from './auth';
 
 export type Project = {
   name: string;
@@ -102,6 +103,24 @@ export function roleIn(p: Project): string | null {
   return p.info?.role ?? null;
 }
 
+/// Whether you may change things in a namespace — create, save, deploy, delete.
+/// The same rule the server applies (flowr-ce access.rs `decide`), so the UI
+/// offers exactly what will be allowed:
+///  - a platform namespace (a3t, system): a SuperAdmin, or an admin of that org;
+///  - a project: its owner, a developer member, or an admin of the owning org
+///    (a SuperAdmin too, for an org's project — not inside someone's personal one);
+///  - a namespace from before projects: a SuperAdmin, or a member of org a3t.
+export function canWriteIn(ns: string | undefined | null): boolean {
+  if (!ns) return false;
+  const superadmin = getSession()?.user?.role === 'superadmin';
+  const orgRole = (h: string) => myOrgs.find((o) => o.handle === h)?.role ?? null;
+  if (ns === 'a3t' || ns === 'system') return superadmin || orgRole(ns) === 'admin';
+  const p = projects.find((x) => x.name === ns);
+  if (!p?.info) return superadmin || orgRole('a3t') === 'admin' || orgRole('a3t') === 'member';
+  const r = p.info.role ?? '';
+  return !!p.info.can_admin || r === 'owner' || r === 'developer' || r === 'org-admin' || (r === 'superadmin' && p.info.owner_kind === 'org');
+}
+
 /// A project is "mine" when I own it or am in it — not when I only see it as
 /// superadmin or as a plain member of its org.
 export function isMine(p: Project): boolean {
@@ -154,13 +173,9 @@ export function exposedProjects(kind?: ExposedKind): Project[] {
   return projects.filter((p) => { const k = exposureFor(p); return !!k && (!kind || k === kind); });
 }
 
-/// Whether you may change what is in a namespace: a project you administer, or a
-/// platform namespace (a3t / system) whose org you are an admin of.
+/// Whether you may change what is in a namespace — the one rule, canWriteIn.
 export function canAdminNamespace(ns: string | undefined): boolean {
-  if (!ns) return false;
-  if (['a3t', 'system'].includes(ns)) return myOrgs.some((o) => o.handle === ns && o.role === 'admin');
-  const p = projects.find((x) => x.name === ns);
-  return !!p?.info && (p.info.can_admin || p.info.role === 'owner' || p.info.role === 'developer');
+  return canWriteIn(ns);
 }
 
 /// Your projects with an exposure — where you can publish to — and the `a3t`

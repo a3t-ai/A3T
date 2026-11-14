@@ -1,7 +1,7 @@
 <script lang="ts">
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
-  import { inContext, canvasKind, itemProject } from '$lib/stores/context.svelte.ts';
+  import { inContext, canvasKind, itemProject, canWriteIn } from '$lib/stores/context.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
@@ -207,7 +207,9 @@
 </div>
 
 <!-- Drag-drop designer popin -->
-<CanvasDesigner open={designerOpen} canvas={editing} onclose={() => (designerOpen = false)} onsaved={() => { void load(); bumpItems(); }} />
+<!-- Read-only where you can't write in its project (the server would refuse). -->
+<CanvasDesigner open={designerOpen} canvas={editing} readonly={!!editing && !canWriteIn(editing.project ?? editing.namespace)}
+  readonlyNote={editing ? `You can see this canvas, but not change or deploy it: that needs write access to project ${editing.project ?? editing.namespace}.` : ''} onclose={() => (designerOpen = false)} onsaved={() => { void load(); bumpItems(); }} />
 
 
 <style>
