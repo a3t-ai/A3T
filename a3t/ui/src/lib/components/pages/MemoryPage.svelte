@@ -52,6 +52,21 @@
   const kindSpace = $derived(kind.startsWith('space:') ? kind.slice(6) : space?.namespace ?? '');
   const kindType = $derived((kind.startsWith('space:') ? 'SEMANTIC' : kind) as Kind);
   const count = (k: string) => k.startsWith('space:') ? (space?.attached.find((a) => a.namespace === k.slice(6))?.entries.length ?? 0) : (space?.counts?.[k.toLowerCase()] ?? 0);
+  /// The bar's parts: each kind, then each attached space, with its own light colour.
+  const TONE: Record<string, [string, string]> = {
+    WORKING: ['var(--ephemeral)', 'var(--ephemeral-bg)'], EPISODIC: ['var(--control)', 'var(--control-bg)'],
+    SEMANTIC: ['var(--runtime)', 'var(--runtime-bg)'], PROCEDURAL: ['var(--signal)', 'var(--signal-bg)'],
+  };
+  const parts = $derived.by(() => {
+    const all = [
+      ...KINDS.map((k) => ({ k: k.k as string, label: k.label, space: false, c: TONE[k.k][0], cb: TONE[k.k][1] })),
+      ...(space?.attached ?? []).map((a) => ({ k: `space:${a.namespace}`, label: a.namespace, space: true, c: 'var(--spec)', cb: 'var(--spec-bg)' })),
+    ].map((p) => ({ ...p, n: count(p.k) }));
+    const sum = all.reduce((t, p) => t + p.n, 0);
+    // A share of the bar by count, but never so thin a part can't be clicked.
+    return all.map((p) => ({ ...p, w: sum ? Math.max(p.n / sum, 0.08) : 1 }));
+  });
+  const total = $derived(parts.reduce((t, p) => t + p.n, 0));
   const shownRecs = $derived(contains.trim() ? records.filter((r) => JSON.stringify(r.data).toLowerCase().includes(contains.trim().toLowerCase())) : records);
 
   async function apply() {
@@ -148,16 +163,25 @@
           </div>
 
         {:else if tab === 'memory'}
-          <div class="kbar" role="tablist">
-            {#each KINDS as k (k.k)}
-              <button role="tab" class:on={kind === k.k} onclick={() => pick(k.k)}><b>{k.label}</b><span>{space ? count(k.k) : '…'}</span></button>
-            {/each}
-            {#each space?.attached ?? [] as a (a.namespace)}
-              <button role="tab" class:on={kind === `space:${a.namespace}`} onclick={() => pick(`space:${a.namespace}`)}><b class="mono">{a.namespace}</b><span>{a.entries.length}</span></button>
-            {/each}
+          <!-- Like a disk-usage bar: one bar, a light colour per kind, each part
+               sized by its share of entries; the bar and the key below both pick. -->
+          <div class="card">
+            <div class="card-head"><h3>1 · Kinds</h3><span>{space ? `${total} entries — pick a kind` : 'reading…'}</span></div>
+            <div class="mbar" role="tablist" aria-label="Memory kinds">
+              {#each parts as s (s.k)}
+                <button role="tab" class="seg" class:on={kind === s.k} aria-selected={kind === s.k} style="flex-grow:{s.w}; --c:{s.c}; --cb:{s.cb}"
+                  title="{s.label}: {s.n}" onclick={() => pick(s.k)}><span>{s.n}</span></button>
+              {/each}
+            </div>
+            <div class="mkey">
+              {#each parts as s (s.k)}
+                <button class:on={kind === s.k} style="--c:{s.c}; --cb:{s.cb}" onclick={() => pick(s.k)}>
+                  <i></i><b class:mono={s.space}>{s.label}</b><span>{space ? s.n : '…'}</span></button>
+              {/each}
+            </div>
           </div>
           <div class="card">
-            <div class="card-head"><h3>1 · Filter</h3><span>{kind.startsWith('space:') ? 'facts in this space' : KINDS.find((k) => k.k === kind)?.what}</span></div>
+            <div class="card-head"><h3>2 · Filter</h3><span>{kind.startsWith('space:') ? 'facts in this space' : KINDS.find((k) => k.k === kind)?.what}</span></div>
             {#each filters as f, i (i)}
               <div class="frow">
                 <input class="mono fin" type="text" bind:value={f.field} placeholder={kindType === 'SEMANTIC' ? 'subject' : kindType === 'EPISODIC' ? 'session_id' : 'key'} />
@@ -176,7 +200,7 @@
             {#if err}<div class="note bad">{err}</div>{/if}
           </div>
           <div class="card">
-            <div class="card-head"><h3>2 · Entries</h3><span>{shownRecs.length}{contains ? ` of ${records.length}` : ''}, newest first</span><span class="grow"></span>
+            <div class="card-head"><h3>3 · Entries</h3><span>{shownRecs.length}{contains ? ` of ${records.length}` : ''}, newest first</span><span class="grow"></span>
               <input class="fin rm" type="search" bind:value={contains} placeholder="Find in these" /></div>
             {@render recList(shownRecs)}
           </div>
@@ -214,11 +238,18 @@
   .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
   @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
   /* The kinds across the page: each a tab with its count. */
-  .kbar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
-  .kbar button { flex: 1 0 auto; min-width: 120px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); cursor: pointer; font: inherit; text-align: left; }
-  .kbar button b { font: 500 13.5px var(--font-sans); color: var(--text-1); }
-  .kbar button span { font: 600 18px var(--font-sans); color: var(--text-2); font-variant-numeric: tabular-nums; }
-  .kbar button.on { border-color: var(--text-1); box-shadow: inset 0 0 0 1px var(--text-1); }
+  .mbar { display: flex; gap: 3px; height: 34px; border-radius: 8px; overflow: hidden; }
+  .mbar .seg { flex: 1 1 0; min-width: 28px; display: flex; align-items: center; padding: 0 10px; border: 0; background: var(--cb); color: var(--c); cursor: pointer; font: 600 12.5px var(--font-sans); font-variant-numeric: tabular-nums; }
+  .mbar .seg span { overflow: hidden; white-space: nowrap; }
+  .mbar .seg:hover { filter: brightness(0.96); }
+  .mbar .seg.on { box-shadow: inset 0 0 0 2px var(--c); }
+  .mkey { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-top: 12px; }
+  .mkey button { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); cursor: pointer; font: inherit; }
+  .mkey i { width: 10px; height: 10px; border-radius: 3px; background: var(--cb); box-shadow: inset 0 0 0 1px var(--c); }
+  .mkey b { font: 500 13px var(--font-sans); color: var(--text-1); }
+  .mkey span { font: 600 13px var(--font-sans); color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .mkey button.on { border-color: var(--c); background: var(--cb); }
+  .mkey button.on span { color: var(--c); }
   .frow { display: flex; align-items: center; gap: 8px; }
   .fin { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 13px var(--font-sans); color: var(--text-1); min-width: 0; }
   .fin.mono { font-family: var(--font-mono); font-size: 12.5px; }
