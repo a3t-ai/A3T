@@ -59,8 +59,8 @@
   };
   const parts = $derived.by(() => {
     const all = [
-      ...KINDS.map((k) => ({ k: k.k as string, label: k.label, space: false, c: TONE[k.k][0], cb: TONE[k.k][1] })),
-      ...(space?.attached ?? []).map((a) => ({ k: `space:${a.namespace}`, label: a.namespace, space: true, c: 'var(--spec)', cb: 'var(--spec-bg)' })),
+      ...KINDS.map((k) => ({ k: k.k as string, label: k.label, what: k.what, space: false, c: TONE[k.k][0], cb: TONE[k.k][1] })),
+      ...(space?.attached ?? []).map((a) => ({ k: `space:${a.namespace}`, label: a.namespace, what: 'an attached semantic space', space: true, c: 'var(--spec)', cb: 'var(--spec-bg)' })),
     ].map((p) => ({ ...p, n: count(p.k) }));
     const sum = all.reduce((t, p) => t + p.n, 0);
     // A share of the bar by count, but never so thin a part can't be clicked.
@@ -163,20 +163,17 @@
           </div>
 
         {:else if tab === 'memory'}
-          <!-- Like a disk-usage bar: one bar, a light colour per kind, each part
-               sized by its share of entries; the bar and the key below both pick. -->
+          <!-- Like a disk map: a box per kind with its colour along the top, sized by
+               its share of the entries (never too narrow to pick); click one to open it. -->
           <div class="card">
             <div class="card-head"><h3>1 · Kinds</h3><span>{space ? `${total} entries — pick a kind` : 'reading…'}</span></div>
             <div class="mbar" role="tablist" aria-label="Memory kinds">
               {#each parts as s (s.k)}
-                <button role="tab" class="seg" class:on={kind === s.k} aria-selected={kind === s.k} style="flex-grow:{s.w}; --c:{s.c}; --cb:{s.cb}"
-                  title="{s.label}: {s.n}" onclick={() => pick(s.k)}><span>{s.n}</span></button>
-              {/each}
-            </div>
-            <div class="mkey">
-              {#each parts as s (s.k)}
-                <button class:on={kind === s.k} style="--c:{s.c}; --cb:{s.cb}" onclick={() => pick(s.k)}>
-                  <i></i><b class:mono={s.space}>{s.label}</b><span>{space ? s.n : '…'}</span></button>
+                <button role="tab" class="seg" class:on={kind === s.k} aria-selected={kind === s.k} style="flex-grow:{s.w}; --c:{s.c}; --cb:{s.cb}" onclick={() => pick(s.k)}>
+                  <b class:mono={s.space}>{s.label}</b>
+                  <span class="n">{space ? `${s.n} ${s.n === 1 ? 'entry' : 'entries'}` : '…'}{space && total ? ` · ${Math.round((s.n / total) * 100)}%` : ''}</span>
+                  <span class="w">{s.what}</span>
+                </button>
               {/each}
             </div>
           </div>
@@ -238,18 +235,25 @@
   .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
   @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
   /* The kinds across the page: each a tab with its count. */
-  .mbar { display: flex; gap: 3px; height: 34px; border-radius: 8px; overflow: hidden; }
-  .mbar .seg { flex: 1 1 0; min-width: 28px; display: flex; align-items: center; padding: 0 10px; border: 0; background: var(--cb); color: var(--c); cursor: pointer; font: 600 12.5px var(--font-sans); font-variant-numeric: tabular-nums; }
-  .mbar .seg span { overflow: hidden; white-space: nowrap; }
-  .mbar .seg:hover { filter: brightness(0.96); }
-  .mbar .seg.on { box-shadow: inset 0 0 0 2px var(--c); }
-  .mkey { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-top: 12px; }
-  .mkey button { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); cursor: pointer; font: inherit; }
-  .mkey i { width: 10px; height: 10px; border-radius: 3px; background: var(--cb); box-shadow: inset 0 0 0 1px var(--c); }
-  .mkey b { font: 500 13px var(--font-sans); color: var(--text-1); }
-  .mkey span { font: 600 13px var(--font-sans); color: var(--text-3); font-variant-numeric: tabular-nums; }
-  .mkey button.on { border-color: var(--c); background: var(--cb); }
-  .mkey button.on span { color: var(--c); }
+  .mbar { display: flex; flex-wrap: wrap; gap: 2px; }
+  .mbar .seg { flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0 12px 10px; border: 1px solid var(--border); border-top: 0; border-radius: 0; overflow: hidden; background: var(--cb); cursor: pointer; font: inherit; text-align: left; }
+  .mbar .seg::before { content: ''; align-self: stretch; height: 8px; margin: 0 -12px 8px; background: var(--c); }
+  .mbar .seg > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mbar .seg b { font: 600 13.5px var(--font-sans); color: var(--text-1); }
+  .mbar .seg .n { font: 500 12.5px var(--font-sans); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .mbar .seg .w { font-size: 12px; color: var(--text-3); }
+  .mbar .seg:first-child { border-radius: 6px 0 0 6px; }
+  .mbar .seg:last-child { border-radius: 0 6px 6px 0; }
+  .mbar .seg.on { position: relative; z-index: 1; }
+  .mbar .seg:hover { border-color: var(--c); }
+  .mbar .seg.on { border-color: var(--c); box-shadow: 0 0 0 2px var(--c); }
+  /* A narrow pane: the same bar, stood on end — one row per kind, full width. */
+  @container details (max-width: 560px) {
+    .mbar { flex-direction: column; flex-wrap: nowrap; }
+    .mbar .seg { flex: none; }
+    .mbar .seg:first-child { border-radius: 6px 6px 0 0; }
+    .mbar .seg:last-child { border-radius: 0 0 6px 6px; }
+  }
   .frow { display: flex; align-items: center; gap: 8px; }
   .fin { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 13px var(--font-sans); color: var(--text-1); min-width: 0; }
   .fin.mono { font-family: var(--font-mono); font-size: 12.5px; }
