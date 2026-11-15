@@ -82,7 +82,7 @@
     } catch {}
     resSaving = false;
   }
-  import { can, canAny, currentUser } from '$lib/stores/auth';
+  import { can, canAny, currentUser, getSession } from '$lib/stores/auth';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
   import { onMount, untrack } from 'svelte';
   import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
@@ -558,7 +558,7 @@ do:
       onsave: $canEditTpl && !readOnly ? saveTemplate : undefined,
       onclose: closePanel,
       // A base template is cloned, never edited; your own can be duplicated.
-      extra: [{ label: readOnly ? 'Clone and edit' : 'Duplicate', run: requestCopy }],
+      extra: getSession()?.user?.role === 'viewer' ? [] : [{ label: readOnly ? 'Clone and edit' : 'Duplicate', run: requestCopy }],
     });
   });
 
@@ -687,7 +687,7 @@ do:
                 <!-- One Design for every template: editable on your copy, read-only
                      on a base template, which you clone to change. -->
                 {#if readOnly && template.spec_yaml}
-                  <div class="tpl-ro">Read-only — this is a base template. <button class="link" onclick={requestCopy}>Clone and edit</button> to change your own copy.</div>
+                  <div class="tpl-ro">Read-only — this is a base template.{#if getSession()?.user?.role !== 'viewer'} <button class="link" onclick={requestCopy}>Clone and edit</button> to change your own copy.{/if}</div>
                 {/if}
                 {#if template.spec_yaml}
                   <FlowEditorPane initialYaml={template.spec_yaml} {readOnly} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />

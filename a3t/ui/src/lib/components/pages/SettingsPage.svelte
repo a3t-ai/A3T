@@ -601,7 +601,7 @@
           <input class="ctl-input" type="text" bind:value={platformName} placeholder="A3T" />
         </div>
         <div class="row-actions">
-          <button class="btn spec" onclick={savePlatform} disabled={platformSaving}>{platformSaving ? 'Saving…' : 'Save'}</button>
+          <button class="btn spec" onclick={savePlatform} disabled={platformSaving || $currentUser?.role !== 'superadmin'} title={$currentUser?.role !== 'superadmin' ? 'Only a SuperAdmin changes platform settings' : undefined}>{platformSaving ? 'Saving…' : 'Save'}</button>
           {#if platformMsg}<span class="msg" class:ok={platformMsg === 'Saved'}>{platformMsg}</span>{/if}
         </div>
       </div>

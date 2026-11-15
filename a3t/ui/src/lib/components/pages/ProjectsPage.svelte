@@ -504,7 +504,7 @@
       <h1 class="screen-title">Projects</h1>
     </div>
     <div class="screen-actions">
-      <NewButton label="New project" accent="spec" onclick={openCreate} />
+      {#if $currentUser?.role !== 'viewer'}<NewButton label="New project" accent="spec" onclick={openCreate} />{/if}
     </div>
   </div>
 </div>
@@ -587,7 +587,7 @@
     {#snippet membersBlock()}
       <section class="ap-card">
         <header class="ap-head">
-          <div><h3>People</h3><p>Who can see and work in this project.</p></div>
+          <div><h3>1 · People</h3><p>Who can see and work in this project.</p></div>
           <button class="link" onclick={() => (showRoles = !showRoles)}>{showRoles ? 'Hide roles' : 'What can each role do?'}</button>
         </header>
         {#if showRoles}
@@ -619,7 +619,7 @@
     {/snippet}
     {#snippet policyBlock()}
       <section class="ap-card">
-        <header class="ap-head"><div><h3>Where it runs</h3><p>Which runtimes may run this project's flows.</p></div></header>
+        <header class="ap-head"><div><h3>2 · Where it runs</h3><p>Which runtimes may run this project's flows.</p></div></header>
         <div class="ap-choices">
           {#each runChoices as c (c.value)}
             <label class="ap-choice" class:on={(dPolicy.runtime ?? '') === c.value} class:off={!canEdit}>
@@ -632,7 +632,7 @@
       </section>
 
       <section class="ap-card">
-        <header class="ap-head"><div><h3>Who else can use it</h3><p>Others may read, clone and run what is in it — never change it.</p></div></header>
+        <header class="ap-head"><div><h3>3 · Who else can use it</h3><p>Others may read, clone and run what is in it — never change it.</p></div></header>
         <div class="ap-choices">
           {#each shareChoices as c (c.value)}
             <label class="ap-choice" class:on={(ex.audience ?? 'none') === c.value} class:off={!canEdit}>
@@ -658,7 +658,7 @@
       </section>
 
       <section class="ap-card">
-        <header class="ap-head"><div><h3>Rules</h3><p>On top of the organisation's baseline.</p></div></header>
+        <header class="ap-head"><div><h3>4 · Rules</h3><p>On top of the organisation's baseline.</p></div></header>
         <div class="ap-rules">
           {#each POLICY_PRESETS as rule (rule.key)}
             <label class="ap-rule" class:off={!canEdit}>
@@ -745,6 +745,7 @@
       <div class="pj-form">
         <!-- About: what it is, then the four facts as a grid — read at a glance. -->
         <section class="pj-card">
+          <h4>1 · About</h4>
           {#if info.description}<p class="pj-lead">{info.description}</p>
           {:else}
             <div class="pj-empty">
@@ -770,7 +771,7 @@
             <button class="pj-tile" onclick={() => (tab = 'health')}><b>{recentRuns.length}</b><span>{recentRuns.length === 1 ? 'run today' : 'runs today'}</span></button>
             <button class="pj-tile" class:bad={failedRecent.length > 0} onclick={() => (tab = 'health')}><b>{failedRecent.length}</b><span>failed today</span></button>
           </div>
-          <div class="pj-h"><h4>Latest runs</h4>{#if insight.runs.length}<button class="link" onclick={() => navigateTo('executions', 'Executions')}>All runs</button>{/if}</div>
+          <div class="pj-h"><h4>2 · Latest runs</h4>{#if insight.runs.length}<button class="link" onclick={() => navigateTo('executions', 'Executions')}>All runs</button>{/if}</div>
           {#if insight.runs.length === 0}<p class="dim">Nothing has run in this project yet.</p>
           {:else}
             <div class="pj-list">
@@ -790,9 +791,9 @@
         {#if !insight}
           <!-- the header bar shows loading -->
         {:else}
-          {#each [['agent', 'Agents', insight.agents], ['flow', 'Flows', insight.flows], ['template', 'Templates', insight.templates], ['resource', 'Resources', insight.resources], ['trigger', 'Triggers', insight.triggers], ['canvas', 'Canvases', insight.canvases]] as [kind, label, rows] (kind)}
+          {#each [['agent', 'Agents', insight.agents], ['flow', 'Flows', insight.flows], ['template', 'Templates', insight.templates], ['resource', 'Resources', insight.resources], ['trigger', 'Triggers', insight.triggers], ['canvas', 'Canvases', insight.canvases]] as [kind, label, rows], i (kind)}
             {@const list = rows as Row[]}
-            <h4>{label} <span class="pj-count">{list.length}</span></h4>
+            <h4>{i + 1} · {label} <span class="pj-count">{list.length}</span></h4>
             {#if list.length === 0}<p class="dim">None yet.</p>
             {:else}
               <div class="pj-list">
@@ -822,7 +823,7 @@
       <div class="pj-form">
         <div class="pj-sample"><b>Sample</b> Environments are not stored or deployed yet — this shows how the screen will work. Edits here are not saved.</div>
 
-        <div class="pj-h"><h4>What runs where</h4><button class="link" onclick={() => navigateTo('runtime', 'Runtimes')}>Details in Runtimes</button></div>
+        <div class="pj-h"><h4>1 · What runs where</h4><button class="link" onclick={() => navigateTo('runtime', 'Runtimes')}>Details in Runtimes</button></div>
         {#if !insight}
           <!-- the header bar shows loading -->
         {:else if whereRuns.length === 0}<p class="dim">Nothing in this project to deploy yet.</p>
@@ -840,7 +841,7 @@
           </table>
         {/if}
 
-        <div class="pj-h"><h4>Variables</h4>{#if canEdit}<button class="pj-btn" onclick={addVar}>Add variable</button>{/if}</div>
+        <div class="pj-h"><h4>2 · Variables</h4>{#if canEdit}<button class="pj-btn" onclick={addVar}>Add variable</button>{/if}</div>
         <p class="pj-note">A canvas deploying into an environment hands that environment's values to its pods. A secret's value is a Secret resource to read it from, never the secret itself.</p>
         <table class="pj-table pj-vars">
           <thead><tr><th>Name</th>{#each envNames as e}<th><span class="pj-env {e}">{e}</span></th>{/each}<th></th></tr></thead>
@@ -871,7 +872,7 @@
         {#if !insight}
           <!-- the header bar shows loading -->
         {:else}
-          <h4>Deployments <span class="pj-count">{insight.deployments.length}</span></h4>
+          <h4>1 · Deployments <span class="pj-count">{insight.deployments.length}</span></h4>
           {#if insight.deployments.length === 0}<p class="dim">Nothing from this project is deployed.</p>
           {:else}
             <table class="pj-table">
@@ -890,7 +891,7 @@
               </tbody>
             </table>
           {/if}
-          <h4>Failed in the last 24 hours <span class="pj-count">{failedRecent.length}</span></h4>
+          <h4>2 · Failed in the last 24 hours <span class="pj-count">{failedRecent.length}</span></h4>
           {#if failedRecent.length === 0}<p class="dim">No failures.</p>
           {:else}
             <div class="pj-list">
@@ -917,7 +918,7 @@
         <div class="pj-sample"><b>Sample</b> Billing accounts and per-project costs are not connected yet — this shows how the screen will work. Changes here are not saved.</div>
 
         <section class="ap-card">
-          <header class="ap-head"><div><h3>Billing account</h3><p>Who pays for what this project uses.</p></div>
+          <header class="ap-head"><div><h3>1 · Billing account</h3><p>Who pays for what this project uses.</p></div>
             <button class="link" onclick={() => navigateToDetail('settings', 'Settings', 'billing.invoices')}>Invoices</button></header>
           <div class="ap-choices">
             {#each BILLING_ACCOUNTS.filter((a) => info.owner_kind === 'org' ? a.owner === 'organisation' : true) as a (a.id)}
@@ -934,7 +935,7 @@
         </section>
 
         <section class="ap-card">
-          <header class="ap-head"><div><h3>This month</h3><p>So far, against its budget.</p></div><b class="bl-total">{money(spend.total)}</b></header>
+          <header class="ap-head"><div><h3>2 · This month</h3><p>So far, against its budget.</p></div><b class="bl-total">{money(spend.total)}</b></header>
           <div class="bl-bar" class:warn={spend.total / budget * 100 >= warnAt} title="{Math.round(spend.total / budget * 100)}% of {money(budget)}">
             <span style:width="{Math.min(100, spend.total / budget * 100)}%"></span>
           </div>
@@ -945,7 +946,7 @@
         </section>
 
         <section class="ap-card">
-          <header class="ap-head"><div><h3>Where it goes</h3><p>Its agents and flows by cost this month.</p></div></header>
+          <header class="ap-head"><div><h3>3 · Where it goes</h3><p>Its agents and flows by cost this month.</p></div></header>
           {#if spend.byItem.length === 0}<p class="dim">Nothing has run yet.</p>
           {:else}
             <ul class="bl-lines">
@@ -959,7 +960,7 @@
         </section>
 
         <section class="ap-card">
-          <header class="ap-head"><div><h3>Budget</h3><p>A monthly limit, when to warn, and what happens at the limit.</p></div></header>
+          <header class="ap-head"><div><h3>4 · Budget</h3><p>A monthly limit, when to warn, and what happens at the limit.</p></div></header>
           <div class="ap-two">
             <label class="ap-field"><span>Monthly budget (EUR)</span><input type="number" min="0" step="50" bind:value={budget} disabled={!canEdit} /></label>
             <label class="ap-field"><span>Warn at (%)</span><input type="number" min="1" max="100" bind:value={warnAt} disabled={!canEdit} /></label>
@@ -1087,7 +1088,8 @@
   .pj-msg { padding: 8px 12px; border-radius: var(--r-sm); background: var(--err-bg, #fde8e8); color: var(--err, #b42318); font-size: 12.5px; margin-bottom: 14px; }
   .pj-msg.ok { background: var(--spec-bg); color: var(--spec); }
   .pj-form { display: flex; flex-direction: column; gap: 14px; }
-  .pj-form h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
+  /* Card heads as on Agents: numbered, serif. */
+  .pj-form h4 { margin: 0; font: 400 16px var(--font-serif); color: var(--text-1); }
   .pj-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-3); }
   .pj-form label > span { font-weight: 550; color: var(--text-2); }
   .pj-form label em { font-style: normal; font-size: 11px; color: var(--text-4); }

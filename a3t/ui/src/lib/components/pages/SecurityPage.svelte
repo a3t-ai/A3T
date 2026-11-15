@@ -14,7 +14,7 @@
   import '$lib/components/triggers/triggers.css';
   import { securityPolicies, idp, audit, getEdition, type PolicyTestBody } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
-  import { getProject, namespacesFor } from '$lib/stores/context.svelte.ts';
+  import { getProject, namespacesFor, allProjectNamespaces } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { isInfosec } from '$lib/stores/auth';
   import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
@@ -201,7 +201,7 @@
             <div class="card-head"><h3>1 · Name</h3><span>the project it governs</span></div>
             <div class="fields">
               <label class="fld">Name<input class="mono" bind:value={nName} placeholder="no-external-llm" /></label>
-              <label class="fld">Project<select bind:value={nNs}>{#each [...new Set([nNs, ...namespacesFor('owned')].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}</select></label>
+              <label class="fld">Project<select bind:value={nNs}>{#each [...new Set([nNs, ...namespacesFor('owned'), ...allProjectNamespaces(), 'default'].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}</select></label>
               <label class="fld full">What it is for<input bind:value={nDesc} placeholder="Agents in this project may not call models outside it" /></label>
             </div>
           </div>

@@ -606,7 +606,7 @@
   let boundCanvas = $derived.by(() => {
     if (!agent) return null;
     const ref = parseJson(agent.variables)?.canvasRef;
-    const byRef = ref ? canvases.find((c) => `a3t/${c.name}` === ref || c.name === String(ref).split('/').pop()) : null;
+    const byRef = ref ? canvases.find((c) => `${c.namespace ?? 'a3t'}/${c.name}` === ref || c.name === String(ref).split('/').pop()) : null;
     return byRef ?? canvases.find((c) => c.config?.agentRef === `a3t/${agent.id}`) ?? null;
   });
 
@@ -641,10 +641,13 @@
       agentRef: `a3t/${agent.id}`,
       description: `${agent.name} — from ${preset.name.replace('preset-', '')}`,
     };
-    const exists = canvases.some((c) => c.name === cname);
-    const res = exists ? await canvasApi.update('a3t', cname, cfg) : await canvasApi.create('a3t', cname, cfg);
+    // The agent's own canvas lives in the agent's project (where its owner may
+    // write), not in the template's.
+    const ns = agent.namespace || 'a3t';
+    const exists = canvases.some((c) => c.name === cname && (c.namespace ?? 'a3t') === ns);
+    const res = exists ? await canvasApi.update(ns, cname, cfg) : await canvasApi.create(ns, cname, cfg);
     if (!res.ok) { canvasBusy = ''; canvasMsg = res.error || 'clone failed'; return; }
-    await setAgentCanvasRef(`a3t/${cname}`);
+    await setAgentCanvasRef(`${ns}/${cname}`);
     await loadCanvases();
     canvasBusy = '';
   }
@@ -655,7 +658,7 @@
     const vars = parseJson(agent.variables) || {};
     if (ref) vars.canvasRef = ref; else delete vars.canvasRef;
     await execFlow('flow_a3t_agents-update', 'a3t', {
-      id: agent.id, org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString(),
+      id: agent.id, org_id: 'org-default', user_id: $currentUser?.id ?? '', timestamp: new Date().toISOString(),
       data: {
         name: agent.name, template_id: agent.template_id, template_version: agent.template_version,
         mode: agent.mode, namespace: agent.namespace, status: agent.status,
@@ -678,7 +681,7 @@
       if (!boundCanvas) { canvasMsg ||= 'Its canvas was not made.'; return; }
     }
     canvasBusy = 'deploying';
-    const res = await canvasApi.deployResource('a3t', boundCanvas.name);
+    const res = await canvasApi.deployResource(boundCanvas.namespace ?? 'a3t', boundCanvas.name);
     canvasBusy = '';
     if (res.ok && res.data?.deployed) deployRev++;
     else canvasMsg = res.data?.error || res.error || 'It was not deployed.';

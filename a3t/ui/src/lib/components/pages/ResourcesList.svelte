@@ -646,6 +646,16 @@ do:
     secretRevealed = false;
   }
 
+  /// A test's call, timed: its answer and how long it took (the resource's
+  /// latency, as the platform sees it — the flow run around it included).
+  async function timedTest(input: Record<string, unknown>) {
+    const t0 = performance.now();
+    const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
+    return { res, ms: Math.round(performance.now() - t0) };
+  }
+  /// The reason inside a failed run's message ("…raised error [type]: why").
+  const why = (e: unknown) => { const t = String(e ?? 'failed'); const m = t.match(/raised error \[[^\]]*\]:\s*([\s\S]*)$/); return (m ? m[1] : t).replace(/^Couldn't do that:\s*/, '').trim(); };
+
   // ── LLM: chat-style test ──
   async function testLlm() {
     if (!selected || !llmInput.trim()) return;
@@ -654,12 +664,10 @@ do:
     llmInput = '';
     testing = true;
     try {
-      const res = await execFlow('flow_a3t_resource_test', 'a3t', {
-        input: { test_type: 'llm', resource: `${selected.namespace}/${selected.name}`, message: msg }
-      });
-      const content = res.data?.content ?? res.data?.text ?? (typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
+      const { res, ms } = await timedTest({ test_type: 'llm', resource: `${selected.namespace}/${selected.name}`, message: msg });
+      const content = res.ok ? (res.data?.content ?? res.data?.text ?? (typeof res.data === 'string' ? res.data : JSON.stringify(res.data))) : `Error: ${why(res.error)}`;
       llmMessages = [...llmMessages, { role: 'assistant', content }];
-      lastTest = res.ok && !/^error/i.test(String(content)) ? { ok: true, msg: 'It answered.' } : { ok: false, msg: String(res.error ?? content).slice(0, 200) };
+      lastTest = res.ok && !/^error/i.test(String(content)) ? { ok: true, msg: `It answered in ${ms} ms.` } : { ok: false, msg: why(res.error ?? content).slice(0, 300) };
     } catch (e: any) {
       llmMessages = [...llmMessages, { role: 'assistant', content: `Error: ${e.message ?? e}` }];
       lastTest = { ok: false, msg: String(e.message ?? e) };
@@ -674,10 +682,9 @@ do:
     testing = true;
     testResult = '';
     try {
-      const input = { test_type: 'adb', resource: `${selected.namespace}/${selected.name}`, query: adbQuery.trim() };
-      const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
-      testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
-      lastTest = res.ok ? { ok: true, msg: 'It answered AQL.' } : { ok: false, msg: String(res.error ?? 'failed') };
+      const { res, ms } = await timedTest({ test_type: 'adb', resource: `${selected.namespace}/${selected.name}`, query: adbQuery.trim() });
+      testResult = !res.ok ? `Error: ${why(res.error)}` : `Answered in ${ms} ms.\n` + (typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2));
+      lastTest = res.ok ? { ok: true, msg: `It answered AQL in ${ms} ms.` } : { ok: false, msg: why(res.error) };
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
     } finally {
@@ -694,9 +701,9 @@ do:
       const input: any = { test_type: 'db', resource: `${selected.namespace}/${selected.name}`, operation: dbOperation };
       if (dbOperation === 'query' && dbQuery) input.filter = dbQuery;
       if (dbOperation === 'query' && dbQuery) input.table = dbQuery.split(' ')[0];
-      const res = await execFlow('flow_a3t_resource_test', 'a3t', { input });
-      testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
-      lastTest = res.ok ? { ok: true, msg: 'It opened.' } : { ok: false, msg: String(res.error ?? 'failed') };
+      const { res, ms } = await timedTest(input);
+      testResult = !res.ok ? `Error: ${why(res.error)}` : `Answered in ${ms} ms.\n` + (typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2));
+      lastTest = res.ok ? { ok: true, msg: `It opened in ${ms} ms.` } : { ok: false, msg: why(res.error) };
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
     } finally {
@@ -711,17 +718,16 @@ do:
     mcpTools = [];
     testResult = '';
     try {
-      const res = await execFlow('flow_a3t_resource_test', 'a3t', {
-        input: { test_type: 'mcp', resource: `${selected.namespace}/${selected.name}` }
-      });
+      const { res, ms } = await timedTest({ test_type: 'mcp', resource: `${selected.namespace}/${selected.name}` });
       const tools = res.data?.tools ?? res.data;
       if (res.ok && Array.isArray(tools)) {
         mcpTools = tools.map((t: any) => ({ name: t.name ?? '', description: t.description ?? '' }));
         mcpListed = true;
-        lastTest = { ok: true, msg: `It lists ${mcpTools.length} tool${mcpTools.length === 1 ? '' : 's'}.` };
+        lastTest = { ok: true, msg: `It lists ${mcpTools.length} tool${mcpTools.length === 1 ? '' : 's'}, in ${ms} ms.` };
+        testResult = `Answered in ${ms} ms.`;
       } else {
-        testResult = !res.ok ? `Error: ${res.error ?? 'failed'}` : typeof tools === 'string' ? tools : JSON.stringify(tools, null, 2);
-        lastTest = { ok: false, msg: String(res.error ?? testResult).slice(0, 200) };
+        testResult = !res.ok ? `Error: ${why(res.error)}` : typeof tools === 'string' ? tools : JSON.stringify(tools, null, 2);
+        lastTest = { ok: false, msg: why(res.error ?? testResult).slice(0, 300) };
       }
     } catch (e: any) {
       testResult = `Error: ${e.message ?? e}`;
@@ -738,10 +744,8 @@ do:
     try {
       let args: any = {};
       try { args = JSON.parse(mcpToolArgs); } catch {}
-      const res = await execFlow('flow_a3t_resource_test', 'a3t', {
-        input: { test_type: 'mcp_call', resource: `${selected.namespace}/${selected.name}`, tool: mcpSelectedTool, arguments: args }
-      });
-      mcpToolResult = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+      const { res, ms } = await timedTest({ test_type: 'mcp_call', resource: `${selected.namespace}/${selected.name}`, tool: mcpSelectedTool, arguments: args });
+      mcpToolResult = !res.ok ? `Error: ${why(res.error)}` : `Answered in ${ms} ms.\n` + (typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2));
     } catch (e: any) {
       mcpToolResult = `Error: ${e.message ?? e}`;
     } finally {

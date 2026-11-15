@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getSession } from '$lib/stores/auth';
   /// A template as people meet it: a blueprint to understand, then copy or use.
   /// About (what it is, and the choice: clone and edit, or use an agent already
   /// built from it) and Versions (its releases, its copies, its agents — and,
@@ -34,6 +35,8 @@
   const title = $derived(facts.title || template?.name || 'Template');
   const ref = $derived(`${template?.namespace ?? facts.namespace ?? ''}/${template?.name ?? ''}`);
   const createAgent = () => navigateTo('agents', 'Agents', { createFromTemplate: template.id });
+  /// A Viewer reads templates; making agents or copies from them is for writers.
+  const canMake = $derived(getSession()?.user?.role !== 'viewer');
   const ns = $derived(template?.namespace ?? facts.namespace ?? 'a3t');
 
   // Its versions as FlowR holds them: which is live (what every agent made from
@@ -137,8 +140,8 @@
         {#if howOpen}{#each facts.description.trim().split(/\n\s*\n/) as para}<p class="tg-desc">{para.replace(/\s*\n\s*/g, ' ')}</p>{/each}{/if}
       {/if}
       <div class="tg-next">
-        <button class="tg-btn primary" onclick={createAgent}>Create an agent from it</button>
-        {#if readOnly}<button class="tg-btn" onclick={openCopy} disabled={!projects.length || copying}>Clone to make your own</button>
+        {#if canMake}<button class="tg-btn primary" onclick={createAgent}>Create an agent from it</button>{/if}
+        {#if readOnly && canMake}<button class="tg-btn" onclick={openCopy} disabled={!projects.length || copying}>Clone to make your own</button>
         {:else}<button class="tg-btn" onclick={() => openInStudio('template', ns, template.name, template.id)}>Edit in Studio</button>{/if}
       </div>
       {#if copying}
@@ -156,7 +159,7 @@
     </section>
 
     <section class="tg-card">
-      <h3>Status</h3>
+      <h3>1 · Status</h3>
       <ul class="tg-st-rows">
         <li><span class="k">Version</span>
           <div>{#if versions === null}…{:else if live}<b class="mono">v{live}</b> is live — every agent made from it runs it, and new agents get it. {versions.length} version{versions.length === 1 ? '' : 's'} in all.
@@ -178,7 +181,7 @@
     </section>
 
     <section class="tg-card">
-      <h3>An agent made from it sets</h3>
+      <h3>2 · An agent made from it sets</h3>
       {#if facts.onCore}
         <ul class="tg-st-rows">
           <li><span class="k">Instructions</span><div>{facts.agent.systemPrompt ? 'Its own; the template starts it with its own text.' : 'Its own: what it is told at the start of every conversation.'}</div><span></span></li>
@@ -194,7 +197,7 @@
     </section>
 
     <section class="tg-card">
-      <h3>What it runs and reaches</h3>
+      <h3>3 · What it runs and reaches</h3>
       <ul class="tg-st-rows">
         {#if facts.extends}<li><span class="k">Extends</span><div class="mono">{facts.extends}</div>
           <button class="tg-btn sm" onclick={() => { const [n, rest] = facts.extends!.split('/'); openInStudio('flow', n, rest.split('@')[0]); }}>Open</button></li>{/if}
@@ -208,7 +211,7 @@
 
   {:else if view === 'agents'}
     <section class="tg-card">
-      <header class="tg-row"><h3>Agents built from it <span class="tg-count">{agents.length}</span></h3><button class="tg-btn" onclick={createAgent}>Create an agent from it</button></header>
+      <header class="tg-row"><h3>1 · Agents built from it <span class="tg-count">{agents.length}</span></h3>{#if canMake}<button class="tg-btn" onclick={createAgent}>Create an agent from it</button>{/if}</header>
       {#if agentsLoading}
         <!-- the header bar shows loading -->
       {:else if agents.length === 0}<p class="tg-dim">None yet. An agent is this template with its own instructions, model, tools and memory.</p>
@@ -230,13 +233,13 @@
   {:else if view === 'versions'}
     {#if base}
       <section class="tg-card">
-        <h3>Copied from</h3>
+        <h3>1 · Copied from</h3>
         <p class="tg-dim"><button class="link" onclick={() => base?.template && onopentemplate?.(base.template)}>{base.path}</button>, version {base.version}.
           {#if base.newer}<b>Version {base.newer} is out</b> — compare it, and bring changes into your copy in Code.{:else if base.template}It is still the latest.{:else}It is no longer listed.{/if}</p>
       </section>
     {/if}
     <section class="tg-card">
-      <h3>Versions <span class="tg-count">{versions?.length ?? '…'}</span></h3>
+      <h3>{base ? 2 : 1} · Versions <span class="tg-count">{versions?.length ?? '…'}</span></h3>
       {#if verErr}<p class="tg-err">{verErr}</p>{/if}
       {#if versions === null}<p class="tg-dim">…</p>
       {:else if !versions.length}<p class="tg-dim">Not published as a flow yet.</p>
@@ -260,7 +263,7 @@
       {/if}
     </section>
     <section class="tg-card">
-      <h3>Copies of it <span class="tg-count">{copies.length}</span></h3>
+      <h3>{base ? 3 : 2} · Copies of it <span class="tg-count">{copies.length}</span></h3>
       {#if copies.length}
         <ul class="tg-agents">
           {#each copies as c (c.id)}
@@ -278,8 +281,8 @@
   .tg-hero h2 { margin: 0; font: 400 26px/1.25 var(--font-serif); color: var(--text-1); }
   .tg-summary { margin: 8px 0 0; font-size: 16px; color: var(--text-1); line-height: 1.45; }
   .tg-desc { margin: 8px 0 0; font-size: 13.5px; color: var(--text-2); line-height: 1.6; max-width: 68ch; }
-  .tg-card { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
-  .tg-card h3 { margin: 0; font: 400 17px var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px; }
+  .tg-card { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); }
+  .tg-card h3 { margin: 0; font: 400 16px var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px; }
   .tg-more { align-self: flex-start; }
   .tg-fields { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .tg-fields li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 13px; }

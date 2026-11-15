@@ -89,6 +89,10 @@ function syncUrl() {
 // ── Reads ──
 
 export function getProjects(): Project[] { return projects; }
+/// Every namespace that is a project, seen or not (names only): what InfoSec may
+/// attach a policy to.
+let everyProject: string[] = [];
+export function allProjectNamespaces(): string[] { return everyProject; }
 export function getProject(): string { return project; }
 export function getShowPlatform(): boolean { return showPlatform; }
 /// Your profile handle (the owner part of your personal projects' namespaces).
@@ -301,6 +305,7 @@ export async function loadProjects(force = false) {
   const list: Project[] = res.ok ? (res.data?.projects ?? []) : [];
   const infos: ProjectInfo[] = mine.ok ? (mine.data?.projects ?? []) : [];
   const hidden = new Set<string>(mine.ok ? (mine.data?.project_namespaces ?? []) : []);
+  everyProject = [...hidden].sort();
   profile = mine.ok ? (mine.data?.profile ?? null) : null;
   myOrgs = mine.ok ? (mine.data?.orgs ?? []) : [];
   if (!list.length && !infos.length) return; // keep the fallback

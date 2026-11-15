@@ -3,7 +3,8 @@ import { execFlow, mcpCall, webhookChat } from '$lib/services/api';
 import { fail, ok, type Result } from '../items';
 import { result, safely } from './util';
 
-const stamp = () => ({ org_id: 'org-default', user_id: 'usr-superadmin', timestamp: new Date().toISOString() });
+// Who changed it is the server's to say (the signed-in principal), not ours.
+const stamp = () => ({ org_id: 'org-default', timestamp: new Date().toISOString() });
 
 export const updateAgent = (agent: any, change: Record<string, unknown>): Promise<Result> =>
   safely('save agent', async () => {

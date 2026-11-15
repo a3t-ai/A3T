@@ -37,7 +37,7 @@ export async function runAql(aql: string, resource = MEMORY_RESOURCE): Promise<{
     ok: true, ms: d.metadata?.execution_time_ms ?? null,
     records: rows.map((x) => ({
       id: String(x.id ?? ''), key: String(x.data?.key ?? x.id ?? '').split('|~').pop() ?? '',
-      at: String(x.data?.at ?? x.data?.created_at ?? x.created_at ?? ''), data: (x.data ?? {}) as Record<string, unknown>,
+      at: String(x.data?.at ?? x.data?.created_at ?? x.metadata?.created_at ?? x.created_at ?? ''), data: (x.data ?? {}) as Record<string, unknown>,
     })),
   };
 }
