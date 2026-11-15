@@ -217,6 +217,7 @@ The agent turn already reaches its own server in-process
 | ADB-R2 | medium | Store-or-update in one statement |
 | ADB-R3 | low | `LIKE` returns its score |
 | ADB-R4 | medium | Every FORGET tombstone is logged by ADB |
+| ADB-R5 | medium | A branch merge carries its episodes too |
 
 ### ADB-R1 — Variables in `STORE` and `UPDATE` values
 
@@ -262,4 +263,21 @@ itself does not record the tombstone.
 - **Until then:** A3T's agent history is the record of forgets made through the console
   and the control plane (`tool_a3t_agent_memory_forget`). A FORGET sent straight to ADB
   is not recorded anywhere.
+
+### ADB-R5 — A branch merge carries its episodes too
+
+*15 Nov 2026, from the functional test run (AG-05); the user chose this.*
+
+An agent tried on a memory branch (`POST /chat` with `memory_branch`) writes its
+conversation as EPISODIC rows on the branch. `branch_conflicts` then reports nothing and
+`branch_merge` merges 0, because by the merge design (`ADB/.ai/MERGE.md`, D1/D8) episodes
+stay on the branch and only facts and procedures merge back. The user wants merging a
+branch to bring its episodes into the agent's memory as well.
+
+- **Done when:** `branch_conflicts` lists the branch's own EPISODIC rows (as clean adds:
+  episodes are append-only, so they never conflict) and `branch_merge` appends them to
+  main, keeping their time and marking where they came from (branch name, merge id).
+  `merge_revert` removes them again.
+- **Until then:** the console's merge preview shows only facts and procedures; a branch
+  that only chatted shows "no changes of its own", and AG-05 stays blocked on this.
 
