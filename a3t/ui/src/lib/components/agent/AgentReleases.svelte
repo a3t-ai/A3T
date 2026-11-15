@@ -10,6 +10,7 @@
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
   import { factsOf, forksOf, envOf, ago, type AgentRec, type TemplateRec } from './agentData';
   import type { AgentLive } from './agentLive.svelte';
+  import AgentTryIt from './AgentTryIt.svelte';
 
   let { agent, templates, allAgents, live, canEdit, onopen, onmade, onchanged, notDeployed, branchForm = $bindable(false) }: {
     agent: AgentRec & { created_at?: string };
@@ -98,14 +99,24 @@
 
   /// Per branch: what merging it would do, then the action chosen.
   let open = $state('');
-  let check = $state<{ clean: number; conflicts: number; main: number } | null>(null);
+  let check = $state<{ clean: number; conflicts: number; main: number; changes: { key: string; kind: string; text: string; conflict: boolean }[] } | null>(null);
+  /// A branch being tried: a conversation with it on that branch.
+  let trying = $state('');
+  /// One line for a changed memory entry.
+  const entryLine = (e: any): { key: string; kind: string; text: string } => {
+    const d = e?.data ?? e?.branch ?? e?.theirs ?? e ?? {};
+    const text = d.content ?? d.text ?? d.object ?? d.summary ?? JSON.stringify(d).slice(0, 160);
+    return { key: String(e?.key ?? d.key ?? ''), kind: String(e?.type ?? e?.kind ?? d.kind ?? ''), text: String(text).slice(0, 200) };
+  };
   let promoteName = $state('');
   async function review(name: string) {
     open = name; check = null; err = ''; msg = '';
     promoteName = `${agent.name}-${name}`.slice(0, 63);
     const r = await agentSpaceApi.conflicts(agent.id, name);
     if (!r.ok) { err = r.error ?? 'Not compared.'; return; }
-    check = { clean: (r.data?.clean ?? []).length, conflicts: (r.data?.conflicts ?? []).length, main: r.data?.main?.offset ?? 0 };
+    const clean: any[] = r.data?.clean ?? [], conflicts: any[] = r.data?.conflicts ?? [];
+    check = { clean: clean.length, conflicts: conflicts.length, main: r.data?.main?.offset ?? 0,
+      changes: [...conflicts.map((e) => ({ ...entryLine(e), conflict: true })), ...clean.map((e) => ({ ...entryLine(e), conflict: false }))] };
   }
   async function merge(name: string) {
     if (!check) return;
@@ -206,11 +217,19 @@
           <div class="row between">
             <div class="row"><span class="tag dev">branch</span><b class="mono">{b.name}</b><span class="dim">{b.created_by}, {ago(Math.floor(b.point_ts / 1000))}</span></div>
             <div class="acts">
+              <button class="btn2" disabled={!canEdit} onclick={() => (trying = trying === b.name ? '' : b.name)}>{trying === b.name ? 'Close' : 'Try it on this branch'}</button>
               <button class="btn2 primary" disabled={!canEdit || !!busy} onclick={() => review(b.name)}>Merge or promote…</button>
               <button class="btn2 quiet" disabled={!canEdit || !!busy} onclick={() => drop(b.name)}>{busy === 'drop' ? '…' : 'Drop'}</button>
             </div>
           </div>
+          {#if trying === b.name}
+            <AgentTryIt agentId={agent.id} branch={b.name} />
+          {/if}
           {#if open === b.name}
+            {#if check?.changes.length}
+              <table class="tbl"><thead><tr><th>What the branch changes</th><th>Kind</th><th></th></tr></thead>
+                <tbody>{#each check.changes as c, i (i)}<tr><td>{c.text}</td><td class="mono">{c.kind}</td><td class:bad={c.conflict}>{c.conflict ? 'conflicts' : 'merges'}</td></tr>{/each}</tbody></table>
+            {:else if check}<p class="dim">The branch has no changes of its own yet: try it on the branch first.</p>{/if}
             <div class="note">
               {#if !check}Comparing it with its memory now…
               {:else if check.conflicts === 0}

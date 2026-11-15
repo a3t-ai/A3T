@@ -32,6 +32,8 @@
   interface Host {
     host: string; note: string;
     memory: { usedBytes?: number; limitBytes?: number };
+    node?: { name?: string; memTotalBytes?: number | null; memAvailableBytes?: number | null; cpus?: number | null; load1?: number | null };
+    seenAt?: string;
     cpu: { coresUsed?: number | null; limitCores?: number };
     disk?: { path: string; totalBytes: number; freeBytes: number; usedBytes: number };
   }
@@ -72,6 +74,7 @@
   let runtimes = $state<Rt[]>([]);
   let unplaced = $state<Row[]>([]);
   let host = $state<Host | null>(null);
+  let hostCount = $state(1);
   let controller = $state<'none' | 'reachable' | 'unreachable'>('none');
   let pools = $state<Pool[]>([]);
   let probe = $state<any>(null);
@@ -88,7 +91,10 @@
     err = '';
     runtimes = res.data?.runtimes ?? [];
     unplaced = res.data?.unplaced ?? [];
-    host = res.data?.host ?? null;
+    // The FlowR picked in Items (every one reports itself), else the one that answered.
+    const all: Host[] = res.data?.hosts ?? [];
+    host = all.find((h) => h.host === key) ?? res.data?.host ?? null;
+    hostCount = all.length || 1;
     controller = res.data?.controller ?? 'none';
     if (view === 'deployment') { const p = await opsApi.probe(key); probe = p.ok ? p.data : null; }
   }
@@ -278,11 +284,14 @@
                 {@const cpu = pct(host.cpu.coresUsed, host.cpu.limitCores)}
                 {@const mem = pct(host.memory.usedBytes, host.memory.limitBytes)}
                 {@const disk = host.disk ? pct(host.disk.usedBytes, host.disk.totalBytes) : null}
+                {@const nodeUsed = host.node?.memTotalBytes != null && host.node?.memAvailableBytes != null ? host.node.memTotalBytes - host.node.memAvailableBytes : undefined}
+                {@const nodeMem = pct(nodeUsed, host.node?.memTotalBytes ?? undefined)}
                 <div class="card">
-                  <div class="card-head"><h3>1 · Resources</h3><span>{host.note}</span></div>
+                  <div class="card-head"><h3>1 · Resources</h3><span>{hostCount > 1 ? `one of ${hostCount} FlowRs` : 'the FlowR'}{host.node?.name ? ` on node ${host.node.name}` : ''}</span></div>
                   <ul class="rows meters">
-                    <li><span class="lbl">CPU</span><span class="val"><span class="bar"><i style="width:{cpu ?? 0}%" class:hot={(cpu ?? 0) > 80}></i></span>{host.cpu.coresUsed != null ? host.cpu.coresUsed.toFixed(2) : '…'} of {host.cpu.limitCores ?? '—'} cores</span><span></span></li>
-                    <li><span class="lbl">Memory</span><span class="val"><span class="bar"><i style="width:{mem ?? 0}%" class:hot={(mem ?? 0) > 80}></i></span>{bytes(host.memory.usedBytes)} of {bytes(host.memory.limitBytes)}</span><span></span></li>
+                    {#if host.node?.memTotalBytes}<li><span class="lbl">Node memory</span><span class="val"><span class="bar"><i style="width:{nodeMem ?? 0}%" class:hot={(nodeMem ?? 0) > 85}></i></span>{bytes(nodeUsed)} of {bytes(host.node.memTotalBytes)} used on the node{host.node.cpus ? ` · ${host.node.cpus} CPUs, load ${host.node.load1?.toFixed(2) ?? '?'}` : ''}</span><span></span></li>{/if}
+                    <li><span class="lbl">This FlowR, CPU</span><span class="val"><span class="bar"><i style="width:{cpu ?? 0}%" class:hot={(cpu ?? 0) > 80}></i></span>{host.cpu.coresUsed != null ? host.cpu.coresUsed.toFixed(2) : '…'} of {host.cpu.limitCores ?? '—'} cores it may use</span><span></span></li>
+                    <li><span class="lbl">This FlowR, memory</span><span class="val"><span class="bar"><i style="width:{mem ?? 0}%" class:hot={(mem ?? 0) > 80}></i></span>{bytes(host.memory.usedBytes)} of {bytes(host.memory.limitBytes)} it may use (its pod's limit)</span><span></span></li>
                     {#if host.disk}<li><span class="lbl">Disk</span><span class="val"><span class="bar"><i style="width:{disk ?? 0}%" class:hot={(disk ?? 0) > 85}></i></span>{bytes(host.disk.usedBytes)} of {bytes(host.disk.totalBytes)} · {bytes(host.disk.freeBytes)} free · <span class="mono">{host.disk.path}</span></span><span></span></li>{/if}
                   </ul>
                 </div>

@@ -970,7 +970,7 @@ do:
                 <span class="val">{#if lastTest}<span class="dot" class:ok={lastTest.ok} class:err={!lastTest.ok}></span> {lastTest.msg}{:else}<span class="dot"></span> not checked yet{/if}</span>
                 <button class="btn2" onclick={() => selectPanelTab('test')}>Test</button></li>
               <li><span class="lbl">Used by</span>
-                <span class="val">{#if uses === null}…{:else if uses.length}{uses.filter((u) => u.kind === 'agent').length} agent{uses.filter((u) => u.kind === 'agent').length === 1 ? '' : 's'}, {uses.filter((u) => u.kind === 'canvas').length} canvas{uses.filter((u) => u.kind === 'canvas').length === 1 ? '' : 'es'}, {uses.filter((u) => u.kind === 'trigger').length} trigger{uses.filter((u) => u.kind === 'trigger').length === 1 ? '' : 's'}{:else}nothing{/if}</span>
+                <span class="val">{#if uses === null}…{:else if uses.length}{[['agent', 'agent', 'agents'], ['flow', 'flow', 'flows'], ['resource', 'resource', 'resources'], ['canvas', 'canvas', 'canvases'], ['trigger', 'trigger', 'triggers']].map(([k, one, many]) => { const n = uses!.filter((u) => u.kind === k).length; return n ? `${n} ${n === 1 ? one : many}` : ''; }).filter(Boolean).join(', ')}{:else}nothing{/if}</span>
                 <button class="btn2" onclick={() => selectPanelTab('used')}>See</button></li>
             </ul>
           </div>
@@ -1122,13 +1122,13 @@ do:
           {/if}
 
         {:else if panelTab === 'used'}
-          {#each [['agent', 'Agents', 'their model, tool servers or memory'], ['canvas', 'Canvases', 'the deployments that depend on it'], ['trigger', 'Triggers', 'that read an ADB topic through it']] as [k, title, sub], i (k)}
+          {#each [['agent', 'Agents', 'their model, tool servers or memory'], ['flow', 'Flows', 'whose steps name it'], ['resource', 'Resources', 'whose settings name it (a secret, a model)'], ['canvas', 'Canvases', 'the deployments that depend on it'], ['trigger', 'Triggers', 'that read an ADB topic through it']] as [k, title, sub], i (k)}
             <div class="card">
               <div class="card-head"><h3>{i + 1} · {title}</h3><span>{sub}</span></div>
               {#if uses === null}<p class="dim">Looking…</p>
               {:else if uses.some((u) => u.kind === k)}
                 <ul class="rows wide">{#each uses.filter((u) => u.kind === k) as u (u.id)}<li><span class="lbl">{u.name}</span><span class="val">{u.how} <span class="dim">· {u.project}</span></span>
-                  <button class="btn2" onclick={() => navigateTo(k === 'agent' ? 'agents' : k === 'canvas' ? 'canvas' : 'triggers', title, { selectedId: k === 'canvas' ? u.name : u.id })}>Open</button></li>{/each}</ul>
+                  <button class="btn2" onclick={() => k === 'flow' ? openInStudio('flow', u.project, u.name) : navigateTo(k === 'agent' ? 'agents' : k === 'canvas' ? 'canvas' : k === 'resource' ? 'resources' : 'triggers', title, { selectedId: k === 'canvas' ? u.name : u.id })}>Open</button></li>{/each}</ul>
               {:else}<p class="empty">None.</p>{/if}
             </div>
           {/each}

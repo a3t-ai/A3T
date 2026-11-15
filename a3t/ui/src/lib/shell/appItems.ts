@@ -101,6 +101,29 @@ function specNamespace(yaml: unknown): string | undefined {
 const PREFERRED = ['a3t', 'default', 'system'];
 /// `keepOrder`: groups in the order their items come (Settings' own order),
 /// not projects-first and alphabetical.
+/// Who owns a project namespace: its owner handle (a user's or an org's) —
+/// `ann-blog` is ann's, `a3t` the platform's.
+export function ownerOfNamespace(ns: string): string {
+  const p = getProjects().find((x) => x.name === ns);
+  return p?.info?.owner || (ns.includes('-') ? ns.slice(0, ns.indexOf('-')) : ns);
+}
+
+/// Groups as above, each folded under its owner: owner → its projects → items.
+/// An owner with one project named after it (the platform's `a3t`) is one level.
+export function groupByOwner(groups: { ns: string; items: AppItem[] }[]): { owner: string; projects: { ns: string; items: AppItem[] }[]; count: number }[] {
+  const me = getProfile()?.handle ?? '';
+  const byOwner = new Map<string, { ns: string; items: AppItem[] }[]>();
+  for (const g of groups) {
+    const o = g.ns ? ownerOfNamespace(g.ns) : '';
+    (byOwner.get(o) ?? byOwner.set(o, []).get(o)!).push(g);
+  }
+  const platform = (o: string) => o === 'a3t' || o === 'system';
+  const rank = (o: string) => (o === me ? 0 : !o ? 3 : platform(o) ? 2 : 1);
+  return [...byOwner.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([owner, projects]) => ({ owner, projects, count: projects.reduce((n, p) => n + p.items.length, 0) }));
+}
+
 export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: string; items: AppItem[] }[] | null {
   if (!items.some((i) => i.section ?? i.namespace)) return null;
   const map = new Map<string, AppItem[]>();
@@ -357,6 +380,8 @@ async function loadAll(source: string): Promise<AppItem[]> {
     // Identity (the SSO realm, platform-wide), then each project's Cedar policies
     // — only the projects in view — and the compiled baseline. InfoSec only: the
     // server answers 403 to anyone else, and the menu does not offer it.
+    const { isInfosec } = await import('$lib/stores/auth');
+    if (!isInfosec()) throw new Error('Security is for SuperAdmin and SecurityAdmin.');
     const { securityPolicies } = await import('$lib/services/api');
     const out: AppItem[] = [{ id: 'identity', label: 'Identity', sub: 'sign-in provider and users · platform-wide', namespace: 'platform' }];
     const r = await securityPolicies.list();
@@ -439,10 +464,14 @@ async function runtimeTree(): Promise<AppItem[]> {
   if (!res.ok) throw new Error(res.error || 'Could not load runtimes');
   const d = res.data ?? {};
   const host = d.host?.host || 'flowr';
-  const out: AppItem[] = [{
-    id: `host:${host}`, label: host, badge: 'H', badgeStyle: BADGE.host, depth: 0,
-    sub: `shared host · ${(d.runtimes ?? []).length} runtimes`,
-  }];
+  // Every FlowR of the cluster (each reports itself), then the runtimes they share.
+  const hosts: any[] = (d.hosts ?? []).length ? d.hosts : [d.host ?? { host }];
+  const gib = (b?: number | null) => (b ? `${(b / 1073741824).toFixed(b > 10 * 1073741824 ? 0 : 1)} GiB` : '?');
+  const out: AppItem[] = hosts.map((h: any, i: number) => ({
+    id: `host:${h.host}`, label: h.host, badge: 'H', badgeStyle: BADGE.host, depth: 0,
+    sub: [h.node?.name ? `node ${h.node.name}` : 'FlowR', h.node?.memTotalBytes ? `${gib((h.node.memTotalBytes ?? 0) - (h.node.memAvailableBytes ?? 0))} of ${gib(h.node.memTotalBytes)} used` : '',
+      i === hosts.length - 1 ? `${(d.runtimes ?? []).length} runtimes` : ''].filter(Boolean).join(' · '),
+  }));
   const dep = (row: any, depth: number): AppItem => ({
     id: `dep:${row.deployment.id}`,
     label: row.deployment.target,

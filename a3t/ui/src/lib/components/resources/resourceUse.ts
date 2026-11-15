@@ -1,9 +1,9 @@
 // Who relies on a resource: the agents whose settings name it (model, tool
 // servers, memory), the canvases that depend on it, the triggers that read an
 // ADB topic through it. What you want to know before you change or delete one.
-import { agentTool, mcpCall, canvasApi } from '$lib/services/api';
+import { agentTool, mcpCall, canvasApi, resourceUsedBy } from '$lib/services/api';
 
-export interface Use { kind: 'agent' | 'canvas' | 'trigger'; id: string; name: string; project: string; how: string }
+export interface Use { kind: 'agent' | 'canvas' | 'trigger' | 'flow' | 'resource'; id: string; name: string; project: string; how: string }
 
 const parse = (v: unknown): any => { if (typeof v !== 'string') return v ?? {}; try { return JSON.parse(v); } catch { return {}; } };
 
@@ -19,12 +19,19 @@ function agentHow(a: any, ref: string): string | null {
 }
 
 export async function usedBy(ref: string): Promise<Use[]> {
-  const [ag, cv, tr] = await Promise.all([
+  const [ns, ...rest] = ref.split('/');
+  const [ag, cv, tr, srv] = await Promise.all([
     agentTool('agent_a3t_agents', 'tool_a3t_agent_list', { org_id: 'org-default' }),
     canvasApi.list(),
     mcpCall('list_triggers', {}),
+    // Flows and resources that name it: the server reads their YAML and config.
+    resourceUsedBy(ns, rest.join('/')),
   ]);
   const out: Use[] = [];
+  for (const f of (srv.ok ? srv.data?.flows ?? [] : []) as any[])
+    out.push({ kind: 'flow', id: `${f.namespace}/${f.name}`, name: f.name, project: f.namespace, how: `names it in its steps (v${f.version})` });
+  for (const r of (srv.ok ? srv.data?.resources ?? [] : []) as any[])
+    out.push({ kind: 'resource', id: `${r.namespace}/${r.name}`, name: r.name, project: r.namespace, how: `its ${r.type} settings name it` });
   for (const a of Array.isArray(ag.data) ? ag.data : []) {
     const how = agentHow(a, ref);
     if (how) out.push({ kind: 'agent', id: a.id, name: a.name ?? a.id, project: a.namespace ?? '', how });

@@ -548,7 +548,7 @@
       <aside class="pj-rail">
         <div class="pj-head">
           <div class="pj-icon">{(panel === 'create' ? (newName || 'NP') : (info?.display_name || selectedName)).slice(0, 2).toUpperCase()}</div>
-          <div>
+          <div class="pj-hinfo">
             <h2 class="pj-title">{panel === 'create' ? 'New project' : (info?.display_name || selectedName)}</h2>
             <div class="pj-sub">
               {#if panel === 'create'}Yours or an organisation's{:else}
@@ -1059,7 +1059,10 @@
   .pj-wiz.stepped { grid-template-columns: 280px 1fr; }
   .pj-rail { display: flex; flex-direction: column; min-height: 0; background: var(--bg-surface); border-right: 1px solid var(--border); }
   .pj-rail .pj-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); margin: 0; }
-  .pj-rail .pj-icon { width: 32px; height: 32px; border-radius: 8px; font-size: 11px; }
+  .pj-rail .pj-icon { width: 32px; height: 32px; border-radius: 8px; font-size: 11px; flex: 0 0 auto; }
+  /* As Templates: the name keeps room; the actions wrap under it when narrow. */
+  .pj-rail .pj-head { flex-wrap: wrap; row-gap: 8px; }
+  .pj-hinfo { min-width: 0; flex: 1 1 160px; }
   .pj-rail .pj-title { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
   .pj-rail .pj-sub { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pj-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }

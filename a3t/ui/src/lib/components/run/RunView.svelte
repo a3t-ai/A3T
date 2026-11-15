@@ -4,7 +4,8 @@
   /// debug run paused at a breakpoint, the controls to continue, step, or edit
   /// the next step's input. Reads the engine's run tools; polls while live.
   import { untrack } from 'svelte';
-  import { runsApi, answerApproval, type DebugCommand } from '$lib/services/api';
+  import { runsApi, answerApproval, mcpCall, type DebugCommand } from '$lib/services/api';
+  import { navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { nodeKey, type FlowDebug } from './debugState.svelte.ts';
 
   /// `shared`: the flow's state shared with the editor graph — this view
@@ -36,6 +37,28 @@
   type Entry = { seq: number; at: string; epoch: number; record: any };
 
   let run = $state<any>(null);
+
+  /// What started it, to name and open: a trigger (or its cron tick), or the agent
+  /// whose turn it is (a turn of tmpl_a3t_agent carries `<agent>:<conversation>`).
+  const startedBy = $derived.by(() => {
+    const t = String(run?.trigger ?? '');
+    const m = t.match(/^(trigger|cron):(.+)$/);
+    if (m) return { kind: 'trigger' as const, id: m[2], cron: m[1] === 'cron' };
+    const sid = run?.input?.session_id;
+    if (run?.flow === 'tmpl_a3t_agent' && typeof sid === 'string' && sid.includes(':')) return { kind: 'agent' as const, id: sid.split(':')[0], cron: false };
+    return null;
+  });
+  let triggerNames = $state<Record<string, string>>({});
+  $effect(() => {
+    const sb = startedBy;
+    if (sb?.kind !== 'trigger' || sb.id in triggerNames) return;
+    untrack(async () => {
+      const r = await mcpCall('list_triggers', {});
+      let d: any = r.data; if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = []; } }
+      const list: any[] = Array.isArray(d) ? d : (d?.triggers ?? []);
+      triggerNames = { ...triggerNames, ...Object.fromEntries(list.map((x) => [x.id, x.name])), [sb.id]: list.find((x) => x.id === sb.id)?.name ?? '' };
+    });
+  });
   let entries = $state<Entry[]>([]);
   let error = $state('');
   let message = $state('');
@@ -575,7 +598,15 @@
         <div class="card-head"><h3>{run.error || failure ? 3 : 2} · What ran</h3><span>who started it, from where, and when</span></div>
         <ul class="rows wide">
           <li><span class="lbl">Flow</span><span class="val mono">{run.namespace}/{run.flow}{run.version ? ` · ${run.version}` : ''}</span>{#if onopen}<button class="btn2" onclick={onopen}>Open</button>{:else}<span></span>{/if}</li>
-          <li><span class="lbl">Started by</span><span class="val">{run.trigger ?? '—'}{run.principal_id ? ` · ${run.principal_id}` : ''}</span><span></span></li>
+          {#if startedBy?.kind === 'trigger'}
+            <li><span class="lbl">Started by</span><span class="val">{startedBy.cron ? 'Schedule of trigger' : 'Trigger'} <span class="mono">{triggerNames[startedBy.id] || startedBy.id}</span>{triggerNames[startedBy.id] === '' ? ' (deleted)' : ''}{run.principal_id ? ` · as ${run.principal_id}` : ''}</span>
+              {#if triggerNames[startedBy.id]}<button class="btn2" onclick={() => navigateToDetail('triggers', 'Triggers', startedBy.id)}>Open</button>{:else}<span></span>{/if}</li>
+          {:else if startedBy?.kind === 'agent'}
+            <li><span class="lbl">Started by</span><span class="val">A turn of agent <span class="mono">{startedBy.id}</span>{run.principal_id ? ` · for ${run.principal_id}` : ''}</span>
+              <button class="btn2" onclick={() => navigateToDetail('agents', 'Agents', startedBy.id)}>Open</button></li>
+          {:else}
+            <li><span class="lbl">Started by</span><span class="val">{run.trigger ?? '—'}{run.principal_id ? ` · ${run.principal_id}` : ''}</span><span></span></li>
+          {/if}
           {#if run.parent_run_id}<li><span class="lbl">Part of</span><span class="val mono">{run.parent_run_id}</span>{#if onparent}<button class="btn2" onclick={() => onparent?.(run.parent_run_id)}>Open</button>{:else}<span></span>{/if}</li>{/if}
           <li><span class="lbl">Queued</span><span class="val">{stamp(run.created_at)}</span><span></span></li>
           <li><span class="lbl">Started</span><span class="val">{stamp(run.started_at)}</span><span></span></li>

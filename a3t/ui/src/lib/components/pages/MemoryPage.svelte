@@ -27,7 +27,7 @@
     untrack(() => { if (id && id !== shown) { shown = id; void open(id); } else if (!id) { shown = ''; agent = null; } });
   });
   async function open(id: string) {
-    tab = 'overview'; space = null; spaceErr = ''; records = []; aqlRes = null; filters = [{ field: '', value: '' }]; contains = '';
+    tab = 'overview'; space = null; spaceErr = ''; records = []; aqlRes = null; filters = [{ field: '', value: '' }]; contains = ''; since = '';
     const l = await mcpCall('list_agents', {});
     const rows: any[] = l.ok ? (Array.isArray(l.data) ? l.data : (l.data?.agents ?? [])) : [];
     const r = rows.find((x) => (x.id ?? x.name) === id);
@@ -67,7 +67,16 @@
     return all.map((p) => ({ ...p, w: sum ? Math.max(p.n / sum, 0.08) : 1 }));
   });
   const total = $derived(parts.reduce((t, p) => t + p.n, 0));
-  const shownRecs = $derived(contains.trim() ? records.filter((r) => JSON.stringify(r.data).toLowerCase().includes(contains.trim().toLowerCase())) : records);
+  /// When: entries from the last hour, day, week or month (by their own time).
+  const SINCE = [{ k: '', t: 'Any time' }, { k: '1h', t: 'Last hour' }, { k: '1d', t: 'Last 24 hours' }, { k: '7d', t: 'Last 7 days' }, { k: '30d', t: 'Last 30 days' }] as const;
+  const SINCE_MS: Record<string, number> = { '1h': 3_600_000, '1d': 86_400_000, '7d': 7 * 86_400_000, '30d': 30 * 86_400_000 };
+  let since = $state('');
+  const recTime = (r: Rec) => { const d: any = r.data ?? {}; const t = Date.parse(String(r.at ?? d.at ?? d.created_at ?? '')); return isNaN(t) ? null : t; };
+  const shownRecs = $derived.by(() => {
+    const text = contains.trim().toLowerCase();
+    const from = since ? Date.now() - SINCE_MS[since] : null;
+    return records.filter((r) => (!text || JSON.stringify(r.data).toLowerCase().includes(text)) && (from === null || ((recTime(r) ?? 0) >= from)));
+  });
 
   async function apply() {
     if (!kindSpace) return;
@@ -78,7 +87,7 @@
     if (r.ok) records = [...r.records].sort((a, b) => String(b.at).localeCompare(String(a.at)));
     else { records = []; err = r.error; }
   }
-  function pick(k: string) { kind = k; filters = [{ field: '', value: '' }]; contains = ''; void apply(); }
+  function pick(k: string) { kind = k; filters = [{ field: '', value: '' }]; contains = ''; since = ''; void apply(); }
   $effect(() => { if (tab === 'memory' && agent && space && !lastAql) untrack(() => void apply()); });
 
   // ── AQL tab ──
@@ -197,7 +206,8 @@
             {#if err}<div class="note bad">{err}</div>{/if}
           </div>
           <div class="card">
-            <div class="card-head"><h3>3 · Entries</h3><span>{shownRecs.length}{contains ? ` of ${records.length}` : ''}, newest first</span><span class="grow"></span>
+            <div class="card-head"><h3>3 · Entries</h3><span>{shownRecs.length}{contains || since ? ` of ${records.length}` : ''}, newest first</span><span class="grow"></span>
+              <select class="fin" bind:value={since} aria-label="When">{#each SINCE as o (o.k)}<option value={o.k}>{o.t}</option>{/each}</select>
               <input class="fin rm" type="search" bind:value={contains} placeholder="Find in these" /></div>
             {@render recList(shownRecs)}
           </div>

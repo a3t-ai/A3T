@@ -94,6 +94,20 @@
   // A viewer may open a template read-only but must not save it.
   const canEditTpl = canAny(['create', 'update'], 'template');
 
+  /// A template's name by the naming convention: tmpl_<project>_<function>
+  /// ("helper" in project qa-run → tmpl_qa_run_helper). A name already in that
+  /// form is kept; anything else is reduced to [a-z0-9_].
+  function templateName(typed: string, project: string): string {
+    const id = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const t = typed.trim();
+    if (/^tmpl_[a-z0-9_]+$/.test(t)) return t;
+    const ns = id(project || 'default');
+    const fn = id(t.replace(/^tmpl[_-]?/i, '')).replace(new RegExp(`^${ns}_`), '');
+    return `tmpl_${ns}_${fn || 'agent'}`;
+  }
+  /// The spec with its document named `name` (the flow it is, in its project).
+  const renameSpec = (yaml: string, name: string) => yaml.replace(/^(document:[\s\S]*?\n\s+name:\s*).*$/m, `$1${name}`);
+
   function defaultSpecYaml(name: string): string {
     const n = name || 'my-agent';
     // A new template belongs to the selected project (`default` under "All projects").
@@ -440,23 +454,24 @@ do:
     // Create mode: persist the draft, then reopen the panel on the saved row.
     if (draftTemplate?.isNew) {
       if (!draftTemplate.name?.trim()) { saving = false; saveMsg = 'Name required'; return; }
+      const tname = templateName(draftTemplate.name, getProject() || 'default');
       const res = await execFlow('flow_a3t_templates-create', 'a3t', {
         org_id: 'org-default',
         user_id: $currentUser?.id ?? '',
         timestamp: new Date().toISOString(),
         data: {
           id: draftTemplate.id,
-          name: draftTemplate.name.trim(),
+          name: tname,
           version: draftTemplate.version || '1.0.0',
           source: draftTemplate.source || 'my',
-          spec_yaml: draftTemplate.spec_yaml,
+          spec_yaml: renameSpec(draftTemplate.spec_yaml, tname),
           tags: draftTemplate.tags ?? '',
           vertical: draftTemplate.vertical ?? '',
         },
       });
       saving = false;
       if (res.ok) {
-        const nm = draftTemplate.name.trim();
+        const nm = tname;
         draftTemplate = null;
         await loadTemplates();
         selectTemplate(nm);
@@ -513,8 +528,9 @@ do:
       .map((p) => ({ name: p.name, label: p.info?.display_name && p.info.display_name !== p.name ? `${p.info.display_name} (${p.name})` : p.name }))
       .sort((a, b) => (a.name === cur ? -1 : b.name === cur ? 1 : a.name.localeCompare(b.name)));
   });
-  async function copyTemplate(name: string, namespace: string): Promise<string | null> {
+  async function copyTemplate(typed: string, namespace: string): Promise<string | null> {
     if (!template) return 'Nothing to copy.';
+    const name = templateName(typed, namespace);
     const from = `${template.namespace ?? ''}/${template.name}@${template.activeVersion ?? template.version ?? '1.0.0'}`;
     const res = await execFlow('flow_a3t_templates-create', 'a3t', {
       org_id: 'org-default',
@@ -989,7 +1005,9 @@ do:
   }
   .sp-tree-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
   .sp-tree-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; }
-  .sp-tree-info { min-width: 0; }
+  /* The name keeps room to be read; the actions wrap under it when the pane is narrow. */
+  .sp-tree-head { flex-wrap: wrap; row-gap: 8px; }
+  .sp-tree-info { min-width: 0; flex: 1 1 160px; }
   .sp-tree-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sp-tree-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

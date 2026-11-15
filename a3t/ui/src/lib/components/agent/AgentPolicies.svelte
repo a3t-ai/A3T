@@ -4,6 +4,7 @@
   /// role, doing something (a tool, its model, a flow). The test runs FlowR's
   /// /security/policies/test against the saved policies (and a draft, if given),
   /// with the agent's own tool ceiling, the way the real check is made.
+  import { untrack } from 'svelte';
   import { securityPolicies } from '$lib/services/api';
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
   import { factsOf, type AgentRec, type TemplateRec } from './agentData';
@@ -40,7 +41,13 @@
   let result = $state<{ allowed?: boolean; decision?: string; reason?: string; policy_ids?: string[]; scopes?: string[]; error?: string } | null>(null);
 
   const targets = $derived(does === 'tool' ? live.allowedTools : does === 'model' ? (f.llm ? [f.llm] : []) : (f.target ? [f.target] : []));
-  $effect(() => { if (!targets.includes(target)) target = targets[0] ?? ''; });
+  // A new kind of thing to do starts on its first suggestion; what is typed after
+  // that is kept (a tool or flow need not be in the suggestions to be tested).
+  let lastDoes = '';
+  $effect(() => {
+    const d = does, first = targets[0] ?? '';
+    untrack(() => { if (d !== lastDoes) { lastDoes = d; target = first; } else if (!target && first) target = first; });
+  });
 
   async function run() {
     const d = DOES.find((x) => x.k === does)!;
@@ -49,10 +56,12 @@
     const r = await securityPolicies.test({
       principal: { kind: 'agent', agent_id: `agent:${agent.id}:policy-test`, on_behalf_of: caller.trim() || undefined, roles: [role], owner: agent.created_by || undefined, flow_id: f.target || undefined } as any,
       action: d.action,
-      resource: { type: d.type, id: target.trim() },
+      // In its project: that project's policies decide, over the platform's.
+      resource: { type: d.type, id: target.trim(), ...(agent.namespace ? { attributes: { namespace: agent.namespace } } : {}) },
       attributes: does === 'tool' ? { template: { exposedTools: all, ...(f.tools ? { enabledTools: f.tools } : {}) } } : {},
       draft_policies: draft.trim() ? [draft] : [],
       include_registry: withSaved,
+      ...(agent.namespace ? { draft_namespace: agent.namespace } : {}),
     });
     running = false;
     result = r.ok ? r.data : { error: r.status === 403 ? 'Only security admins can run policy tests.' : r.error ?? `HTTP ${r.status}` };

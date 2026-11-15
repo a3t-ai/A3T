@@ -4,7 +4,9 @@
   import { API_BASE } from '$lib/config';
   import { getAccessToken } from '$lib/services/api';
 
-  let { agentId, onanswered }: { agentId: string; onanswered?: () => void } = $props();
+  /// `branch`: talk to it on that memory branch — what it remembers and learns
+  /// stays on the branch until the branch is merged (POST /chat memory_branch).
+  let { agentId, branch, onanswered }: { agentId: string; branch?: string; onanswered?: () => void } = $props();
 
   type Msg = { role: 'you' | 'agent'; text: string; err?: boolean };
   let msgs = $state<Msg[]>([]);
@@ -25,7 +27,7 @@
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${getAccessToken() ?? ''}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ session_id: `${agentId}:${conv}`, message }),
+        body: JSON.stringify({ session_id: `${agentId}:${conv}`, message, ...(branch ? { memory_branch: branch } : {}) }),
       });
       if (!res.ok || !res.body) {
         let why = `${res.status}`;
@@ -70,7 +72,7 @@
     <button class="btn2 primary" type="submit" disabled={busy || !input.trim()}>{busy ? 'Answering…' : 'Send'}</button>
     {#if msgs.length}<button class="link" type="button" onclick={restart} disabled={busy}>New conversation</button>{/if}
   </form>
-  <p class="dim">As you, on <span class="mono">POST /chat</span> with session <span class="mono">{agentId}:{conv}</span> — what an app sends with a key.</p>
+  <p class="dim">As you, on <span class="mono">POST /chat</span> with session <span class="mono">{agentId}:{conv}</span>{#if branch} on memory branch <span class="mono">{branch}</span>: what it learns stays on the branch{:else} — what an app sends with a key{/if}.</p>
 </div>
 
 <style>

@@ -112,6 +112,9 @@ export function roleIn(p: Project): string | null {
 ///  - a namespace from before projects: a SuperAdmin, or a member of org a3t.
 export function canWriteIn(ns: string | undefined | null): boolean {
   if (!ns) return false;
+  // Viewer is read-only everywhere, whatever it owns or is a member of (the
+  // server refuses its writes the same way).
+  if (getSession()?.user?.role === 'viewer') return false;
   const superadmin = getSession()?.user?.role === 'superadmin';
   const orgRole = (h: string) => myOrgs.find((o) => o.handle === h)?.role ?? null;
   if (ns === 'a3t' || ns === 'system') return superadmin || orgRole(ns) === 'admin';

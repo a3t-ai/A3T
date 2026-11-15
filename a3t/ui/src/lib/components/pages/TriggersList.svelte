@@ -86,7 +86,7 @@
   let testError = $state('');
 
   /// The runs the last firing started, each followed to its end.
-  type TestRun = { target: string; instance_id: string; status: string; output?: unknown; error?: string; duration_ms?: number };
+  type TestRun = { target: string; instance_id: string; status: string; input?: unknown; output?: unknown; error?: string; duration_ms?: number };
   let testRuns = $state<TestRun[]>([]);
   /// What the platform answered when nothing ran to follow (a URL target, say).
   let testReply = $state<any>(null);
@@ -136,8 +136,10 @@
           if (!st.ok) return;
           const d: any = typeof st.data === 'string' ? JSON.parse(st.data) : st.data;
           const status = String(d?.status ?? '').toLowerCase();
+          // What the target got — the mapping's result — as soon as it is known.
+          if (d?.input !== undefined && testRuns[k].input === undefined) testRuns[k] = { ...testRuns[k], input: d.input };
           if (status === 'completed' || status === 'failed') {
-            testRuns[k] = { ...r, status, output: d.output, error: status === 'failed' ? (d.error ?? 'It failed.') : undefined,
+            testRuns[k] = { ...testRuns[k], status, output: d.output, error: status === 'failed' ? (d.error ?? 'It failed.') : undefined,
               duration_ms: d.duration_us != null ? Math.round(d.duration_us / 1000) : undefined };
           }
         }));
@@ -601,8 +603,9 @@
                   <div>
                     <div class="t">{r.target.replace(/^workflow:/, 'flow ').replace(/^a3t_agent:/, 'agent ')}</div>
                     <div class="m mono">{r.instance_id}{r.duration_ms != null ? ` · ${r.duration_ms} ms` : ''}</div>
+                    {#if r.input !== undefined}<div class="m">It got (the mapped input):</div><pre class="code out">{JSON.stringify(r.input, null, 2)}</pre>{/if}
                     {#if r.error}<div class="m err">{r.error}</div>{/if}
-                    {#if r.output !== undefined}<pre class="code out">{JSON.stringify(r.output, null, 2)}</pre>{/if}
+                    {#if r.output !== undefined}<div class="m">It gave:</div><pre class="code out">{JSON.stringify(r.output, null, 2)}</pre>{/if}
                   </div>
                   <span class="tag" class:prod={r.status === 'completed'}>{r.status}</span>
                 </li>

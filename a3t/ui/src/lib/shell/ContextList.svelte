@@ -8,10 +8,11 @@
     APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, itemsRev_, getPins, isPinned, setPins,
   } from '$lib/stores/apps.svelte.ts';
   import { deleteChatSession, setPin } from '$lib/services/api';
-  import { getProject } from '$lib/stores/context.svelte.ts';
+  import { getProject, canWriteIn } from '$lib/stores/context.svelte.ts';
+  import { getSession, isInfosec } from '$lib/stores/auth';
   import { setItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
   import { getActiveItem } from '$lib/stores/activeItem.svelte.ts';
-  import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
+  import { loadAppItems, groupByNamespace, groupByOwner, type AppItem } from './appItems';
 
   let { appType }: { appType: string } = $props();
 
@@ -105,6 +106,10 @@
   /// Rows grouped under their namespace, or null for lists that have none
   /// (conversations, resource categories) — those stay flat.
   const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections' || spec?.source === 'resources' || spec?.source === 'projects'));
+  /// All projects: each project's items folded under its owner, as Projects shows
+  /// them. (Resources keep their categories; Projects and Settings are already so.)
+  const ownerGroups = $derived(groups && !getProject() && !['settings-sections', 'resources', 'projects'].includes(spec?.source ?? '')
+    ? groupByOwner(groups) : null);
 
   /// Pinned items first, as their own group; they stay in their namespace too.
   const pinnedShown = $derived.by<Item[]>(() => {
@@ -218,7 +223,16 @@
     triggers: 'New trigger', resources: 'New resource', canvas: 'New canvas', runtime: 'New runtime',
     security: 'New policy', executions: 'Run a flow', datarooms: 'New storage', knowledge: 'New knowledge graph',
   };
-  const newLabel = $derived(NEW_LABEL[appType] ?? (spec?.source === 'flows' ? 'New flow' : ''));
+  // Only offered to whoever can make one: a Viewer starts conversations only;
+  // policies are InfoSec's; in a project, its writers.
+  const canCreate = $derived.by(() => {
+    if (appType === 'chat') return true;
+    if (appType === 'security') return isInfosec();
+    if (getSession()?.user?.role === 'viewer') return false;
+    const p = getProject();
+    return !p || canWriteIn(p);
+  });
+  const newLabel = $derived(canCreate ? (NEW_LABEL[appType] ?? (spec?.source === 'flows' ? 'New flow' : '')) : '');
   function newItem() {
     if (spec?.source === 'sessions') return newChat();
     if (spec?.source === 'flows') return newFlow();
@@ -356,6 +370,32 @@
       <div class="ctx-note">{filter ? 'Nothing matches.' : 'Nothing here yet.'}</div>
     {:else if isTree}
       {#each shown as item (item.id)}{@render row(item)}{/each}
+    {:else if ownerGroups}
+      {#each ownerGroups as o (o.owner)}
+        <section class="ctx-group">
+          <button class="ctx-ghead" onclick={() => toggleGroup(`owner:${o.owner}`)} aria-expanded={isOpen(`owner:${o.owner}`)}>
+            <svg class="ctx-chev" class:open={isOpen(`owner:${o.owner}`)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
+            <span class="ctx-gname">{o.owner || 'No project'}</span>
+            <span class="ctx-gcount">{o.count}</span>
+          </button>
+          {#if isOpen(`owner:${o.owner}`)}
+            {#if o.projects.length === 1 && o.projects[0].ns === o.owner}
+              {@render list(sorted(o.projects[0].items))}
+            {:else}
+              {#each o.projects as g (g.ns)}
+                <section class="ctx-group ctx-sub">
+                  <button class="ctx-ghead" onclick={() => toggleGroup(g.ns)} aria-expanded={isOpen(g.ns)}>
+                    <svg class="ctx-chev" class:open={isOpen(g.ns)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
+                    <span class="ctx-gname">{g.ns || 'No project'}</span>
+                    <span class="ctx-gcount">{g.items.length}</span>
+                  </button>
+                  {#if isOpen(g.ns)}{@render list(sorted(g.items))}{/if}
+                </section>
+              {/each}
+            {/if}
+          {/if}
+        </section>
+      {/each}
     {:else if groups}
       {#each groups as g (g.ns)}
         <section class="ctx-group">
@@ -387,6 +427,7 @@
   .ctx-title { margin: 2px 0 0; font: 400 22px var(--font-serif); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ctx-actions { display: flex; align-items: center; gap: 6px; }
   .ctx-primary { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 0; background: var(--green, #1a7158); color: #fff; font: 500 13px var(--font-sans); cursor: pointer; white-space: nowrap; }
+  .ctx-sub { margin-left: 12px; }
   .ctx-icon { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-3); display: grid; place-items: center; cursor: pointer; }
   .ctx-icon:hover:not(:disabled) { color: var(--spec); border-color: var(--spec); }
   .ctx-icon:disabled { opacity: 0.4; cursor: default; }

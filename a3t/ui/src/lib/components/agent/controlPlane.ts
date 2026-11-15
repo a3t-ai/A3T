@@ -97,7 +97,12 @@ export function describeEvent(e: AgentEvent): string {
     case 'shared': return `shared with ${p.target === '*' ? 'everyone (public)' : p.target}`;
     case 'unshared': return `no longer shared with ${p.target === '*' ? 'everyone' : p.target}`;
     case 'merged': return `procedures merged in from ${p.from} (${p.procedures ?? 0})`;
-    default: return e.type;
+    // Memory: an entry written or forgotten by hand, a semantic space attached.
+    case 'memory_edited': return p.key ? `edited its ${p.type ?? ''} memory entry ${p.key}` : `added a ${p.type ?? ''} memory entry`;
+    case 'memory_forgotten': return `forgot its ${p.type ?? ''} memory entry ${p.key ?? ''} (kept in its history, not in reads)`;
+    case 'memory_attached': return `attached the semantic space ${p.namespace ?? ''}`;
+    case 'memory_detached': return `detached the semantic space ${p.namespace ?? ''}`;
+    default: return e.type.replace(/_/g, ' ');
   }
 }
 

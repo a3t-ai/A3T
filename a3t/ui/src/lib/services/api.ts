@@ -50,10 +50,25 @@ async function request<T = any>(
 ): Promise<ApiResponse<T>> {
   const span = begin(requestKind(path, options));
   const res = await send<T>(path, options, requireAuth);
-  if (res.status === 0) reached(false, res.error);
+  if (res.status === 0) reached(false, `${requestLabel(path, options)}: ${res.error ?? 'no answer'}. The console could not reach the A3T API; it retries with the next request.`);
   else reached(true);
+  // A server fault is shown, naming what failed — a page that only says nothing
+  // came back leaves people guessing. (4xx are the page's to explain.)
+  if (res.status >= 500) {
+    messages.error(`${requestLabel(path, options)} failed (${res.status})`, { key: `5xx:${requestLabel(path, options)}`, detail: res.error ?? `The server answered ${res.status}.`, source: 'api' });
+  }
   end(span, res.ok);
   return res;
+}
+
+/// What a request is, in a few words: its method and path, or the tool an MCP
+/// call (POST /message) runs.
+function requestLabel(path: string, options: RequestInit = {}): string {
+  const p = path.split('?')[0];
+  if (p === '/message' && typeof options.body === 'string') {
+    try { const b = JSON.parse(options.body); const n = b?.params?.name; if (n) return `${n}${b?.params?.arguments?.name ? ` ${b.params.arguments.name}` : ''}`; } catch { /* not JSON */ }
+  }
+  return `${(options.method ?? 'GET').toUpperCase()} ${p}`;
 }
 
 async function send<T = any>(
@@ -453,6 +468,11 @@ export const state = {
 // ── EE security policies (Cedar) ──
 // Cedar policies are stored as `type: cedar` registry resources; the operate
 // surface (list/reload/test) is served by flowr-server's /security/policies*.
+/** The flows and resources that name a resource (`<ns>/<name>`), among those you can see. */
+export const resourceUsedBy = (ns: string, name: string) =>
+  request<{ flows: { namespace: string; name: string; version: string }[]; resources: { namespace: string; name: string; type: string }[] }>(
+    `/registry/resources/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/used-by`, { method: 'GET' });
+
 export interface PolicyTestBody {
   principal: { kind: string; user_id?: string; roles?: string[]; agent_id?: string; service_id?: string };
   action: string;
@@ -460,6 +480,8 @@ export interface PolicyTestBody {
   attributes?: Record<string, any>;
   draft_policies?: string[];
   include_registry?: boolean;
+  /** The project the draft would be saved in (none: a platform policy). */
+  draft_namespace?: string;
 }
 /** Public edition probe — {edition:'ce'|'ee', enforcing, policy_hook, features}. */
 export const getEdition = () => request('/edition', { method: 'GET' }, false);

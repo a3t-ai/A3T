@@ -635,7 +635,8 @@
     canvasBusy = 'cloning'; canvasMsg = '';
     const cname = `${agent.name}-canvas`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     const cfg = {
-      ...structuredClone(preset.config),
+      // `canvases` is $state: clone the plain value, not the proxy (DataCloneError).
+      ...structuredClone($state.snapshot(preset.config)),
       flowRef: agentTargetFlow(),
       agentRef: `a3t/${agent.id}`,
       description: `${agent.name} — from ${preset.name.replace('preset-', '')}`,

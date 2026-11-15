@@ -112,7 +112,9 @@
   /// Details shows the app's welcome until something is picked or created;
   /// the app's old list page is not shown. Apps without a list keep their page.
   const listApp = $derived(hasContext(activeType) && !!APP_CONTEXT[activeType]?.focuses);
-  const creating = $derived(!!panel?.props?.create);
+  // A New form is open: the shell's New, or a deep link that starts one (a
+  // template's "Create an agent from it").
+  const creating = $derived(!!panel?.props?.create || !!panel?.props?.createFromTemplate);
   // AI Chat with nothing picked is a new conversation, not a welcome page.
   const nothingSelected = $derived(listApp && kind !== 'chat' && !selectedId && !creating);
 

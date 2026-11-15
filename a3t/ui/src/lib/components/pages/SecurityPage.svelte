@@ -16,6 +16,7 @@
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { getProject, namespacesFor } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
+  import { isInfosec } from '$lib/stores/auth';
   import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
 
   type Policy = { namespace: string; name: string; cedar: string; description?: string | null; readOnly?: boolean };
@@ -43,6 +44,8 @@
   async function ensureEdition() { if (!edition) { const e = await getEdition(); edition = e.ok && e.data?.edition === 'ee' ? 'ee' : 'ce'; } }
   async function open(id: string) {
     await ensureEdition(); denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
+    // InfoSec only: say so, and ask the server nothing it would refuse.
+    if (!isInfosec()) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; view = 'policy'; pol = null; return; }
     if (id === 'identity' || id === 'policies') { view = 'identity'; pol = null; void loadIdp(); return; }
     if (id === 'baseline') { view = 'policy'; pol = { ...BASELINE }; return; }
     const ref = id.replace(/^policy:/, '');
@@ -101,8 +104,12 @@
   let testRes = $state<any>(null);
   async function runTest() {
     busy = 'test'; testRes = null;
-    const body: PolicyTestBody = { principal: { kind: 'human', user_id: 'dry-run', roles: [tRole] }, action: tAction, resource: { type: tType, id: tId },
-      include_registry: true, draft_policies: tDraft && pol && !pol.readOnly ? [pol.cedar] : [] };
+    // Tried in the policy's own project: a project policy governs only the calls
+    // that touch its project (the platform's, every call).
+    const ns = pol && !pol.readOnly ? pol.namespace : undefined;
+    const body: PolicyTestBody = { principal: { kind: 'human', user_id: 'dry-run', roles: [tRole] }, action: tAction,
+      resource: { type: tType, id: tId, ...(ns ? { attributes: { namespace: ns } } : {}) },
+      include_registry: true, draft_policies: tDraft && pol && !pol.readOnly ? [pol.cedar] : [], ...(ns ? { draft_namespace: ns } : {}) };
     const r = await securityPolicies.test(body);
     busy = ''; testRes = r.ok ? r.data : { error: r.error ?? `HTTP ${r.status}` };
   }
@@ -119,7 +126,7 @@
   let nName = $state(''); let nNs = $state(getProject() || 'default'); let nDesc = $state('');
   let nCedar = $state('// Forbid overrides permit; deny by default.\n// Example: block one tool for everyone in this project.\nforbid(principal, action, resource)\nwhen { resource is Tool && resource has name && resource.name == "some_tool" };\n');
   let nErr = $state('');
-  async function openNew() { await ensureEdition(); view = 'new'; pol = null; shown = ''; nName = ''; nErr = ''; nNs = getProject() || 'default'; }
+  async function openNew() { await ensureEdition(); if (!isInfosec()) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; view = 'policy'; pol = null; return; } view = 'new'; pol = null; shown = ''; nName = ''; nErr = ''; nNs = getProject() || 'default'; }
   async function create() {
     nErr = '';
     const r = await securityPolicies.save(nNs, nName.trim(), nCedar, nDesc || undefined);
