@@ -27,7 +27,7 @@
   import { keepKey } from '$lib/components/agent/keyOnce';
   import { updateAgent } from '$lib/studio-core/adapters/agents';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
-  import { namespacesFor } from '$lib/stores/context.svelte.ts';
+  import { namespacesFor, loadProjects } from '$lib/stores/context.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { execFlow, mcpCall, canvasApi, agentTool } from '$lib/services/api';
@@ -254,6 +254,10 @@
 
   async function loadRegistry() {
     const llm: any[] = [], mcp: any[] = [], fl: any[] = [];
+    // The projects first: before they are in, the picker's namespaces are the
+    // platform's only, and a project's own models, tool servers and flows (its
+    // hook flows) were missing from every list.
+    await loadProjects();
     for (const ns of namespacesFor('picker')) {
       const r = await mcpCall('list_resources', { namespace: ns });
       for (const res of (r.data?.resources ?? [])) {

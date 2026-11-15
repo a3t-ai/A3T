@@ -296,9 +296,17 @@ export function contextFromUrl() {
   if (p !== project) { project = p; remember(); bumpContext(); }
 }
 
+/// The load in flight: a second caller waits for it, rather than going on with
+/// nothing loaded yet (the flag below is set when the load starts).
+let loading: Promise<void> | null = null;
 export async function loadProjects(force = false) {
-  if (loaded && !force) return;
+  if (loaded && !force) return loading ?? undefined;
   loaded = true;
+  loading = loadProjectsNow();
+  return loading;
+}
+
+async function loadProjectsNow() {
   // Namespaces and their counts from the registry; projects (who owns them, your
   // role) from the flow_a3t_projects flow, which leaves out the ones you can't see.
   const [res, mine] = await Promise.all([mcpCall('list_projects', {}), projectsApi.list()]);
