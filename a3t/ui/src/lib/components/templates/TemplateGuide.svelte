@@ -95,10 +95,19 @@
   let copyProject = $state('');
   let copyBusy = $state(false);
   let copyError = $state('');
+  /// What it does, without its kind and project: tmpl_a3t_agent → agent.
+  const shortName = (n: string) => n.replace(/^tmpl_[a-z0-9]+_/, '').replace(/^tmpl[_-]/, '') || n;
+  /// The name the copy gets in `ns`: tmpl_<project>_<what you typed> (the naming convention).
+  const fullName = (typed: string, ns: string) => {
+    const id = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const t = typed.trim();
+    return /^tmpl_[a-z0-9_]+$/.test(t) ? t : `tmpl_${id(ns || 'default')}_${id(t.replace(/^tmpl[_-]?/i, '')) || 'agent'}`;
+  };
   function freeName(ns: string) {
     const taken = new Set(allTemplates.filter((t) => (t.namespace ?? '') === ns).map((t) => t.name));
-    let n = `${template.name}-copy`;
-    for (let i = 2; taken.has(n); i++) n = `${template.name}-copy-${i}`;
+    const base = shortName(template.name);
+    let n = `${base}-copy`;
+    for (let i = 2; taken.has(fullName(n, ns)); i++) n = `${base}-copy-${i}`;
     return n;
   }
   function openCopy() {
@@ -111,8 +120,8 @@
   $effect(() => { if (copyRequest && copyRequest !== seenRequest) { seenRequest = copyRequest; openCopy(); } });
   async function doCopy() {
     if (!oncopy || !copyName.trim() || !copyProject) return;
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(copyName.trim())) { copyError = 'A name is lowercase letters, digits and dashes.'; return; }
-    if (allTemplates.some((t) => t.name === copyName.trim() && (t.namespace ?? '') === copyProject)) { copyError = `${copyProject} already has a template ${copyName.trim()}.`; return; }
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(copyName.trim())) { copyError = 'A name is lowercase letters, digits, dashes and underscores.'; return; }
+    if (allTemplates.some((t) => t.name === fullName(copyName, copyProject) && (t.namespace ?? '') === copyProject)) { copyError = `${copyProject} already has a template ${fullName(copyName, copyProject)}.`; return; }
     copyBusy = true; copyError = '';
     copyError = (await oncopy(copyName.trim(), copyProject)) ?? '';
     copyBusy = false;
@@ -147,7 +156,8 @@
       {#if copying}
         <div class="tg-card tg-form">
           <p class="tg-dim">Your own copy, in a project of yours, to change as you like. This one stays as it is.</p>
-          <label><span>Name of your copy</span><input type="text" class="mono" bind:value={copyName} /></label>
+          <label><span>Name of your copy</span><input type="text" class="mono" bind:value={copyName} />
+            {#if copyName.trim() && copyProject}<small class="mono">It will be named {fullName(copyName, copyProject)}</small>{/if}</label>
           <label><span>In project</span>
             <select bind:value={copyProject} onchange={() => (copyName = freeName(copyProject))}>{#each projects as p (p.name)}<option value={p.name}>{p.label}</option>{/each}</select>
           </label>
