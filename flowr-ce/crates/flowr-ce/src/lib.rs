@@ -3066,8 +3066,8 @@ async fn run_request_raw(
         attributes: Default::default(),
         params: serde_json::Value::Null,
     };
-    let start = flowr_policy::policy_hook().check(&start_req).await.non_interactive();
-    let refused = match start {
+    let start_decision = flowr_policy::policy_hook().check(&start_req).await.non_interactive();
+    let refused = match start_decision {
         flowr_policy::PolicyDecision::Deny { reason, policy_ids } => {
             flowr_policy::audit::record(&start_req, &flowr_policy::PolicyDecision::Deny { reason: reason.clone(), policy_ids: policy_ids.clone() });
             Some(swf_runtime::RuntimeError::Denied { task: "flow:start".to_string(), reason, policy_ids })
