@@ -14,6 +14,7 @@ mod auth_routes;
 mod sso;
 mod impersonate;
 mod forgot;
+mod first_password;
 mod directory;
 mod config;
 
@@ -269,6 +270,8 @@ async fn main() -> anyhow::Result<()> {
                 // "Forgot password" (forgot.rs): public, like /auth/login.
                 let forgot_routes = Router::new()
                     .route("/auth/forgot", post(forgot::forgot_handler))
+                    // First sign-in with a temporary password (first_password.rs).
+                    .route("/auth/first-password", post(first_password::first_password_handler))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router

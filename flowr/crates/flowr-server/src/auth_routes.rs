@@ -67,27 +67,40 @@ pub async fn login_handler(
     // sign in through the same email/password form. `(user_id, org, role, email, name)`.
     let resolved = match authenticate_user(config.platform.get().await.as_ref(), &body.email, &body.password).await {
         Ok(t) => Some(t),
-        Err(local_err) => {
-            let kc = keycloak_login(&config, &body.email, &body.password).await;
-            if kc.is_none() {
-                warn!(email = %body.email, error = %local_err, "Login failed (local + oidc)");
+        Err(local_err) => match keycloak_login(&config, &body.email, &body.password).await {
+            KcLogin::Ok(t) => Some(t),
+            // The password was right; the account still has a temporary password.
+            // The console asks for a new one and posts it to /auth/first-password.
+            KcLogin::SetupRequired => {
+                info!(email = %body.email, "Login: a new password is needed first");
+                return (StatusCode::FORBIDDEN, Json(json!({
+                    "error": "Choose a new password to finish setting up your account.",
+                    "code": "password_change_required",
+                }))).into_response();
             }
-            kc
-        }
+            KcLogin::Failed => {
+                warn!(email = %body.email, error = %local_err, "Login failed (local + oidc)");
+                None
+            }
+        },
     };
 
-    let Some((user_id, org_id, role, email, name)) = resolved else {
+    let Some(identity) = resolved else {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response();
     };
+    issue_session(&config, identity)
+}
 
-    let access_token = match create_token(&config, &user_id, &org_id, &role, &email, &name) {
+/// The tokens and user for a signed-in identity `(user_id, org, role, email, name)`.
+pub(crate) fn issue_session(config: &AuthConfig, (user_id, org_id, role, email, name): (String, String, String, String, String)) -> axum::response::Response {
+    let access_token = match create_token(config, &user_id, &org_id, &role, &email, &name) {
         Ok(t) => t,
         Err(e) => {
             warn!(error = %e, "Failed to create token");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response();
         }
     };
-    let refresh_token = match create_refresh_token(&config, &user_id) {
+    let refresh_token = match create_refresh_token(config, &user_id) {
         Ok(t) => t,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
     };
@@ -121,17 +134,27 @@ pub(crate) fn pick_role(roles: &[String]) -> String {
     else { "viewer" }.to_string()
 }
 
+/// What a Keycloak password sign-in came to.
+pub(crate) enum KcLogin {
+    /// Signed in: `(user_id, org, role, email, name)`.
+    Ok((String, String, String, String, String)),
+    /// The password was right, but the account must set a new one first.
+    SetupRequired,
+    /// Wrong password, unknown user, or no Keycloak here.
+    Failed,
+}
+
 /// EE login fallback: authenticate against Keycloak (password grant) and return an
-/// A3T identity tuple. Returns None if OIDC isn't configured or the login fails.
-async fn keycloak_login(
+/// A3T identity tuple.
+pub(crate) async fn keycloak_login(
     config: &AuthConfig,
     email: &str,
     password: &str,
-) -> Option<(String, String, String, String, String)> {
+) -> KcLogin {
     #[cfg(feature = "ee")]
     {
-        if config.oidc_issuer.is_empty() { return None; }
-        let (base, realm) = split_issuer(&config.oidc_issuer)?;
+        if config.oidc_issuer.is_empty() { return KcLogin::Failed; }
+        let Some((base, realm)) = split_issuer(&config.oidc_issuer) else { return KcLogin::Failed };
         let client = reqwest::Client::new();
         match aesop_tower::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password).await {
             Ok(id) => {
@@ -140,15 +163,16 @@ async fn keycloak_login(
                 let out_email = id.email.clone().unwrap_or_else(|| email.to_string());
                 let name = id.name.clone().unwrap_or_else(|| id.username.clone());
                 info!(user = %user_id, email = %out_email, role = %role, "Login successful (oidc)");
-                Some((user_id, "org-default".to_string(), role, out_email, name))
+                KcLogin::Ok((user_id, "org-default".to_string(), role, out_email, name))
             }
-            Err(e) => { warn!(email = %email, error = %e, "OIDC login failed"); None }
+            Err(aesop_tower::oidc_admin::IdpAdminError::SetupRequired) => KcLogin::SetupRequired,
+            Err(e) => { warn!(email = %email, error = %e, "OIDC login failed"); KcLogin::Failed }
         }
     }
     #[cfg(not(feature = "ee"))]
     {
         let _ = (config, email, password);
-        None
+        KcLogin::Failed
     }
 }
 
