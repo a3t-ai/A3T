@@ -213,6 +213,7 @@ The agent turn already reaches its own server in-process
 | ADB-R1 | high | Variables in `STORE` and `UPDATE` values |
 | ADB-R2 | medium | Store-or-update in one statement |
 | ADB-R3 | low | `LIKE` returns its score |
+| ADB-R4 | medium | Every FORGET tombstone is logged by ADB |
 
 ### ADB-R1 — Variables in `STORE` and `UPDATE` values
 
@@ -241,3 +242,21 @@ the top N.
 Also seen while testing locally: with no embedding model (`ADB_EMBED_MODEL_DIR` unset),
 the ADB log says "LIKE finds nothing". It did rank results in the test, so that log line
 is wrong, or the ranking falls back to lexical. Worth checking.
+
+### ADB-R4 — Every FORGET tombstone is logged by ADB
+
+*15 Nov 2026, from the functional test run (ME-06).*
+
+The rule for FORGET is: no physical delete, history kept, and every tombstone logged.
+In the test, forgetting an episodic entry of an agent removed it from every read at
+once (correct), and A3T recorded it in the agent's history (`agent_events`,
+`memory_forgotten`, with who and which key). ADB's own logs had no line for it, so ADB
+itself does not record the tombstone.
+
+- **Done when:** each FORGET writes one record (log line at least; ideally a queryable
+  tombstone log) with the namespace, memory type, key, offset, time and the caller, so a
+  forget can be audited from ADB alone.
+- **Until then:** A3T's agent history is the record of forgets made through the console
+  and the control plane (`tool_a3t_agent_memory_forget`). A FORGET sent straight to ADB
+  is not recorded anywhere.
+
