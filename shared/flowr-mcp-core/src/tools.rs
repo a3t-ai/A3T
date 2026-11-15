@@ -2301,6 +2301,11 @@ async fn list_executions(storage: &dyn StorageBackend, principal: &flowr_policy:
             // of platform flows (chats carry other people's conversations).
             let mut execs = Vec::new();
             for e in all {
+                // A namespace without a flow name: that namespace's runs only (the
+                // store lists by flow, so this filter is ours).
+                if namespace.is_some_and(|ns| e.namespace != ns) {
+                    continue;
+                }
                 if crate::ns_gate::can_see_run(principal, &e).await {
                     execs.push(e);
                 }

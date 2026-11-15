@@ -62,6 +62,24 @@ impl TaskHandler for RotateHandler {
         "call:rotate"
     }
 
+    /// RotatE is the knowledge-graph model, not key rotation: never "destructive"
+    /// by its name. What it does is by operation — `ingest` and `train` write the
+    /// graph, everything else reads it — so the baseline's data-write rule gates
+    /// the writes and anyone who may read the project reads its graph.
+    fn policy_resource(&self, task: &NamedTask) -> flowr_policy::Resource {
+        let op = match &task.task {
+            Task::Call(c) => c.with.as_ref().and_then(|w| w.get("operation")).and_then(|v| v.as_str()).unwrap_or("stats").to_string(),
+            _ => "stats".to_string(),
+        };
+        // An operation given as an expression is not known here: treated as a write.
+        let class = if matches!(op.as_str(), "ingest" | "train") || op.contains("${") { "write" } else { "read" };
+        flowr_policy::Resource::new("Tool", "call:rotate")
+            .with_attr("name", "call:rotate")
+            .with_attr("destructive", false)
+            .with_attr("operation", class)
+            .with_attr("task_type", "call:rotate")
+    }
+
     async fn execute(
         &self,
         task: &NamedTask,

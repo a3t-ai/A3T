@@ -692,6 +692,14 @@ impl TaskHandler for AgentHandler {
                         }
                         info!(server = %server, count = count, "discovered MCP tools for LLM");
                     }
+                    // A server named in its settings that no longer exists is a
+                    // settings error: the turn says so (RS-05). One that is merely
+                    // unreachable is skipped, and the turn goes on without it.
+                    Err(e) if e.starts_with("MCP server resource not found") => {
+                        return Err(RuntimeError::ResourceNotFound(format!(
+                            "this agent's tool server '{server}' does not exist (it was deleted or renamed); remove it from the agent's Settings or pick another"
+                        )));
+                    }
                     Err(e) => warn!(server = %server, error = %e, "MCP tools/list failed — skipping"),
                 }
             }

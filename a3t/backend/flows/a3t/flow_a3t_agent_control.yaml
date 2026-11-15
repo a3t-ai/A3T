@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.5.0'
+  version: '1.5.1'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -36,7 +36,8 @@ do:
       set:
         _in: '${ . }'
         _org: '${ .org_id // "org-default" }'
-        _who: '${ .user_id // (($context._principal // {}).user // "") | tostring }'
+        # Who did it: the signed-in principal; a user_id the caller sends only when there is none.
+        _who: '${ (($context._principal // {}).user) // .user_id // "" | tostring }'
         _now: '${ now | todateiso8601 }'
       export:
         as: '${ $context + . }'

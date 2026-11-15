@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_agents
-  version: 1.1.5
+  version: 1.1.6
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -179,7 +179,7 @@ do:
           | (($context._u.data // {}) + {status: $st}) as $n
           | (($o.variables // "{}") | if type == "string" then (try fromjson catch {}) else . end // {}) as $vo
           | (($n.variables // "{}") | if type == "string" then (try fromjson catch {}) else . end // {}) as $vn
-          | {by: ($context._u.user_id // (($context._principal // {}).user // "")),
+          | {by: ((($context._principal // {}).user) // $context._u.user_id // ""),
              changed: (
                (["name", "template_id", "template_version", "mode", "namespace", "status", "resource_bindings"]
                 | map(select(($n[.] // null) != null and (($n[.] | tostring) != (($o[.] // "") | tostring)))))
@@ -215,7 +215,7 @@ do:
               input:
                 error: ${ $context.error }
                 flow: a3t/flow_a3t_agents
-                version: 1.1.4
+                version: 1.1.6
                 run_id: ${ (($workflow // {}).id // "") | tostring }
                 principal: ${ (($context._principal // {}).user // "") | tostring }
                 step: update-event

@@ -44,6 +44,18 @@ impl TaskHandler for LanceDbHandler {
 
         let operation = with.get("operation").and_then(|v| v.as_str()).unwrap_or("query");
         let table_name = with.get("table").and_then(|v| v.as_str()).unwrap_or("");
+        // A database the step names that is gone: say so, by name — never open the
+        // embedded default in its place (another database, or a path it can't use).
+        if let Some(rn) = with.get("_resource").and_then(|v| v.as_str()).filter(|r| *r != PLATFORM_DB_RESOURCE) {
+            if let Some(storage) = ctx.storage.as_ref().and_then(|s| s.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()) {
+                let (ns, name) = rn.split_once('/').unwrap_or(("a3t", rn));
+                if storage.resources().get(ns, name).await.is_err() {
+                    return Err(RuntimeError::ResourceNotFound(format!(
+                        "the database resource '{rn}' does not exist (it was deleted or renamed); pick another in the flow's settings"
+                    )));
+                }
+            }
+        }
         let db = platform_db_for(ctx, with.get("_resource").and_then(|v| v.as_str())).await;
         info!(task = %task.name, op = %operation, table = %table_name, db = %db.describe(), "call:lancedb");
         let comm = RuntimeError::Communication;

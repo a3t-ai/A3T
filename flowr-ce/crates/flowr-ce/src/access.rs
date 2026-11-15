@@ -629,14 +629,15 @@ pub async fn gate_ce_tool(storage: &Arc<dyn StorageBackend>, principal: &Princip
             Some((deployment_namespace(&d), level))
         }
         "terminate_runtime" | "set_runtime_state" | "set_paused_response" => {
-            let labels = crate::ops::runtime_by_name(storage.as_ref(), arg(args, "runtime")).await
-                .map(|r| r.labels).unwrap_or_default();
+            let rt = crate::ops::runtime_by_name(storage.as_ref(), arg(args, "runtime")).await;
+            let labels = rt.as_ref().map(|r| r.labels.clone()).unwrap_or_default();
+            let rt_ns = rt.as_ref().map(|r| r.namespace.clone()).unwrap_or_default();
             if !guard().can_see_runtime(principal, &labels).await {
                 return Some(CallToolResult::error("Not found: no such runtime.".to_string()));
             }
-            if !guard().can_control_runtime(principal, &labels).await {
+            if !controls_runtime(principal, &rt_ns, &labels).await {
                 return Some(CallToolResult::error(
-                    "Forbidden: a shared runtime is controlled by superadmin only; an org's own runtime by its admins.".to_string()));
+                    "Forbidden: a shared runtime is controlled by superadmin only; an org's own runtime by its admins; a project's own runtime by whoever may change that project.".to_string()));
             }
             None
         }
@@ -676,7 +677,8 @@ pub async fn filter_overview(principal: &Principal, mut overview: Value) -> Valu
             if !g.can_see_runtime(principal, &labels).await {
                 continue;
             }
-            let control = g.can_control_runtime(principal, &labels).await;
+            let rt_ns = rt.get("runtime").and_then(|r| r.get("namespace")).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let control = controls_runtime(principal, &rt_ns, &labels).await;
             if let Some(deps) = rt.get_mut("deployments").and_then(|v| v.as_array_mut()) {
                 let mut shown = Vec::new();
                 for d in std::mem::take(deps) {
@@ -743,6 +745,19 @@ pub async fn can_read_item(principal: &Principal, kind: ItemKind, ns: &str, name
 }
 
 /// A REST write into `ns`: `Err` with the response when refused.
+/// Who controls a runtime (pause, resume, restart, terminate): as the guard says
+/// (superadmin for a shared one, an org's admins for the org's own) — and, for a
+/// runtime made in a project (not a platform namespace, no org label), whoever
+/// may change that project.
+async fn controls_runtime(principal: &Principal, ns: &str, labels: &BTreeMap<String, String>) -> bool {
+    let g = guard();
+    if g.can_control_runtime(principal, labels).await {
+        return true;
+    }
+    !ns.is_empty() && !["system", "a3t", "default"].contains(&ns) && !labels.contains_key(ORG_LABEL)
+        && g.access(principal, ns).await >= NsAccess::Write
+}
+
 pub async fn rest_write(principal: &Principal, ns: &str) -> Result<(), (axum::http::StatusCode, axum::Json<Value>)> {
     let g = guard();
     if !g.enforcing() {

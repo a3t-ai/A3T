@@ -31,7 +31,7 @@ out when the request lands.
 | CA-R5 | high | One failure is logged once, not once per enclosing flow |
 | CA-R6 | high | The engine's PROCEDURAL recall has no namespace |
 | CA-R7 | medium | Inheriting steps and hooks from the core agent |
-| CA-R8 | medium | `try` / `catch` in the CNCF shape is silently ignored |
+| CA-R8 | done | `try` / `catch` in the CNCF shape is silently ignored |
 | CA-R9 | medium | Hooks run `set` tasks only |
 | CA-R10 | medium | Reading a field of `null` is an error |
 | CA-R11 | low | Retry transient LLM and tool failures |
@@ -154,6 +154,9 @@ written in the CNCF shape loads, and its `catch` is dropped without a word, so e
 are not caught.
 
 - **Done when:** both shapes work, or the CNCF shape is refused at save with a message.
+- **Done 15 Nov 2026:** `parse_try_task` takes `try:` as a task list or `{do}`, and `catch`
+  inside or beside it (test `test_try_catch_both_shapes`). Flows written in the CNCF shape
+  (flow_a3t_agents `update-event`, flow_a3t_resource_test) now really catch.
 
 ### CA-R9 — Hooks run `set` tasks only
 

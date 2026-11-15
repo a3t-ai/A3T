@@ -3050,9 +3050,36 @@ async fn run_request_raw(
     // Execute
     // Raced against the stop signal: Terminate drops the executor future at its
     // next await point, which is what actually stops an LLM call or a wait.
-    let result = tokio::select! {
-        r = executor.execute(&swf_workflow, request.input.clone(), &mut exec_ctx) => Some(r),
-        _ = stop.notified() => None,
+    // Starting the flow is a decision of its own: `flow:start` on `Flow{ns/name}`,
+    // as a subflow's start already is — so a policy about flows (`resource is
+    // Flow`) applies to every run, however it was started. The baseline permits
+    // people, agents acting for one, and the runtime service.
+    let flow_id = format!("{}/{}", request.namespace, request.name);
+    let start_req = flowr_policy::ExecutionRequest {
+        principal: exec_ctx.principal.clone(),
+        action: flowr_policy::actions::flow_start(),
+        resource: flowr_policy::Resource::new("Flow", flow_id.clone())
+            .with_attr("name", flow_id.clone())
+            .with_attr("namespace", request.namespace.clone())
+            .with_attr("task_type", "run"),
+        context: Default::default(),
+        attributes: Default::default(),
+        params: serde_json::Value::Null,
+    };
+    let start = flowr_policy::policy_hook().check(&start_req).await.non_interactive();
+    let refused = match start {
+        flowr_policy::PolicyDecision::Deny { reason, policy_ids } => {
+            flowr_policy::audit::record(&start_req, &flowr_policy::PolicyDecision::Deny { reason: reason.clone(), policy_ids: policy_ids.clone() });
+            Some(swf_runtime::RuntimeError::Denied { task: "flow:start".to_string(), reason, policy_ids })
+        }
+        _ => None,
+    };
+    let result = match refused {
+        Some(e) => Some(Err(e)),
+        None => tokio::select! {
+            r = executor.execute(&swf_workflow, request.input.clone(), &mut exec_ctx) => Some(r),
+            _ = stop.notified() => None,
+        },
     };
 
     let duration_us = start.elapsed().as_micros() as u64;

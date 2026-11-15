@@ -286,25 +286,33 @@ fn parse_switch_task(obj: &serde_json::Map<String, Value>) -> Result<Task> {
 }
 
 fn parse_try_task(obj: &serde_json::Map<String, Value>) -> Result<Task> {
-    let try_value = obj.get("try").and_then(|v| v.as_object()).ok_or_else(|| {
+    // Both shapes (CA-R8): CNCF 1.0 — `try:` is the task list and `catch:` sits
+    // beside it — and FlowR's older `try: {do, catch}`. A `catch` beside `try`
+    // was dropped without a word before, so errors were never caught.
+    let try_value = obj.get("try").ok_or_else(|| {
         SwfError::MissingField { field: "try".to_string(), context: "try task".to_string() }
     })?;
-
-    let do_value = try_value.get("do").ok_or_else(|| {
-        SwfError::MissingField { field: "do".to_string(), context: "try task".to_string() }
-    })?;
+    let (do_value, inner_catch) = match try_value {
+        Value::Array(_) => (try_value, None),
+        Value::Object(o) => (
+            o.get("do").ok_or_else(|| SwfError::MissingField { field: "do".to_string(), context: "try task".to_string() })?,
+            o.get("catch"),
+        ),
+        _ => return Err(SwfError::MissingField { field: "try".to_string(), context: "try task: a list of tasks, or {do, catch}".to_string() }),
+    };
     let tasks = parse_do_block(do_value)?;
 
-    let catch = if let Some(catch_value) = try_value.get("catch") {
+    let catch = if let Some(catch_value) = inner_catch.or_else(|| obj.get("catch")) {
         let errors = catch_value.get("errors").and_then(|v| {
             serde_json::from_value(v.clone()).ok()
         });
         let retry = catch_value.get("retry").and_then(|v| {
             serde_json::from_value(v.clone()).ok()
         });
-        let catch_tasks = catch_value.get("do")
-            .map(|v| parse_do_block(v).unwrap_or_default())
-            .unwrap_or_default();
+        let catch_tasks = match catch_value.get("do") {
+            Some(v) => parse_do_block(v)?,
+            None => Vec::new(),
+        };
 
         Some(CatchBlock { errors, retry, tasks: catch_tasks })
     } else {
@@ -407,6 +415,28 @@ do:
         assert_eq!(wf.tasks.len(), 1);
         assert_eq!(wf.tasks[0].name, "greet");
         assert_eq!(wf.tasks[0].task.type_name(), "set");
+    }
+
+    /// CA-R8: a `catch` beside `try` (CNCF 1.0) is kept, as is the older
+    /// `try: {do, catch}`, and `try:` may be the task list itself.
+    #[test]
+    fn test_try_catch_both_shapes() {
+        let shapes = [
+            "  - t:\n      try:\n        do:\n        - a:\n            set: {x: 1}\n      catch:\n        do:\n        - b:\n            set: {y: 2}\n",
+            "  - t:\n      try:\n        do:\n        - a:\n            set: {x: 1}\n        catch:\n          do:\n          - b:\n              set: {y: 2}\n",
+            "  - t:\n      try:\n      - a:\n          set: {x: 1}\n      catch:\n        do:\n        - b:\n            set: {y: 2}\n",
+        ];
+        for body in shapes {
+            let yaml = format!("document:\n  dsl: '1.0.3'\n  namespace: test\n  name: t\n  version: '1.0.0'\ndo:\n{body}");
+            let wf = parse_yaml(&yaml).unwrap_or_else(|e| panic!("{e}\n{yaml}"));
+            match &wf.tasks[0].task {
+                Task::Try(t) => {
+                    assert_eq!(t.tasks.len(), 1, "{yaml}");
+                    assert_eq!(t.catch.as_ref().map(|c| c.tasks.len()), Some(1), "catch kept: {yaml}");
+                }
+                other => panic!("not a try: {}", other.type_name()),
+            }
+        }
     }
 
     #[test]
