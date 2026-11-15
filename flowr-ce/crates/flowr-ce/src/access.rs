@@ -568,7 +568,23 @@ fn guard() -> Arc<dyn NamespaceGuard> {
 }
 
 /// The namespace a deployment's work belongs to.
-fn deployment_namespace(d: &crate::ops::Deployment) -> String {
+/// The project a deployment belongs to: an agent's is the agent's own project
+/// (its record's namespace) — not its serving flow's, which agents share (a3t's
+/// tmpl_a3t_agent); a flow's is the flow's.
+async fn deployment_namespace(d: &crate::ops::Deployment) -> String {
+    if d.kind == "agent" {
+        if let Some(storage) = crate::agent_keys::store() {
+            let id = if d.agent_ref.is_empty() { d.target.as_str() } else { d.agent_ref.rsplit('/').next().unwrap_or(&d.target) };
+            let row = crate::handlers::call_lancedb::query_platform_table(
+                storage.as_ref(), "agent_configs",
+                Some(format!("id = {}", crate::handlers::call_lancedb::sql_quote(id))), 1).await
+                .ok().and_then(|r| r.into_iter().next());
+            if let Some(row) = row {
+                let ns = row.get("namespace").and_then(|v| v.as_str()).unwrap_or("a3t");
+                return effective_namespace(ItemKind::Agent, ns, id, "", row.get("created_by").and_then(|v| v.as_str()).unwrap_or_default());
+            }
+        }
+    }
     let ns = d.flow_ref.split_once('/').map(|(n, _)| n.to_string()).unwrap_or_else(|| d.namespace.clone());
     let name = d.flow_ref.split_once('/').map(|(_, n)| n).unwrap_or(&d.target);
     effective_namespace(ItemKind::Flow, &ns, name, "", "")
@@ -626,7 +642,7 @@ pub async fn gate_ce_tool(storage: &Arc<dyn StorageBackend>, principal: &Princip
         "probe_deployment" | "pause_deployment" | "resume_deployment" | "restart_deployment" | "undeploy" | "terminate_deployment" => {
             let Some(d) = crate::ops::deployment_by_id(storage.as_ref(), arg(args, "deployment")).await else { return None };
             let level = if name == "probe_deployment" { NsAccess::Read } else { NsAccess::Write };
-            Some((deployment_namespace(&d), level))
+            Some((deployment_namespace(&d).await, level))
         }
         "terminate_runtime" | "set_runtime_state" | "set_paused_response" => {
             let rt = crate::ops::runtime_by_name(storage.as_ref(), arg(args, "runtime")).await;
@@ -667,7 +683,7 @@ pub async fn filter_overview(principal: &Principal, mut overview: Value) -> Valu
     }
     async fn visible_deployment(p: &Principal, d: &Value) -> bool {
         let Ok(dep) = serde_json::from_value::<crate::ops::Deployment>(d.get("deployment").cloned().unwrap_or(Value::Null)) else { return false };
-        guard().access(p, &deployment_namespace(&dep)).await >= NsAccess::Read
+        guard().access(p, &deployment_namespace(&dep).await).await >= NsAccess::Read
     }
     if let Some(rts) = overview.get_mut("runtimes").and_then(|v| v.as_array_mut()) {
         let mut keep = Vec::new();

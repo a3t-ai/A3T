@@ -30,6 +30,11 @@ const LAST_USED_EVERY_SECS: i64 = 300;
 static STORE: OnceLock<Arc<dyn StorageBackend>> = OnceLock::new();
 
 /// At startup, next to `access::install`: where keys are looked up.
+/// The storage installed at start (None before `install`).
+pub fn store() -> Option<Arc<dyn StorageBackend>> {
+    STORE.get().cloned()
+}
+
 pub fn install(storage: Arc<dyn StorageBackend>) {
     let _ = STORE.set(storage);
 }
