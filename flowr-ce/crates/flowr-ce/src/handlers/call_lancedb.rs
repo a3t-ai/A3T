@@ -99,19 +99,33 @@ impl TaskHandler for LanceDbHandler {
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "update requires 'filter'"))?;
                 let values = with.get("values").and_then(|v| v.as_object())
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "update requires 'values' object"))?;
+                // Say what was changed: an update that matches no row changed nothing.
+                let rows = db.query(table_name, Some(filter), 100_000).await.map(|b| batches_to_json(&b).len()).map_err(comm)?;
+                if rows == 0 {
+                    return Ok(TaskResult::new(json!({"updated": false, "rows": 0})));
+                }
                 db.update(table_name, filter, values).await.map_err(comm)?;
-                Ok(TaskResult::new(json!({"updated": true})))
+                Ok(TaskResult::new(json!({"updated": true, "rows": rows})))
             }
 
             "delete" => {
                 let filter = with.get("filter").and_then(|v| v.as_str())
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "delete requires 'filter'"))?;
                 // The dependency tree: a template with agents, a deployed agent.
-                if let Err(why) = crate::integrity::check_table_delete(db.as_ref(), table_name, filter).await {
-                    return Err(RuntimeError::task_failed(&task.name, why));
+                let rows = crate::integrity::check_table_delete(db.as_ref(), table_name, filter)
+                    .await
+                    .map_err(|why| RuntimeError::task_failed(&task.name, why))?;
+                // Nothing matched: nothing was deleted, and the answer says so.
+                if rows.is_empty() {
+                    return Ok(TaskResult::new(json!({"deleted": false, "rows": 0})));
                 }
                 db.delete(table_name, filter).await.map_err(comm)?;
-                Ok(TaskResult::new(json!({"deleted": true})))
+                // An agent that is gone takes its API keys with it.
+                if table_name == "agent_configs" {
+                    let ids: Vec<String> = rows.iter().filter_map(|r| r.get("id").and_then(|v| v.as_str())).map(str::to_string).collect();
+                    crate::agent_keys::revoke_all(db.as_ref(), &ids).await;
+                }
+                Ok(TaskResult::new(json!({"deleted": true, "rows": rows.len()})))
             }
 
             other => {

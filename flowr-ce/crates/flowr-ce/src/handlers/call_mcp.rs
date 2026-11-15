@@ -70,8 +70,15 @@ impl TaskHandler for McpHandler {
         let server_url = if let Some(server) = with.get("server").and_then(|v| v.as_str()) {
             server.to_string()
         } else if let Some(resource_name) = with.get("_resource").and_then(|v| v.as_str()) {
-            resolve_mcp_url_from_resource(ctx, resource_name).await
-                .unwrap_or_else(|| format!("http://localhost:{}/message", 3099))
+            // A named server that is gone is an error that names it — never a
+            // silent fall back to this FlowR's own tools.
+            match resolve_mcp_url_from_resource(ctx, resource_name).await {
+                Some(Some(url)) => url,
+                Some(None) => return Err(RuntimeError::ResourceNotFound(format!(
+                    "the tool server resource '{resource_name}' has no url (set url, endpoint or server in its settings)"))),
+                None => return Err(RuntimeError::ResourceNotFound(format!(
+                    "the tool server resource '{resource_name}' does not exist (it was deleted or renamed); pick another in the agent's or flow's settings"))),
+            }
         } else {
             format!("http://localhost:{}/message", 3099)
         };
@@ -162,9 +169,12 @@ impl TaskHandler for McpHandler {
 }
 
 /// Resolve MCP server URL from a named resource in storage
-async fn resolve_mcp_url_from_resource(ctx: &ExecutionContext, resource_name: &str) -> Option<String> {
-    let storage_any = ctx.storage.as_ref()?;
-    let storage = storage_any.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()?;
+/// The URL of an MCP resource: `None` when there is no such resource, `Some(None)`
+/// when it has no URL. (No storage to look in: treated as found, without a URL.)
+async fn resolve_mcp_url_from_resource(ctx: &ExecutionContext, resource_name: &str) -> Option<Option<String>> {
+    let Some(storage) = ctx.storage.as_ref().and_then(|s| s.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()) else {
+        return Some(None);
+    };
 
     let (ns, name) = if resource_name.contains('/') {
         let parts: Vec<&str> = resource_name.splitn(2, '/').collect();
@@ -175,8 +185,8 @@ async fn resolve_mcp_url_from_resource(ctx: &ExecutionContext, resource_name: &s
 
     let resource = storage.resources().get(ns, name).await.ok()?.in_environment();
     // Try url field, then endpoint, then server
-    resource.config.get("url").and_then(|v| v.as_str())
+    Some(resource.config.get("url").and_then(|v| v.as_str())
         .or_else(|| resource.config.get("endpoint").and_then(|v| v.as_str()))
         .or_else(|| resource.config.get("server").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
+        .map(|s| s.to_string()))
 }

@@ -74,17 +74,121 @@ fn build_merged_schema(base_override: Option<&str>, fragments: &[String]) -> Str
     merged.to_string()
 }
 
+/// A Cedar policy saved in the registry (`type_ref: cedar`): where it lives and
+/// its source. In `system`, `a3t` or `default` it is a **platform** policy and
+/// applies everywhere; in any other namespace it is that **project's** policy and
+/// applies only to calls touching that project.
+#[derive(Debug, Clone)]
+pub struct NamedPolicy {
+    pub namespace: String,
+    pub name: String,
+    pub source: String,
+}
+
+impl NamedPolicy {
+    pub fn new(namespace: impl Into<String>, name: impl Into<String>, source: impl Into<String>) -> Self {
+        Self { namespace: namespace.into(), name: name.into(), source: source.into() }
+    }
+    /// `namespace/name`, the label a decision names it by.
+    pub fn label(&self) -> String {
+        format!("{}/{}", self.namespace, self.name)
+    }
+}
+
+/// Namespaces whose policies are the platform's.
+pub const PLATFORM_POLICY_NAMESPACES: &[&str] = &["system", "a3t", "default"];
+
+/// Who each Cedar `policyN` is: its label (`@id`, or `<namespace>/<name>`) and,
+/// for a rule that says so, why (`@reason`).
+#[derive(Debug, Clone, Default)]
+struct Labels(Vec<(String, Option<String>)>);
+
+impl Labels {
+    /// The labels of the policies in `src`, in the order Cedar numbers them.
+    fn of(src: &str, origin: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        use std::str::FromStr;
+        let set = cedar_policy::PolicySet::from_str(src).map_err(|e| format!("{origin}: {e}"))?;
+        let mut ps: Vec<(usize, String, Option<String>)> = set
+            .policies()
+            .map(|p| {
+                let n = p.id().to_string().trim_start_matches("policy").parse::<usize>().unwrap_or(usize::MAX);
+                let id = p.annotation("id").map(str::to_string);
+                let reason = p.annotation("reason").map(str::to_string);
+                (n, id.unwrap_or_else(|| origin.to_string()), reason)
+            })
+            .collect();
+        ps.sort_by_key(|(n, _, _)| *n);
+        Ok(ps.into_iter().map(|(_, l, r)| (l, r)).collect())
+    }
+    fn label(&self, id: &str) -> String {
+        id.strip_prefix("policy")
+            .and_then(|n| n.parse::<usize>().ok())
+            .and_then(|n| self.0.get(n))
+            .map(|(l, _)| l.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+    fn reason(&self, id: &str) -> Option<String> {
+        id.strip_prefix("policy").and_then(|n| n.parse::<usize>().ok()).and_then(|n| self.0.get(n)).and_then(|(_, r)| r.clone())
+    }
+    /// `text` with every `policyN` replaced by its label (highest N first, so
+    /// `policy1` does not eat the start of `policy12`).
+    fn rename(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for n in (0..self.0.len()).rev() {
+            out = out.replace(&format!("policy{n}"), &format!("'{}'", self.0[n].0));
+        }
+        out
+    }
+}
+
+/// One compiled policy set and who its policies are.
+struct Pack {
+    engine: AuthzEngine,
+    labels: Labels,
+}
+
+impl Pack {
+    /// Baseline + the given policies, in that order, validated against `schema`.
+    fn build(baseline: &str, extra: &[(String, String)], schema: &str) -> Result<Self, String> {
+        let mut text = String::from(baseline);
+        let mut labels = Labels::of(baseline, "baseline")?;
+        for (label, src) in extra {
+            labels.extend(Labels::of(src, label)?);
+            text.push_str("\n// ── ");
+            text.push_str(label);
+            text.push_str(" ──\n");
+            text.push_str(src);
+            text.push('\n');
+        }
+        let labels = Labels(labels);
+        let engine = AuthzEngine::new(&text, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
+        Ok(Self { engine, labels })
+    }
+}
+
+/// What a project's calls are checked against.
+enum ProjectPack {
+    Ready(Pack),
+    /// Its policy does not compile: its calls are refused (fail closed, for that
+    /// project only) until it is fixed.
+    Broken(String),
+}
+
 /// A [`PolicyHook`] backed by Cedar. Fails **closed**: any engine fault or an
 /// unrepresentable request denies.
+///
+/// The platform set (baseline + platform policies) decides every call; a project
+/// with policies of its own has its own set (baseline + platform + its policies),
+/// which decides the calls that touch that project.
 pub struct CedarHook {
-    engine: AuthzEngine,
+    global: Pack,
+    projects: std::collections::HashMap<String, ProjectPack>,
 }
 
 impl CedarHook {
     /// Build from explicit Cedar policy + schema source.
     pub fn new(policies_src: &str, schema_src: &str) -> Result<Self, String> {
-        let engine = AuthzEngine::new(policies_src, Some(schema_src)).map_err(|e| e.to_string())?;
-        Ok(Self { engine })
+        Ok(Self { global: Pack::build(policies_src, &[], schema_src)?, projects: Default::default() })
     }
 
     /// Build from the embedded A3T baseline pack (schema + policies).
@@ -92,41 +196,119 @@ impl CedarHook {
         Self::new(A3T_BASELINE, A3T_SCHEMA)
     }
 
-    /// Build the enforced policy set as **baked baseline + attached registry
-    /// policies** (E2 #2c load order, §6.3). Each entry in `registry_policies`
-    /// is the Cedar source of a `type_ref: cedar` resource owned by InfoSec.
-    /// The baseline guardrails (deny-by-default, destructive-tool forbid, SoD)
-    /// always apply; registry policies layer permits/forbids on top. All are
-    /// validated against the single A3T schema — a malformed registry policy
-    /// fails the whole load (fail closed) rather than silently dropping.
-    /// `base_override` is an optional registry `system/base-schema` (Cedar JSON)
-    /// replacing/extending the embedded base; `schema_fragments` are per-resource
-    /// Cedar-JSON fragments merged on top. The merged schema is used to validate
-    /// the policy set (N8). Falls back to the embedded base schema if the merged
-    /// schema can't validate the policies.
+    /// Baseline + unnamed registry policies, all platform-wide (the dry run's
+    /// draft path; see [`Self::with_named_policies`] for the real set).
     pub fn with_registry_policies(
         registry_policies: &[String],
         base_override: Option<&str>,
         schema_fragments: &[String],
     ) -> Result<Self, String> {
-        let mut policies = String::from(A3T_BASELINE);
-        for (i, src) in registry_policies.iter().enumerate() {
-            policies.push_str("\n// ── attached registry policy #");
-            policies.push_str(&i.to_string());
-            policies.push_str(" ──\n");
-            policies.push_str(src);
-            policies.push('\n');
-        }
-        let schema_json = build_merged_schema(base_override, schema_fragments);
-        match Self::new(&policies, &schema_json) {
-            Ok(hook) => Ok(hook),
+        let named: Vec<NamedPolicy> = registry_policies
+            .iter()
+            .enumerate()
+            .map(|(i, s)| NamedPolicy::new("default", format!("registry-policy-{i}"), s.clone()))
+            .collect();
+        Self::with_named_policies(&named, base_override, schema_fragments)
+    }
+
+    /// The enforced set: the baked baseline, the platform policies (namespaces
+    /// `system`, `a3t`, `default`) for every call, and each project's own
+    /// policies for the calls touching it. The baseline guardrails always apply.
+    ///
+    /// A platform policy that does not compile fails the whole load (fail closed;
+    /// the caller keeps the hook it had). A project policy that does not compile
+    /// closes that project only: its calls are refused, naming the policy.
+    /// Schema: the embedded base ⊕ `base_override` ⊕ `schema_fragments`, falling
+    /// back to the embedded base if the merged one rejects the policies.
+    pub fn with_named_policies(
+        policies: &[NamedPolicy],
+        base_override: Option<&str>,
+        schema_fragments: &[String],
+    ) -> Result<Self, String> {
+        let merged = build_merged_schema(base_override, schema_fragments);
+        let platform: Vec<(String, String)> = policies
+            .iter()
+            .filter(|p| PLATFORM_POLICY_NAMESPACES.contains(&p.namespace.as_str()))
+            .map(|p| (p.label(), p.source.clone()))
+            .collect();
+        let (global, schema) = match Pack::build(A3T_BASELINE, &platform, &merged) {
+            Ok(g) => (g, merged),
             Err(e) => {
-                // Merged schema didn't validate the policy set — fall back to the
-                // embedded base so authz keeps working (loudly logged).
                 tracing::warn!("merged registry schema rejected ({e}); using embedded base schema");
-                Self::new(&policies, A3T_SCHEMA)
+                (Pack::build(A3T_BASELINE, &platform, A3T_SCHEMA)?, A3T_SCHEMA.to_string())
+            }
+        };
+        let mut by_ns: std::collections::BTreeMap<&str, Vec<(String, String)>> = Default::default();
+        for p in policies.iter().filter(|p| !PLATFORM_POLICY_NAMESPACES.contains(&p.namespace.as_str())) {
+            by_ns.entry(p.namespace.as_str()).or_default().push((p.label(), p.source.clone()));
+        }
+        let mut projects = std::collections::HashMap::new();
+        for (ns, own) in by_ns {
+            let mut all = platform.clone();
+            all.extend(own);
+            let pack = match Pack::build(A3T_BASELINE, &all, &schema) {
+                Ok(p) => ProjectPack::Ready(p),
+                Err(e) => {
+                    tracing::error!(project = %ns, error = %e, "a project policy does not compile; that project's calls are refused until it is fixed");
+                    ProjectPack::Broken(e)
+                }
+            };
+            projects.insert(ns.to_string(), pack);
+        }
+        Ok(Self { global, projects })
+    }
+
+    /// Check that `policies` load: the platform set, and every project's set.
+    /// The error names the policy and says what is wrong. Used before a policy is
+    /// saved, so what is stored always compiles.
+    pub fn validate(policies: &[NamedPolicy], base_override: Option<&str>, schema_fragments: &[String]) -> Result<(), String> {
+        let hook = Self::with_named_policies(policies, base_override, schema_fragments)?;
+        for (ns, p) in &hook.projects {
+            if let ProjectPack::Broken(e) = p {
+                return Err(format!("project {ns}: {e}"));
             }
         }
+        Ok(())
+    }
+
+    /// The projects with policies of their own.
+    pub fn project_count(&self) -> usize {
+        self.projects.len()
+    }
+
+    /// The set deciding `req`: its project's, else the platform's.
+    fn pack_for(&self, req: &ExecutionRequest) -> Result<&Pack, String> {
+        match flowr_policy::namespace::request_namespace(req).and_then(|ns| self.projects.get(&ns)) {
+            Some(ProjectPack::Ready(p)) => Ok(p),
+            Some(ProjectPack::Broken(e)) => Err(e.clone()),
+            None => Ok(&self.global),
+        }
+    }
+
+    /// [`PolicyHook::check`], plus the policies that decided: for an allow, the
+    /// permits that matched; for a deny, the forbids (none: nothing permits it).
+    /// Labels, not Cedar's positional ids. The Policies page's dry run uses this.
+    pub async fn check_explained(&self, req: &ExecutionRequest) -> (PolicyDecision, Vec<String>) {
+        let decision = self.check(req).await;
+        let ids = match &decision {
+            PolicyDecision::Deny { policy_ids, .. } | PolicyDecision::Ask { policy_ids, .. } => policy_ids.clone(),
+            PolicyDecision::Allow => {
+                let scoped = flowr_policy::namespace::scoped_principal(req).await;
+                let ctx = SecurityContext { principal: to_aesop_principal(&scoped), attributes: req.attributes.clone() };
+                match (self.pack_for(req), AesopAction::new(req.action.as_str())) {
+                    (Ok(pack), Ok(action)) => {
+                        let resource = AesopResource {
+                            type_name: req.resource.type_name.clone(),
+                            id: req.resource.id.clone(),
+                            attributes: req.resource.attributes.clone(),
+                        };
+                        pack.engine.enforce(&ctx, &action, &resource).map(|a| a.policy_ids.iter().map(|i| pack.labels.label(i)).collect()).unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                }
+            }
+        };
+        (decision, ids)
     }
 
     /// Load a policy pack from a directory: all `*.cedar` files concatenated as
@@ -211,6 +393,27 @@ impl CedarHook {
     }
 }
 
+/// A refusal in words: what was refused, which policy refused it and what access
+/// it needs (the rule's `@reason`), or that nothing permits it for these roles.
+fn deny_reason(p: &Principal, action: &str, rtype: &str, rid: &str, ids: &[String], why: &[String]) -> String {
+    let what = format!("{action} on {rtype} '{rid}'");
+    let roles = match p {
+        Principal::Human { roles, .. } | Principal::Agent { roles, .. } if !roles.is_empty() => roles.join(", "),
+        Principal::Agent { .. } => "an agent's".into(),
+        Principal::Service { .. } => "the service's".into(),
+        _ => "no".into(),
+    };
+    if ids.is_empty() {
+        return format!("Refused: no policy permits {what} with {roles} role(s) in this project.");
+    }
+    let by = ids.join(", ");
+    if why.is_empty() {
+        format!("Refused by policy {by}: {what}.")
+    } else {
+        format!("Refused by policy {by}: {what}. {}", why.join(" "))
+    }
+}
+
 /// The template keys that describe the agent's **capability ceiling** — what it
 /// was configured to be able to do.
 ///
@@ -274,9 +477,20 @@ impl PolicyHook for CedarHook {
             attributes: req.resource.attributes.clone(),
         };
 
-        match self.engine.enforce(&ctx, &action, &resource) {
+        let pack = match self.pack_for(req) {
+            Ok(p) => p,
+            Err(e) => {
+                return PolicyDecision::Deny {
+                    reason: format!("This project's policy doesn't compile, so its calls are refused until a SecurityAdmin fixes it: {e}"),
+                    policy_ids: vec![],
+                }
+            }
+        };
+        match pack.engine.enforce(&ctx, &action, &resource) {
             Ok(_allowed) => PolicyDecision::Allow,
-            Err(AesopError::Denied { policy_ids, action: denied_action, resource_type, resource_id }) => {
+            Err(AesopError::Denied { policy_ids: raw_ids, action: denied_action, resource_type, resource_id }) => {
+                let policy_ids: Vec<String> = raw_ids.iter().map(|i| pack.labels.label(i)).collect();
+                let why: Vec<String> = raw_ids.iter().filter_map(|i| pack.labels.reason(i)).collect();
                 // ── Deny, or a question? ──
                 //
                 // Cedar only ever answers allow/deny; `Ask` is derived, not
@@ -316,7 +530,7 @@ impl PolicyHook for CedarHook {
                         // wave away a rule like "no external HTTP from PII flows".
                         attributes: as_approver_attributes(&req.attributes, is_owner),
                     };
-                    if self.engine.enforce(&approver_ctx, &action, &resource).is_ok() {
+                    if pack.engine.enforce(&approver_ctx, &action, &resource).is_ok() {
                         return PolicyDecision::Ask {
                             reason: format!(
                                 "{denied_action} on {resource_type}::{resource_id} is outside this agent's \
@@ -332,7 +546,7 @@ impl PolicyHook for CedarHook {
                     }
                 }
                 PolicyDecision::Deny {
-                    reason: format!("cedar denied {denied_action} on {resource_type}::{resource_id}"),
+                    reason: deny_reason(&scoped, &denied_action, &resource_type, &resource_id, &policy_ids, &why),
                     policy_ids,
                 }
             }

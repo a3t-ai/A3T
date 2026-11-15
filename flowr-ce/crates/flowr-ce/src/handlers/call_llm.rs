@@ -79,9 +79,17 @@ impl TaskHandler for LlmHandler {
                 } else {
                     ("default", resource_name)
                 };
-                storage.resources().get(ns, rn).await
-                    .map(|r| r.in_environment().config)
-                    .unwrap_or(json!({}))
+                match storage.resources().get(ns, rn).await {
+                    Ok(r) => r.in_environment().config,
+                    // A model the step names that is gone: say so, by name. (The
+                    // implicit default may be absent: its built-in settings apply.)
+                    Err(_) if with.get("_resource").is_some() => {
+                        return Err(RuntimeError::ResourceNotFound(format!(
+                            "the model resource '{resource_name}' does not exist (it was deleted or renamed); pick another in the agent's or flow's settings"
+                        )));
+                    }
+                    Err(_) => json!({}),
+                }
             } else { json!({}) }
         } else { json!({}) };
 

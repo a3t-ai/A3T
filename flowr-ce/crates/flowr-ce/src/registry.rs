@@ -26,6 +26,34 @@ pub struct RegistryState {
     pub storage: Arc<dyn StorageBackend>,
 }
 
+/// Every namespace the registry holds resources in: the platform's (system, a3t,
+/// default) and every project's. A scan over "all resources" goes over these —
+/// not the platform three only, which left everything saved in a project out.
+pub async fn resource_namespaces(storage: &dyn StorageBackend) -> Vec<String> {
+    let mut ns = storage.resources().namespaces().await.unwrap_or_default();
+    for p in ["system", "a3t", "default"] {
+        if !ns.iter().any(|n| n == p) {
+            ns.push(p.to_string());
+        }
+    }
+    ns.sort();
+    ns.dedup();
+    ns
+}
+
+/// The same for flows.
+pub async fn workflow_namespaces(storage: &dyn StorageBackend) -> Vec<String> {
+    let mut ns = storage.workflows().namespaces().await.unwrap_or_default();
+    for p in ["system", "a3t", "default"] {
+        if !ns.iter().any(|n| n == p) {
+            ns.push(p.to_string());
+        }
+    }
+    ns.sort();
+    ns.dedup();
+    ns
+}
+
 /// Build the registry router
 pub fn registry_router(storage: Arc<dyn StorageBackend>) -> Router {
     let state = Arc::new(RegistryState { storage });
@@ -43,6 +71,9 @@ pub fn registry_router(storage: Arc<dyn StorageBackend>) -> Router {
             "/resources/:ns/:name",
             get(get_resource).put(update_resource).delete(delete_resource),
         )
+        // The flows and resources that name it (`<namespace>/<name>`), among those
+        // the caller can see: what to check before changing or deleting it.
+        .route("/resources/:ns/:name/used-by", get(resource_used_by))
         // A3T's platform database: embedded LanceDB or ADB platform tables (FlowR
         // EE, ADB stage G). Switching is a `resource:update` on a3t/a3t-platform-db.
         .route("/platform-db", get(platform_db_status))
@@ -475,7 +506,7 @@ async fn list_resources(
     let who = caller(principal);
     let mut all: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for ns in &["system", "a3t", "default"] {
+    for ns in &resource_namespaces(state.storage.as_ref()).await {
         if let Ok(resources) = state.storage.resources().list(ns).await {
             for r in &resources {
                 let key = format!("{}/{}", r.namespace, r.name);
@@ -545,6 +576,72 @@ async fn get_resource(
     }
 }
 
+/// GET /registry/resources/:ns/:name/used-by — `{flows: [{namespace, name, version}],
+/// resources: [{namespace, name, type}]}`: the flows whose YAML names
+/// `<ns>/<name>` (a `_resource`, an `llm_resource`, a `run: workflow` target…) and
+/// the resources whose config does (a secret an MCP server reads, a model a
+/// knowledge graph uses…). Only those the caller may read.
+async fn resource_used_by(
+    State(state): State<Arc<RegistryState>>,
+    Path((ns, name)): Path<(String, String)>,
+    principal: Option<Extension<Principal>>,
+) -> impl IntoResponse {
+    let who = caller(principal);
+    let target = format!("{ns}/{name}");
+    // As a whole value or path segment: `a3t/llm` must not match `a3t/llm-2`.
+    let names_it = |text: &str| {
+        text.match_indices(&target).any(|(i, _)| {
+            let before = text[..i].chars().last();
+            let after = text[i + target.len()..].chars().next();
+            let edge = |c: Option<char>| c.map_or(true, |c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'));
+            edge(before) && edge(after)
+        })
+    };
+    let mut flows = Vec::new();
+    for fns in workflow_namespaces(state.storage.as_ref()).await {
+        let Ok(list) = state.storage.workflows().list(&fns).await else { continue };
+        for f in list {
+            if !crate::access::can_read_item(&who, flowr_policy::namespace::ItemKind::Flow, &fns, &f.name, "").await {
+                continue;
+            }
+            if let Ok(rec) = state.storage.workflows().get(&fns, &f.name).await {
+                if names_it(&rec.raw_yaml) {
+                    flows.push(json!({ "namespace": fns, "name": f.name, "version": f.version }));
+                }
+            }
+        }
+    }
+    let mut resources = Vec::new();
+    for rns in resource_namespaces(state.storage.as_ref()).await {
+        let Ok(list) = state.storage.resources().list(&rns).await else { continue };
+        for r in list {
+            if r.namespace == ns && r.name == name {
+                continue;
+            }
+            if !crate::access::can_read_item(&who, flowr_policy::namespace::ItemKind::Resource, &r.namespace, &r.name, &r.type_ref).await {
+                continue;
+            }
+            if names_it(&r.config.to_string()) {
+                resources.push(json!({ "namespace": r.namespace, "name": r.name, "type": r.type_ref }));
+            }
+        }
+    }
+    Json(json!({ "resource": target, "flows": flows, "resources": resources })).into_response()
+}
+
+/// Who may write a resource in `ns`: whoever may write the project — and, for
+/// a Cedar policy (`type: cedar`), Platform InfoSec (SuperAdmin, SecurityAdmin)
+/// in any project, member or not: policies are theirs (separation of duties;
+/// the baseline's SoD rule still refuses anyone else).
+async fn write_gate(who: &Principal, ns: &str, type_ref: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    let infosec = matches!(who, Principal::Human { roles, .. }
+        if roles.iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN));
+    if type_ref == "cedar" && infosec {
+        return Ok(());
+    }
+    crate::access::rest_write(who, ns).await
+}
+
 /// POST /registry/resources — create a resource. Gated by `resource:create`;
 /// creating a `type: cedar` policy is refused unless the caller is InfoSec.
 async fn create_resource(
@@ -553,7 +650,7 @@ async fn create_resource(
     Json(body): Json<ResourceBody>,
 ) -> impl IntoResponse {
     let who = caller(principal);
-    if let Err(resp) = crate::access::rest_write(&who, &body.namespace).await {
+    if let Err(resp) = write_gate(&who, &body.namespace, &body.type_ref).await {
         return resp.into_response();
     }
     if let Err(resp) = authorize_resource_write(
@@ -603,8 +700,8 @@ async fn update_resource(
     };
 
     let who = caller(principal);
-    if let Err(resp) = crate::access::rest_write(&who, &crate::access::effective_namespace(
-        flowr_policy::namespace::ItemKind::Resource, &ns, &name, &type_ref, "")).await {
+    if let Err(resp) = write_gate(&who, &crate::access::effective_namespace(
+        flowr_policy::namespace::ItemKind::Resource, &ns, &name, &type_ref, ""), &type_ref).await {
         return resp.into_response();
     }
     if let Err(resp) = authorize_resource_write(
@@ -651,8 +748,8 @@ async fn delete_resource(
 
     // Registry resource? (LLM/MCP/db/secret/…)
     if let Ok(r) = state.storage.resources().get(&ns, &name).await {
-        if let Err(resp) = crate::access::rest_write(&who, &crate::access::effective_namespace(
-            flowr_policy::namespace::ItemKind::Resource, &ns, &name, &r.type_ref, "")).await {
+        if let Err(resp) = write_gate(&who, &crate::access::effective_namespace(
+            flowr_policy::namespace::ItemKind::Resource, &ns, &name, &r.type_ref, ""), &r.type_ref).await {
             return resp.into_response();
         }
         if let Err(resp) = authorize_resource_write(
@@ -749,7 +846,7 @@ async fn list_templates(
 ) -> impl IntoResponse {
     // List workflows from all namespaces, fetch full records to check for agent call
     let mut templates: Vec<Value> = Vec::new();
-    for ns in &["system", "a3t", "default"] {
+    for ns in &workflow_namespaces(state.storage.as_ref()).await {
         if let Ok(summaries) = state.storage.workflows().list(ns).await {
             for s in &summaries {
                 // Fetch full record to check raw YAML

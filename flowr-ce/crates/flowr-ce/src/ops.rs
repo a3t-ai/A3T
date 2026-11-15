@@ -1203,6 +1203,8 @@ pub async fn overview(storage: &dyn StorageBackend) -> Value {
         "runtimes": rts,
         "unplaced": orphans,
         "host": host,
+        // Every FlowR of the cluster (this one answered).
+        "hosts": cluster_hosts(storage).await,
         // "none" | "reachable" | "unreachable". Configured is not the same as
         // working: on a cluster where the controller is not running, claiming
         // "EE orchestration" would be the console lying about isolation.
@@ -1361,10 +1363,68 @@ pub fn host_metrics() -> Value {
         "scope": "shared-host",
         "host": std::env::var("HOSTNAME").unwrap_or_default(),
         "note": "CE runs every runtime inside this one process — these figures are shared by all of them.",
+        // This process's own share (its cgroup): what it uses of what it may use.
         "memory": { "usedBytes": mem_used, "limitBytes": mem_limit },
+        // The machine it runs on, as the node reports it (not the process's limit).
+        "node": node_metrics(),
         "cpu": { "coresUsed": cpu_cores_used, "limitCores": cpu_limit_cores },
         "disk": disk.map(|(total, free)| json!({ "path": data_dir, "totalBytes": total, "freeBytes": free, "usedBytes": total.saturating_sub(free) })),
     })
+}
+
+/// The node this runs on: its name (`NODE_NAME`, from the downward API, when
+/// set), memory from /proc/meminfo, CPUs and the 1-minute load. In a container
+/// these files describe the node, not the container.
+fn node_metrics() -> Value {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let kb = |key: &str| meminfo.lines().find_map(|l| l.strip_prefix(key).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())).map(|k| k * 1024);
+    let cpus = std::fs::read_to_string("/proc/cpuinfo").ok().map(|c| c.lines().filter(|l| l.starts_with("processor")).count()).filter(|n| *n > 0);
+    let load1 = std::fs::read_to_string("/proc/loadavg").ok().and_then(|l| l.split_whitespace().next()?.parse::<f64>().ok());
+    json!({
+        "name": std::env::var("NODE_NAME").unwrap_or_default(),
+        "memTotalBytes": kb("MemTotal:"),
+        "memAvailableBytes": kb("MemAvailable:"),
+        "cpus": cpus,
+        "load1": load1,
+    })
+}
+
+/// Every FlowR of the cluster, as each last reported itself (`flowr_hosts`,
+/// platform DB): each writes its own row every HEARTBEAT; one silent for three
+/// beats is gone. A single FlowR answers the console, so this is how the console
+/// sees all of them.
+const HOSTS_TABLE: &str = "flowr_hosts";
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(20);
+
+pub fn start_host_heartbeat(storage: Arc<dyn StorageBackend>) {
+    tokio::spawn(async move {
+        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "flowr".into());
+        loop {
+            let db = crate::platform_db::open_platform_db(storage.as_ref(), Some(crate::handlers::call_lancedb::PLATFORM_DB_RESOURCE), crate::handlers::call_lancedb::DEFAULT_PLATFORM_DB_PATH).await;
+            let schema: serde_json::Map<String, Value> = ["host", "at", "metrics"].iter().map(|c| (c.to_string(), json!("string"))).collect();
+            let _ = db.create_table(HOSTS_TABLE, Some(&schema), "create_if_not_exists").await;
+            let row = json!({ "host": host, "at": Utc::now().to_rfc3339(), "metrics": host_metrics().to_string() });
+            let filter = format!("host = {}", crate::handlers::call_lancedb::sql_quote(&host));
+            if let Err(e) = db.delete(HOSTS_TABLE, &filter).await.and(db.insert(HOSTS_TABLE, &[row]).await.map(|_| ())) {
+                tracing::debug!(error = %e, "host heartbeat not written");
+            }
+            tokio::time::sleep(HEARTBEAT).await;
+        }
+    });
+}
+
+/// The FlowRs that reported in the last three heartbeats, each with its metrics.
+async fn cluster_hosts(storage: &dyn StorageBackend) -> Vec<Value> {
+    let rows = crate::handlers::call_lancedb::query_platform_table(storage, HOSTS_TABLE, None, 1000).await.unwrap_or_default();
+    let cutoff = Utc::now() - chrono::Duration::from_std(HEARTBEAT * 3).unwrap_or_default();
+    let mut hosts: Vec<Value> = rows
+        .into_iter()
+        .filter(|r| r.get("at").and_then(|v| v.as_str()).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).is_some_and(|t| t.with_timezone(&Utc) >= cutoff))
+        .filter_map(|r| r.get("metrics").and_then(|v| v.as_str()).and_then(|m| serde_json::from_str::<Value>(m).ok())
+            .map(|mut m| { m["seenAt"] = r.get("at").cloned().unwrap_or(Value::Null); m }))
+        .collect();
+    hosts.sort_by(|a, b| a["host"].as_str().cmp(&b["host"].as_str()));
+    hosts
 }
 
 fn disk_usage(path: &str) -> Option<(u64, u64)> {

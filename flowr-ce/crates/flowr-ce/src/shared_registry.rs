@@ -379,6 +379,11 @@ fn parse_resource(row: &Value) -> Option<Resource> {
     Some(r)
 }
 
+/// The policy gate, for a Cedar policy resource (see `crate::policy_gate`).
+fn policy_gate(type_ref: &str) -> Option<std::sync::Arc<dyn crate::policy_gate::PolicyGate>> {
+    (type_ref == "cedar").then(crate::policy_gate::get).flatten()
+}
+
 #[async_trait]
 impl ResourceStore for SharedResources {
     async fn register_type(&self, resource_type: ResourceType) -> FlowResult<()> {
@@ -409,11 +414,19 @@ impl ResourceStore for SharedResources {
         if self.exists(&resource.namespace, &resource.name).await? {
             return Err(FlowError::Validation(format!("Resource {}/{} already exists", resource.namespace, resource.name)));
         }
+        let gate = policy_gate(&resource.type_ref);
+        if let Some(g) = &gate {
+            let src = crate::policy_gate::source_of(&resource.config).unwrap_or_default();
+            g.check(&resource.namespace, &resource.name, Some(src)).await.map_err(FlowError::Validation)?;
+        }
         let t = now();
         insert(&*self.db, RESOURCES, json!({
             "namespace": resource.namespace, "name": resource.name, "type_ref": resource.type_ref,
             "config": config, "created_at": t, "updated_at": t,
         })).await?;
+        if let Some(g) = gate {
+            g.changed().await;
+        }
         Ok(resource)
     }
 
@@ -435,17 +448,36 @@ impl ResourceStore for SharedResources {
     /// In place: one update, so a concurrent reader never sees the resource missing.
     async fn update(&self, namespace: &str, name: &str, config: Value) -> FlowResult<Resource> {
         let existing = self.get(namespace, name).await?;
+        let gate = policy_gate(&existing.type_ref);
+        if let Some(g) = &gate {
+            let src = crate::policy_gate::source_of(&config).unwrap_or_default();
+            g.check(namespace, name, Some(src)).await.map_err(FlowError::Validation)?;
+        }
         let mut values = Map::new();
         values.insert("config".into(), json!(serde_json::to_string(&config).unwrap_or_default()));
         values.insert("updated_at".into(), json!(now()));
         self.db.update(RESOURCES, &flow_filter(namespace, name), &values).await.map_err(storage_err)?;
         let mut r = Resource::new(name, existing.type_ref, config).with_namespace(namespace);
         r.created_at = existing.created_at;
+        if let Some(g) = gate {
+            g.changed().await;
+        }
         Ok(r)
     }
 
     async fn delete(&self, namespace: &str, name: &str) -> FlowResult<()> {
-        self.db.delete(RESOURCES, &flow_filter(namespace, name)).await.map_err(storage_err)
+        let gate = match self.get(namespace, name).await {
+            Ok(r) => policy_gate(&r.type_ref),
+            Err(_) => None,
+        };
+        if let Some(g) = &gate {
+            g.check(namespace, name, None).await.map_err(FlowError::Validation)?;
+        }
+        self.db.delete(RESOURCES, &flow_filter(namespace, name)).await.map_err(storage_err)?;
+        if let Some(g) = gate {
+            g.changed().await;
+        }
+        Ok(())
     }
 
     async fn exists(&self, namespace: &str, name: &str) -> FlowResult<bool> {

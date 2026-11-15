@@ -13,6 +13,8 @@ aesop-core = { path = "../../../../AESOP/crates/aesop-core", features = ["cedar"
 async-trait = "0.1"
 tracing = "0.1"
 serde_json = "1"
+# Policy labels (@id, @reason) and counts: the same Cedar aesop-core uses.
+cedar-policy = "4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

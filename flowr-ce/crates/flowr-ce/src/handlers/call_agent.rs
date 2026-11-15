@@ -756,7 +756,7 @@ impl TaskHandler for AgentHandler {
                         Some(config.session_id.as_str()),
                     ),
                 ).await?;
-                let llm_result = llm_result.map_err(|e| RuntimeError::Communication(format!("LLM call failed: {}", e)))?;
+                let llm_result = llm_result.map_err(llm_error)?;
 
                 // AC-17: what this turn has used so far.
                 if let Some(u) = llm_result.get("usage") {
@@ -1499,6 +1499,17 @@ async fn resolve_secret_ref(storage: &Arc<dyn StorageBackend>, secret_ref: &str)
 }
 
 /// Call LLM via OpenAI-compatible API
+/// A failed model call, as the run's error. The agent's model resource gone is
+/// the agent's settings (404, named), not an outage.
+fn llm_error(e: String) -> RuntimeError {
+    match e.strip_prefix("LLM resource '").and_then(|r| r.split_once("' not found")) {
+        Some((name, _)) => RuntimeError::ResourceNotFound(format!(
+            "this agent's model resource '{name}' does not exist (it was deleted or renamed); pick another model in the agent's Settings"
+        )),
+        None => RuntimeError::Communication(format!("LLM call failed: {e}")),
+    }
+}
+
 async fn call_llm(
     client: &reqwest::Client,
     storage: &Arc<dyn StorageBackend>,

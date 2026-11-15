@@ -52,13 +52,14 @@ fn list(names: &[String]) -> String {
     }
 }
 
-/// Guard a `call:lancedb` delete. Only the platform tables in the tree are
-/// checked; every other table deletes as before.
-pub async fn check_table_delete(db: &dyn crate::platform_db::PlatformDb, table: &str, filter: &str) -> Result<(), String> {
+/// Guard a `call:lancedb` delete: the rows it would remove (none: nothing to
+/// delete, and the caller says so), or why it may not. Only the platform tables
+/// in the tree are checked for dependents.
+pub async fn check_table_delete(db: &dyn crate::platform_db::PlatformDb, table: &str, filter: &str) -> Result<Vec<Value>, String> {
+    let rows = ids_matching(db, table, filter).await?;
     match table {
         // A template with agents built from it.
         "template_registry" => {
-            let rows = ids_matching(db, table, filter).await?;
             for t in &rows {
                 let Some(id) = t.get("id").and_then(|v| v.as_str()) else { continue };
                 // A duplicate row of a template (same id) may go as long as one stays:
@@ -81,25 +82,24 @@ pub async fn check_table_delete(db: &dyn crate::platform_db::PlatformDb, table: 
                     ));
                 }
             }
-            Ok(())
+            Ok(rows)
         }
         // A deployed agent.
         "agent_configs" => {
-            let rows = ids_matching(db, table, filter).await?;
-            for a in rows {
+            for a in &rows {
                 let Some(id) = a.get("id").and_then(|v| v.as_str()) else { continue };
                 if let Some(d) = crate::ops::deployment_of_agent(id) {
                     return Err(format!(
                         "Agent '{}' is deployed on runtime '{}'. Undeploy it first (Runtimes → {}).",
-                        name_of(&a),
+                        name_of(a),
                         d.runtime,
                         d.target
                     ));
                 }
             }
-            Ok(())
+            Ok(rows)
         }
-        _ => Ok(()),
+        _ => Ok(rows),
     }
 }
 

@@ -29,6 +29,7 @@ pub mod handlers;
 pub mod registry;
 pub mod topic_triggers;
 pub mod platform_db;
+pub mod policy_gate;
 pub mod router;
 pub mod gateway;
 pub mod shared_registry;
@@ -736,6 +737,12 @@ async fn webhook_handler(
         &trigger_path, body, &trigger_adapter, &trigger_wf_adapter
     ).await;
 
+    // No trigger listens on this path (none was made, or it was deleted): 404,
+    // never a 200 that says nothing was delivered.
+    if trigger_results.is_empty() {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "not found", "message": "No trigger listens on this path.", "path": trigger_path}))).into_response();
+    }
+
     let mut total: Vec<String> = agent_delivered;
     for r in &trigger_results {
         total.extend(r.delivered_to.iter().cloned());
@@ -939,6 +946,19 @@ impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
     }
 
     async fn execute_workflow(&self, namespace: &str, name: &str, input: Value) -> anyhow::Result<String> {
+        self.start(None, namespace, name, input).await
+    }
+
+    async fn execute_workflow_for(&self, trigger_id: &str, trigger_name: &str, namespace: &str, name: &str, input: Value) -> anyhow::Result<String> {
+        self.start(Some((trigger_id, trigger_name)), namespace, name, input).await
+    }
+}
+
+impl TriggerWorkflowAdapter {
+    /// Start `namespace/name` for a trigger's event; `trigger` (id, name), when
+    /// known, is recorded on the run as what started it (`trigger:<id>`; a cron
+    /// tick stays `cron:<id>`).
+    async fn start(&self, trigger: Option<(&str, &str)>, namespace: &str, name: &str, input: Value) -> anyhow::Result<String> {
         let storage = GLOBAL_STORAGE.get()
             .ok_or_else(|| anyhow::anyhow!("Storage not initialized"))?;
         // Checked here, before anything is spawned, so the caller gets the paused
@@ -965,7 +985,7 @@ impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
             input,
             durability: None,
             requested_at: chrono::Utc::now(),
-            caller: Some("trigger".to_string()),
+            caller: Some(trigger.map(|(_, n)| format!("trigger {n}")).unwrap_or_else(|| "trigger".to_string())),
             // Run on behalf of the authenticated caller when present (so an agent
             // in the flow gets `on_behalf_of` and its policy-gated tool calls are
             // permitted). External webhooks with no token run as the trigger
@@ -986,6 +1006,10 @@ impl flowr_ce_agents::triggers::WorkflowExecutor for TriggerWorkflowAdapter {
         let engine = storage.engine();
         if let Some(engine) = &engine {
             let mut run = flowr_ce_storage::engine_adapters::new_run(&request);
+            // What started it: the trigger, by id (the console links it by that).
+            if let Some((id, _)) = trigger {
+                run.trigger = format!("trigger:{id}");
+            }
             // A trigger that names its firing (`_dedupe`: a mapped input, an agent
             // target) gets that as the run's dedupe key.
             if let Some(key) = request.input.get("_dedupe").and_then(|v| v.as_str()) {
@@ -2541,8 +2565,8 @@ async fn mcp_delete_agent(storage: &Arc<dyn StorageBackend>, args: &Value) -> Ca
     };
 
     // Delete config + session state
-    let _ = storage.state().delete(&format!("agent:config:{}", agent_id)).await;
-    let _ = storage.state().delete(&format!("agent:session:{}", agent_id)).await;
+    let had_config = storage.state().delete(&format!("agent:config:{}", agent_id)).await.unwrap_or(false);
+    let had_session = storage.state().delete(&format!("agent:session:{}", agent_id)).await.unwrap_or(false);
 
     // Delete triggers
     let triggers = flowr_ce_agents::trigger_manager().list().await;
@@ -2557,6 +2581,14 @@ async fn mcp_delete_agent(storage: &Arc<dyn StorageBackend>, args: &Value) -> Ca
 
     if removed > 0 {
         persist_triggers().await;
+    }
+
+    // Nothing of it existed: say so, never "deleted". (This is the built-in agent
+    // runner's agent; A3T agents are deleted with flow_a3t_agents action delete.)
+    if !had_config && !had_session && removed == 0 {
+        return CallToolResult::error(format!(
+            "No built-in agent '{agent_id}', so nothing was deleted. An A3T agent is deleted with a3t/flow_a3t_agents (action delete, id, org_id)."
+        ));
     }
 
     info!(agent_id = %agent_id, triggers_removed = removed, "Agent deleted");

@@ -465,7 +465,7 @@ impl TriggerManager {
                         }
                     };
                     let input = with_dedupe(json!({ "message": msg, "session_id": format!("{}:{}", agent_id, if conv.is_empty() { format!("trigger-{trigger_name}") } else { conv }) }), &format!("agent:{agent_id}"));
-                    match workflow_executor.execute_workflow("a3t", "tmpl_a3t_agent", input).await {
+                    match workflow_executor.execute_workflow_for(trigger_id, trigger_name, "a3t", "tmpl_a3t_agent", input).await {
                         Ok(instance_id) => {
                             info!(trigger = %trigger_id, agent = %agent_id, instance = %instance_id, "Delivered to A3T agent");
                             delivered.push(format!("a3t_agent:{} ({})", agent_id, instance_id));
@@ -489,7 +489,7 @@ impl TriggerManager {
                         },
                         None => context.clone().unwrap_or(json!({ "message": content })),
                     };
-                    match workflow_executor.execute_workflow(namespace, name, input).await {
+                    match workflow_executor.execute_workflow_for(trigger_id, trigger_name, namespace, name, input).await {
                         Ok(instance_id) => {
                             info!(trigger = %trigger_id, workflow = %name, instance = %instance_id, "Delivered to workflow");
                             delivered.push(format!("workflow:{}/{} ({})", namespace, name, instance_id));
@@ -706,6 +706,19 @@ pub trait WorkflowExecutor: Send + Sync {
         name: &str,
         input: Value,
     ) -> anyhow::Result<String>;
+
+    /// The same, started by a trigger (`trigger_id`, `trigger_name`): the run can
+    /// say which one started it. Without that, as `execute_workflow`.
+    async fn execute_workflow_for(
+        &self,
+        _trigger_id: &str,
+        _trigger_name: &str,
+        namespace: &str,
+        name: &str,
+        input: Value,
+    ) -> anyhow::Result<String> {
+        self.execute_workflow(namespace, name, input).await
+    }
 
     /// Evaluate a target's jq expression (`input_mapping`, an agent's `message`…)
     /// over the event. Without an evaluator, the event as it is.

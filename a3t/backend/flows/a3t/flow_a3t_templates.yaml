@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_templates
-  version: 1.1.0
+  version: 1.1.1
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -214,4 +214,19 @@ do:
           resource:
             type: Template
             id: ${ .input.id }
-    then: end
+    then: delete-check
+# A delete that matched nothing deleted nothing: say so, never "deleted".
+- delete-check:
+    switch:
+    - none:
+        when: '${ .deleted == false }'
+        then: delete-none
+    - default:
+        then: end
+- delete-none:
+    raise:
+      error:
+        type: https://a3t.io/errors/input
+        status: 404
+        title: Not found
+        detail: No template with that id in this org (give its id and org_id), so nothing was deleted.

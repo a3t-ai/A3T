@@ -165,6 +165,8 @@ async fn main() -> anyhow::Result<()> {
     // project flows, enforced at every boundary.
     // Agent keys (a3tk_…) are looked up in the platform tables, enforcing or not.
     flowr_ce::agent_keys::install(storage.clone());
+    // RT-01: every FlowR reports itself, so the console sees all of them.
+    flowr_ce::ops::start_host_heartbeat(storage.clone());
     if enforcing {
         flowr_ce::access::install(storage.clone());
         info!("namespace guard installed (projects enforced)");
@@ -252,6 +254,11 @@ async fn main() -> anyhow::Result<()> {
                 };
                 #[cfg(feature = "ee")]
                 follow_policy_reloads(policy_admin.clone());
+                // Every saved Cedar policy compiles, and applies at once on every FlowR.
+                #[cfg(feature = "ee")]
+                if policy_admin.hook_setting == "cedar" && policy_admin.policies_dir.is_empty() {
+                    flowr_ce::policy_gate::install(Arc::new(ServerPolicyGate(policy_admin.clone())));
+                }
                 // EE IdP-admin surface: connect to Keycloak + create/list users.
                 let idp_admin = IdpAdminState {
                     issuer: oidc_issuer.clone(),
@@ -394,26 +401,32 @@ static EDITION_INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLoc
 /// return the *effective* hook name (may differ from the request if the named
 /// hook isn't compiled into this build). AllowAll is the default when unset, so
 /// "allow_all" needs no install; `policy_hook()` already returns it.
-/// E2 #2c: read InfoSec-owned Cedar policy resources (`type_ref: cedar`) from
-/// the registry, returning each resource's `config.cedar` source. These layer
-/// onto the baked baseline pack at hook install. Malformed/typeless resources
-/// are skipped here; a syntactically bad policy is caught when the engine loads.
+/// E2 #2c: every InfoSec-owned Cedar policy resource (`type_ref: cedar`) in the
+/// registry, in every namespace, as (namespace, name, `config.cedar`). Those in
+/// system / a3t / default are the platform's; any other is its project's
+/// (flowr_aesop::NamedPolicy). What is stored compiles: the policy gate checks
+/// each one before it is saved.
 async fn collect_registry_cedar_policies(
     storage: &Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
-) -> Vec<String> {
+) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
-    for ns in &["system", "a3t", "default"] {
+    for ns in &flowr_ce::registry::resource_namespaces(storage.as_ref()).await {
         if let Ok(resources) = storage.resources().list(ns).await {
             for r in resources {
                 if r.type_ref == "cedar" {
                     if let Some(src) = r.config.get("cedar").and_then(|v| v.as_str()) {
-                        out.push(src.to_string());
+                        out.push((r.namespace.clone(), r.name.clone(), src.to_string()));
                     }
                 }
             }
         }
     }
     out
+}
+
+#[cfg(feature = "ee")]
+fn named(policies: &[(String, String, String)]) -> Vec<flowr_aesop::NamedPolicy> {
+    policies.iter().map(|(ns, n, s)| flowr_aesop::NamedPolicy::new(ns.clone(), n.clone(), s.clone())).collect()
 }
 
 /// Collect the registry-supplied Cedar **schema**: an optional base override
@@ -428,7 +441,7 @@ async fn collect_registry_schema(
     };
     let mut base_override: Option<String> = None;
     let mut fragments = Vec::new();
-    for ns in &["system", "a3t", "default"] {
+    for ns in &flowr_ce::registry::resource_namespaces(storage.as_ref()).await {
         if let Ok(resources) = storage.resources().list(ns).await {
             for r in resources {
                 if r.type_ref == "cedarschema" {
@@ -453,7 +466,7 @@ async fn collect_registry_schema(
 fn install_policy_hook(
     name: &str,
     policies_dir: &str,
-    registry_policies: &[String],
+    registry_policies: &[(String, String, String)],
     schema_base: Option<&str>,
     schema_fragments: &[String],
 ) -> &'static str {
@@ -476,8 +489,8 @@ fn install_policy_hook(
                 let loaded = if !policies_dir.is_empty() {
                     flowr_aesop::CedarHook::from_dir(policies_dir)
                 } else {
-                    flowr_aesop::CedarHook::with_registry_policies(
-                        registry_policies,
+                    flowr_aesop::CedarHook::with_named_policies(
+                        &named(registry_policies),
                         schema_base,
                         schema_fragments,
                     )
@@ -586,18 +599,17 @@ async fn policies_list_handler(
             axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
     }
     let mut policies = Vec::new();
-    for ns in &["system", "a3t", "default"] {
-        if let Ok(resources) = state.storage.resources().list(ns).await {
-            for r in resources {
-                if r.type_ref == "cedar" {
-                    policies.push(serde_json::json!({
-                        "namespace": r.namespace,
-                        "name": r.name,
-                        "cedar": r.config.get("cedar").and_then(|v| v.as_str()).unwrap_or(""),
-                        "description": r.config.get("description").and_then(|v| v.as_str()),
-                    }));
-                }
-            }
+    for (ns, name, _) in collect_registry_cedar_policies(&state.storage).await {
+        if let Ok(r) = state.storage.resources().get(&ns, &name).await {
+            let platform = ["system", "a3t", "default"].contains(&ns.as_str());
+            policies.push(serde_json::json!({
+                "namespace": r.namespace,
+                "name": r.name,
+                "cedar": r.config.get("cedar").and_then(|v| v.as_str()).unwrap_or(""),
+                "description": r.config.get("description").and_then(|v| v.as_str()),
+                // Where it applies: every project (platform), or its own.
+                "scope": if platform { "platform".to_string() } else { format!("project {ns}") },
+            }));
         }
     }
     axum::Json(serde_json::json!({ "count": policies.len(), "policies": policies })).into_response()
@@ -617,7 +629,7 @@ async fn reload_policies(state: &PolicyAdminState) -> Result<(usize, usize), Str
     let loaded = if !state.policies_dir.is_empty() {
         flowr_aesop::CedarHook::from_dir(&state.policies_dir)
     } else {
-        flowr_aesop::CedarHook::with_registry_policies(&policies, schema_base.as_deref(), &schema_fragments)
+        flowr_aesop::CedarHook::with_named_policies(&named(&policies), schema_base.as_deref(), &schema_fragments)
     };
     match loaded {
         Ok(hook) => {
@@ -628,6 +640,47 @@ async fn reload_policies(state: &PolicyAdminState) -> Result<(usize, usize), Str
         Err(e) => {
             warn!(error = %e, "policy hot-reload rejected; keeping current hook");
             Err(e.to_string())
+        }
+    }
+}
+
+/// The registry's policy gate (flowr_ce::policy_gate): a policy is saved only if
+/// the whole set still compiles with it, and the set is reloaded here and on
+/// every other FlowR after it is saved or deleted.
+#[cfg(feature = "ee")]
+struct ServerPolicyGate(PolicyAdminState);
+
+#[cfg(feature = "ee")]
+#[async_trait::async_trait]
+impl flowr_ce::policy_gate::PolicyGate for ServerPolicyGate {
+    async fn check(&self, namespace: &str, name: &str, source: Option<&str>) -> Result<(), String> {
+        let mut policies: Vec<(String, String, String)> = collect_registry_cedar_policies(&self.0.storage)
+            .await
+            .into_iter()
+            .filter(|(ns, n, _)| !(ns == namespace && n == name))
+            .collect();
+        if let Some(src) = source {
+            if src.trim().is_empty() {
+                return Err(format!("Policy {namespace}/{name} is empty: write at least one permit or forbid."));
+            }
+            policies.push((namespace.to_string(), name.to_string(), src.to_string()));
+        }
+        let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
+        flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
+            .map_err(|e| format!("Policy {namespace}/{name} was not saved: it does not compile. {e}"))
+    }
+
+    async fn changed(&self) {
+        match reload_policies(&self.0).await {
+            Ok(_) => {
+                if let Some(engine) = self.0.storage.engine() {
+                    let from = std::env::var("HOSTNAME").unwrap_or_default();
+                    if let Err(e) = engine.publish(POLICY_TOPIC, serde_json::json!({ "from": from })).await {
+                        warn!(error = %e, "policy change not announced to the cluster");
+                    }
+                }
+            }
+            Err(e) => warn!(error = %e, "a saved policy change did not load"),
         }
     }
 }
@@ -720,6 +773,10 @@ struct PolicyTestRequest {
     /// true). Set false to test a draft against the baseline in isolation.
     #[serde(default = "default_true")]
     include_registry: bool,
+    /// The project the draft would be saved in (its calls are what it governs);
+    /// none: a platform policy.
+    #[serde(default)]
+    draft_namespace: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -748,7 +805,6 @@ async fn policies_test_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use flowr_policy::PolicyHook;
         let action = match flowr_policy::Action::new(&body.action) {
             Ok(a) => a,
             Err(e) => return (axum::http::StatusCode::BAD_REQUEST,
@@ -761,10 +817,14 @@ async fn policies_test_handler(
         } else {
             Vec::new()
         };
-        policies.extend(body.draft_policies.iter().cloned());
+        // A draft is tried where it would be saved: its project, or the platform.
+        let draft_ns = body.draft_namespace.clone().unwrap_or_else(|| "default".into());
+        for (i, d) in body.draft_policies.iter().enumerate() {
+            policies.push((draft_ns.clone(), format!("draft-{i}"), d.clone()));
+        }
         // Validate/evaluate the draft against the same merged schema (base + fragments).
         let (schema_base, schema_fragments) = collect_registry_schema(&state.storage).await;
-        let hook = match flowr_aesop::CedarHook::with_registry_policies(&policies, schema_base.as_deref(), &schema_fragments) {
+        let hook = match flowr_aesop::CedarHook::with_named_policies(&named(&policies), schema_base.as_deref(), &schema_fragments) {
             Ok(h) => h,
             Err(e) => return (axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                 axum::Json(serde_json::json!({ "error": format!("policy set failed to load: {e}") }))).into_response(),
@@ -793,7 +853,7 @@ async fn policies_test_handler(
             attributes: body.attributes,
             params: serde_json::Value::Null,
         };
-        let decision = hook.check(&req).await;
+        let (decision, deciding) = hook.check_explained(&req).await;
         // This endpoint exists to show what the policy WOULD do, so `Ask` is
         // reported as itself rather than folded into a deny. Collapsing it here
         // would make the Policies page claim a request is refused when in fact
@@ -801,7 +861,7 @@ async fn policies_test_handler(
         // dry run is for. `allowed` stays false (an unanswered question is not
         // permission) and `scopes` says what the prompt would offer.
         let (allowed, reason, policy_ids, scopes) = match &decision {
-            flowr_policy::PolicyDecision::Allow => (true, None, Vec::new(), Vec::new()),
+            flowr_policy::PolicyDecision::Allow => (true, None, deciding.clone(), Vec::new()),
             flowr_policy::PolicyDecision::Deny { reason, policy_ids } =>
                 (false, Some(reason.clone()), policy_ids.clone(), Vec::new()),
             flowr_policy::PolicyDecision::Ask { reason, policy_ids, scopes } => (

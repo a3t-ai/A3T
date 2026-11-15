@@ -115,8 +115,8 @@ async fn authorize_deploy(
 /// Read every stored canvas as a typed spec, paired with its registry identity.
 pub(crate) async fn stored_canvases(storage: &dyn StorageBackend) -> Vec<(String, String, CanvasSpec)> {
     let mut out = Vec::new();
-    for ns in ["a3t", "default", "system"] {
-        let Ok(list) = storage.resources().list(ns).await else { continue };
+    for ns in crate::registry::resource_namespaces(storage).await {
+        let Ok(list) = storage.resources().list(&ns).await else { continue };
         for r in list.into_iter().filter(|r| r.type_ref == "canvas") {
             if let Ok(spec) = serde_json::from_value::<CanvasSpec>(r.config.clone()) {
                 out.push((r.namespace.clone(), r.name.clone(), spec));
@@ -638,7 +638,7 @@ async fn gate_placement(
 /// Collect all registered runtime pools (`type_ref == "runtime"`) as typed specs.
 pub(crate) async fn collect_runtimes(storage: &dyn StorageBackend) -> Vec<RuntimeSpec> {
     let mut out = Vec::new();
-    for ns in &["system", "a3t", "default"] {
+    for ns in &crate::registry::resource_namespaces(storage).await {
         if let Ok(resources) = storage.resources().list(ns).await {
             for r in resources {
                 if r.type_ref != "runtime" {
@@ -658,7 +658,7 @@ pub(crate) async fn collect_runtimes(storage: &dyn StorageBackend) -> Vec<Runtim
 /// Find a standalone canvas resource (`type_ref == "canvas"`) whose `flowRef`
 /// targets `flow_ref`. Scans the usual namespaces; returns the first match.
 async fn find_canvas_by_flow_ref(storage: &dyn StorageBackend, flow_ref: &str) -> Option<CanvasSpec> {
-    for ns in &["a3t", "default", "system"] {
+    for ns in &crate::registry::resource_namespaces(storage).await {
         if let Ok(resources) = storage.resources().list(ns).await {
             for r in resources {
                 if r.type_ref != "canvas" {

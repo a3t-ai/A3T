@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_resource_test
-  version: 1.0.0
+  version: 1.0.1
 metadata:
   a3t:
     extends: system/flow_system_base@1.0.0
@@ -32,51 +32,191 @@ do:
 
 # ── LLM test: send a simple prompt and return the response ──
 - test-llm:
-    call: llm
-    with:
-      prompt: ${ .input.message // "Say hello in one sentence." }
-      # The conversation before this message (Studio chat); the prompt follows it.
-      messages: ${ .input.messages // [] }
-      system_prompt: "You are a test assistant. Keep responses brief."
-      max_tokens: ${ .input.max_tokens // 256 }
-      temperature: 0.3
-      _resource: ${ .input.resource }
+    # A failure is the resource's (a wrong host, key or path): answer with the
+    # driver's own words, never "something failed on our side".
+    try:
+      do:
+      - test-llm-call:
+          call: llm
+          with:
+            prompt: ${ .input.message // "Say hello in one sentence." }
+            # The conversation before this message (Studio chat); the prompt follows it.
+            messages: ${ .input.messages // [] }
+            system_prompt: "You are a test assistant. Keep responses brief."
+            max_tokens: ${ .input.max_tokens // 256 }
+            temperature: 0.3
+            _resource: ${ .input.resource }
+    catch:
+      do:
+      - test-llm-why:
+          switch:
+          - denied:
+              when: '${ ($context.error.status // 0) == 403 }'
+              then: test-llm-denied
+          - default:
+              then: test-llm-failed
+      - test-llm-denied:
+          raise:
+            error:
+              type: https://serverlessworkflow.io/spec/1.0.0/errors/authorization
+              status: 403
+              title: Not allowed
+              detail: '${ ($context.error.detail // $context.error.title // "refused") | tostring }'
+      - test-llm-failed:
+          raise:
+            error:
+              type: https://a3t.io/errors/input
+              status: 422
+              title: Resource test failed
+              detail: '${ ($context.error.detail // $context.error.title // ($context.error | tostring)) | tostring }'
     then: end
 
 # ── Database test: list tables or run a query ──
 - test-db:
-    call: lancedb
-    with:
-      operation: ${ .input.operation // "list_tables" }
-      table: ${ .input.table // "" }
-      filter: ${ .input.filter // "" }
-      limit: ${ .input.limit // 10 }
-      _resource: ${ .input.resource }
+    # A failure is the resource's (a wrong host, key or path): answer with the
+    # driver's own words, never "something failed on our side".
+    try:
+      do:
+      - test-db-call:
+          call: lancedb
+          with:
+            operation: ${ .input.operation // "list_tables" }
+            table: ${ .input.table // "" }
+            filter: ${ .input.filter // "" }
+            limit: ${ .input.limit // 10 }
+            _resource: ${ .input.resource }
+    catch:
+      do:
+      - test-db-why:
+          switch:
+          - denied:
+              when: '${ ($context.error.status // 0) == 403 }'
+              then: test-db-denied
+          - default:
+              then: test-db-failed
+      - test-db-denied:
+          raise:
+            error:
+              type: https://serverlessworkflow.io/spec/1.0.0/errors/authorization
+              status: 403
+              title: Not allowed
+              detail: '${ ($context.error.detail // $context.error.title // "refused") | tostring }'
+      - test-db-failed:
+          raise:
+            error:
+              type: https://a3t.io/errors/input
+              status: 422
+              title: Resource test failed
+              detail: '${ ($context.error.detail // $context.error.title // ($context.error | tostring)) | tostring }'
     then: end
 
 # ── ADB test: run one AQL statement with the ADB driver ──
 - test-adb:
-    call: adb
-    with:
-      query: ${ .input.query // "RECALL FROM WORKING LIMIT 5" }
-      _resource: ${ .input.resource }
+    # A failure is the resource's (a wrong host, key or path): answer with the
+    # driver's own words, never "something failed on our side".
+    try:
+      do:
+      - test-adb-call:
+          call: adb
+          with:
+            query: ${ .input.query // "RECALL FROM WORKING LIMIT 5" }
+            _resource: ${ .input.resource }
+    catch:
+      do:
+      - test-adb-why:
+          switch:
+          - denied:
+              when: '${ ($context.error.status // 0) == 403 }'
+              then: test-adb-denied
+          - default:
+              then: test-adb-failed
+      - test-adb-denied:
+          raise:
+            error:
+              type: https://serverlessworkflow.io/spec/1.0.0/errors/authorization
+              status: 403
+              title: Not allowed
+              detail: '${ ($context.error.detail // $context.error.title // "refused") | tostring }'
+      - test-adb-failed:
+          raise:
+            error:
+              type: https://a3t.io/errors/input
+              status: 422
+              title: Resource test failed
+              detail: '${ ($context.error.detail // $context.error.title // ($context.error | tostring)) | tostring }'
     then: end
 
 # ── MCP test: list available tools ──
 - test-mcp:
-    call: mcp
-    with:
-      method: "tools/list"
-      _resource: ${ .input.resource }
+    # A failure is the resource's (a wrong host, key or path): answer with the
+    # driver's own words, never "something failed on our side".
+    try:
+      do:
+      - test-mcp-call:
+          call: mcp
+          with:
+            method: "tools/list"
+            _resource: ${ .input.resource }
+    catch:
+      do:
+      - test-mcp-why:
+          switch:
+          - denied:
+              when: '${ ($context.error.status // 0) == 403 }'
+              then: test-mcp-denied
+          - default:
+              then: test-mcp-failed
+      - test-mcp-denied:
+          raise:
+            error:
+              type: https://serverlessworkflow.io/spec/1.0.0/errors/authorization
+              status: 403
+              title: Not allowed
+              detail: '${ ($context.error.detail // $context.error.title // "refused") | tostring }'
+      - test-mcp-failed:
+          raise:
+            error:
+              type: https://a3t.io/errors/input
+              status: 422
+              title: Resource test failed
+              detail: '${ ($context.error.detail // $context.error.title // ($context.error | tostring)) | tostring }'
     then: end
 
 # ── MCP call: execute a specific tool ──
 - test-mcp-call:
-    call: mcp
-    with:
-      tool: ${ .input.tool }
-      arguments: ${ .input.arguments // {} }
-      _resource: ${ .input.resource }
+    # A failure is the resource's (a wrong host, key or path): answer with the
+    # driver's own words, never "something failed on our side".
+    try:
+      do:
+      - test-mcp-call-call:
+          call: mcp
+          with:
+            tool: ${ .input.tool }
+            arguments: ${ .input.arguments // {} }
+            _resource: ${ .input.resource }
+    catch:
+      do:
+      - test-mcp-call-why:
+          switch:
+          - denied:
+              when: '${ ($context.error.status // 0) == 403 }'
+              then: test-mcp-call-denied
+          - default:
+              then: test-mcp-call-failed
+      - test-mcp-call-denied:
+          raise:
+            error:
+              type: https://serverlessworkflow.io/spec/1.0.0/errors/authorization
+              status: 403
+              title: Not allowed
+              detail: '${ ($context.error.detail // $context.error.title // "refused") | tostring }'
+      - test-mcp-call-failed:
+          raise:
+            error:
+              type: https://a3t.io/errors/input
+              status: 422
+              title: Resource test failed
+              detail: '${ ($context.error.detail // $context.error.title // ($context.error | tostring)) | tostring }'
     then: end
 
 # ── Secret test: verify secret resource exists and has a value ──

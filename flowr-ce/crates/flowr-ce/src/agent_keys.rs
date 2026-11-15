@@ -84,6 +84,12 @@ pub async fn verify(token: &str) -> Result<(flowr_policy::Principal, KeyScope), 
     if !col(&row, "revoked_at").is_empty() {
         return Err("this key was revoked".into());
     }
+    // A key is its agent's: an agent that no longer exists takes every key with
+    // it, however it was removed (deleting one revokes them too).
+    let agent = col(&row, "agent_id");
+    if query_platform_table(storage.as_ref(), "agent_configs", Some(format!("id = {}", sql_quote(&agent))), 1).await.map(|r| r.is_empty()).unwrap_or(false) {
+        return Err(format!("this key's agent ({agent}) was deleted"));
+    }
     let roles: Vec<String> = col(&row, "roles").split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect();
     let scope = KeyScope { key_id: col(&row, "id"), agent_id: col(&row, "agent_id") };
     // When it was last used, at most once per window (a write per call would be one per message).
@@ -151,6 +157,25 @@ pub async fn revoke(storage: &dyn StorageBackend, agent_id: &str, key_id: &str) 
     v.insert("revoked_at".into(), json!(chrono::Utc::now().to_rfc3339()));
     db.update(TABLE, &filter, &v).await?;
     Ok(true)
+}
+
+/// Revoke every key of these agents (they were deleted). Rows stay, like any revoked key.
+pub async fn revoke_all(db: &dyn crate::platform_db::PlatformDb, agent_ids: &[String]) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for id in agent_ids {
+        let filter = format!("agent_id = {} AND revoked_at = ''", sql_quote(id));
+        let mut v = Map::new();
+        v.insert("revoked_at".into(), json!(now));
+        match db.query(TABLE, Some(&filter), 1000).await {
+            Ok(b) if crate::handlers::call_lancedb::batches_to_json(&b).is_empty() => {}
+            Ok(_) => match db.update(TABLE, &filter, &v).await {
+                Ok(()) => tracing::info!(agent = %id, "agent deleted: its keys are revoked"),
+                Err(e) => tracing::warn!(agent = %id, error = %e, "agent deleted, but its keys were not revoked"),
+            },
+            // No keys table yet: no keys.
+            Err(_) => {}
+        }
+    }
 }
 
 #[cfg(test)]
