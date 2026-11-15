@@ -782,6 +782,16 @@ async fn new_version(s: &dyn StorageBackend, row: &Value, sp: &Space, flows: &Va
     Ok(version_json(&stored))
 }
 
+/// A version made by a save of the agent's settings (decided 15 Nov 2026: every
+/// save that changes something is a version, as well as "Make a version"). The
+/// same checks and record as `POST /agents/{id}/versions`; `note` says what changed.
+pub async fn version_on_save(s: &dyn StorageBackend, principal: &Principal, id: &str, note: &str) -> Result<Value, String> {
+    let (row, sp) = agent_space(s, principal, id, true).await.map_err(|r| format!("no version: {:?}", r.status()))?;
+    new_version(s, &row, &sp, &Value::Null, note, Value::Null, principal.id())
+        .await
+        .map_err(|r| format!("no version: {:?}", r.status()))
+}
+
 async fn list_versions(State(s): St, p: P, Path(id): Path<String>) -> Response {
     both(async {
         agent_space(s.as_ref(), &who(p), &id, false).await?;

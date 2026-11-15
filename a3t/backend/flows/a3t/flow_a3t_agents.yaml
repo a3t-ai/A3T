@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_agents
-  version: 1.1.6
+  version: 1.1.7
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -215,10 +215,26 @@ do:
               input:
                 error: ${ $context.error }
                 flow: a3t/flow_a3t_agents
-                version: 1.1.6
+                version: 1.1.7
                 run_id: ${ (($workflow // {}).id // "") | tostring }
                 principal: ${ (($context._principal // {}).user // "") | tostring }
                 step: update-event
+# A save that changed something is also a version (decided 15 Nov 2026), noted
+# with what changed. Best effort: the save stands if the version can't be made.
+- update-version:
+    if: '${ ($context._diff.changed | length) > 0 }'
+    try:
+    - update-version-make:
+        call: registry
+        with:
+          operation: agent_version
+          agent_id: ${ $context._u.id }
+          note: '${ "saved: changed " + ($context._diff.changed | map(sub("^values\\."; "")) | join(", ")) }'
+    catch:
+      do:
+      - update-version-failed:
+          set:
+            _version_error: '${ ($context.error.detail // "no version") | tostring }'
 - update-done:
     set:
       updated: true

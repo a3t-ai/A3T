@@ -930,6 +930,16 @@ async fn deploy_flow(
 /// `flow_<ns>_<fn>`. A name that had to change gets a short stable hash, so two
 /// names that map to the same text (`a_b`, `a-b`) never share a CR. Deploy and
 /// undeploy both name the CR with this.
+/// Where the controller puts a canvas of A3T project `ns`: every project's in the
+/// one Kubernetes namespace A3T runs in (`A3T_CONTROLLER_NAMESPACE`, default
+/// `a3t`; decided 15 Nov 2026), its CR named `<project>--<name>` so projects can't
+/// collide. A canvas of that namespace itself keeps its plain name.
+pub(crate) fn controller_target(ns: &str, name: &str) -> (String, String) {
+    let k8s = std::env::var("A3T_CONTROLLER_NAMESPACE").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "a3t".into());
+    let cr = if ns == k8s { cr_name(name) } else { cr_name(&format!("{ns}--{name}")) };
+    (k8s, cr)
+}
+
 pub(crate) fn cr_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
@@ -953,7 +963,8 @@ async fn push_spec_to_controller(
     name: &str,
     spec: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let body = json!({ "namespace": ns, "name": cr_name(name), "spec": spec });
+    let (k8s_ns, cr) = controller_target(ns, name);
+    let body = json!({ "namespace": k8s_ns, "name": cr, "spec": spec });
     let mut req = reqwest::Client::new()
         .post(format!("{}/v1/canvas", url.trim_end_matches('/')))
         .json(&body);
@@ -1031,7 +1042,7 @@ async fn deploy_canvas_resource(
                     // The CR is this canvas's own (`ns/cr_name(name)`), not the
                     // flow's: say so on the record, for undeploy (CA-36).
                     Ok(d) => if let Some(id) = d.get("id").and_then(|v| v.as_str()) {
-                        if let Err(e) = crate::ops::set_controller_cr(&*state.storage, id, &format!("{ns}/{}", cr_name(&name))).await {
+                        if let Err(e) = crate::ops::set_controller_cr(&*state.storage, id, &{ let (k, c) = controller_target(&ns, &name); format!("{k}/{c}") }).await {
                             tracing::warn!(error = %e, "deployment's canvas not recorded");
                         }
                     },

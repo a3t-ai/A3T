@@ -606,7 +606,7 @@ pub async fn undeploy(storage: &dyn StorageBackend, id: &str, by: &str) -> Resul
                 Some((n, c)) if !n.is_empty() && !c.is_empty() => (n.to_string(), c.to_string()),
                 _ => {
                     let (fns, fname) = d.flow_ref.split_once('/').unwrap_or(("default", d.flow_ref.as_str()));
-                    (fns.to_string(), crate::canvas::cr_name(fname))
+                    crate::canvas::controller_target(fns, fname)
                 }
             };
             let mut req = reqwest::Client::new()

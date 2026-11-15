@@ -466,6 +466,15 @@ impl TaskHandler for RegistryHandler {
                     .map(TaskResult::new)
                     .map_err(|e| RuntimeError::task_failed(&task.name, e))
             }
+            // An agent's next version, made by a save (`{agent_id, note}`): see
+            // crate::agent_space::version_on_save. Needs write access to the agent.
+            "agent_version" => {
+                let store = storage(ctx)?;
+                crate::agent_space::version_on_save(store.as_ref(), &ctx.principal, &s("agent_id"), &s("note"))
+                    .await
+                    .map(TaskResult::new)
+                    .map_err(|e| RuntimeError::task_failed(&task.name, e))
+            }
             other => Err(RuntimeError::task_failed(&task.name, format!("unsupported registry operation: {other}"))),
         }
     }
