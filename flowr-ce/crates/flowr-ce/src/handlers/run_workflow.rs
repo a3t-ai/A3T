@@ -129,7 +129,17 @@ impl TaskHandler for RunWorkflowHandler {
         // the run; it is not this step's failure.
         let output = child_executor.execute(&swf_workflow, wf_input, &mut child_ctx).await
             .map_err(|e| match e {
-                RuntimeError::Halted(_) => e,
+                // An error that says what went wrong keeps saying it: a missing
+                // resource, a refusal, a raised error (already handled once), bad
+                // input, a timeout. Wrapping them as "task failed" turned a named
+                // cause into "something failed on our side".
+                RuntimeError::Halted(_)
+                | RuntimeError::ResourceNotFound(_)
+                | RuntimeError::WorkflowNotFound { .. }
+                | RuntimeError::Denied { .. }
+                | RuntimeError::Raised { .. }
+                | RuntimeError::Validation { .. }
+                | RuntimeError::Timeout(_) => e,
                 e => RuntimeError::task_failed(&task.name, format!("Nested workflow failed: {}", e)),
             })?;
 
