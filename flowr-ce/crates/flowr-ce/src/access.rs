@@ -294,7 +294,20 @@ impl NamespaceGuard for ProjectGuard {
         let Some(user) = acting_user(principal) else {
             return NsAccess::None; // an agent acting for no one
         };
-        self.snapshot_for(Some(namespace)).await.decide(user, is_superadmin(principal), namespace)
+        let su = is_superadmin(principal);
+        let has = self.snapshot_for(Some(namespace)).await.decide(user, su, namespace);
+        // Less than write in a project, on a snapshot over a second old: it may
+        // predate a change made on another pod (each pod drops only its own
+        // snapshot on a write) — re-read once and decide again. At most every
+        // UNKNOWN_RETRY per user and project, so refusals can't flood the DB.
+        if has < NsAccess::Write && !PLATFORM.contains(&namespace) {
+            let old = self.snapshot.read().unwrap().0.is_none_or(|t| t.elapsed() > Duration::from_secs(1));
+            if old && self.retry_unknown(&format!("{user}\u{1f}{namespace}")) {
+                invalidate();
+                return self.snapshot_for(Some(namespace)).await.decide(user, su, namespace);
+            }
+        }
+        has
     }
 
     fn is_platform(&self, namespace: &str) -> bool {
