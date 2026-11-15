@@ -77,29 +77,38 @@ function saveSession(session: Session) {
 
 // ── Login — calls POST /auth/login ──
 
-export async function login(email: string, password: string): Promise<{ ok: boolean; error?: string }> {
+export type LoginResult = { ok: boolean; error?: string; code?: string };
+
+/// The session for a sign-in answer (login or first password).
+function signedIn(data: api.LoginResponse) {
+  saveSession({
+    user: {
+      id: data.user.id,
+      email: data.user.email,
+      name: data.user.name,
+      role: data.user.role as UserRole,
+      org_id: data.user.org_id,
+    },
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_in: data.expires_in,
+  });
+}
+
+/// `code: 'password_change_required'` — the password was right but temporary:
+/// ask for a new one and call `setFirstPassword`.
+export async function login(email: string, password: string): Promise<LoginResult> {
   if (!email || !password) return { ok: false, error: 'Email and password required' };
-
   const res = await api.login(email, password);
+  if (res.ok && res.data) { signedIn(res.data); return { ok: true }; }
+  return { ok: false, error: res.error || 'Login failed', code: res.detail?.code };
+}
 
-  if (res.ok && res.data) {
-    const session: Session = {
-      user: {
-        id: res.data.user.id,
-        email: res.data.user.email,
-        name: res.data.user.name,
-        role: res.data.user.role as UserRole,
-        org_id: res.data.user.org_id,
-      },
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
-      expires_in: res.data.expires_in,
-    };
-    saveSession(session);
-    return { ok: true };
-  }
-
-  return { ok: false, error: res.error || 'Login failed' };
+/// Replace a temporary password at first sign-in, then sign in with the new one.
+export async function setFirstPassword(email: string, password: string, newPassword: string): Promise<LoginResult> {
+  const res = await api.firstPassword(email, password, newPassword);
+  if (res.ok && res.data) { signedIn(res.data); return { ok: true }; }
+  return { ok: false, error: res.error || 'Could not set your password' };
 }
 
 // ── Sign in with your organisation (.ai/A3T_ORG_SSO_SPEC.md) ──

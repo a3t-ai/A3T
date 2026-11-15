@@ -160,6 +160,14 @@ export async function login(email: string, password: string): Promise<ApiRespons
   }, false);
 }
 
+/// First sign-in with a temporary password: prove it, set the new one, and sign in.
+export async function firstPassword(email: string, password: string, newPassword: string): Promise<ApiResponse<LoginResponse>> {
+  return request<LoginResponse>('/auth/first-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, new_password: newPassword }),
+  }, false);
+}
+
 export async function signup(name: string, email: string, password: string): Promise<ApiResponse<LoginResponse>> {
   return request<LoginResponse>('/auth/signup', {
     method: 'POST',

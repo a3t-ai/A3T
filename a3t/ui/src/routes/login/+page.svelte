@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { login, isAuthenticated, ssoStartUrl, completeSso } from '$lib/stores/auth';
+  import { login, setFirstPassword, isAuthenticated, ssoStartUrl, completeSso } from '$lib/stores/auth';
   import { API_BASE } from '$lib/config';
   import { onMount } from 'svelte';
   import { startEarlyAccess, finishEarlyAccess, providersAvailable, PROVIDER_LABEL, type Provider, type Identity } from '$lib/core/auth/earlyAccess';
@@ -87,10 +87,33 @@
     loading = false;
     if (result.ok) {
       goto('/');
+    } else if (result.code === 'password_change_required') {
+      // The password was right but temporary: choose your own before going in.
+      choosing = true; newPassword = ''; confirmPassword = ''; chooseError = '';
     } else {
       error = result.error || 'Login failed';
     }
   }
+
+  // ── First sign-in: an admin gave a temporary password; choose your own. ──
+  let choosing = $state(false);
+  let newPassword = $state('');
+  let confirmPassword = $state('');
+  let chooseError = $state('');
+  let chooseBusy = $state(false);
+  async function chooseSubmit(e: Event) {
+    e.preventDefault();
+    chooseError = '';
+    if (newPassword.length < 8) { chooseError = 'Use at least 8 characters.'; return; }
+    if (newPassword !== confirmPassword) { chooseError = "The two passwords don't match."; return; }
+    if (newPassword === password) { chooseError = 'Choose a password different from the temporary one.'; return; }
+    chooseBusy = true;
+    const r = await setFirstPassword(email, password, newPassword);
+    chooseBusy = false;
+    if (r.ok) { password = ''; newPassword = ''; confirmPassword = ''; goto('/'); }
+    else chooseError = r.error ?? 'Could not set your password.';
+  }
+  function chooseCancel() { choosing = false; password = ''; newPassword = ''; confirmPassword = ''; chooseError = ''; }
 
   // ── Request Early Access. The visitor isn't signed in, so this posts to a public
   // webhook (/webhook/* needs no token), whose trigger runs the `a3t/flow_a3t_early_access`
@@ -177,7 +200,30 @@
       <p class="auth-tagline">the agent platform</p>
     </div>
 
-    {#if forgotOpen}
+    {#if choosing}
+      <h1>Choose your password</h1>
+      <p class="auth-sub">Your account has a temporary password. Choose your own to finish setting it up; you'll use it from now on.</p>
+      {#if chooseError}<div class="auth-error">{chooseError}</div>{/if}
+      <form onsubmit={chooseSubmit}>
+        <div class="field">
+          <label for="cp-email">Email</label>
+          <input id="cp-email" type="email" value={email} readonly autocomplete="username" />
+        </div>
+        <div class="field">
+          <label for="cp-new">New password</label>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input id="cp-new" type="password" bind:value={newPassword} oninput={() => (chooseError = '')} placeholder="At least 8 characters" required autocomplete="new-password" autofocus />
+        </div>
+        <div class="field">
+          <label for="cp-confirm">Confirm new password</label>
+          <input id="cp-confirm" type="password" bind:value={confirmPassword} oninput={() => (chooseError = '')} placeholder="The same again" required autocomplete="new-password" />
+        </div>
+        <button type="submit" class="auth-submit" disabled={chooseBusy}>
+          {#if chooseBusy}<span class="spinner"></span> Setting your password...{:else}Set password and sign in{/if}
+        </button>
+      </form>
+      <div class="choose-back"><button type="button" class="link-btn" onclick={chooseCancel}>Back to sign in</button></div>
+    {:else if forgotOpen}
       <h1>Reset your password</h1>
       <p class="auth-sub">We'll email you a link to set a new one.</p>
       {#if forgotSent}
@@ -688,4 +734,5 @@
   .sso-submit { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border, #d9d4c8); background: var(--bg-surface, #fff); color: var(--text-1, #222); font: inherit; font-weight: 600; cursor: pointer; }
   .sso-submit:hover:not(:disabled) { border-color: var(--text-2, #555); }
   .sso-submit:disabled { opacity: .55; cursor: default; }
+  .choose-back { margin-top: 14px; text-align: center; }
 </style>
