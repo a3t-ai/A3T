@@ -929,7 +929,7 @@
            middle and sending is what creates the conversation. -->
       <div class="landing-head">
         <h1 class="landing-title">What would you like to do?</h1>
-        <p class="landing-sub">Ask about templates, agents, flows, resources — or start building one.</p>
+        <p class="landing-sub">Ask about templates, agents, flows, resources — or start building one. <a class="landing-docs" href="https://docs.a3t.io/console/chat/" target="_blank" rel="noopener noreferrer">Learn more ↗</a></p>
       </div>
     {/if}
     <div class="chat-messages" class:hidden={landing} bind:this={messagesEl} onscroll={onMessagesScroll}>
@@ -1228,6 +1228,8 @@
     color: var(--text-1); margin: 0 0 6px;
   }
   .landing-sub { font-size: 12.5px; color: var(--text-4); margin: 0; }
+  .landing-docs { color: var(--accent, #2563eb); text-decoration: none; white-space: nowrap; }
+  .landing-docs:hover { text-decoration: underline; }
 
   .intents { order: 1; max-width: 860px; width: 100%; margin: auto auto 0; padding: 0 16px 8px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 6px; }
   .intent { display: flex; flex-direction: row; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }

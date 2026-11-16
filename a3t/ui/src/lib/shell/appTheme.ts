@@ -111,7 +111,7 @@ export const BANNERS: Record<string, AppBanner> = {
     description: 'In Community Edition anyone who signs in can change things. Enterprise adds roles, access rules, company sign-in and an audit trail; those settings are marked EE.',
   },
   'early-access': {
-    headline: 'People asking to join.', highlight: 'join', docsPath: '',
+    headline: 'People asking to join.', highlight: 'join', docsPath: '/console/access/#2-get-your-account',
     subtitle: 'Requests to try A3T early, sent from the sign-in page.',
     description: 'See who asked and why, and get in touch with the right people.',
   },

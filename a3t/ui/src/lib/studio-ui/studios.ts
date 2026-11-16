@@ -51,7 +51,7 @@ export const STUDIOS = {
       subtitle: 'Flows, databases, LLMs, MCP servers, triggers and canvases — one editor for all of them.',
       description: 'Open anything from the Explorer: edit a flow as a graph, YAML or form and run or debug it; query a database; chat with an LLM; call an MCP server’s tools; fire a trigger. Each item’s config is one click away.',
       accent: 'spec',
-      docsPath: '/getting-started/introduction/',
+      docsPath: '/console/studio/',
     },
   },
   db: {
@@ -70,7 +70,7 @@ export const STUDIOS = {
       subtitle: 'SQL, Redis and AQL against the databases in your projects — answers as tables.',
       description: 'Pick a database in the Explorer. Write a query and run it with Ctrl/⌘+Enter; runs are kept under History, and Save query keeps one by name. Config shows the database resource itself.',
       accent: 'control',
-      docsPath: '/concepts/resources/',
+      docsPath: '/console/resources/',
     },
   },
 } satisfies Record<string, StudioConfig>;
