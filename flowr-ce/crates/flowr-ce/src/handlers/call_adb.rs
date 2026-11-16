@@ -47,6 +47,13 @@ impl TaskHandler for AdbHandler {
             return Err(RuntimeError::task_failed(&task.name, "call:adb requires 'query' (AQL) in with"));
         }
 
+        // A project's flow reaches its own memory only (platform flows are A3T's own code).
+        let guarded = flowr_policy::namespace::namespace_guard().enforcing()
+            && !flowr_policy::namespace::PLATFORM_NAMESPACES.contains(&ctx.namespace.as_str());
+        if guarded && with.get("url").is_some() {
+            return Err(RuntimeError::task_failed(&task.name,
+                "call:adb in a project names an adb resource (`_resource`), not a url"));
+        }
         // No silent default: a missing resource is an error, not a call to localhost.
         let ep = if let Some(u) = with.get("url").and_then(|v| v.as_str()) {
             adb_endpoint(u, with.get("flight_url").and_then(|v| v.as_str()))
@@ -67,6 +74,27 @@ impl TaskHandler for AdbHandler {
             return Err(RuntimeError::task_failed(&task.name, "call:adb requires '_resource' (an adb resource) or 'url'"));
         };
 
+        if guarded {
+            let named = with.get("_resource").and_then(|v| v.as_str()).unwrap_or_default();
+            let org = crate::agent_space::org_adb("");
+            let storage = ctx.storage.as_ref()
+                .and_then(|s| s.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>());
+            // The shared org ADB — by name, or by a project resource pointing at the same server.
+            let shared = named == org || match storage {
+                Some(st) => resolve_adb(st.as_ref(), &org).await.map(|o| o.http == ep.http || o.flight == ep.flight).unwrap_or(false),
+                None => false,
+            };
+            let own_resource = named.split_once('/').map(|(ns, _)| ns == ctx.namespace).unwrap_or(false);
+            if !shared && !own_resource {
+                return Err(RuntimeError::task_failed(&task.name, format!(
+                    "a flow in project '{}' uses its own adb resources (or the org's memory); '{named}' is another project's",
+                    ctx.namespace)));
+            }
+            if shared {
+                project_namespaces_only(&query, &ctx.namespace).map_err(|e| RuntimeError::task_failed(&task.name, e))?;
+            }
+        }
+
         // AC-6: a run on a memory branch reads and writes that branch.
         let query = match ctx.principal.memory_branch() {
             Some(b) => on_branch(&query, b).map_err(|e| RuntimeError::task_failed(&task.name, e))?,
@@ -77,6 +105,48 @@ impl TaskHandler for AdbHandler {
             .await
             .map_err(|e| RuntimeError::Communication(e))?;
         Ok(TaskResult::new(result))
+    }
+}
+
+/// The NAMESPACEs an AQL statement names (its string literals after `NAMESPACE`).
+pub fn named_namespaces(aql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (mut quoted, mut escaped) = (false, false);
+    let (mut word, mut lit) = (String::new(), String::new());
+    let mut after_ns = false;
+    for c in aql.chars() {
+        if quoted {
+            if escaped { escaped = false; lit.push(c); }
+            else if c == '\\' { escaped = true; }
+            else if c == '"' {
+                quoted = false;
+                if after_ns { out.push(std::mem::take(&mut lit)); }
+                lit.clear();
+                after_ns = false;
+            } else { lit.push(c); }
+            continue;
+        }
+        if c.is_alphanumeric() || c == '_' || c == '$' { word.push(c); continue; }
+        if !word.is_empty() {
+            after_ns = word.eq_ignore_ascii_case("NAMESPACE");
+            word.clear();
+        }
+        if c == '"' { quoted = true; } else if !c.is_whitespace() { after_ns = false; }
+    }
+    out
+}
+
+/// On the shared org ADB a project's flow names its NAMESPACE, and only its own:
+/// the project's (`<project>`) or one of its agents' spaces (`<project>--<agent>`).
+pub fn project_namespaces_only(aql: &str, project: &str) -> std::result::Result<(), String> {
+    let named = named_namespaces(aql);
+    if named.is_empty() {
+        return Err(format!("on the org's memory a query names its NAMESPACE: \"{project}\" or \"{project}--<agent>\""));
+    }
+    let own = |n: &str| n == project || n.strip_prefix(project).is_some_and(|rest| rest.starts_with("--"));
+    match named.iter().find(|n| !own(n)) {
+        Some(n) => Err(format!("NAMESPACE \"{n}\" is not project '{project}''s memory")),
+        None => Ok(()),
     }
 }
 
@@ -128,6 +198,27 @@ pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<String, String>
                 Ok(aql.to_string())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod namespace_guard_tests {
+    use super::*;
+
+    #[test]
+    fn finds_every_named_namespace() {
+        assert_eq!(named_namespaces(r#"RECALL FROM SEMANTIC NAMESPACE "acme-web" LIMIT 5"#), vec!["acme-web"]);
+        assert_eq!(named_namespaces(r#"STORE INTO EPISODIC NAMESPACE "a--bot" (content = "NAMESPACE \"x\"")"#), vec!["a--bot"]);
+        assert!(named_namespaces(r#"RECALL FROM SEMANTIC WHERE x = "NAMESPACE""#).is_empty());
+    }
+
+    #[test]
+    fn a_project_reaches_only_its_own_memory() {
+        assert!(project_namespaces_only(r#"RECALL FROM SEMANTIC NAMESPACE "acme" LIMIT 1"#, "acme").is_ok());
+        assert!(project_namespaces_only(r#"RECALL FROM SEMANTIC NAMESPACE "acme--support" LIMIT 1"#, "acme").is_ok());
+        assert!(project_namespaces_only(r#"RECALL FROM SEMANTIC NAMESPACE "acme2" LIMIT 1"#, "acme").is_err());
+        assert!(project_namespaces_only(r#"RECALL FROM SEMANTIC NAMESPACE "other--bot" LIMIT 1"#, "acme").is_err());
+        assert!(project_namespaces_only(r#"RECALL FROM SEMANTIC LIMIT 1"#, "acme").is_err());
     }
 }
 

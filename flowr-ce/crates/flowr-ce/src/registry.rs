@@ -843,12 +843,17 @@ async fn delete_resource(
 
 async fn list_templates(
     State(state): State<Arc<RegistryState>>,
+    principal: Option<Extension<Principal>>,
 ) -> impl IntoResponse {
-    // List workflows from all namespaces, fetch full records to check for agent call
+    let who = caller(principal);
+    // List workflows from the namespaces the caller can see, fetch full records to check for agent call
     let mut templates: Vec<Value> = Vec::new();
     for ns in &workflow_namespaces(state.storage.as_ref()).await {
         if let Ok(summaries) = state.storage.workflows().list(ns).await {
             for s in &summaries {
+                if !crate::access::can_read_item(&who, flowr_policy::namespace::ItemKind::Flow, ns, &s.name, "").await {
+                    continue;
+                }
                 // Fetch full record to check raw YAML
                 if let Ok(record) = state.storage.workflows().get(ns, &s.name).await {
                     if record.raw_yaml.contains("a3t:agent") || record.raw_yaml.contains("call: agent") {
@@ -871,7 +876,11 @@ async fn list_templates(
 async fn get_template(
     State(state): State<Arc<RegistryState>>,
     Path((ns, name)): Path<(String, String)>,
+    principal: Option<Extension<Principal>>,
 ) -> impl IntoResponse {
+    if !crate::access::can_read_item(&caller(principal), flowr_policy::namespace::ItemKind::Flow, &ns, &name, "").await {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": format!("template '{}/{}' not found", ns, name) }))).into_response();
+    }
     // Fetch the workflow
     let workflow = match state.storage.workflows().get(&ns, &name).await {
         Ok(w) => w,

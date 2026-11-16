@@ -181,6 +181,16 @@ pub async fn signup_handler(
     Extension(config): Extension<Arc<AuthConfig>>,
     Json(body): Json<SignupRequest>,
 ) -> impl IntoResponse {
+    // Where access is enforced, accounts come from approved early access or an
+    // administrator (Security › Identity), never from an open form. An install
+    // that wants open sign-up says so: FLOWR_AUTH_SIGNUP=open.
+    let open = std::env::var("FLOWR_AUTH_SIGNUP").map(|v| v.eq_ignore_ascii_case("open")).unwrap_or(false);
+    if !open && flowr_policy::namespace::namespace_guard().enforcing() {
+        return (StatusCode::FORBIDDEN, Json(json!({
+            "error": "Sign-up is closed. Request early access, or ask your administrator for an account.",
+            "code": "signup_closed",
+        }))).into_response();
+    }
     if body.name.is_empty() || body.email.is_empty() || body.password.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "All fields required" }))).into_response();
     }

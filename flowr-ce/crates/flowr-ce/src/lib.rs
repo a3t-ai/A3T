@@ -95,7 +95,9 @@ impl Default for ServerConfig {
 /// Application state shared across all handlers
 pub struct AppState {
     pub storage: Arc<dyn StorageBackend>,
-    pub tx: broadcast::Sender<String>,
+    /// MCP-over-SSE replies, tagged with the SSE session they belong to: each
+    /// stream forwards only its own (never another client's answers).
+    pub tx: broadcast::Sender<(String, String)>,
 }
 
 /// Global storage reference for trigger/template persistence
@@ -383,7 +385,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let storage_routes = storage_browse::router(storage.clone());
     let agent_space_routes = agent_space::router(storage.clone());
 
-    let (tx, _) = broadcast::channel::<String>(100);
+    let (tx, _) = broadcast::channel::<(String, String)>(100);
     let state = Arc::new(AppState { storage, tx });
 
     let cors = CorsLayer::new()
@@ -847,69 +849,96 @@ async fn mapping_check_handler(
     Json(json!({"all_ok": all_ok, "results": results, "schema": schema, "schema_note": schema_note})).into_response()
 }
 
-async fn list_triggers_handler() -> impl IntoResponse {
-    let triggers = flowr_ce_agents::trigger_manager().list().await;
-    Json(json!({ "triggers": triggers, "count": triggers.len() }))
+/// The REST trigger and template routes drive FlowR's in-process managers, which
+/// know nothing of projects: the console and MCP use the project-checked trigger
+/// and template tools instead. So these routes are platform administration: a
+/// SuperAdmin or the runtime itself, whenever access is enforced.
+fn platform_admin_only(principal: &Option<axum::extract::Extension<flowr_policy::Principal>>) -> Option<axum::response::Response> {
+    if !flowr_policy::namespace::namespace_guard().enforcing() {
+        return None;
+    }
+    match principal {
+        Some(axum::extract::Extension(p))
+            if matches!(p, flowr_policy::Principal::Service { .. }) || flowr_policy::namespace::is_superadmin(p) => None,
+        _ => Some((StatusCode::FORBIDDEN, Json(json!({"error": "This route is platform administration (SuperAdmin). Use the project's triggers and templates instead."}))).into_response()),
+    }
 }
 
-async fn create_trigger_handler(Json(body): Json<Value>) -> impl IntoResponse {
+type MaybePrincipal = Option<axum::extract::Extension<flowr_policy::Principal>>;
+
+async fn list_triggers_handler(principal: MaybePrincipal) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
+    let triggers = flowr_ce_agents::trigger_manager().list().await;
+    Json(json!({ "triggers": triggers, "count": triggers.len() })).into_response()
+}
+
+async fn create_trigger_handler(principal: MaybePrincipal, Json(body): Json<Value>) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let trigger: flowr_ce_agents::Trigger = match serde_json::from_value(body) {
         Ok(t) => t,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid trigger: {}", e)}))),
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid trigger: {}", e)}))).into_response(),
     };
     let name = trigger.name.clone();
     match flowr_ce_agents::trigger_manager().create(trigger).await {
-        Ok(id) => { persist_triggers().await; (StatusCode::CREATED, Json(json!({"id": id, "name": name, "created": true}))) }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))),
+        Ok(id) => { persist_triggers().await; (StatusCode::CREATED, Json(json!({"id": id, "name": name, "created": true}))).into_response() }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
 
-async fn get_trigger_handler(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+async fn get_trigger_handler(principal: MaybePrincipal, axum::extract::Path(id): axum::extract::Path<String>) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     match flowr_ce_agents::trigger_manager().get(&id).await {
-        Some(t) => (StatusCode::OK, Json(json!(t))),
-        None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Trigger '{}' not found", id)}))),
+        Some(t) => (StatusCode::OK, Json(json!(t))).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Trigger '{}' not found", id)}))).into_response(),
     }
 }
 
-async fn delete_trigger_handler(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+async fn delete_trigger_handler(principal: MaybePrincipal, axum::extract::Path(id): axum::extract::Path<String>) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     match flowr_ce_agents::trigger_manager().delete(&id).await {
-        Ok(()) => { persist_triggers().await; Json(json!({"deleted": true, "id": id})) }
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(()) => { persist_triggers().await; Json(json!({"deleted": true, "id": id})).into_response() }
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
-async fn enable_trigger_handler(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+async fn enable_trigger_handler(principal: MaybePrincipal, axum::extract::Path(id): axum::extract::Path<String>) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     match flowr_ce_agents::trigger_manager().enable(&id).await {
-        Ok(()) => { persist_triggers().await; Json(json!({"enabled": true, "id": id})) }
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(()) => { persist_triggers().await; Json(json!({"enabled": true, "id": id})).into_response() }
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
-async fn pause_trigger_handler(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+async fn pause_trigger_handler(principal: MaybePrincipal, axum::extract::Path(id): axum::extract::Path<String>) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     match flowr_ce_agents::trigger_manager().pause(&id).await {
-        Ok(()) => { persist_triggers().await; Json(json!({"paused": true, "id": id})) }
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(()) => { persist_triggers().await; Json(json!({"paused": true, "id": id})).into_response() }
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
 async fn attach_trigger_handler(
+    principal: MaybePrincipal,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(target): Json<flowr_ce_agents::TriggerTarget>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     match flowr_ce_agents::trigger_manager().attach(&id, target).await {
-        Ok(()) => { persist_triggers().await; Json(json!({"attached": true, "trigger_id": id})) }
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(()) => { persist_triggers().await; Json(json!({"attached": true, "trigger_id": id})).into_response() }
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
 async fn detach_trigger_handler(
+    principal: MaybePrincipal,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let target_id = body.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
     match flowr_ce_agents::trigger_manager().detach(&id, target_id).await {
-        Ok(()) => { persist_triggers().await; Json(json!({"detached": true, "trigger_id": id})) }
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(()) => { persist_triggers().await; Json(json!({"detached": true, "trigger_id": id})).into_response() }
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
@@ -1108,66 +1137,77 @@ async fn await_outcome(
 // --- Template handlers ---
 
 async fn list_templates_handler(
+    principal: MaybePrincipal,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let ns = params.get("namespace").map(|s| s.as_str());
     let templates = flowr_ce_agents::template_manager().list(ns).await;
-    Json(json!({ "templates": templates, "count": templates.len() }))
+    Json(json!({ "templates": templates, "count": templates.len() })).into_response()
 }
 
-async fn create_template_handler(Json(body): Json<Value>) -> impl IntoResponse {
+async fn create_template_handler(principal: MaybePrincipal, Json(body): Json<Value>) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let template: flowr_ce_agents::AgentTemplate = match serde_json::from_value(body) {
         Ok(t) => t,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid template: {}", e)}))),
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid template: {}", e)}))).into_response(),
     };
     let name = template.name.clone();
     match flowr_ce_agents::template_manager().create(template).await {
-        Ok(v) => (StatusCode::CREATED, Json(json!({"name": name, "version": v, "created": true}))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))),
+        Ok(v) => (StatusCode::CREATED, Json(json!({"name": name, "version": v, "created": true}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
 
 async fn get_template_handler(
+    principal: MaybePrincipal,
     axum::extract::Path(name): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let ns = params.get("namespace").map(|s| s.as_str()).unwrap_or("default");
     match flowr_ce_agents::template_manager().get_active(ns, &name).await {
-        Some(t) => (StatusCode::OK, Json(json!(t))),
-        None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Template '{}' not found", name)}))),
+        Some(t) => (StatusCode::OK, Json(json!(t))).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Template '{}' not found", name)}))).into_response(),
     }
 }
 
 async fn get_template_version_handler(
+    principal: MaybePrincipal,
     axum::extract::Path((name, version)): axum::extract::Path<(String, String)>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let ns = params.get("namespace").map(|s| s.as_str()).unwrap_or("default");
     match flowr_ce_agents::template_manager().get(ns, &name, &version).await {
-        Some(t) => (StatusCode::OK, Json(json!(t))),
-        None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Template '{}:{}' not found", name, version)}))),
+        Some(t) => (StatusCode::OK, Json(json!(t))).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Template '{}:{}' not found", name, version)}))).into_response(),
     }
 }
 
 async fn activate_template_handler(
+    principal: MaybePrincipal,
     axum::extract::Path((name, version)): axum::extract::Path<(String, String)>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let ns = params.get("namespace").map(|s| s.as_str()).unwrap_or("default");
     match flowr_ce_agents::template_manager().activate(ns, &name, &version).await {
-        Ok(()) => Json(json!({"activated": true, "name": name, "version": version})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(()) => Json(json!({"activated": true, "name": name, "version": version})).into_response(),
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
 async fn delete_template_handler(
+    principal: MaybePrincipal,
     axum::extract::Path(name): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Some(r) = platform_admin_only(&principal) { return r; }
     let ns = params.get("namespace").map(|s| s.as_str()).unwrap_or("default");
     match flowr_ce_agents::template_manager().delete_all(ns, &name).await {
-        Ok(count) => Json(json!({"deleted": true, "name": name, "versions_removed": count})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(count) => Json(json!({"deleted": true, "name": name, "versions_removed": count})).into_response(),
+        Err(e) => Json(json!({"error": e.to_string()})).into_response(),
     }
 }
 
@@ -1191,22 +1231,87 @@ async fn sse_handler(
         .event("endpoint")
         .data(endpoint);
 
+    let mine = session_id.clone();
     let stream = BroadcastStream::new(rx)
         .filter_map(|result| result.ok())
-        .map(|msg| Ok(Event::default().event("message").data(msg)));
+        .filter(move |(sid, _)| *sid == mine)
+        .map(|(_, msg)| Ok(Event::default().event("message").data(msg)));
 
     let init_stream = stream::once(async { Ok(init_event) });
     Sse::new(init_stream.chain(stream))
 }
 
-/// SSE stream of an agent session's live tokens. Replays anything the client
-/// missed (`Last-Event-ID`, or `?after=`) before switching to live chunks, so a
-/// reconnect after a navigation or a dropped connection does not lose tokens.
+/// May `principal` follow this conversation's live tokens? An existing session:
+/// its owner, or InfoSec (who may read transcripts). A session with no row yet
+/// is claimed for the caller with an owner-only row, so nobody else can attach
+/// to it or continue it (the agent turn checks the owner too).
+async fn own_or_claim_session(state: &Arc<AppState>, principal: &Principal, session_id: &str) -> Result<(), axum::response::Response> {
+    let not_found = || (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response();
+    let busy = || (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "try again in a moment"}))).into_response();
+    let skey = crate::handlers::call_agent::session_key(session_id);
+    match state.storage.state().get(&skey).await {
+        Ok(Some(row)) => {
+            let owner = row.get("owner").and_then(|v| v.as_str()).filter(|o| !o.is_empty());
+            if owner.is_some() && !session_policy_allows(principal, flowr_policy::actions::session_read(), session_id, owner).await {
+                // 404, not 403: that the session exists is itself somebody else's.
+                return Err(not_found());
+            }
+            Ok(())
+        }
+        Ok(None) => {
+            let claim = json!({ "owner": principal.id(), "owner_kind": principal.kind(), "messages": [],
+                                "updated_at": chrono::Utc::now().to_rfc3339() });
+            state.storage.state().set(&skey, claim, None).await.map_err(|e| {
+                warn!(error = %e, "chat: could not claim the session");
+                busy()
+            })
+        }
+        Err(e) => {
+            warn!(error = %e, "chat: session unreadable");
+            Err(busy())
+        }
+    }
+}
+
+/// `GET /chat/stream/:session_id` — a conversation's live tokens, for its owner.
+///
+/// The console attaches before it sends a new conversation's first message, so a
+/// session with no row yet is claimed here for the caller (an owner-only row);
+/// the agent turn then refuses anyone else (call_agent, load_session). An existing
+/// session is streamed to its owner — and readable by InfoSec, as transcripts are.
+/// It replays anything the client missed (`Last-Event-ID`, or `?after=`) before
+/// switching to live chunks, so a reconnect does not lose tokens.
 async fn chat_stream_handler(
+    State(state): State<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    key: Option<Extension<crate::agent_keys::KeyScope>>,
     axum::extract::Path(session_id): axum::extract::Path<String>,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    q: axum::extract::Query<std::collections::HashMap<String, String>>,
     headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let not_found = || (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response();
+    if flowr_policy::namespace::namespace_guard().enforcing() {
+        let Some(Extension(principal)) = principal else {
+            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
+        };
+        if let Some(Extension(k)) = &key {
+            if !k.owns_session(&session_id) {
+                return not_found();
+            }
+        }
+        if let Err(resp) = own_or_claim_session(&state, &principal, &session_id).await {
+            return resp;
+        }
+    }
+    chat_stream_events(&session_id, &q.0, &headers).into_response()
+}
+
+fn chat_stream_events(
+    session_id: &str,
+    q: &std::collections::HashMap<String, String>,
+    headers: &axum::http::HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let session_id = session_id.to_string();
     let after: u64 = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
@@ -1573,6 +1678,11 @@ async fn chat_ui_stream_handler(
     // take a live-only subscription: the ring still holds the previous turn
     // (kept so Last-Event-ID resume works), and replaying it here would re-send
     // the last answer as soon as a second message was sent.
+    if flowr_policy::namespace::namespace_guard().enforcing() {
+        if let Err(resp) = own_or_claim_session(&state, &principal, &session_id).await {
+            return resp;
+        }
+    }
     let rx = crate::token_stream::subscribe_live(&session_id);
     let replay: Vec<crate::token_stream::StreamChunk> = Vec::new();
 
@@ -1824,11 +1934,16 @@ fn ui_message_stream(
 async fn sse_message_handler(
     State(state): State<Arc<AppState>>,
     principal: Option<Extension<Principal>>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     let response = handle_request(&state.storage, caller(principal), request).await;
-    let response_json = serde_json::to_string(&response).unwrap_or_default();
-    let _ = state.tx.send(response_json.clone());
+    // Only to the SSE stream that asked (`?session_id=`, from its endpoint event);
+    // without one the reply goes back in this response alone.
+    if let Some(sid) = q.get("session_id").filter(|s| !s.is_empty()) {
+        let response_json = serde_json::to_string(&response).unwrap_or_default();
+        let _ = state.tx.send((sid.clone(), response_json));
+    }
     Json(response)
 }
 

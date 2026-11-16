@@ -42,6 +42,15 @@ impl TaskHandler for LanceDbHandler {
             _ => return Err(RuntimeError::task_failed(&task.name, "expected call task")),
         };
 
+        // The platform tables say who may use what (users, orgs, members, agents):
+        // only A3T's own flows touch them. A project's data goes in its adb.
+        if flowr_policy::namespace::namespace_guard().enforcing()
+            && !flowr_policy::namespace::PLATFORM_NAMESPACES.contains(&ctx.namespace.as_str())
+        {
+            return Err(RuntimeError::task_failed(&task.name, format!(
+                "call:lancedb is for A3T's own flows; a flow in project '{}' keeps its data with call: adb",
+                ctx.namespace)));
+        }
         let operation = with.get("operation").and_then(|v| v.as_str()).unwrap_or("query");
         let table_name = with.get("table").and_then(|v| v.as_str()).unwrap_or("");
         // A database the step names that is gone: say so, by name — never open the

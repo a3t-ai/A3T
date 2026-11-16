@@ -12,7 +12,6 @@ pub const MCP_CALL: &str = "mcp:call";
 
 // Flow lifecycle
 pub const FLOW_START: &str = "flow:start";
-pub const FLOW_CANCEL: &str = "flow:cancel";
 /// Placing a flow into a runtime pool — the deployment decision.
 ///
 /// Distinct from `flow:start`, which runs a flow that is already deployed.
@@ -40,13 +39,6 @@ pub const RUNTIME_RESUME: &str = "runtime:resume";
 /// Removing a runtime outright — and undeploying whatever still runs on it.
 pub const RUNTIME_TERMINATE: &str = "runtime:terminate";
 
-// Agent lifecycle & delegation
-pub const AGENT_SPAWN: &str = "agent:spawn";
-pub const AGENT_STOP: &str = "agent:stop";
-
-// Memory (ClawDB)
-pub const MEMORY_READ: &str = "memory:read";
-pub const MEMORY_WRITE: &str = "memory:write";
 // An agent's memory lifecycle (AC-14), checked in the engine before acting.
 pub const MEMORY_BRANCH: &str = "memory:branch";
 pub const MEMORY_MERGE: &str = "memory:merge";
@@ -77,7 +69,6 @@ pub const ALL: &[&str] = &[
     TOOL_INVOKE,
     MCP_CALL,
     FLOW_START,
-    FLOW_CANCEL,
     FLOW_DEPLOY,
     FLOW_PAUSE,
     FLOW_RESUME,
@@ -87,10 +78,12 @@ pub const ALL: &[&str] = &[
     RUNTIME_PAUSE,
     RUNTIME_RESUME,
     RUNTIME_TERMINATE,
-    AGENT_SPAWN,
-    AGENT_STOP,
-    MEMORY_READ,
-    MEMORY_WRITE,
+    MEMORY_BRANCH,
+    MEMORY_MERGE,
+    MEMORY_PROMOTE,
+    MEMORY_FORK,
+    MEMORY_LAYERS,
+    DEPLOY_PROD,
     LLM_CALL,
     RESOURCE_CREATE,
     RESOURCE_UPDATE,
@@ -114,9 +107,6 @@ pub fn mcp_call() -> Action {
 }
 pub fn flow_start() -> Action {
     Action::known(FLOW_START)
-}
-pub fn flow_cancel() -> Action {
-    Action::known(FLOW_CANCEL)
 }
 pub fn flow_deploy() -> Action {
     Action::known(FLOW_DEPLOY)
@@ -144,18 +134,6 @@ pub fn runtime_resume() -> Action {
 }
 pub fn runtime_terminate() -> Action {
     Action::known(RUNTIME_TERMINATE)
-}
-pub fn agent_spawn() -> Action {
-    Action::known(AGENT_SPAWN)
-}
-pub fn agent_stop() -> Action {
-    Action::known(AGENT_STOP)
-}
-pub fn memory_read() -> Action {
-    Action::known(MEMORY_READ)
-}
-pub fn memory_write() -> Action {
-    Action::known(MEMORY_WRITE)
 }
 pub fn llm_call() -> Action {
     Action::known(LLM_CALL)

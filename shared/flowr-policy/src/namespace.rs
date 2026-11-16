@@ -120,6 +120,19 @@ pub fn acting_user(principal: &Principal) -> Option<&str> {
 }
 
 /// Whether a principal holds the SuperAdmin role.
+/// A3T's own namespaces: the platform's flows, agents and resources.
+pub const PLATFORM_NAMESPACES: &[&str] = &["a3t", "system"];
+
+/// Whether what is in `ns` is hidden from `principal`. Everyone signed in may
+/// *run* the platform flows the console calls (that is how it works), but only a
+/// SuperAdmin or SecurityAdmin — or the runtime itself — may list or read the
+/// platform's flows, agents, resources and triggers. Running never implies seeing.
+pub fn platform_hidden(principal: &Principal, ns: &str) -> bool {
+    PLATFORM_NAMESPACES.contains(&ns)
+        && !matches!(principal, Principal::Service { .. })
+        && !principal.roles().iter().any(|r| r == crate::roles::SUPER_ADMIN || r == crate::roles::SECURITY_ADMIN)
+}
+
 pub fn is_superadmin(principal: &Principal) -> bool {
     principal.roles().iter().any(|r| r == crate::roles::SUPER_ADMIN)
 }

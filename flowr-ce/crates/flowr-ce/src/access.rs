@@ -604,6 +604,9 @@ async fn deployment_namespace(d: &crate::ops::Deployment) -> String {
 }
 
 async fn allowed(principal: &Principal, ns: &str, needed: NsAccess) -> Result<(), CallToolResult> {
+    if needed == NsAccess::Read && flowr_policy::namespace::platform_hidden(principal, ns) {
+        return Err(CallToolResult::error(format!("Not found: no project '{ns}' that you can see.")));
+    }
     let has = guard().access(principal, ns).await;
     if has >= needed {
         return Ok(());
@@ -754,7 +757,7 @@ pub async fn filter_items(principal: &Principal, kind: ItemKind, items: Vec<Valu
         let s = |k: &str| it.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let ns = if s("namespace").is_empty() { "default".to_string() } else { s("namespace") };
         let ns = effective_namespace(kind, &ns, &s("name"), &s("type"), &s("created_by"));
-        if g.access(principal, &ns).await >= NsAccess::Read {
+        if !flowr_policy::namespace::platform_hidden(principal, &ns) && g.access(principal, &ns).await >= NsAccess::Read {
             out.push(it);
         }
     }
@@ -770,7 +773,11 @@ pub fn result_text(r: &CallToolResult) -> String {
 /// Whether `principal` may see an item (REST routes).
 pub async fn can_read_item(principal: &Principal, kind: ItemKind, ns: &str, name: &str, type_ref: &str) -> bool {
     let g = guard();
-    !g.enforcing() || g.access(principal, &effective_namespace(kind, ns, name, type_ref, "")).await >= NsAccess::Read
+    if !g.enforcing() {
+        return true;
+    }
+    let ns = effective_namespace(kind, ns, name, type_ref, "");
+    !flowr_policy::namespace::platform_hidden(principal, &ns) && g.access(principal, &ns).await >= NsAccess::Read
 }
 
 /// A REST write into `ns`: `Err` with the response when refused.

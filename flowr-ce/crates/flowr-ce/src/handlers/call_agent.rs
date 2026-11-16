@@ -518,6 +518,15 @@ impl TaskHandler for AgentHandler {
         fire_before(self, ctx, "load_session", "call:state:get").await;
         let session_key = session_key(&config.session_id);
         if let Ok(Some(session)) = storage.state().get(&session_key).await {
+            // A conversation belongs to whoever started it. Continuing someone
+            // else's would hand their transcript to this turn's model and then
+            // rewrite the row's owner, so the turn is refused instead.
+            let owner = session.get("owner").and_then(|v| v.as_str()).unwrap_or_default();
+            if !owner.is_empty() && owner != ctx.principal.id() {
+                warn!(session = %config.session_id, "turn refused: the conversation belongs to someone else");
+                return Err(RuntimeError::task_failed(&task.name,
+                    "this conversation belongs to someone else; start a new one".to_string()));
+            }
             state.messages.extend(messages_from_session(&session));
             debug!(restored_messages = state.messages.len(), "session restored");
         }

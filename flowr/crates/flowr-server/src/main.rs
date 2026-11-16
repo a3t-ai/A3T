@@ -15,6 +15,8 @@ mod sso;
 mod impersonate;
 mod forgot;
 mod first_password;
+mod change_password;
+mod refresh;
 mod directory;
 mod config;
 
@@ -272,6 +274,8 @@ async fn main() -> anyhow::Result<()> {
                     .route("/auth/forgot", post(forgot::forgot_handler))
                     // First sign-in with a temporary password (first_password.rs).
                     .route("/auth/first-password", post(first_password::first_password_handler))
+                    // A new session from a refresh token, with roles read again (refresh.rs).
+                    .route("/auth/refresh", post(refresh::refresh_handler))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
@@ -291,6 +295,8 @@ async fn main() -> anyhow::Result<()> {
                                 get(idp_get_user_handler).put(idp_update_user_handler).delete(idp_delete_user_handler))
                             // A SuperAdmin acting as a user or a role (impersonate.rs).
                             .route("/auth/impersonate", post(impersonate::impersonate_handler))
+                            // Change your own password, proving the current one (change_password.rs).
+                            .route("/auth/change-password", post(change_password::change_password_handler))
                             // People a member can be picked from, for project owners and org admins (directory.rs).
                             .route("/directory/users", get(directory::directory_users_handler))
                             .layer(Extension(idp_admin)),
@@ -926,6 +932,59 @@ struct IdpNewUser {
     roles: Vec<String>,
 }
 
+/// Realm roles a person may hold, as Keycloak names them (the spellings
+/// `roles::canonicalize` understands).
+const IDP_ROLE_NAMES: &[&str] = &["superadmin", "securityadmin", "admin", "operator", "developer", "viewer"];
+
+fn is_super_admin(principal: Option<&flowr_policy::Principal>) -> bool {
+    matches!(principal, Some(flowr_policy::Principal::Human { roles: r, .. })
+        if r.iter().any(|role| role == flowr_policy::roles::SUPER_ADMIN))
+}
+
+/// Does this set of realm roles carry SuperAdmin or SecurityAdmin?
+fn grants_infosec(roles: &[String]) -> bool {
+    use flowr_policy::roles;
+    roles.iter().flat_map(|r| roles::canonicalize(r))
+        .any(|r| r == roles::SUPER_ADMIN || r == roles::SECURITY_ADMIN)
+}
+
+/// Roles one person may give another. Only known roles; and only a SuperAdmin
+/// gives SuperAdmin or SecurityAdmin, so a SecurityAdmin can't raise anyone
+/// (themselves included) above their own role.
+fn check_role_grant(principal: Option<&flowr_policy::Principal>, roles: &[String]) -> Result<(), String> {
+    if let Some(bad) = roles.iter().find(|r| !IDP_ROLE_NAMES.contains(&r.trim().to_ascii_lowercase().as_str())) {
+        return Err(format!("Unknown role '{bad}'. Roles are: {}.", IDP_ROLE_NAMES.join(", ")));
+    }
+    if grants_infosec(roles) && !is_super_admin(principal) {
+        return Err("Only a SuperAdmin can give the SuperAdmin or SecurityAdmin role.".into());
+    }
+    Ok(())
+}
+
+fn idp_refuse(status: axum::http::StatusCode, msg: impl Into<String>) -> axum::response::Response {
+    (status, axum::Json(serde_json::json!({ "error": msg.into() }))).into_response()
+}
+
+/// A SuperAdmin or SecurityAdmin account is changed (password, roles, enabled,
+/// delete) only by a SuperAdmin; otherwise a SecurityAdmin could take one over.
+#[cfg(feature = "ee")]
+async fn guard_infosec_target(
+    state: &IdpAdminState,
+    cfg: &aesop_tower::oidc_admin::IdpAdminConfig,
+    token: &str,
+    principal: Option<&flowr_policy::Principal>,
+    id: &str,
+) -> Result<(), axum::response::Response> {
+    if is_super_admin(principal) { return Ok(()); }
+    match aesop_tower::oidc_admin::user_realm_roles(&state.client, cfg, token, id).await {
+        Ok(current) if grants_infosec(&current) => Err(idp_refuse(axum::http::StatusCode::FORBIDDEN,
+            "Only a SuperAdmin can change a SuperAdmin or SecurityAdmin account.")),
+        Ok(_) => Ok(()),
+        // Not knowing who the target is must not let the change through.
+        Err(e) => Err(idp_refuse(axum::http::StatusCode::BAD_GATEWAY, e.to_string())),
+    }
+}
+
 /// `GET /security/idp/status` — is Keycloak admin configured, and can we reach it?
 async fn idp_status_handler(
     Extension(state): Extension<IdpAdminState>,
@@ -1024,6 +1083,9 @@ async fn idp_create_user_handler(
         if body.username.trim().is_empty() || body.password.is_empty() {
             return (axum::http::StatusCode::BAD_REQUEST,
                 axum::Json(serde_json::json!({ "error": "username and password are required" }))).into_response();
+        }
+        if let Err(msg) = check_role_grant(principal.as_ref().map(|e| &e.0), &body.roles) {
+            return idp_refuse(axum::http::StatusCode::FORBIDDEN, msg);
         }
         let cfg = match kc::IdpAdminConfig::from_issuer(&state.issuer, state.admin_user.clone(), state.admin_password.clone()) {
             Some(c) => c,
@@ -1138,7 +1200,19 @@ async fn idp_update_user_handler(
     #[cfg(feature = "ee")]
     {
         use aesop_tower::oidc_admin as kc;
+        let who = principal.as_ref().map(|e| &e.0);
+        if let Some(roles) = &body.roles {
+            // An empty list would strip every role; to stop someone signing in, disable them.
+            if roles.is_empty() {
+                return idp_refuse(axum::http::StatusCode::BAD_REQUEST,
+                    "A person needs at least one role. To stop them signing in, disable the account instead.");
+            }
+            if let Err(msg) = check_role_grant(who, roles) {
+                return idp_refuse(axum::http::StatusCode::FORBIDDEN, msg);
+            }
+        }
         let (cfg, token) = match idp_cfg_token(&state).await { Ok(v) => v, Err(resp) => return resp };
+        if let Err(resp) = guard_infosec_target(&state, &cfg, &token, who, &id).await { return resp; }
         let upd = kc::UpdateUser {
             name: body.name.clone(),
             email: body.email.clone(),
@@ -1172,6 +1246,7 @@ async fn idp_delete_user_handler(
     {
         use aesop_tower::oidc_admin as kc;
         let (cfg, token) = match idp_cfg_token(&state).await { Ok(v) => v, Err(resp) => return resp };
+        if let Err(resp) = guard_infosec_target(&state, &cfg, &token, principal.as_ref().map(|e| &e.0), &id).await { return resp; }
         match kc::delete_user(&state.client, &cfg, &token, &id).await {
             Ok(()) => { info!(user_id = %id, "deleted Keycloak user");
                 (axum::http::StatusCode::NO_CONTENT, axum::Json(serde_json::json!({ "deleted": true }))).into_response() }

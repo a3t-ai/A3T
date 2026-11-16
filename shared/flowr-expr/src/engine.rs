@@ -237,7 +237,7 @@ impl ExpressionEngine {
         // $resource is a FlowR extension for accessing resolved resource config
         // $secrets provides access to workflow secrets per CNCF spec
         let filter = Compiler::default()
-            .with_funs(jaq_std::funs().chain(jaq_json::funs()))
+            .with_funs(sandboxed_funs())
             .with_global_vars(["$secrets", "$resource", "$context", "$task", "$workflow", "$runtime"])
             .compile(modules)
             .map_err(|errs| {
@@ -308,4 +308,21 @@ impl ExpressionEngine {
         let cache = self.cache.read().unwrap();
         cache.len()
     }
+}
+
+/// The jq standard library without the filters that reach outside the expression.
+/// `env` reads the FlowR process environment (database URLs, API keys, signing
+/// secrets), and `halt` / `halt_error` call `std::process::exit` — one flow
+/// expression would stop the whole server. Both stay defined, so programs and the
+/// std library that mention them still compile, but they only raise an error.
+fn sandboxed_funs() -> impl Iterator<Item = jaq_std::Filter<Native<Val>>> {
+    fn refused<'a>(_: &'a jaq_core::compile::Lut<Native<Val>>, _: jaq_core::Cv<'a, Val>) -> jaq_core::ValXs<'a, Val> {
+        jaq_core::box_iter::box_once(Err(jaq_core::Exn::from(jaq_core::Error::str(
+            "this function is not available in flow expressions",
+        ))))
+    }
+    jaq_std::funs().chain(jaq_json::funs()).map(|(name, args, f)| match name {
+        "env" | "halt" | "halt_error" => (name, args, Native::new(refused)),
+        _ => (name, args, f),
+    })
 }

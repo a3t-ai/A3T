@@ -294,3 +294,17 @@ fn test_passthrough_literals() {
     let result = engine.eval_recursive(&template, &input, &scope).unwrap();
     assert_eq!(result, template);
 }
+
+// Flow expressions must not read the server's environment or stop the process.
+#[test]
+fn test_env_and_halt_are_refused() {
+    let engine = ExpressionEngine::new();
+    let scope = Scope::new();
+    for expr in ["${ env }", "${ env.PATH }", "${ halt }", "${ \"x\" | halt_error }", "${ \"x\" | halt_error(1) }"] {
+        let r = engine.eval(&json!({}), expr, &scope);
+        assert!(r.is_err(), "{expr} should be refused, got {r:?}");
+    }
+    // The rest of the standard library still works.
+    assert_eq!(engine.eval(&json!({"a": [1, 2]}), "${ .a | map(. * 2) | add }", &scope).unwrap(), json!(6));
+    assert!(engine.eval(&json!({}), "${ now }", &scope).unwrap().is_number());
+}

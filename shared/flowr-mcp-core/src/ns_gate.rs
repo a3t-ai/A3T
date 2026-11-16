@@ -82,6 +82,9 @@ pub async fn check(storage: &dyn StorageBackend, principal: &Principal, tool: &s
             .then(|| CallToolResult::text(format!("Execution `{id}` not found or still pending.")));
     }
     let (ns, needed) = requirement(storage, tool, args).await?;
+    if needed == NsAccess::Read && flowr_policy::namespace::platform_hidden(principal, &ns) {
+        return Some(CallToolResult::error(format!("Not found: no project '{ns}' that you can see.")));
+    }
     let has = g.access(principal, &ns).await;
     if has >= needed {
         return None;
@@ -110,7 +113,7 @@ pub async fn can_read(principal: &Principal, kind: ItemKind, ns: &str, name: &st
         return true;
     }
     let ns = g.effective_namespace(kind, ns, name, type_ref, created_by);
-    g.access(principal, &ns).await >= NsAccess::Read
+    !flowr_policy::namespace::platform_hidden(principal, &ns) && g.access(principal, &ns).await >= NsAccess::Read
 }
 
 /// Whether `principal` may see a run. A run of a project's flow: whoever can read
