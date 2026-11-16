@@ -169,6 +169,8 @@ pub(super) async fn get_security(State(s): St, p: P, Path(id): Path<String>) -> 
             "policy": {
                 "set": policy.is_some(),
                 "rules": policy.as_deref().map(sentences).unwrap_or_default(),
+                // The file as data, for the console's rule editor.
+                "file": policy.as_deref().and_then(|y| flowr_policy::policy_file::PolicyFile::parse(y).ok()),
                 "source": policy,
                 "updated_by": pol.as_ref().map(|r| col(r, "updated_by")),
             },
