@@ -83,6 +83,9 @@ pub enum Change {
     TaskLease { id: TaskId, until: DateTime<Utc> },
     /// Not durable: a run's ownership extended.
     RunOwner { id: RunId, until: DateTime<Utc> },
+    /// The task order and outbox id counters raised to at least these (a
+    /// restore: acked tasks and done outbox rows left them past every row).
+    Counters { order: u64, outbox_id: u64 },
 }
 
 impl Change {
@@ -283,6 +286,10 @@ impl EngineCore {
                 self.outbox.push(row.clone());
             }
             Change::OutboxDone { up_to } => self.outbox.retain(|r| r.id > *up_to),
+            Change::Counters { order, outbox_id } => {
+                self.order = self.order.max(*order);
+                self.outbox_id = self.outbox_id.max(*outbox_id);
+            }
             Change::TaskLease { id, until } => {
                 if let Some(t) = self.tasks.get_mut(id) {
                     t.lease_until = Some(*until);
@@ -973,6 +980,43 @@ impl EngineCore {
         Ok(n)
     }
 
+    /// This core's durable state as the changes that rebuild it (the inverse of
+    /// [`Self::restore`]): moving a space from one host's snapshot to another
+    /// host. Runs come first (journals, waits and checkpoints name them), then
+    /// what hangs off them, then the queue, events, outbox and counters. A run's
+    /// step identities are rebuilt from its journal; an evicted run has neither.
+    pub fn to_changes(&self) -> Vec<Change> {
+        let mut out = Vec::with_capacity(self.runs.len() * 2 + self.tasks.len());
+        let mut runs: Vec<&RunState> = self.runs.values().collect();
+        runs.sort_by_key(|s| (s.row.created_at, s.row.run_id));
+        out.extend(runs.iter().map(|s| Change::Run { id: s.row.run_id, state: Some((*s).clone()) }));
+        for s in &runs {
+            let id = s.row.run_id;
+            if let Some(entries) = self.journal.get(&id).filter(|e| !e.is_empty()) {
+                // Applying entries moves the row's step and times: the run's own
+                // state goes in again after them (the host needs the run first, to
+                // file the entries under its namespace).
+                out.push(Change::Journal { run: id, entries: entries.clone() });
+                out.push(Change::Run { id, state: Some((*s).clone()) });
+            }
+            if self.evicted.contains(&id) {
+                out.push(Change::JournalEvicted { run: id });
+            }
+            for (seq, snapshot, at) in self.checkpoints.get(&id).into_iter().flatten() {
+                out.push(Change::Checkpoint { run: id, seq: *seq, snapshot: snapshot.clone(), at: *at });
+            }
+        }
+        out.extend(self.waits.iter().map(|w| Change::Wait { run: w.run, wait_id: w.wait_id.clone(), row: Some(w.clone()) }));
+        let mut tasks: Vec<(&TaskId, &TaskRow)> = self.tasks.iter().collect();
+        tasks.sort_by_key(|(_, t)| t.order);
+        out.extend(tasks.into_iter().map(|(id, t)| Change::Task { id: *id, row: Some(t.clone()) }));
+        out.extend(self.events_seen.iter().map(|(key, at)| Change::EventSeen { key: key.clone(), at: *at }));
+        out.extend(self.recent.iter().map(|(namespace, at, event)| Change::EventKept { namespace: namespace.clone(), at: *at, event: event.clone() }));
+        out.extend(self.outbox.iter().map(|row| Change::Outbox { row: row.clone() }));
+        out.push(Change::Counters { order: self.order, outbox_id: self.outbox_id });
+        out
+    }
+
     /// Finished runs whose journal is still here and which ended before `cut`, up to
     /// `limit`. Allocates only for the answer: this runs on a timer.
     pub fn evictable(&self, cut: DateTime<Utc>, limit: usize) -> Vec<RunId> {
@@ -1049,7 +1093,8 @@ fn sort_sets(v: &mut Value) {
         Value::Object(m) => m.values_mut().for_each(sort_sets),
         Value::Array(a) => {
             a.iter_mut().for_each(sort_sets);
-            if a.iter().all(|x| x.is_array()) {
+            // Sets serialize in hash order: tuples (identities) and ids (evicted).
+            if a.iter().all(|x| x.is_array()) || a.iter().all(|x| x.is_string()) {
                 a.sort_by_key(|x| x.to_string());
             }
         }
@@ -1225,6 +1270,28 @@ mod tests {
             b.apply(c);
         }
         assert_eq!(b.durable_view(), a.durable_view());
+    }
+
+    #[test]
+    fn to_changes_restores_the_same_state_elsewhere() {
+        for seed in [3, 11, 2026] {
+            let mut core = EngineCore::new();
+            exercise(&mut core, seed);
+            // Some finished runs' journals already left memory, as upkeep does.
+            let cut = Utc::now() + chrono::Duration::days(1);
+            for run in core.evictable(cut, 5) {
+                core.evict_journal(run);
+            }
+            core.take_effects();
+            assert!(!core.evicted.is_empty() && !core.runs.is_empty(), "seed {seed}: evicted and live runs");
+
+            let mut moved = EngineCore::new();
+            let n = moved.restore(core.to_changes(), true).unwrap();
+            assert!(n > core.runs.len());
+            assert_eq!(moved.durable_view(), core.durable_view(), "seed {seed}");
+            assert_eq!(moved.take_effects().changes.len(), n, "every change emitted for the host to keep");
+            assert!(moved.restore(core.to_changes(), true).is_err(), "a second import is refused");
+        }
     }
 
     #[test]
