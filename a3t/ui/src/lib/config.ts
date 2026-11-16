@@ -12,13 +12,11 @@
 const KNOWN_DOMAINS = ['a3t.io', 'a3tplatform.com'];
 const OVERRIDE_KEY = 'a3t.apiBase';
 
-// UAT pin: the prod console (dash.a3t.io) currently has no updated backend
-// (console.a3t.io runs an old image without the Security/IdP endpoints), so pin
-// it to the vc-dev EE runtime which has the full API. Remove this entry once a
-// prod backend runs the current image. The Settings runtime switch still wins.
-const HOST_BACKEND_PIN: Record<string, string> = {
-	'dash.a3t.io': 'https://console.dev.a3t.io',
-};
+// Hosts served by another backend than their name says. Empty: since 16 Nov 2026
+// console.a3t.io is the prod cluster with the current image, so dash.a3t.io uses
+// it (the UAT pin to console.dev.a3t.io is gone). The Settings runtime switch
+// still wins over this table.
+const HOST_BACKEND_PIN: Record<string, string> = {};
 
 /** Hostname-derived backend, ignoring any override. */
 function hostnameApiBase(): string {
