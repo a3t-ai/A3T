@@ -106,6 +106,11 @@
             Back to {$actingAs.by.email || 'yourself'}
           </button>
         {/if}
+        <!-- The consent banner lives in app.html (shared a3t_consent cookie with a3t.io and the docs). -->
+        <button class="ud-item ud-nav" onclick={() => { (window as any).a3tCookieSettings?.(); }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="6" cy="6.5" r=".8" fill="currentColor"/><circle cx="9.5" cy="9.5" r=".8" fill="currentColor"/><circle cx="10" cy="5.5" r=".6" fill="currentColor"/></svg>
+          Cookie settings
+        </button>
         <button class="ud-item" onclick={handleSignOut}>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2H3a1 1 0 00-1 1v10a1 1 0 001 1h3M11 11l3-3-3-3M14 8H6"/></svg>
           Sign out
