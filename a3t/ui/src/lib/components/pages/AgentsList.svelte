@@ -22,6 +22,7 @@
   import { agentName } from '$lib/components/agent/agentData';
   import AgentSetup from '$lib/components/agent/AgentSetup.svelte';
   import AgentPolicies from '$lib/components/agent/AgentPolicies.svelte';
+  import AgentSecurity from '$lib/components/agent/AgentSecurity.svelte';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import AgentMetrics from '$lib/components/agent/AgentMetrics.svelte';
   import { keepKey } from '$lib/components/agent/keyOnce';
@@ -177,7 +178,7 @@
   const AGENT_HINTS: Record<string, string> = {
     overview: 'Its endpoints, a test, the code to call it, and its status',
     build: 'Make it work: its code, model and tools, hooks, memory, lineage',
-    secure: 'Who can call it and what it may do: keys, sharing, controls, endpoints',
+    secure: 'What it may do and who can call it: security profile, keys, sharing, controls, endpoints',
     audit: 'What it did and what changed: calls, decisions, changes',
     metrics: 'How it is doing: its turns, failures, time and tool calls',
     versions: 'Its versions and memory branches, and where it runs',
@@ -201,10 +202,10 @@
   /// The sections of each tab, in the order they are used.
   const SECTIONS: Record<string, { id: string; label: string }[]> = {
     build: [{ id: 'code', label: 'Code' }, { id: 'tools', label: 'Model & tools' }, { id: 'hooks', label: 'Hooks' }, { id: 'memory', label: 'Memory' }, { id: 'lineage', label: 'Lineage' }],
-    secure: [{ id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }],
+    secure: [{ id: 'profile', label: 'Security profile' }, { id: 'keys', label: 'Keys' }, { id: 'sharing', label: 'Sharing' }, { id: 'controls', label: 'Controls' }, { id: 'exposure', label: 'Endpoints' }],
   };
   const SECTION_TAB: Record<string, string> = Object.fromEntries(Object.entries(SECTIONS).flatMap(([t, ss]) => ss.map((x) => [x.id, t])));
-  let sub = $state<Record<string, string>>({ build: 'code', secure: 'keys' });
+  let sub = $state<Record<string, string>>({ build: 'code', secure: 'profile' });
   /// Names other pages and earlier versions link with.
   const TAB_ALIAS: Record<string, string> = {
     detail: 'overview', access: 'tools', config: 'tools', configure: 'tools', api: 'exposure', tokens: 'keys', token: 'keys',
@@ -832,6 +833,8 @@
             {:else if propNode === 'build' && sub.build === 'lineage'}
               <AgentLineage {agent} {allAgents} onopen={selectAgent} onmake={lifecycle}
                 making={makeKind} projects={namespaceChoices(agent.namespace)} onmakefrom={makeFrom} oncancelmake={() => (makeKind = null)} />
+            {:else if propNode === 'secure' && sub.secure === 'profile'}
+              <AgentSecurity {agent} canEdit={writable} />
             {:else if propNode === 'secure' && sub.secure === 'keys'}
               <AgentKeys {agent} canEdit={writable} />
             {:else if propNode === 'secure' && sub.secure === 'sharing'}

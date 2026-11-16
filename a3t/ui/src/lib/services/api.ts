@@ -696,6 +696,17 @@ export function a3tToolFor(flow: string, input: any): { agent: string; tool: str
 /// An agent's memory space, versions and memory branches (FlowR's /agents/{id}/…).
 /// The space is the namespace its memory lives in on the org's ADB — the agent's
 /// id, where the core agent keeps it; versions and branches need it registered.
+export type AgentSecurity = {
+  agent_id: string; project: string; version: string | null;
+  reach: { hosts?: string[]; mcp?: string[]; llm?: string[]; memory?: string[]; subflows?: string[] } | null;
+  bound_to: { model: any; mcp_servers: any; enabled_tools: any };
+  policy: { set: boolean; rules: string[]; source: string | null; updated_by: string | null };
+  note: string;
+};
+export type CatalogueEntry = { id: string; label: string; tools?: string[]; actions?: string[]; enforced_by?: string; note?: string };
+/** Every permission a rule can name (a3t/policies/catalogue.yaml). */
+export const securityCatalogue = () => request<{ verbs: Record<string, string>; permissions: CatalogueEntry[] }>('/security/catalogue');
+
 const ag = (id: string, rest = '') => `/agents/${encodeURIComponent(id)}${rest}`;
 export const agentSpaceApi = {
   memory: (id: string) => request<{ namespace: string | null; own: boolean; resource: string }>(ag(id, '/memory')),
@@ -711,6 +722,11 @@ export const agentSpaceApi = {
   keys: (id: string) => request<{ keys: AgentKey[] }>(ag(id, '/keys')),
   makeKey: (id: string, name: string) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name }) }),
   revokeKey: (id: string, keyId: string) => request(ag(id, `/keys/${encodeURIComponent(keyId)}`), { method: 'DELETE' }),
+  /** The agent's security profile: what it reaches, what it is bound to, its own rules. */
+  security: (id: string) => request<AgentSecurity>(ag(id, '/security')),
+  /** Save the agent's own policy (a kind: a3t/policy file); checked before it is saved. */
+  savePolicy: (id: string, policy: string) => request<{ rules: string[] }>(ag(id, '/policy'), { method: 'PUT', body: JSON.stringify({ policy }) }),
+  dropPolicy: (id: string) => request(ag(id, '/policy'), { method: 'DELETE' }),
   promote: (id: string, name: string, newAgent: { id: string; name: string }) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/promote`), { method: 'POST', body: JSON.stringify({ new_agent: newAgent }) }),
 };
 export interface AgentVersion { version: string; template: { id: string; version: string }; memory: { namespace: string; tag: string } | null; note: string; created_by: string; created_at: string }
