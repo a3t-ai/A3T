@@ -30,7 +30,7 @@
 //! remove: [memory.change, tools.delete_*]
 //! ```
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::str::FromStr;
 
 use flowr_policy::catalogue::{catalogue, Catalogue, Permission};
@@ -39,99 +39,7 @@ use flowr_policy::catalogue::{catalogue, Catalogue, Permission};
 pub const BASELINE_ROLES: &[&str] = &["Admin", "Operator", "Viewer"];
 const TOOL_ACTIONS: &str = r#"[Action::"mcp:call", Action::"tool:invoke"]"#;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PolicyFile {
-    pub kind: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Where it applies. Absent: only where a flow or agent references it.
-    #[serde(default)]
-    pub applies_to: Option<AppliesTo>,
-    #[serde(default)]
-    pub rules: Vec<Rule>,
-    /// Expert Cedar (`forbid` statements only).
-    #[serde(default)]
-    pub cedar: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppliesTo {
-    /// Every project in the org.
-    #[serde(default)]
-    pub org: bool,
-    #[serde(default)]
-    pub projects: Vec<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// `<project>/<flow>`.
-    #[serde(default)]
-    pub flows: Vec<String>,
-    #[serde(default)]
-    pub agents: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Rule {
-    #[serde(default)]
-    pub who: Option<Who>,
-    /// Catalogue ids (`flows.run`, `apps.security`) or tool globs (`tools.delete_*`).
-    pub cannot: Vec<String>,
-    #[serde(default)]
-    pub on: Option<On>,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Who {
-    #[serde(default)]
-    pub roles: Vec<String>,
-    /// `any`, or agent ids.
-    #[serde(default)]
-    pub agents: Option<AgentsSel>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum AgentsSel {
-    Any(String),
-    Named(Vec<String>),
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct On {
-    /// Tool-name globs the rule is limited to (`github.*`).
-    #[serde(default)]
-    pub tools: Vec<String>,
-    #[serde(default)]
-    pub models: Option<InOrNot>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct InOrNot {
-    #[serde(default, rename = "in")]
-    pub is_in: Vec<String>,
-    #[serde(default)]
-    pub not_in: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RoleFile {
-    pub kind: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    pub extends: String,
-    #[serde(default)]
-    pub remove: Vec<String>,
-}
+pub use flowr_policy::policy_file::{AgentsSel, AppliesTo, InOrNot, On, PolicyFile, RoleFile, Rule, Who};
 
 /// Where a compiled policy is placed (which policy sets carry it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -320,9 +228,25 @@ fn annotate(id: &str, reason: &str) -> String {
     format!("@id({})\n@reason({})\n", q(id), q(reason))
 }
 
+/// An agent's own policy (its security profile): it applies to that agent
+/// only, wherever the agent runs, so the file names no `applies_to`. Compiled
+/// under the agent's project; the scope is the agent's id, so a copy of the
+/// agent (clone, fork, sale) carries the same limits under its new id.
+pub fn compile_agent_policy(project: &str, agent_id: &str, yaml: &str) -> Result<Compiled, String> {
+    let mut f = PolicyFile::parse(yaml)?;
+    if f.applies_to.is_some() {
+        return Err("an agent's own policy applies to the agent itself: leave out applies_to".into());
+    }
+    f.applies_to = Some(AppliesTo { agents: vec![agent_id.to_string()], ..Default::default() });
+    compile_file(project, f)
+}
+
 /// Compile a policy file of `org`.
 pub fn compile_policy(org: &str, yaml: &str) -> Result<Compiled, String> {
-    let f: PolicyFile = serde_yaml::from_str(yaml).map_err(|e| format!("policy file: {e}"))?;
+    compile_file(org, PolicyFile::parse(yaml)?)
+}
+
+fn compile_file(org: &str, f: PolicyFile) -> Result<Compiled, String> {
     if f.kind != "a3t/policy" {
         return Err(format!("kind is {:?}, not a3t/policy", f.kind));
     }

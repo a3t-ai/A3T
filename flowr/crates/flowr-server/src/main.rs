@@ -432,6 +432,18 @@ async fn collect_registry_cedar_policies(
             }
         }
     }
+    // Each agent's own security policy. It goes in the platform set: an agent's
+    // turns run through A3T's agent flow, wherever the agent lives, and every
+    // statement names the agent, so it binds that agent only. It was checked
+    // when saved; one that no longer compiles (the catalogue changed) is
+    // reported and left out, and the rest of the set still loads.
+    #[cfg(feature = "ee")]
+    for (id, project, yaml) in flowr_ce::agent_space::security::all_policies(storage.as_ref()).await {
+        match flowr_aesop::policy_files::compile_agent_policy(&project, &id, &yaml) {
+            Ok(c) => out.push(("a3t".to_string(), format!("agent-{id}"), c.cedar)),
+            Err(e) => warn!(agent = %id, error = %e, "an agent's own policy no longer compiles; it is not enforced"),
+        }
+    }
     out
 }
 
@@ -686,6 +698,18 @@ impl flowr_ce::policy_gate::PolicyGate for ServerPolicyGate {
         let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
         flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
             .map_err(|e| format!("Policy {namespace}/{name} was not saved: it does not compile. {e}"))
+    }
+
+    async fn compile_agent_policy(&self, project: &str, agent_id: &str, yaml: &str) -> Result<serde_json::Value, String> {
+        let c = flowr_aesop::policy_files::compile_agent_policy(project, agent_id, yaml)?;
+        // It must also load with everything else that is saved.
+        let mut policies: Vec<(String, String, String)> = collect_registry_cedar_policies(&self.0.storage)
+            .await.into_iter().filter(|(_, n, _)| n != &format!("agent-{agent_id}")).collect();
+        policies.push(("a3t".to_string(), format!("agent-{agent_id}"), c.cedar.clone()));
+        let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
+        flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
+            .map_err(|e| format!("The policy was not saved: it does not load with the others. {e}"))?;
+        Ok(serde_json::json!({ "name": c.name, "placement": c.placement, "hidden_apps": c.hidden_apps }))
     }
 
     async fn changed(&self) {

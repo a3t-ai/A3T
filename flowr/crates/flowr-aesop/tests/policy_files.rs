@@ -1,7 +1,7 @@
 //! Org policy and role files compile to Cedar that the engine enforces, and
 //! they can only narrow access.
 
-use flowr_aesop::policy_files::{compile_policy, compile_role, HiddenApp, Placement};
+use flowr_aesop::policy_files::{compile_agent_policy, compile_policy, compile_role, HiddenApp, Placement};
 use flowr_aesop::CedarHook;
 use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource};
 
@@ -139,4 +139,18 @@ cedar: |
 fn expert_cedar_that_does_not_fit_the_schema_is_refused_at_save() {
     let e = compile_policy("acme", "kind: a3t/policy\nname: x\ncedar: |\n  forbid(principal, action, resource) when { resource.colour == \"red\" };\n").unwrap_err();
     assert!(e.contains("A3T schema"), "{e}");
+}
+
+#[tokio::test]
+async fn an_agents_own_policy_binds_that_agent_only() {
+    let yaml = "kind: a3t/policy\nname: profile\nrules:\n  - cannot: [tools.external]\n    reason: This agent uses only A3T's own tools.\n";
+    let c = compile_agent_policy("acme-crm", "agt-1", yaml).unwrap();
+    let h = hook(&[c.cedar]);
+    let as_agent = |id: &str| tool_call(human(&["Admin"]), "github_create_issue", serde_json::json!({"agent": id}));
+    assert!(denied(&h.check(&as_agent("agt-1")).await).is_some(), "the agent is bound");
+    assert!(denied(&h.check(&as_agent("agt-2")).await).is_none(), "other agents are not");
+    // A copy under a new id carries the same file, scoped to itself.
+    let copy = compile_agent_policy("other-org", "agt-9", yaml).unwrap();
+    assert!(denied(&hook(&[copy.cedar]).check(&as_agent("agt-9")).await).is_some());
+    assert!(compile_agent_policy("acme-crm", "agt-1", "kind: a3t/policy\nname: x\napplies_to: { org: true }\nrules:\n  - cannot: [flows.run]\n    reason: r\n").is_err());
 }

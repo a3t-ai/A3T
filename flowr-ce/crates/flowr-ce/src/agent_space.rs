@@ -48,6 +48,7 @@ use crate::platform_db::open_platform_db;
 
 pub mod environments;
 pub mod manifest;
+pub mod security;
 mod merge_requests;
 
 /// The org's ADB (the agents' memory). One for every org until per-org resources exist.
@@ -262,6 +263,8 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         // Keys for its data plane (crate::agent_keys): list, make (shown once), revoke.
         .route("/agents/:agent_id/keys", get(list_keys).post(create_key))
         .route("/agents/:agent_id/keys/:key_id", delete(revoke_key))
+        .route("/agents/:agent_id/policy", get(security::get_policy).put(security::put_policy).delete(security::delete_policy))
+        .route("/agents/:agent_id/security", get(security::get_security))
         .route("/agents/:agent_id/tools", get(list_agent_tools))
         .route("/agents/:agent_id/tools/:tool", post(call_agent_tool))
         .route("/projects/:project/usage", get(project_usage))
@@ -449,6 +452,8 @@ async fn copy_new_agent(s: &dyn StorageBackend, principal: &Principal, id: &str,
     body["into"] = json!(into);
     let copied = adb(s, &sp, action, body).await?;
     write_new_agent(s, &new_row, &new_id, &sp.org_id, &into, principal.id()).await?;
+    // The copy keeps the agent's own security policy (scoped to its new id).
+    security::copy_policy(s, id, &new_id, principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("agent {new_id} was created, but its policy was not copied: {e}")))?;
     // AC-5: the new agent's first version says where it came from. The agent exists by
     // now, so a failure here is reported, not fatal.
     let lineage = match branch {
@@ -613,6 +618,8 @@ async fn transfer_agent(State(s): St, p: P, Path(id): Path<String>, Json(b): Jso
         let tools = b.get("tools").and_then(|v| v.as_bool()).unwrap_or(false);
         let copied = adb(s, &sp, "space_clone", json!({ "into": into, "procedures_only": true, "tools": tools })).await?;
         write_new_agent(s, &new_row, &new_id, &org_id, &into, principal.id()).await?;
+        // A copy into another project or org keeps the agent's own security policy.
+        security::copy_policy(s, &id, &new_id, principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("agent {new_id} was created, but its policy was not copied: {e}")))?;
         let new_space = Space { agent_id: new_id.clone(), resource: org_adb(&org_id), org_id, namespace: into };
         let lineage = json!({ "transferred_from": { "agent": id, "memory": copied.get("from"), "procedures_only": true } });
         let mut answer = json!({ "agent": new_row, "memory": copied });

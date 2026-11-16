@@ -20,6 +20,12 @@ pub trait PolicyGate: Send + Sync {
     async fn check(&self, namespace: &str, name: &str, source: Option<&str>) -> Result<(), String>;
     /// A policy changed: load the set here, and on every other FlowR.
     async fn changed(&self);
+    /// Compile an agent's own policy (`kind: a3t/policy`, applying to agent
+    /// `agent_id` of `project`): `{name, placement, hidden_apps}` or why not.
+    async fn compile_agent_policy(&self, project: &str, agent_id: &str, yaml: &str) -> Result<serde_json::Value, String> {
+        let _ = (project, agent_id, yaml);
+        Err("agent security policies need FlowR EE".into())
+    }
 }
 
 static GATE: OnceLock<Arc<dyn PolicyGate>> = OnceLock::new();

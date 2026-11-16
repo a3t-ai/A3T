@@ -145,6 +145,13 @@ impl TaskHandler for LanceDbHandler {
                 if table_name == "agent_configs" {
                     let ids: Vec<String> = rows.iter().filter_map(|r| r.get("id").and_then(|v| v.as_str())).map(str::to_string).collect();
                     crate::agent_keys::revoke_all(db.as_ref(), &ids).await;
+                    // ...and its own security policy.
+                    for id in &ids {
+                        let _ = db.delete(crate::agent_space::security::TABLE, &format!("agent_id = {}", sql_quote(id))).await;
+                    }
+                    if let Some(gate) = crate::policy_gate::get() {
+                        gate.changed().await;
+                    }
                 }
                 Ok(TaskResult::new(json!({"deleted": true, "rows": rows.len()})))
             }
