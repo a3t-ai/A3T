@@ -41,6 +41,21 @@ pub fn compose_template(inherited: Option<Value>, current: Value) -> Value {
             _ => {}
         }
     }
+    // Policy attachments only accumulate: a subflow (or a flow that extends
+    // another) can add policies and tags, never drop the ones it runs under.
+    for key in ["policyRef", "tags"] {
+        let par = parent.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        if par.is_empty() {
+            continue;
+        }
+        let mut all = result.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        for x in par {
+            if !all.contains(&x) {
+                all.push(x);
+            }
+        }
+        result.insert(key.to_string(), Value::Array(all));
+    }
     for (k, v) in parent {
         result.entry(k.clone()).or_insert_with(|| v.clone());
     }
@@ -138,6 +153,21 @@ pub fn apply_base(mut child: WorkflowDefinition, base: &WorkflowDefinition) -> R
     meta["a3t"] = a3t;
     child.metadata = Some(meta);
     Ok(child)
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_subflow_cannot_drop_the_policies_it_runs_under() {
+        let parent = json!({ "policyRef": ["acme/no-external-llm"], "tags": ["pii"] });
+        let child = json!({ "policyRef": ["acme/other"], "tags": [] });
+        let out = compose_template(Some(parent), child);
+        assert_eq!(out["policyRef"], json!(["acme/other", "acme/no-external-llm"]));
+        assert_eq!(out["tags"], json!(["pii"]));
+    }
 }
 
 #[cfg(test)]

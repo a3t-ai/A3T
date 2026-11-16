@@ -8,9 +8,9 @@ fn annotated_a3t_flows_parse() {
         .join("../../a3t/backend/flows/a3t");
     let mut checked = 0;
     for f in [
-        "templates_crud.yaml", "agents_crud.yaml", "canvas_crud.yaml",
-        "resources_crud.yaml", "settings_crud.yaml", "users_crud.yaml",
-        "audit_crud.yaml",
+        "flow_a3t_templates.yaml", "flow_a3t_agents.yaml", "flow_a3t_canvas.yaml",
+        "flow_a3t_resources.yaml", "flow_a3t_settings.yaml", "flow_a3t_users.yaml",
+        "flow_a3t_audit.yaml",
     ] {
         let p = dir.join(f);
         let yaml = std::fs::read_to_string(&p)
@@ -33,8 +33,8 @@ fn annotated_a3t_flows_parse() {
 #[test]
 fn a3t_project_flows_parse() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../a3t/backend/flows");
-    for (f, ns) in [("system/a3t_projects_install.yaml", "system"), ("a3t/a3t_profile.yaml", "a3t"),
-                    ("a3t/a3t_orgs.yaml", "a3t"), ("a3t/a3t_projects.yaml", "a3t")] {
+    for (f, ns) in [("system/flow_system_projects_install.yaml", "system"), ("a3t/flow_a3t_profile.yaml", "a3t"),
+                    ("a3t/flow_a3t_orgs.yaml", "a3t"), ("a3t/flow_a3t_projects.yaml", "a3t")] {
         let p = dir.join(f);
         let yaml = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
         let wf = swf_parser::parse_yaml(&yaml).unwrap_or_else(|e| panic!("{f} failed to parse: {e}"));

@@ -18,6 +18,11 @@ type A3tTemplate = {
   runtimePolicy?: String,
   policyRef?: Set<String>,
   tags?: Set<String>,
+  // Who is running, stamped by the runtime (never taken from the flow's own
+  // metadata): `<project>/<flow>` of the business flow, and the agent's id.
+  // They let SecOps apply a policy to a flow or agent by name (applies_to).
+  flow?: String,
+  agent?: String,
 };
 
 entity User { roles?: Set<String>, template?: A3tTemplate };

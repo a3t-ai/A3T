@@ -3466,7 +3466,9 @@ dependencies = [
  "async-trait",
  "cedar-policy",
  "flowr-policy",
+ "serde",
  "serde_json",
+ "serde_yaml",
  "tracing",
 ]
 

@@ -10,6 +10,8 @@
 //! Dependency direction: `flowr-ee → { flowr-policy (CE), aesop-core }`. Neither
 //! CE nor aesop depends on this crate.
 
+pub mod policy_files;
+
 use aesop_core::{
     AesopError, Action as AesopAction, AgentId as AesopAgentId, AuthzEngine, Engine,
     Principal as AesopPrincipal, Resource as AesopResource, SecurityContext,
@@ -17,11 +19,11 @@ use aesop_core::{
 use flowr_policy::{ExecutionRequest, PolicyDecision, PolicyHook, Principal};
 
 /// The A3T baseline policy pack, embedded so the EE binary is self-contained.
-pub const A3T_SCHEMA: &str = include_str!("../policies/a3t/a3t.cedarschema");
+pub const A3T_SCHEMA: &str = include_str!("../../../../a3t/policies/a3t.cedarschema");
 /// The same base schema in Cedar JSON — the merge base for registry schema
 /// fragments (JSON deep-merges cleanly; cedarschema text can't extend an entity).
-pub const A3T_SCHEMA_JSON: &str = include_str!("../policies/a3t/a3t.schema.json");
-pub const A3T_BASELINE: &str = include_str!("../policies/a3t/baseline.cedar");
+pub const A3T_SCHEMA_JSON: &str = include_str!("../../../../a3t/policies/a3t.schema.json");
+pub const A3T_BASELINE: &str = include_str!("../../../../a3t/policies/baseline.cedar");
 
 /// Recursively merge `over` into `base`: objects merge key-by-key (so entity
 /// `shape.attributes` and action maps union), everything else is overwritten by

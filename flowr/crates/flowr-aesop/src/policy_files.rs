@@ -1,0 +1,441 @@
+//! Config-to-code policy: org policy and role files (YAML) compiled to Cedar.
+//!
+//! SecOps build rules in the console (or experts write Cedar); A3T saves them as
+//! files in the org's policy repo, and this module turns a file into Cedar
+//! `forbid` statements. Org policy can only **narrow** what the A3T baseline
+//! allows: every plain rule becomes a `forbid`, and an expert `cedar:` block may
+//! hold `forbid`s only. Names come from the permission catalogue
+//! (`a3t/policies/catalogue.yaml`).
+//!
+//! ```yaml
+//! kind: a3t/policy
+//! name: no-external-llm
+//! applies_to: { projects: [acme-crm], tags: [pii], flows: [acme-crm/refunds] }
+//! rules:
+//!   - who: { roles: [Operator], agents: any }
+//!     cannot: [models.use]
+//!     on: { models: { not_in: [acme/claude-sonnet] } }
+//!     reason: Only the org's approved models.
+//! cedar: |
+//!   forbid(principal, action == Action::"mcp:call", resource) when { ... };
+//! ```
+//!
+//! A role file is a baseline role minus permissions; it compiles to forbids on
+//! principals holding that role:
+//!
+//! ```yaml
+//! kind: a3t/role
+//! name: support-operator
+//! extends: Operator
+//! remove: [memory.change, tools.delete_*]
+//! ```
+
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
+use flowr_policy::catalogue::{catalogue, Catalogue, Permission};
+
+/// The baseline roles an org role can extend (and a rule can name).
+pub const BASELINE_ROLES: &[&str] = &["Admin", "Operator", "Viewer"];
+const TOOL_ACTIONS: &str = r#"[Action::"mcp:call", Action::"tool:invoke"]"#;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyFile {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Where it applies. Absent: only where a flow or agent references it.
+    #[serde(default)]
+    pub applies_to: Option<AppliesTo>,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+    /// Expert Cedar (`forbid` statements only).
+    #[serde(default)]
+    pub cedar: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppliesTo {
+    /// Every project in the org.
+    #[serde(default)]
+    pub org: bool,
+    #[serde(default)]
+    pub projects: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// `<project>/<flow>`.
+    #[serde(default)]
+    pub flows: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    #[serde(default)]
+    pub who: Option<Who>,
+    /// Catalogue ids (`flows.run`, `apps.security`) or tool globs (`tools.delete_*`).
+    pub cannot: Vec<String>,
+    #[serde(default)]
+    pub on: Option<On>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Who {
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// `any`, or agent ids.
+    #[serde(default)]
+    pub agents: Option<AgentsSel>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum AgentsSel {
+    Any(String),
+    Named(Vec<String>),
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct On {
+    /// Tool-name globs the rule is limited to (`github.*`).
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub models: Option<InOrNot>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InOrNot {
+    #[serde(default, rename = "in")]
+    pub is_in: Vec<String>,
+    #[serde(default)]
+    pub not_in: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleFile {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub extends: String,
+    #[serde(default)]
+    pub remove: Vec<String>,
+}
+
+/// Where a compiled policy is placed (which policy sets carry it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    /// Every project of the org.
+    Org,
+    /// These projects only.
+    Projects(Vec<String>),
+}
+
+/// An app a rule hides in the console, and for whom (a Cedar-free summary).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HiddenApp {
+    pub app: String,
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Compiled {
+    /// `<org>/<name>`.
+    pub name: String,
+    /// The Cedar statements, each with `@id` and `@reason`.
+    pub cedar: String,
+    pub placement: Placement,
+    pub hidden_apps: Vec<HiddenApp>,
+}
+
+fn q(s: &str) -> String {
+    serde_json::to_string(s).expect("a string serializes")
+}
+
+fn set(items: &[String]) -> String {
+    format!("[{}]", items.iter().map(|s| q(s)).collect::<Vec<_>>().join(", "))
+}
+
+fn valid_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 63 && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && n.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+}
+
+/// A glob as a Cedar `like` pattern (`*` stays; a literal `*` can't be asked for).
+fn like(glob: &str) -> Result<String, String> {
+    if glob.is_empty() || glob.contains('"') || glob.contains('\\') {
+        return Err(format!("{glob:?} is not a tool name pattern"));
+    }
+    Ok(format!("\"{glob}\""))
+}
+
+/// What one `cannot` entry forbids: (action clause for the head, resource
+/// condition) pairs, or an app the console hides.
+enum Target {
+    Cedar(Vec<(String, Option<String>)>),
+    App(String),
+}
+
+fn target_of(cat: &Catalogue, item: &str) -> Result<Target, String> {
+    if let Some(glob) = item.strip_prefix("tools.").filter(|g| *g != "external") {
+        if cat.permissions.iter().all(|p| p.id != item) {
+            let cond = format!("resource is Tool && resource has name && resource.name like {}", like(glob)?);
+            return Ok(Target::Cedar(vec![(format!("action in {TOOL_ACTIONS}"), Some(cond))]));
+        }
+    }
+    let p: &Permission = cat.permissions.iter().find(|p| p.id == item)
+        .ok_or_else(|| format!("{item:?} is not in the permission catalogue"))?;
+    if p.enforced_by.as_deref() == Some("console") {
+        return Ok(Target::App(p.id.trim_start_matches("apps.").to_string()));
+    }
+    let mut parts = Vec::new();
+    if p.id == "tools.external" {
+        // Tools of connected MCP servers: anything that is not a built-in tool.
+        let builtin: Vec<String> = cat.permissions.iter().flat_map(|p| p.tools.iter().cloned()).collect();
+        parts.push((format!("action in {TOOL_ACTIONS}"),
+            Some(format!("resource is Tool && resource has name && !({}.contains(resource.name))", set(&builtin)))));
+        return Ok(Target::Cedar(parts));
+    }
+    if !p.tools.is_empty() {
+        parts.push((format!("action in {TOOL_ACTIONS}"),
+            Some(format!("resource is Tool && resource has name && {}.contains(resource.name)", set(&p.tools)))));
+    }
+    if !p.actions.is_empty() {
+        let acts = p.actions.iter().map(|a| format!("Action::{}", q(a))).collect::<Vec<_>>().join(", ");
+        parts.push((format!("action in [{acts}]"), None));
+    }
+    Ok(Target::Cedar(parts))
+}
+
+/// The principal is one of these agents.
+fn agent_is(ids: &[String]) -> String {
+    let eqs = ids.iter().map(|a| format!("principal == Agent::{}", q(a))).collect::<Vec<_>>().join(" || ");
+    format!("(principal is Agent && ({eqs}))")
+}
+
+/// A role as principals carry it: baseline and platform roles by name, an
+/// org's own roles as `<org>/<role>`.
+fn role_name(org: &str, r: &str) -> String {
+    if BASELINE_ROLES.contains(&r) || r == "SuperAdmin" || r == "SecurityAdmin" || r.contains('/') {
+        r.to_string()
+    } else {
+        format!("{org}/{r}")
+    }
+}
+
+fn who_cond(org: &str, who: &Option<Who>) -> Result<(Option<String>, Vec<String>), String> {
+    let Some(w) = who else { return Ok((None, Vec::new())) };
+    let roles: Vec<String> = w.roles.iter().map(|r| role_name(org, r)).collect();
+    let mut ors = Vec::new();
+    if !roles.is_empty() {
+        ors.push(format!("(principal has roles && principal.roles.containsAny({}))", set(&roles)));
+    }
+    match &w.agents {
+        None => {}
+        Some(AgentsSel::Any(s)) if s == "any" => ors.push("principal is Agent".to_string()),
+        Some(AgentsSel::Any(s)) => return Err(format!("who.agents is \"any\" or a list of agent ids, not {s:?}")),
+        Some(AgentsSel::Named(ids)) if !ids.is_empty() => ors.push(agent_is(ids)),
+        Some(AgentsSel::Named(_)) => {}
+    }
+    if ors.is_empty() {
+        return Ok((None, roles));
+    }
+    Ok((Some(format!("({})", ors.join(" || "))), roles))
+}
+
+fn scope_cond(full_name: &str, applies: &Option<AppliesTo>) -> (Option<String>, Placement) {
+    let referenced = format!(
+        "(principal has template && principal.template has policyRef && principal.template.policyRef.contains({}))",
+        q(full_name));
+    let Some(a) = applies else {
+        // No applies_to: only where a flow or agent references it.
+        return (Some(referenced), Placement::Org);
+    };
+    let mut ors = vec![referenced];
+    if !a.tags.is_empty() {
+        ors.push(format!("(principal has template && principal.template has tags && principal.template.tags.containsAny({}))", set(&a.tags)));
+    }
+    if !a.flows.is_empty() {
+        ors.push(format!("(principal has template && principal.template has flow && {}.contains(principal.template.flow))", set(&a.flows)));
+    }
+    if !a.agents.is_empty() {
+        ors.push(agent_is(&a.agents));
+        ors.push(format!("(principal has template && principal.template has agent && {}.contains(principal.template.agent))", set(&a.agents)));
+    }
+    let selective = !(a.tags.is_empty() && a.flows.is_empty() && a.agents.is_empty());
+    let placement = if a.org || a.projects.is_empty() { Placement::Org } else { Placement::Projects(a.projects.clone()) };
+    // Placed on whole projects (or the org) with no narrower selector: every call there.
+    if !selective && (a.org || !a.projects.is_empty()) {
+        return (None, placement);
+    }
+    (Some(format!("({})", ors.join(" || "))), placement)
+}
+
+fn on_cond(on: &Option<On>) -> Result<Vec<String>, String> {
+    let Some(on) = on else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    if !on.tools.is_empty() {
+        let alts = on.tools.iter().map(|g| like(g).map(|p| format!("resource.name like {p}"))).collect::<Result<Vec<_>, _>>()?;
+        out.push(format!("(resource is Tool && resource has name && ({}))", alts.join(" || ")));
+    }
+    if let Some(m) = &on.models {
+        if !m.is_in.is_empty() && !m.not_in.is_empty() {
+            return Err("on.models takes `in` or `not_in`, not both".into());
+        }
+        if !m.is_in.is_empty() {
+            out.push(format!("(resource is Llm && resource has name && {}.contains(resource.name))", set(&m.is_in)));
+        }
+        if !m.not_in.is_empty() {
+            out.push(format!("(resource is Llm && !(resource has name && {}.contains(resource.name)))", set(&m.not_in)));
+        }
+    }
+    Ok(out)
+}
+
+/// Parse and validate against the A3T schema, as the engine will when it loads.
+fn validate(src: &str) -> Result<(), String> {
+    let set = cedar_policy::PolicySet::from_str(src).map_err(|e| format!("Cedar does not parse: {e}"))?;
+    let (schema, _) = cedar_policy::Schema::from_cedarschema_str(crate::A3T_SCHEMA).map_err(|e| format!("A3T schema: {e}"))?;
+    let result = cedar_policy::Validator::new(schema).validate(&set, cedar_policy::ValidationMode::default());
+    if !result.validation_passed() {
+        let errs: Vec<String> = result.validation_errors().map(|e| e.to_string()).collect();
+        return Err(format!("Cedar does not fit the A3T schema: {}", errs.join("; ")));
+    }
+    Ok(())
+}
+
+fn annotate(id: &str, reason: &str) -> String {
+    format!("@id({})\n@reason({})\n", q(id), q(reason))
+}
+
+/// Compile a policy file of `org`.
+pub fn compile_policy(org: &str, yaml: &str) -> Result<Compiled, String> {
+    let f: PolicyFile = serde_yaml::from_str(yaml).map_err(|e| format!("policy file: {e}"))?;
+    if f.kind != "a3t/policy" {
+        return Err(format!("kind is {:?}, not a3t/policy", f.kind));
+    }
+    if !valid_name(&f.name) {
+        return Err(format!("name {:?}: lowercase letters, digits and '-'", f.name));
+    }
+    if f.rules.is_empty() && f.cedar.as_deref().map_or(true, |c| c.trim().is_empty()) {
+        return Err("a policy needs at least one rule (or an expert cedar block)".into());
+    }
+    let cat = catalogue();
+    let full = format!("{org}/{}", f.name);
+    let (scope, placement) = scope_cond(&full, &f.applies_to);
+    let mut out = String::new();
+    let mut hidden = Vec::new();
+    for (i, r) in f.rules.iter().enumerate() {
+        if r.cannot.is_empty() {
+            return Err(format!("rule {}: `cannot` names nothing", i + 1));
+        }
+        if r.reason.trim().is_empty() {
+            return Err(format!("rule {}: give a reason (people see it when they are refused)", i + 1));
+        }
+        let (who, roles) = who_cond(org, &r.who)?;
+        let on = on_cond(&r.on)?;
+        for (k, item) in r.cannot.iter().enumerate() {
+            match target_of(cat, item).map_err(|e| format!("rule {}: {e}", i + 1))? {
+                Target::App(app) => hidden.push(HiddenApp { app, roles: roles.clone() }),
+                Target::Cedar(parts) => {
+                    for (j, (head, res)) in parts.into_iter().enumerate() {
+                        let conds: Vec<String> = scope.iter().cloned().chain(who.iter().cloned()).chain(res).chain(on.iter().cloned()).collect();
+                        let when = if conds.is_empty() { String::new() } else { format!(" when {{\n  {}\n}}", conds.join(" &&\n  ")) };
+                        out.push_str(&annotate(&format!("{full}/r{}.{}.{}", i + 1, k + 1, j + 1), &r.reason));
+                        out.push_str(&format!("forbid(principal, {head}, resource){when};\n\n"));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(src) = f.cedar.as_deref().filter(|c| !c.trim().is_empty()) {
+        out.push_str(&expert_cedar(&full, src)?);
+    }
+    if out.trim().is_empty() {
+        // Only console rules (apps): nothing for the engine.
+        return Ok(Compiled { name: full, cedar: out, placement, hidden_apps: hidden });
+    }
+    // A broken file never reaches the engine: it is refused here, at save.
+    validate(&out)?;
+    Ok(Compiled { name: full, cedar: out, placement, hidden_apps: hidden })
+}
+
+/// Check an expert block: Cedar that parses, `forbid` only, each statement named.
+fn expert_cedar(full: &str, src: &str) -> Result<String, String> {
+    let set = cedar_policy::PolicySet::from_str(src).map_err(|e| format!("cedar block: {e}"))?;
+    if set.templates().next().is_some() {
+        return Err("cedar block: templates are not allowed".into());
+    }
+    let mut n = 0;
+    for p in set.policies() {
+        n += 1;
+        if p.effect() != cedar_policy::Effect::Forbid {
+            return Err("cedar block: only `forbid` statements; org policy can narrow access, never widen it".into());
+        }
+    }
+    if n == 0 {
+        return Err("cedar block: no statements".into());
+    }
+    // Statements without an @id get one under this policy's name, so every
+    // decision names the file that made it.
+    let mut out = String::new();
+    for (i, p) in set.policies().enumerate() {
+        let text = p.to_string();
+        if p.annotation("id").is_some() {
+            out.push_str(&text);
+        } else {
+            out.push_str(&format!("@id({})\n{text}", q(&format!("{full}/cedar.{}", i + 1))));
+        }
+        out.push_str("\n\n");
+    }
+    Ok(out)
+}
+
+/// Compile a role file of `org`: forbids for what the role removes from its base.
+pub fn compile_role(org: &str, yaml: &str) -> Result<Compiled, String> {
+    let f: RoleFile = serde_yaml::from_str(yaml).map_err(|e| format!("role file: {e}"))?;
+    if f.kind != "a3t/role" {
+        return Err(format!("kind is {:?}, not a3t/role", f.kind));
+    }
+    if !valid_name(&f.name) {
+        return Err(format!("name {:?}: lowercase letters, digits and '-'", f.name));
+    }
+    if !BASELINE_ROLES.contains(&f.extends.as_str()) {
+        return Err(format!("extends {:?}: one of {}", f.extends, BASELINE_ROLES.join(", ")));
+    }
+    let cat = catalogue();
+    let full = format!("{org}/{}", f.name);
+    let role = format!("{org}/{}", f.name);
+    let holder = format!("principal has roles && principal.roles.contains({})", q(&role));
+    let mut out = String::new();
+    let mut hidden = Vec::new();
+    for (k, item) in f.remove.iter().enumerate() {
+        match target_of(cat, item).map_err(|e| format!("remove: {e}"))? {
+            Target::App(app) => hidden.push(HiddenApp { app, roles: vec![role.clone()] }),
+            Target::Cedar(parts) => {
+                for (j, (head, res)) in parts.into_iter().enumerate() {
+                    let conds: Vec<String> = std::iter::once(holder.clone()).chain(res).collect();
+                    out.push_str(&annotate(&format!("{full}/remove.{}.{}", k + 1, j + 1),
+                        &format!("The {} role does not include this ({item}).", f.name)));
+                    out.push_str(&format!("forbid(principal, {head}, resource) when {{\n  {}\n}};\n\n", conds.join(" &&\n  ")));
+                }
+            }
+        }
+    }
+    if !out.is_empty() {
+        validate(&out)?;
+    }
+    Ok(Compiled { name: full, cedar: out, placement: Placement::Org, hidden_apps: hidden })
+}

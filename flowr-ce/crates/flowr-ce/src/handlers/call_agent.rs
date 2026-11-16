@@ -530,6 +530,14 @@ impl TaskHandler for AgentHandler {
             state.messages.extend(messages_from_session(&session));
             debug!(restored_messages = state.messages.len(), "session restored");
         }
+        // The acting agent, for policies SecOps apply to it by name (the runtime
+        // stamps it; the agent's own YAML can't).
+        if let Some(agent) = crate::agent_space::agent_of_session(&config.session_id) {
+            let t = ctx.template_meta.entry("template".to_string()).or_insert_with(|| json!({}));
+            if let Some(obj) = t.as_object_mut() {
+                obj.insert("agent".to_string(), json!(agent));
+            }
+        }
         // Approvals given in this conversation on another process (L39).
         crate::grants_store::load(storage.as_ref(), &config.session_id).await;
         ctx.context = state.to_context_value(&config);

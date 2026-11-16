@@ -35,6 +35,14 @@
               "type": "String"
             },
             "required": false
+          },
+          "flow": {
+            "type": "String",
+            "required": false
+          },
+          "agent": {
+            "type": "String",
+            "required": false
           }
         }
       }

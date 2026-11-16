@@ -179,11 +179,27 @@ impl WorkflowExecutor {
         // parent's template (inherited at the child-context edge); compose
         // attenuate-only so a subflow can narrow the capability surface but never
         // widen it. If the subflow declares no `a3t`, it keeps the inherited one.
-        if let Some(a3t) = workflow.metadata.as_ref().and_then(|m| m.get("a3t")) {
-            let inherited = ctx.template_meta.get("template").cloned();
-            let composed = compose_template(inherited, a3t.clone());
-            ctx.template_meta.insert("template".to_string(), composed);
+        let inherited = ctx.template_meta.get("template").cloned();
+        let mut template = match workflow.metadata.as_ref().and_then(|m| m.get("a3t")) {
+            Some(a3t) => compose_template(inherited.clone(), a3t.clone()),
+            None => inherited.clone().unwrap_or_else(|| serde_json::json!({})),
+        };
+        // Who is running is the runtime's to say, never the flow's own metadata:
+        // `flow` is the business flow (`<project>/<flow>`; a subflow keeps its
+        // caller's) and `agent` the acting agent (set by the agent turn). They let
+        // SecOps apply a policy to a flow or agent by name.
+        if let Some(t) = template.as_object_mut() {
+            t.remove("flow");
+            t.remove("agent");
+            let parent = inherited.as_ref().and_then(|p| p.as_object());
+            let flow = parent.and_then(|p| p.get("flow")).cloned()
+                .unwrap_or_else(|| serde_json::json!(format!("{}/{}", ctx.namespace, ctx.name)));
+            t.insert("flow".to_string(), flow);
+            if let Some(agent) = parent.and_then(|p| p.get("agent")) {
+                t.insert("agent".to_string(), agent.clone());
+            }
         }
+        ctx.template_meta.insert("template".to_string(), template);
 
         // Execute task list under the aesop `flow_run` span (E0.5). Every
         // `flow_step` and `tool_call` span nests beneath this root, so the whole
