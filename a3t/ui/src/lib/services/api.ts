@@ -168,6 +168,14 @@ export async function firstPassword(email: string, password: string, newPassword
   }, false);
 }
 
+/** Change your own password; the server checks the current one. */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse<{ ok: boolean }>> {
+  return request<{ ok: boolean }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
 export async function signup(name: string, email: string, password: string): Promise<ApiResponse<LoginResponse>> {
   return request<LoginResponse>('/auth/signup', {
     method: 'POST',

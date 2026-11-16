@@ -1,6 +1,6 @@
 <script lang="ts">
   import { currentUser, userRole, actingAs, actAs } from '$lib/stores/auth';
-  import { mcpCall, execFlow, login as apiLogin, loadDirectory, type DirectoryUser } from '$lib/services/api';
+  import { changePassword as apiChangePassword, loadDirectory, type DirectoryUser } from '$lib/services/api';
 
   let { open = $bindable(false) } = $props();
 
@@ -20,9 +20,6 @@
   let firstName = $state('');
   let lastName = $state('');
   let email = $state('');
-  let address = $state('');
-  let personalSaving = $state(false);
-  let personalMsg = $state('');
 
   $effect(() => {
     if (open) {
@@ -30,23 +27,10 @@
       firstName = p[0] ?? '';
       lastName = p.slice(1).join(' ');
       email = $currentUser?.email ?? '';
-      personalMsg = ''; pwMsg = '';
+      pwMsg = '';
     }
   });
 
-  async function savePersonal(e: Event) {
-    e.preventDefault();
-    personalSaving = true; personalMsg = '';
-    try {
-      const res = await mcpCall('execute_flow', {
-        name: 'flow_a3t_users', namespace: 'a3t',
-        input: { input: { action: 'update', id: $currentUser?.id, name: `${firstName} ${lastName}`.trim(), email, address } }
-      });
-      personalMsg = res.ok ? 'Saved' : (res.error ?? 'Save failed');
-    } catch (err) {
-      personalMsg = err instanceof Error ? err.message : 'Save failed';
-    } finally { personalSaving = false; }
-  }
 
   // ── Preferences ──
   let theme = $state('system');
@@ -72,22 +56,9 @@
     if (newPw !== confirmPw) { pwMsg = 'Passwords do not match'; return; }
     pwSaving = true;
     try {
-      // 1. Verify the current password server-side (Argon2) without touching the
-      //    active session — this is the raw api login, not the auth-store one.
-      const verify = await apiLogin($currentUser?.email ?? '', currentPw);
-      if (!verify.ok) { pwMsg = 'Current password is incorrect'; return; }
-
-      // 2. Set the new password via the users CRUD flow (waits for completion).
-      const res = await execFlow('flow_a3t_users', 'a3t', {
-        input: {
-          action: 'change-password',
-          id: $currentUser?.id,
-          org_id: $currentUser?.org_id,
-          new_password: newPw,
-          timestamp: new Date().toISOString()
-        }
-      }, { silent: true });
-
+      // The server proves the current password and sets the new one where the
+      // account lives (A3T or the sign-in provider).
+      const res = await apiChangePassword(currentPw, newPw);
       pwMsg = res.ok ? 'Password updated' : (res.error ?? 'Update failed');
       if (res.ok) { currentPw = newPw = confirmPw = ''; }
     } catch (err) {
@@ -192,18 +163,14 @@
           {#if propNode === 'personal'}
             <div class="sp-form">
               <h3>Personal Details</h3>
-              <form onsubmit={savePersonal}>
-                <div class="pm-row">
-                  <div class="pm-field"><label for="pm-fn">First Name</label><input id="pm-fn" bind:value={firstName} placeholder="Jane" /></div>
-                  <div class="pm-field"><label for="pm-ln">Last Name</label><input id="pm-ln" bind:value={lastName} placeholder="Doe" /></div>
-                </div>
-                <div class="pm-field"><label for="pm-email">Email</label><input id="pm-email" type="email" bind:value={email} placeholder="jane@company.com" /></div>
-                <div class="pm-field"><label for="pm-addr">Address</label><textarea id="pm-addr" rows="3" bind:value={address} placeholder="Street, City, Country"></textarea></div>
-                <div class="pm-actions">
-                  <button type="submit" class="pm-save" disabled={personalSaving}>{personalSaving ? 'Saving…' : 'Save changes'}</button>
-                  {#if personalMsg}<span class="pm-msg" class:ok={personalMsg === 'Saved'}>{personalMsg}</span>{/if}
-                </div>
-              </form>
+              <!-- Name and email live in the sign-in account (Keycloak, or the org's SSO);
+                   A3T shows them and does not keep a second copy to drift. -->
+              <div class="pm-row">
+                <div class="pm-field"><label for="pm-fn">First Name</label><input id="pm-fn" value={firstName} readonly /></div>
+                <div class="pm-field"><label for="pm-ln">Last Name</label><input id="pm-ln" value={lastName} readonly /></div>
+              </div>
+              <div class="pm-field"><label for="pm-email">Email</label><input id="pm-email" type="email" value={email} readonly /></div>
+              <p class="pm-msg">These come from your sign-in account. To change them, ask a SecurityAdmin (Security › Identity) or your organisation's identity provider.</p>
             </div>
 
           {:else if propNode === 'preferences'}

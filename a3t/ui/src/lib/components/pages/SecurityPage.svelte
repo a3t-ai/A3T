@@ -16,7 +16,7 @@
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { getProject, namespacesFor, allProjectNamespaces } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
-  import { isInfosec } from '$lib/stores/auth';
+  import { isInfosec, userRole } from '$lib/stores/auth';
   import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
 
   type Policy = { namespace: string; name: string; cedar: string; description?: string | null; readOnly?: boolean };
@@ -97,17 +97,27 @@
   }
 
   // Test: a dry run against what is active, with this text in place of the saved one.
-  const ROLES = ['SuperAdmin', 'SecurityAdmin', 'Admin', 'Operator', 'Viewer'];
   const ACTIONS = ['mcp:call', 'tool:invoke', 'resource:create', 'resource:update', 'resource:delete', 'llm:call', 'flow:start', 'flow:deploy'];
   const RES_TYPES = ['Tool', 'Resource', 'Llm', 'Flow', 'Runtime'];
-  let tRole = $state('Operator'); let tAction = $state('mcp:call'); let tType = $state('Tool'); let tId = $state('list_flows'); let tDraft = $state(true);
+  // A3T roles a realm role carries (as the server canonicalizes them at sign-in).
+  const CANON: Record<string, string[]> = {
+    superadmin: ['SuperAdmin', 'SecurityAdmin', 'Admin', 'Operator', 'Viewer'], securityadmin: ['SecurityAdmin'],
+    admin: ['Admin', 'Operator', 'Viewer'], operator: ['Admin', 'Operator', 'Viewer'], developer: ['Admin', 'Operator', 'Viewer'], viewer: ['Viewer'],
+  };
+  // Decided as a real person: their project roles come from their membership of
+  // the project the request touches, exactly as at run time.
+  let tUser = $state(''); let tAction = $state('mcp:call'); let tType = $state('Tool'); let tId = $state('list_flows'); let tDraft = $state(true);
   let testRes = $state<any>(null);
   async function runTest() {
     busy = 'test'; testRes = null;
+    if (!tUser) { busy = ''; testRes = { error: 'Pick a person to decide as.' }; return; }
+    const who = await idp.getUser(tUser);
+    if (!who.ok) { busy = ''; testRes = { error: who.error ?? 'Could not read that person.' }; return; }
+    const roles = [...new Set(((who.data?.roles ?? []) as string[]).flatMap((r) => CANON[r.toLowerCase()] ?? []))];
     // Tried in the policy's own project: a project policy governs only the calls
     // that touch its project (the platform's, every call).
     const ns = pol && !pol.readOnly ? pol.namespace : undefined;
-    const body: PolicyTestBody = { principal: { kind: 'human', user_id: 'dry-run', roles: [tRole] }, action: tAction,
+    const body: PolicyTestBody = { principal: { kind: 'human', user_id: tUser, roles }, action: tAction,
       resource: { type: tType, id: tId, ...(ns ? { attributes: { namespace: ns } } : {}) },
       include_registry: true, draft_policies: tDraft && pol && !pol.readOnly ? [pol.cedar] : [], ...(ns ? { draft_namespace: ns } : {}) };
     const r = await securityPolicies.test(body);
@@ -123,10 +133,13 @@
   }); });
 
   // ── New policy ──
-  let nName = $state(''); let nNs = $state(getProject() || 'default'); let nDesc = $state('');
+  // A platform policy governs every call; it is a deliberate choice, never a default.
+  const PLATFORM_POLICY_NS = 'default';
+  const projectOrNone = () => { const p = getProject(); return p && !['default', 'a3t', 'system'].includes(p) ? p : ''; };
+  let nName = $state(''); let nNs = $state(projectOrNone()); let nDesc = $state('');
   let nCedar = $state('// Forbid overrides permit; deny by default.\n// Example: block one tool for everyone in this project.\nforbid(principal, action, resource)\nwhen { resource is Tool && resource has name && resource.name == "some_tool" };\n');
   let nErr = $state('');
-  async function openNew() { await ensureEdition(); if (!isInfosec()) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; view = 'policy'; pol = null; return; } view = 'new'; pol = null; shown = ''; nName = ''; nErr = ''; nNs = getProject() || 'default'; }
+  async function openNew() { await ensureEdition(); if (!isInfosec()) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; view = 'policy'; pol = null; return; } view = 'new'; pol = null; shown = ''; nName = ''; nErr = ''; nNs = projectOrNone(); }
   async function create() {
     nErr = '';
     const r = await securityPolicies.save(nNs, nName.trim(), nCedar, nDesc || undefined);
@@ -144,24 +157,49 @@
     idpStatus = st.ok ? st.data : { error: st.error };
     if (idpStatus?.connected) { const u = await idp.users(); users = u.ok ? (u.data?.users ?? []) : []; }
   }
-  let uEdit = $state<{ id: string | null; email: string; name: string; password: string; temporary: boolean; roles: string } | null>(null);
+  // The realm roles a person can hold. Only a SuperAdmin gives SuperAdmin or
+  // SecurityAdmin (the server enforces it too).
+  const REALM_ROLES = [
+    { id: 'viewer', label: 'Viewer', what: 'reads what is in their projects' },
+    { id: 'operator', label: 'Operator', what: 'today the same as Admin in their projects (A3T maps it to Admin)' },
+    { id: 'admin', label: 'Admin', what: 'creates and changes flows, agents and resources in their projects' },
+    { id: 'securityadmin', label: 'SecurityAdmin', what: 'Security and the Decision log; no project work', infosec: true },
+    { id: 'superadmin', label: 'SuperAdmin', what: 'everything, every org', infosec: true },
+  ];
+  type UserEdit = { id: string | null; email: string; name: string; password: string; temporary: boolean; roles: string[]; rolesLoaded: boolean; rolesBefore: string };
+  let uEdit = $state<UserEdit | null>(null);
   let uMsg = $state('');
   async function editUser(u: any | null) {
     uMsg = '';
-    if (!u) { uEdit = { id: null, email: '', name: '', password: '', temporary: true, roles: '' }; return; }
-    uEdit = { id: u.id, email: u.email ?? u.username ?? '', name: '', password: '', temporary: false, roles: '' };
+    if (!u) { uEdit = { id: null, email: '', name: '', password: '', temporary: true, roles: ['viewer'], rolesLoaded: true, rolesBefore: '' }; return; }
+    uEdit = { id: u.id, email: u.email ?? u.username ?? '', name: '', password: '', temporary: false, roles: [], rolesLoaded: false, rolesBefore: '' };
     const d = await idp.getUser(u.id);
-    if (d.ok && uEdit?.id === u.id) { uEdit.name = d.data?.name ?? ''; uEdit.roles = (d.data?.roles ?? []).join(', '); }
+    if (uEdit?.id !== u.id) return;
+    if (!d.ok) { uMsg = `Couldn't read their roles (${d.error ?? 'error'}); roles stay as they are.`; return; }
+    uEdit.name = d.data?.name ?? '';
+    uEdit.roles = ((d.data?.roles ?? []) as string[]).map((r) => r.toLowerCase());
+    uEdit.rolesLoaded = true;
+    uEdit.rolesBefore = [...uEdit.roles].sort().join(',');
+  }
+  function toggleRole(id: string) {
+    if (!uEdit) return;
+    uEdit.roles = uEdit.roles.includes(id) ? uEdit.roles.filter((r) => r !== id) : [...uEdit.roles, id];
   }
   async function saveUser() {
     if (!uEdit) return;
-    const roles = uEdit.roles.split(',').map((r) => r.trim()).filter(Boolean);
+    const known = new Set(REALM_ROLES.map((r) => r.id));
+    const picked = uEdit.roles.filter((r) => known.has(r));
+    // Roles go only when they were read and changed: an edit that couldn't read
+    // them must never wipe them.
+    const changed = uEdit.rolesLoaded && [...uEdit.roles].sort().join(',') !== uEdit.rolesBefore;
+    if ((changed || !uEdit.id) && !picked.length) { uMsg = 'Give them at least one role. To stop someone signing in, delete them.'; return; }
+    const roles = changed || !uEdit.id ? uEdit.roles : undefined;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(uEdit.email.trim())) { uMsg = 'The email is the sign-in name.'; return; }
     if (!uEdit.id && !uEdit.password) { uMsg = 'Give a first password.'; return; }
     busy = 'user';
     const r = uEdit.id
       ? await idp.updateUser(uEdit.id, { name: uEdit.name || undefined, password: uEdit.password || undefined, temporary: uEdit.temporary, roles })
-      : await idp.createUser({ username: uEdit.email.trim(), email: uEdit.email.trim(), name: uEdit.name || undefined, password: uEdit.password, temporary: uEdit.temporary, roles });
+      : await idp.createUser({ username: uEdit.email.trim(), email: uEdit.email.trim(), name: uEdit.name || undefined, password: uEdit.password, temporary: uEdit.temporary, roles: roles ?? [] });
     busy = '';
     if (!r.ok) { uMsg = r.error ?? 'Not saved.'; return; }
     uEdit = null; void loadIdp();
@@ -201,7 +239,12 @@
             <div class="card-head"><h3>1 · Name</h3><span>the project it governs</span></div>
             <div class="fields">
               <label class="fld">Name<input class="mono" bind:value={nName} placeholder="no-external-llm" /></label>
-              <label class="fld">Project<select bind:value={nNs}>{#each [...new Set([nNs, ...namespacesFor('owned'), ...allProjectNamespaces(), 'default'].filter(Boolean))] as ns (ns)}<option value={ns}>{ns}</option>{/each}</select></label>
+              <label class="fld">Applies to<select bind:value={nNs}>
+                <option value="">Pick a project…</option>
+                {#each [...new Set([...namespacesFor('owned'), ...allProjectNamespaces()].filter((n) => n && !['default', 'a3t', 'system'].includes(n)))] as ns (ns)}<option value={ns}>Project {ns}</option>{/each}
+                {#if $userRole === 'superadmin'}<option value={PLATFORM_POLICY_NS}>Everywhere — every project (platform policy)</option>{/if}
+              </select></label>
+              {#if nNs === PLATFORM_POLICY_NS}<div class="note warn full">A platform policy applies to every call in every project.</div>{/if}
               <label class="fld full">What it is for<input bind:value={nDesc} placeholder="Agents in this project may not call models outside it" /></label>
             </div>
           </div>
@@ -210,7 +253,7 @@
             <textarea class="cedar" rows="12" spellcheck="false" bind:value={nCedar}></textarea>
           </div>
           {#if nErr}<div class="note bad">{nErr}</div>{/if}
-          <div class="acts"><button class="btn2 primary" disabled={!/^[a-z0-9][a-z0-9-]{1,62}$/.test(nName.trim()) || edition === 'ce'} onclick={create}>Create and apply</button><button class="btn2 quiet" onclick={close}>Cancel</button></div>
+          <div class="acts"><button class="btn2 primary" disabled={!/^[a-z0-9][a-z0-9-]{1,62}$/.test(nName.trim()) || !nNs || edition === 'ce'} onclick={create}>Create and apply</button><button class="btn2 quiet" onclick={close}>Cancel</button></div>
         </section>
       </div></div></div>
     </div>
@@ -225,7 +268,7 @@
         {:else if pol}
           {#if tab === 'overview'}
             <div class="card">
-              <div class="card-head"><h3>1 · What it does</h3><span>{pol.readOnly ? 'compiled into the runtime' : `applies to project ${pol.namespace}`}</span></div>
+              <div class="card-head"><h3>1 · What it does</h3><span>{pol.readOnly ? 'compiled into the runtime' : ['default', 'a3t', 'system'].includes(pol.namespace) ? 'applies everywhere (platform policy)' : `applies to project ${pol.namespace}`}</span></div>
               {#if pol.description}<p class="lead">{pol.description}</p>{/if}
               <div class="tiles">
                 <div class="tile"><span class="v">{shape.permits}</span><span class="k">permit rules</span></div>
@@ -236,7 +279,7 @@
               <ul class="rows">
                 {#if shape.actions.length}<li><span class="lbl">Actions</span><span class="val mono">{shape.actions.join(', ')}</span><span></span></li>{/if}
                 {#if shape.roles.length}<li><span class="lbl">Roles</span><span class="val">{shape.roles.join(', ')}</span><span></span></li>{/if}
-                <li><span class="lbl">Where</span><span class="val">{pol.readOnly ? 'everywhere, beneath every project policy' : `project ${pol.namespace}`}</span><button class="btn2" onclick={() => (tab = 'policy')}>{pol.readOnly ? 'Read' : 'Edit'}</button></li>
+                <li><span class="lbl">Where</span><span class="val">{pol.readOnly ? 'everywhere, beneath every project policy' : ['default', 'a3t', 'system'].includes(pol.namespace) ? 'everywhere: every call in every project' : `project ${pol.namespace}`}</span><button class="btn2" onclick={() => (tab = 'policy')}>{pol.readOnly ? 'Read' : 'Edit'}</button></li>
               </ul>
             </div>
             <div class="card">
@@ -270,7 +313,7 @@
             <div class="card">
               <div class="card-head"><h3>1 · The request</h3><span>who, doing what, to what</span></div>
               <div class="fields">
-                <label class="fld">Role<select bind:value={tRole}>{#each ROLES as r (r)}<option>{r}</option>{/each}</select></label>
+                <label class="fld">As<select bind:value={tUser} onfocus={() => { if (!users.length) void loadIdp(); }}><option value="">Pick a person…</option>{#each users as u (u.id)}<option value={u.id}>{u.email ?? u.username}</option>{/each}</select></label>
                 <label class="fld">Action<select bind:value={tAction}>{#each ACTIONS as a (a)}<option>{a}</option>{/each}</select></label>
                 <label class="fld">Resource type<select bind:value={tType}>{#each RES_TYPES as r (r)}<option>{r}</option>{/each}</select></label>
                 <label class="fld">Resource<input class="mono" bind:value={tId} placeholder="list_flows" /></label>
@@ -332,7 +375,8 @@
               <li><span class="lbl">SuperAdmin</span><span class="val">everything, every org — including Security and the Decision log</span><span></span></li>
               <li><span class="lbl">SecurityAdmin</span><span class="val">Security and the Decision log: policies, identity, every decision</span><span></span></li>
               <li><span class="lbl">Admin</span><span class="val">runs projects; does not see Security or the Decision log</span><span></span></li>
-              <li><span class="lbl">Operator · Viewer</span><span class="val">work in their projects; read only for Viewer</span><span></span></li>
+              <li><span class="lbl">Operator</span><span class="val">today the same as Admin in their projects (A3T maps it to Admin)</span><span></span></li>
+              <li><span class="lbl">Viewer</span><span class="val">reads what is in their projects</span><span></span></li>
             </ul>
           </div>
         {:else if idpStatus && !idpStatus.connected}
@@ -346,7 +390,15 @@
                   <label class="fld">Email <small>the sign-in name</small><input class="mono" bind:value={uEdit.email} readonly={!!uEdit.id} /></label>
                   <label class="fld">Name<input bind:value={uEdit.name} /></label>
                   <label class="fld">{uEdit.id ? 'New password' : 'Password'} <small>{uEdit.id ? 'empty: unchanged' : ''}</small><input type="password" autocomplete="new-password" bind:value={uEdit.password} /></label>
-                  <label class="fld">Roles <small>realm roles, comma-separated</small><input class="mono" bind:value={uEdit.roles} placeholder="operator" /></label>
+                    </div>
+                <div class="fld full"><span>Roles</span>
+                  {#if !uEdit.rolesLoaded}<p class="dim">Reading their roles…</p>
+                  {:else}
+                    <ul class="rows wide">{#each REALM_ROLES as r (r.id)}
+                      {@const locked = !!r.infosec && $userRole !== 'superadmin'}
+                      <li><label class="chk"><input type="checkbox" checked={uEdit.roles.includes(r.id)} disabled={locked} onchange={() => toggleRole(r.id)} /> <b>{r.label}</b></label><span class="val dim">{r.what}{locked ? ' — only a SuperAdmin gives this' : ''}</span><span></span></li>
+                    {/each}</ul>
+                  {/if}
                 </div>
                 <label class="fld chk"><input type="checkbox" bind:checked={uEdit.temporary} /> They change the password at first sign-in</label>
                 <div class="acts"><button class="btn2 primary" disabled={busy === 'user'} onclick={saveUser}>{uEdit.id ? 'Save' : 'Create user'}</button><button class="btn2 quiet" onclick={() => (uEdit = null)}>Cancel</button>{#if uMsg}<span class="err">{uMsg}</span>{/if}</div>
