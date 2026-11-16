@@ -280,6 +280,8 @@ async fn main() -> anyhow::Result<()> {
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
                     .merge(Router::new().route("/security/audit", get(audit_handler)))
+                    // The permission catalogue roles and rules are built from (a3t/policies/catalogue.yaml).
+                    .merge(Router::new().route("/security/catalogue", get(catalogue_handler)))
                     .merge(
                         Router::new()
                             .route("/security/policies", get(policies_list_handler))
@@ -581,6 +583,13 @@ struct PolicyAdminState {
     storage: Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
     policies_dir: String,
     hook_setting: String,
+}
+
+/// `GET /security/catalogue` — every permission a role or rule can name, with
+/// what enforces it. Not a secret: anyone signed in may read it (the console
+/// builds its role and rule editors from it).
+async fn catalogue_handler() -> impl IntoResponse {
+    axum::Json(flowr_policy::catalogue::catalogue().clone())
 }
 
 /// Policy administration is restricted to InfoSec/admin roles. Gate on the

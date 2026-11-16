@@ -19,6 +19,7 @@
 pub mod grants;
 pub mod namespace;
 pub mod actions;
+pub mod catalogue;
 pub mod audit;
 pub mod op_policy;
 pub mod roles;

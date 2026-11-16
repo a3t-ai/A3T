@@ -3106,3 +3106,16 @@ mod environment_mask_tests {
         assert!(shown.contains("https://dev"), "{shown}");
     }
 }
+
+#[cfg(test)]
+mod catalogue_coverage {
+    /// Every built-in MCP tool belongs to a permission in the A3T catalogue, so a
+    /// role or rule can grant or forbid it by name.
+    #[test]
+    fn every_tool_is_in_the_catalogue() {
+        let c = flowr_policy::catalogue::catalogue();
+        let missing: Vec<String> = super::get_tools().into_iter().map(|t| t.name)
+            .filter(|n| c.permission_of_tool(n).is_none()).collect();
+        assert!(missing.is_empty(), "tools missing from a3t/policies/catalogue.yaml: {missing:?}");
+    }
+}

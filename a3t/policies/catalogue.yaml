@@ -1,0 +1,189 @@
+# A3T permission catalogue (config-to-code; owned by the A3T repo).
+#
+# Every permission a role or rule can name. A permission is an object and a verb
+# ("flows.run"); each lists exactly what enforces it:
+#   tools:   MCP tools (checked as `mcp:call` / `tool:invoke` on Tool::"<name>")
+#   actions: Cedar actions checked at their choke points
+#   enforced_by: console — the console hides it; the data behind it is guarded by
+#            the tool and action permissions, so hiding an app is not the guard.
+#
+# Tests keep this honest: every built-in MCP tool belongs to exactly one
+# permission, and every Cedar action FlowR checks is named here.
+kind: a3t/catalogue
+version: 1
+
+verbs:
+  read: See it
+  run: Run it
+  change: Create or change it
+  delete: Delete it
+  operate: Pause, resume or restart it
+  deploy: Deploy it
+  use: Use it
+
+permissions:
+  # ── Flows ──
+  - id: flows.read
+    label: See flows and task types
+    tools: [list_task_types, get_task_type, check_conformance, list_flows, list_projects, get_flow]
+  - id: flows.change
+    label: Create and change flows
+    tools: [propose_flow, propose_edit, create_flow, update_flow]
+  - id: flows.delete
+    label: Delete flows
+    tools: [delete_flow]
+  - id: flows.run
+    label: Run flows
+    tools: [execute_flow]
+    actions: [flow:start]
+
+  # ── Runs ──
+  - id: runs.read
+    label: See runs, their output and journal
+    tools: [get_execution_status, list_executions, list_runs, get_run, get_run_journal]
+  - id: runs.run
+    label: Start and rerun runs, and send events to waiting runs
+    tools: [start_run, rerun_run, send_event]
+  - id: runs.operate
+    label: Cancel runs
+    tools: [cancel_run]
+  - id: runs.change
+    label: Debug runs (breakpoints, step through, edit a step's input)
+    tools: [debug_run, set_breakpoints, edit_step_input]
+
+  # ── Agents ──
+  - id: agents.read
+    label: See agents and their history
+    tools: [list_agents, get_agent, get_agent_history]
+  - id: agents.change
+    label: Create agents
+    tools: [create_agent]
+  - id: agents.delete
+    label: Delete agents
+    tools: [delete_agent]
+  - id: agents.use
+    label: Chat with agents
+    tools: [send_message, clear_agent_session, list_permissions]
+  - id: templates.read
+    label: See agent templates
+    tools: [list_agent_templates, get_agent_template]
+  - id: templates.change
+    label: Create agent templates
+    tools: [create_agent_template]
+
+  # ── Conversations ──
+  - id: chats.read
+    label: Read conversations
+    actions: [session:read]
+  - id: chats.delete
+    label: Delete conversations
+    actions: [session:delete]
+
+  # ── Memory ──
+  - id: memory.change
+    label: Branch, merge, promote and fork agent memory
+    actions: [memory:branch, memory:merge, memory:promote, memory:fork, memory:layers]
+  - id: state.read
+    label: Read flow state
+    tools: [get_state]
+  - id: state.change
+    label: Change flow state
+    tools: [set_state]
+
+  # ── Models ──
+  - id: models.use
+    label: Call language models
+    actions: [llm:call]
+
+  # ── Resources ──
+  - id: resources.read
+    label: See resources and their tools
+    tools: [list_resources, get_resource, list_mcp_tools, list_resource_types]
+  - id: resources.run
+    label: Query a database resource
+    tools: [query_resource]
+  - id: resources.change
+    label: Create and change resources
+    tools: [create_resource]
+    actions: [resource:create, resource:update]
+  - id: resources.delete
+    label: Delete resources
+    tools: [delete_resource]
+    actions: [resource:delete]
+
+  # ── Triggers ──
+  - id: triggers.read
+    label: See triggers
+    tools: [list_triggers, get_trigger]
+  - id: triggers.change
+    label: Create, change, attach and switch triggers
+    tools: [create_trigger, update_trigger, enable_trigger, pause_trigger, attach_trigger, detach_trigger]
+  - id: triggers.delete
+    label: Delete triggers
+    tools: [delete_trigger]
+
+  # ── Canvas and deployments ──
+  - id: canvas.read
+    label: See canvases and placements
+    tools: [list_canvas_presets, get_canvas, preview_placement]
+  - id: canvas.change
+    label: Change canvases
+    tools: [clone_canvas, bind_canvas, update_canvas]
+  - id: deployments.read
+    label: See deployments
+    tools: [list_deployments, probe_deployment]
+  - id: deployments.deploy
+    label: Deploy flows and agents
+    tools: [deploy_flow]
+    actions: [flow:deploy]
+  - id: production.deploy
+    label: Deploy to production
+    actions: [deploy:prod]
+  - id: deployments.operate
+    label: Pause, resume and restart deployments
+    tools: [pause_deployment, resume_deployment, restart_deployment, set_paused_response]
+    actions: [flow:pause, flow:resume]
+  - id: deployments.delete
+    label: Undeploy and terminate deployments
+    tools: [undeploy, terminate_deployment]
+    actions: [flow:undeploy, flow:terminate]
+
+  # ── Runtimes ──
+  - id: runtimes.read
+    label: See runtimes
+    tools: [list_runtimes]
+  - id: runtimes.change
+    label: Create runtimes
+    tools: [create_runtime]
+  - id: runtimes.operate
+    label: Hibernate, pause and resume runtimes
+    tools: [set_runtime_state]
+    actions: [runtime:hibernate, runtime:pause, runtime:resume]
+  - id: runtimes.delete
+    label: Terminate runtimes
+    tools: [terminate_runtime]
+    actions: [runtime:terminate]
+
+  # ── Tools from connected MCP servers ──
+  - id: tools.external
+    label: Call tools of connected MCP servers
+    actions: [mcp:call, tool:invoke]
+    note: A rule narrows this by tool name, for example tools.external on {tool - "github.*"}.
+
+  # ── Console apps (visibility; the permissions above are the guard) ──
+  - { id: apps.chat, label: AI Chat app, enforced_by: console }
+  - { id: apps.projects, label: Projects app, enforced_by: console }
+  - { id: apps.agents, label: Agents app, enforced_by: console }
+  - { id: apps.templates, label: Templates app, enforced_by: console }
+  - { id: apps.triggers, label: Triggers app, enforced_by: console }
+  - { id: apps.canvas, label: Canvas app, enforced_by: console }
+  - { id: apps.resources, label: Resources app, enforced_by: console }
+  - { id: apps.files, label: Files app, enforced_by: console }
+  - { id: apps.memory, label: Memory app, enforced_by: console }
+  - { id: apps.knowledge, label: Knowledge app, enforced_by: console }
+  - { id: apps.security, label: Security app, enforced_by: console }
+  - { id: apps.decision-log, label: Decision log app, enforced_by: console }
+  - { id: apps.runtimes, label: Runtimes app, enforced_by: console }
+  - { id: apps.executions, label: Executions app, enforced_by: console }
+  - { id: apps.studio, label: Studio app, enforced_by: console }
+  - { id: apps.settings, label: Settings app, enforced_by: console }
