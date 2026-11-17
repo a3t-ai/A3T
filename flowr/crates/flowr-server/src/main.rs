@@ -444,6 +444,19 @@ async fn collect_registry_cedar_policies(
             Err(e) => warn!(agent = %id, error = %e, "an agent's own policy no longer compiles; it is not enforced"),
         }
     }
+    // Each org's files, kept from its own GitHub repo: placed in the policy set
+    // of every project they apply to, never outside the org. They were checked
+    // when they were synced; a set that no longer compiles (the catalogue
+    // changed) is reported loudly and left out.
+    #[cfg(feature = "ee")]
+    for (org, projects, files) in flowr_ce::org_policy::all_org_files(storage.as_ref()).await {
+        let files: Vec<flowr_aesop::policy_files::OrgFile> = files.into_iter()
+            .map(|(path, content)| flowr_aesop::policy_files::OrgFile { path, content }).collect();
+        match flowr_aesop::policy_files::compile_org_set(&org, &projects, &files) {
+            Ok(set) => out.extend(set.policies),
+            Err(errors) => tracing::error!(org = %org, errors = ?errors, "an org's kept policy files no longer compile; they are NOT enforced"),
+        }
+    }
     out
 }
 
@@ -710,6 +723,21 @@ impl flowr_ce::policy_gate::PolicyGate for ServerPolicyGate {
         flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
             .map_err(|e| format!("The policy was not saved: it does not load with the others. {e}"))?;
         Ok(serde_json::json!({ "name": c.name, "placement": c.placement, "hidden_apps": c.hidden_apps }))
+    }
+
+    async fn compile_org_files(&self, org: &str, projects: &[String], files: &[(String, String)]) -> Result<serde_json::Value, Vec<String>> {
+        let files: Vec<flowr_aesop::policy_files::OrgFile> = files.iter()
+            .map(|(path, content)| flowr_aesop::policy_files::OrgFile { path: path.clone(), content: content.clone() }).collect();
+        let set = flowr_aesop::policy_files::compile_org_set(org, projects, &files)?;
+        // It must also load with everything else: the other orgs, the agents, the platform.
+        let mine = format!("org.{org}.");
+        let mut policies: Vec<(String, String, String)> = collect_registry_cedar_policies(&self.0.storage)
+            .await.into_iter().filter(|(_, n, _)| !n.starts_with(&mine)).collect();
+        policies.extend(set.policies.iter().cloned());
+        let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
+        flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
+            .map_err(|e| vec![format!("the files do not load with the other policies: {e}")])?;
+        Ok(serde_json::json!({ "files": set.files, "hidden_apps": set.hidden_apps, "access": set.access }))
     }
 
     async fn changed(&self) {

@@ -1,7 +1,7 @@
 //! Org policy and role files compile to Cedar that the engine enforces, and
 //! they can only narrow access.
 
-use flowr_aesop::policy_files::{compile_agent_policy, compile_policy, compile_role, HiddenApp, Placement};
+use flowr_aesop::policy_files::{compile_agent_policy, compile_org_set, compile_policy, compile_role, HiddenApp, OrgFile, Placement};
 use flowr_aesop::CedarHook;
 use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource};
 
@@ -172,4 +172,53 @@ async fn an_agents_model_rule_holds_on_its_chat_turns() {
     assert!(denied(&h.check(&turn("agt-1", "a3t/other")).await).is_some(), "another model is refused");
     assert!(denied(&h.check(&turn("agt-1", "a3t/approved")).await).is_none(), "the approved model runs");
     assert!(denied(&h.check(&turn("agt-2", "a3t/other")).await).is_none(), "other agents are not bound");
+}
+
+fn file(path: &str, content: &str) -> OrgFile {
+    OrgFile { path: path.into(), content: content.into() }
+}
+
+const MODELS: &str = "kind: a3t/policy\nname: approved-models\napplies_to: { org: true }\nrules:\n  - cannot: [models.use]\n    on: { models: { not_in: [acme/claude] } }\n    reason: Only approved models.\n";
+const ROLE: &str = "kind: a3t/role\nname: support-lead\nextends: Operator\nremove: [memory.change]\n";
+
+#[tokio::test]
+async fn an_orgs_files_compile_into_its_own_projects_only() {
+    let projects = vec!["acme-crm".to_string(), "acme-support".to_string()];
+    let set = compile_org_set("acme", &projects, &[
+        file("policies/approved-models.yaml", MODELS),
+        file("roles/support-lead.yaml", ROLE),
+        file("access/acme-support.yaml", "kind: a3t/access\nproject: acme-support\ngroups: { support-leads: support-lead, support: Operator }\nusers: { jane@acme.com: Viewer }\n"),
+        file("README.md", "not ours"),
+        file("policies/nested/x.yaml", "ignored: not directly in policies/"),
+    ]).expect("a good set compiles");
+    let placed: Vec<(&str, &str)> = set.policies.iter().map(|(p, n, _)| (p.as_str(), n.as_str())).collect();
+    assert!(placed.contains(&("acme-crm", "org.acme.policy.approved-models")));
+    assert!(placed.contains(&("acme-support", "org.acme.policy.approved-models")));
+    assert!(placed.contains(&("acme-support", "org.acme.role.support-lead")));
+    assert!(placed.iter().all(|(p, _)| projects.iter().any(|q| q == p)), "nothing outside the org");
+    assert_eq!(set.access.len(), 1);
+    assert_eq!(set.files.len(), 3);
+    // What each project carries is enforced there.
+    let h = hook(&[set.policies[0].2.clone()]);
+    assert!(denied(&h.check(&llm_call(human(&["Admin"]), "openai/gpt")).await).is_some());
+}
+
+#[test]
+fn a_set_with_any_bad_file_is_refused_whole_and_names_each_file() {
+    let projects = vec!["acme-crm".to_string()];
+    let errs = compile_org_set("acme", &projects, &[
+        file("policies/approved-models.yaml", MODELS),
+        file("policies/elsewhere.yaml", "kind: a3t/policy\nname: elsewhere\napplies_to: { projects: [globex-prod] }\nrules:\n  - cannot: [flows.delete]\n    reason: r\n"),
+        file("policies/broken.yaml", "kind: a3t/policy\nname: broken\nrules:\n  - cannot: [no.such]\n    reason: r\n"),
+        file("access/acme-crm.yaml", "kind: a3t/access\nproject: acme-crm\ngroups: { ops: Superuser }\n"),
+        file("access/globex.yaml", "kind: a3t/access\nproject: globex-prod\ngroups: { ops: Viewer }\n"),
+        file("roles/dup.yaml", ROLE),
+        file("roles/dup2.yaml", ROLE),
+    ]).unwrap_err();
+    let all = errs.join("\n");
+    for needle in ["policies/elsewhere.yaml: applies_to names projects that are not acme's: globex-prod",
+                   "policies/broken.yaml:", "access/acme-crm.yaml: ops → \"Superuser\"",
+                   "access/globex.yaml: project \"globex-prod\" is not acme's", "roles/dup2.yaml: another role file"] {
+        assert!(all.contains(needle), "expected {needle:?} in:\n{all}");
+    }
 }

@@ -39,7 +39,7 @@ use flowr_policy::catalogue::{catalogue, Catalogue, Permission};
 pub const BASELINE_ROLES: &[&str] = &["Admin", "Operator", "Viewer"];
 const TOOL_ACTIONS: &str = r#"[Action::"mcp:call", Action::"tool:invoke"]"#;
 
-pub use flowr_policy::policy_file::{AgentsSel, AppliesTo, InOrNot, On, PolicyFile, RoleFile, Rule, Who};
+pub use flowr_policy::policy_file::{kind_of_path, AccessFile, AgentsSel, AppliesTo, InOrNot, On, PolicyFile, RoleFile, Rule, Who};
 
 /// Where a compiled policy is placed (which policy sets carry it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -362,4 +362,115 @@ pub fn compile_role(org: &str, yaml: &str) -> Result<Compiled, String> {
         validate(&out)?;
     }
     Ok(Compiled { name: full, cedar: out, placement: Placement::Org, hidden_apps: hidden })
+}
+
+// ── An org's whole set of files ──────────────────────────────────────────────
+
+/// One file of an org's policy repo: its path in the repo (below the folder
+/// A3T reads) and its text.
+#[derive(Debug, Clone)]
+pub struct OrgFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// An org's files, compiled: the Cedar each project's policy set carries, the
+/// console apps hidden per role, and who holds which role where.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct OrgSet {
+    /// `(project, policy name, cedar)`, ready for the project's policy set.
+    pub policies: Vec<(String, String, String)>,
+    pub hidden_apps: Vec<HiddenApp>,
+    pub access: Vec<AccessFile>,
+    /// What each file became: `{path, kind, name, placement}` (no Cedar).
+    pub files: Vec<serde_json::Value>,
+}
+
+/// Compile every file of `org` at once. `projects` are the org's projects:
+/// nothing in the files can reach a project outside them. All or nothing: any
+/// error in any file refuses the set (each error names its file), so a broken
+/// push never half-applies.
+pub fn compile_org_set(org: &str, projects: &[String], files: &[OrgFile]) -> Result<OrgSet, Vec<String>> {
+    let mut errors = Vec::new();
+    let mut set = OrgSet::default();
+    let mut names = std::collections::BTreeSet::new();
+    let mut roles: Vec<String> = Vec::new();
+    let mut access_files = Vec::new();
+    let place = |c: &Compiled, path: &str, errors: &mut Vec<String>| -> Vec<String> {
+        match &c.placement {
+            Placement::Org => projects.to_vec(),
+            Placement::Projects(ps) => {
+                let outside: Vec<&String> = ps.iter().filter(|p| !projects.contains(p)).collect();
+                if !outside.is_empty() {
+                    errors.push(format!("{path}: applies_to names projects that are not {org}'s: {}",
+                        outside.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+                    return Vec::new();
+                }
+                ps.clone()
+            }
+        }
+    };
+    for f in files {
+        let Some(kind) = kind_of_path(&f.path) else { continue };
+        let compiled = match kind {
+            "policy" => compile_policy(org, &f.content),
+            "role" => compile_role(org, &f.content),
+            _ => {
+                access_files.push(f);
+                continue;
+            }
+        };
+        let c = match compiled {
+            Ok(c) => c,
+            Err(e) => {
+                errors.push(format!("{}: {e}", f.path));
+                continue;
+            }
+        };
+        if !names.insert((kind, c.name.clone())) {
+            errors.push(format!("{}: another {kind} file is also named {:?}", f.path, c.name));
+            continue;
+        }
+        if kind == "role" {
+            roles.push(c.name.rsplit('/').next().unwrap_or_default().to_string());
+        }
+        let short = c.name.rsplit('/').next().unwrap_or_default();
+        // Dots: an org slug never has one, so one org's labels never prefix another's.
+        let label = format!("org.{org}.{kind}.{short}");
+        for p in place(&c, &f.path, &mut errors) {
+            if !c.cedar.trim().is_empty() {
+                set.policies.push((p, label.clone(), c.cedar.clone()));
+            }
+        }
+        set.hidden_apps.extend(c.hidden_apps.iter().cloned());
+        set.files.push(serde_json::json!({ "path": f.path, "kind": kind, "name": c.name, "placement": c.placement }));
+    }
+    // Access files last: they may name the org's own roles.
+    let mut mapped = std::collections::BTreeSet::new();
+    for f in access_files {
+        let a = match AccessFile::parse(&f.content) {
+            Ok(a) => a,
+            Err(e) => {
+                errors.push(format!("{}: {e}", f.path));
+                continue;
+            }
+        };
+        if !projects.contains(&a.project) {
+            errors.push(format!("{}: project {:?} is not {org}'s", f.path, a.project));
+            continue;
+        }
+        if !mapped.insert(a.project.clone()) {
+            errors.push(format!("{}: another access file already maps project {:?}", f.path, a.project));
+            continue;
+        }
+        for (who, role) in a.groups.iter().chain(a.users.iter()) {
+            if !BASELINE_ROLES.contains(&role.as_str()) && !roles.contains(role) {
+                errors.push(format!("{}: {who} → {role:?}: not a baseline role ({}) or one of the org's roles/ files",
+                    f.path, BASELINE_ROLES.join(", ")));
+            }
+        }
+        set.files.push(serde_json::json!({ "path": f.path, "kind": "access", "name": a.project, "placement": { "projects": [a.project] } }));
+        set.access.push(a);
+    }
+    if errors.is_empty() { Ok(set) } else { Err(errors) }
 }

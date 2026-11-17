@@ -99,6 +99,60 @@ pub struct RoleFile {
     pub remove: Vec<String>,
 }
 
+/// Which kind of file a path in an org's policy repo holds (below the folder
+/// A3T reads): `policies/`, `roles/` or `access/`, a `.yaml` or `.yml` file
+/// directly in that folder. Anything else in the repo is not A3T's.
+pub fn kind_of_path(path: &str) -> Option<&'static str> {
+    let (dir, file) = path.split_once('/')?;
+    if file.contains('/') || !(file.ends_with(".yaml") || file.ends_with(".yml")) {
+        return None;
+    }
+    match dir {
+        "policies" => Some("policy"),
+        "roles" => Some("role"),
+        "access" => Some("access"),
+        _ => None,
+    }
+}
+
+/// Who holds which role on one of the org's projects (`access/<project>.yaml`).
+/// People join IdP groups in the org's IdP; this file maps a group to a role.
+/// An org with no IdP names A3T accounts instead (`users`).
+///
+/// ```yaml
+/// kind: a3t/access
+/// project: acme-support
+/// groups: { support-team: Operator, support-leads: support-lead }
+/// users: { jane@acme.com: Viewer }
+/// ```
+///
+/// A role is a baseline role (Admin, Operator, Viewer) or one of the org's own
+/// (`roles/<name>.yaml`, named without the org).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccessFile {
+    pub kind: String,
+    pub project: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub groups: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub users: std::collections::BTreeMap<String, String>,
+}
+
+impl AccessFile {
+    pub fn parse(yaml: &str) -> Result<Self, String> {
+        let f: AccessFile = serde_yaml::from_str(yaml).map_err(|e| format!("access file: {e}"))?;
+        if f.kind != "a3t/access" {
+            return Err(format!("kind is {:?}, not a3t/access", f.kind));
+        }
+        if f.groups.is_empty() && f.users.is_empty() {
+            return Err("an access file maps at least one group or user to a role".into());
+        }
+        Ok(f)
+    }
+}
 
 impl PolicyFile {
     pub fn parse(yaml: &str) -> Result<Self, String> {

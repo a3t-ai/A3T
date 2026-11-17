@@ -26,6 +26,13 @@ pub trait PolicyGate: Send + Sync {
         let _ = (project, agent_id, yaml);
         Err("agent security policies need FlowR EE".into())
     }
+    /// Compile an org's policy repo files (`(path, text)`) for its `projects`,
+    /// all or nothing, and check they load with every other saved policy:
+    /// `{files, hidden_apps, access}`, or one error per bad file.
+    async fn compile_org_files(&self, org: &str, projects: &[String], files: &[(String, String)]) -> Result<serde_json::Value, Vec<String>> {
+        let _ = (org, projects, files);
+        Err(vec!["org policy files need FlowR EE".into()])
+    }
 }
 
 static GATE: OnceLock<Arc<dyn PolicyGate>> = OnceLock::new();

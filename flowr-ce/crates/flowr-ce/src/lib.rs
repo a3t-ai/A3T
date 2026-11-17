@@ -30,6 +30,7 @@ pub mod registry;
 pub mod topic_triggers;
 pub mod platform_db;
 pub mod policy_gate;
+pub mod org_policy;
 pub mod router;
 pub mod gateway;
 pub mod shared_registry;
@@ -384,6 +385,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let ops_routes = ops::ops_router(storage.clone());
     let storage_routes = storage_browse::router(storage.clone());
     let agent_space_routes = agent_space::router(storage.clone());
+    let org_policy_routes = org_policy::router(storage.clone());
 
     let (tx, _) = broadcast::channel::<(String, String)>(100);
     let state = Arc::new(AppState { storage, tx });
@@ -455,6 +457,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         .merge(Router::new().nest("/storage", storage_routes))
         // Agents as repos: an agent's memory space, branches, tags, layers, fork, promote
         .merge(agent_space_routes)
+        .merge(org_policy_routes)
         // AO-1: this process's metrics (with an embedded ADB's in CE).
         .route("/metrics", get(metrics_text))
         .route("/admin/stats/metrics", get(metrics_json))
