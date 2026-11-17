@@ -22,7 +22,12 @@
 //!
 //! - `GET|PUT|DELETE /security/orgs/{org}/source`
 //! - `POST /security/orgs/{org}/sync`
-//! - `GET /security/orgs/{org}/files` · `DELETE` (stop enforcing them)
+//! - `GET /security/orgs/{org}/files`: every kept file, and whether it is enforced
+//! - `PUT /security/orgs/{org}/files/enforced` `{enforced: [path…]}`: which kept
+//!   files are enforced. The others stay kept (and listed) but out of the policy
+//!   set; the chosen set must compile on its own, so a rule can't lose the role
+//!   it names. A new file from GitHub is enforced; a switched-off one stays off
+//!   across commits until switched back on.
 //! - `POST /webhook/_a3t/github` (public; each org's webhook secret signs it)
 //!
 //! Org admins and org security admins manage their own org; platform
@@ -51,6 +56,9 @@ use crate::platform_db::{open_platform_db, PlatformDb};
 
 pub const SOURCES: &str = "org_policy_sources";
 pub const FILES: &str = "org_policy_files";
+/// Kept files switched off: `(org, path)`; everything else kept is enforced.
+pub const OFF: &str = "org_policy_off";
+const OFF_COLUMNS: [&str; 4] = ["org", "path", "updated_by", "updated_at"];
 const SOURCE_COLUMNS: [&str; 12] = [
     "org", "repo", "git_ref", "folder", "token_secret", "webhook_secret", "mode",
     "last_commit", "last_sync", "last_error", "updated_by", "updated_at",
@@ -87,7 +95,8 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
     Router::new()
         .route("/security/orgs/:org/source", get(get_source).put(put_source).delete(delete_source))
         .route("/security/orgs/:org/sync", post(sync_now))
-        .route("/security/orgs/:org/files", get(list_files).delete(delete_files))
+        .route("/security/orgs/:org/files", get(list_files))
+        .route("/security/orgs/:org/files/enforced", axum::routing::put(set_enforced))
         .route("/webhook/_a3t/github", post(github_webhook))
         .with_state(storage)
 }
@@ -96,7 +105,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
 
 async fn db(s: &dyn StorageBackend) -> Result<Arc<dyn PlatformDb>, String> {
     let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
-    for (t, cols) in [(SOURCES, &SOURCE_COLUMNS[..]), (FILES, &FILE_COLUMNS[..])] {
+    for (t, cols) in [(SOURCES, &SOURCE_COLUMNS[..]), (FILES, &FILE_COLUMNS[..]), (OFF, &OFF_COLUMNS[..])] {
         let schema: Map<String, Value> = cols.iter().map(|c| (c.to_string(), json!("string"))).collect();
         db.create_table(t, Some(&schema), "create_if_not_exists").await?;
     }
@@ -111,6 +120,12 @@ async fn files_of(s: &dyn StorageBackend, org: &str) -> Vec<Value> {
     query_platform_table(s, FILES, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
 }
 
+/// The org's kept files that are switched off.
+async fn off_of(s: &dyn StorageBackend, org: &str) -> std::collections::BTreeSet<String> {
+    query_platform_table(s, OFF, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
+        .iter().map(|r| col(r, "path")).collect()
+}
+
 /// The org's projects (their namespaces): where its files may apply.
 pub async fn org_projects(s: &dyn StorageBackend, org: &str) -> Vec<String> {
     let filter = format!("owner_kind = 'org' AND owner = {}", sql_quote(org));
@@ -121,11 +136,16 @@ pub async fn org_projects(s: &dyn StorageBackend, org: &str) -> Vec<String> {
     out
 }
 
-/// Every org's kept files, for the policy set: `(org, projects, [(path, text)])`.
+/// Every org's enforced files, for the policy set: `(org, projects, [(path, text)])`.
 pub async fn all_org_files(s: &dyn StorageBackend) -> Vec<(String, Vec<String>, Vec<(String, String)>)> {
     let rows = query_platform_table(s, FILES, None, 100_000).await.unwrap_or_default();
+    let off: std::collections::BTreeSet<(String, String)> = query_platform_table(s, OFF, None, 100_000).await.unwrap_or_default()
+        .iter().map(|r| (col(r, "org"), col(r, "path"))).collect();
     let mut by_org: std::collections::BTreeMap<String, Vec<(String, String)>> = Default::default();
     for r in rows {
+        if off.contains(&(col(&r, "org"), col(&r, "path"))) {
+            continue;
+        }
         by_org.entry(col(&r, "org")).or_default().push((col(&r, "path"), col(&r, "content")));
     }
     let mut out = Vec::new();
@@ -261,7 +281,7 @@ async fn delete_source(State(s): St, p: P, Path(org): Path<String>) -> Response 
         may_manage(s.as_ref(), &who(p), &org).await?;
         db(s.as_ref()).await.map_err(internal)?.delete(SOURCES, &format!("org = {}", sql_quote(&org))).await.map_err(internal)?;
         // The kept files stay enforced: disconnecting a repo is not removing the rules.
-        Ok(Json(json!({ "org": org, "source": null, "files": "kept; DELETE /security/orgs/{org}/files stops enforcing them" })).into_response())
+        Ok(Json(json!({ "org": org, "source": null, "files": "kept and still enforced; PUT /security/orgs/{org}/files/enforced chooses which" })).into_response())
     }.await)
 }
 
@@ -269,8 +289,10 @@ async fn list_files(State(s): St, p: P, Path(org): Path<String>) -> Response {
     both(async {
         let s = s.as_ref();
         may_manage(s, &who(p), &org).await?;
+        let off = off_of(s, &org).await;
         let mut files: Vec<Value> = files_of(s, &org).await.iter().map(|r| json!({
             "path": col(r, "path"), "kind": col(r, "kind"), "content": col(r, "content"), "commit": col(r, "commit"),
+            "enforced": !off.contains(&col(r, "path")),
         })).collect();
         files.sort_by_key(|f| col(f, "path"));
         let src = source_of(s, &org).await;
@@ -281,15 +303,45 @@ async fn list_files(State(s): St, p: P, Path(org): Path<String>) -> Response {
     }.await)
 }
 
-async fn delete_files(State(s): St, p: P, Path(org): Path<String>) -> Response {
+/// `PUT /security/orgs/{org}/files/enforced` — which kept files are enforced.
+async fn set_enforced(State(s): St, p: P, Path(org): Path<String>, Json(b): Json<Value>) -> Response {
     both(async {
+        let principal = who(p);
         let s = s.as_ref();
-        may_manage(s, &who(p), &org).await?;
-        db(s).await.map_err(internal)?.delete(FILES, &format!("org = {}", sql_quote(&org))).await.map_err(internal)?;
-        if let Some(gate) = crate::policy_gate::get() {
-            gate.changed().await;
+        may_manage(s, &principal, &org).await?;
+        let Some(want) = b.get("enforced").and_then(|v| v.as_array()) else {
+            return Err(err(StatusCode::BAD_REQUEST, "enforced: the paths of the kept files to enforce"));
+        };
+        let want: std::collections::BTreeSet<String> = want.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        let kept: Vec<(String, String)> = files_of(s, &org).await.iter().map(|r| (col(r, "path"), col(r, "content"))).collect();
+        if let Some(bad) = want.iter().find(|w| !kept.iter().any(|(p, _)| p == *w)) {
+            return Err(err(StatusCode::BAD_REQUEST, format!("{bad}: not one of {org}'s kept files")));
         }
-        Ok(Json(json!({ "org": org, "files": [] })).into_response())
+        // What will be enforced must compile on its own and load with every other policy.
+        let on: Vec<(String, String)> = kept.iter().filter(|(p, _)| want.contains(p)).cloned().collect();
+        let gate = crate::policy_gate::get()
+            .ok_or_else(|| err(StatusCode::NOT_IMPLEMENTED, "org policy files need FlowR EE"))?;
+        if !on.is_empty() {
+            if let Err(errors) = gate.compile_org_files(&org, &org_projects(s, &org).await, &on).await {
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({
+                    "error": "those files don't work on their own; nothing changed", "errors": errors,
+                }))).into_response());
+            }
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows: Vec<Value> = kept.iter().filter(|(p, _)| !want.contains(p))
+            .map(|(p, _)| json!({ "org": org, "path": p, "updated_by": principal.id(), "updated_at": now })).collect();
+        let db = db(s).await.map_err(internal)?;
+        let before = off_of(s, &org).await;
+        if !rows.is_empty() {
+            db.upsert(OFF, &["org", "path"], &rows).await.map_err(internal)?;
+        }
+        for p in before.iter().filter(|p| want.contains(*p)) {
+            db.delete(OFF, &format!("org = {} AND path = {}", sql_quote(&org), sql_quote(p))).await.map_err(internal)?;
+        }
+        gate.changed().await;
+        info!(org, enforced = on.len(), off = rows.len(), by = %principal.id(), "org policy files enforced");
+        Ok(Json(json!({ "org": org, "enforced": on.len(), "off": rows.len() })).into_response())
     }.await)
 }
 
@@ -425,6 +477,19 @@ pub async fn sync(s: &dyn StorageBackend, org: &str, known_commit: Option<String
             })));
         }
     };
+    // What will be enforced (switched-off files stay off) must work on its own too.
+    let off = off_of(s, org).await;
+    let on: Vec<(String, String)> = files.iter().filter(|(p, _)| !off.contains(p)).cloned().collect();
+    if on.len() != files.len() && !on.is_empty() {
+        if let Err(errors) = gate.compile_org_files(org, &projects, &on).await {
+            let short = commit.get(..7).unwrap_or(&commit);
+            note(&format!("commit {short} was not applied: with the switched-off files left out, {}", errors.join("; "))).await;
+            return Err(fail(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "error": format!("commit {short} was not applied: the enforced files need one that is switched off"),
+                "commit": commit, "errors": errors,
+            })));
+        }
+    }
     // Write the new set before removing what it dropped, so no reload ever
     // sees the org with fewer rules than either commit has.
     let db = db(s).await.map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })))?;
@@ -444,6 +509,10 @@ pub async fn sync(s: &dyn StorageBackend, org: &str, known_commit: Option<String
         if !files.iter().any(|(p, _)| *p == path) {
             let _ = db.delete(FILES, &format!("org = {} AND path = {}", sql_quote(org), sql_quote(&path))).await;
         }
+    }
+    // A switched-off file the repo no longer has is gone; so is its switch.
+    for p in off.iter().filter(|p| !files.iter().any(|(f, _)| f == *p)) {
+        let _ = db.delete(OFF, &format!("org = {} AND path = {}", sql_quote(org), sql_quote(p))).await;
     }
     let mut row = src.clone();
     row["last_commit"] = json!(commit);

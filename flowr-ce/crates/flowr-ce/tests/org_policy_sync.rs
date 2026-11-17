@@ -4,7 +4,9 @@
 //! and only the org's admins (or platform security) may manage it.
 //!
 //! GitHub is a local stand-in serving the REST calls FlowR makes; the policy
-//! gate is a stand-in for FlowR EE's compiler that refuses files saying BROKEN.
+//! gate is a stand-in for FlowR EE's compiler that refuses files saying BROKEN,
+//! and a file saying `NEEDS:<path>` without that file in the set (a rule
+//! naming a role defined in another file).
 
 use std::collections::BTreeMap;
 use std::sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex};
@@ -80,7 +82,12 @@ impl flowr_ce::policy_gate::PolicyGate for Gate {
     async fn check(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> { Ok(()) }
     async fn changed(&self) { self.reloads.fetch_add(1, Ordering::SeqCst); }
     async fn compile_org_files(&self, _org: &str, projects: &[String], files: &[(String, String)]) -> Result<Value, Vec<String>> {
-        let errors: Vec<String> = files.iter().filter(|(_, t)| t.contains("BROKEN")).map(|(p, _)| format!("{p}: broken")).collect();
+        let mut errors: Vec<String> = files.iter().filter(|(_, t)| t.contains("BROKEN")).map(|(p, _)| format!("{p}: broken")).collect();
+        for (p, t) in files {
+            if let Some(need) = t.split("NEEDS:").nth(1).and_then(|r| r.split_whitespace().next()) {
+                if !files.iter().any(|(q, _)| q == need) { errors.push(format!("{p}: needs {need}")); }
+            }
+        }
         if !errors.is_empty() { return Err(errors); }
         Ok(json!({ "files": files.iter().map(|(p, _)| json!({ "path": p })).collect::<Vec<_>>(), "projects": projects }))
     }
@@ -144,7 +151,7 @@ async fn an_orgs_files_sync_from_its_repo_whole_commits_or_not_at_all() {
     let gh: Gh = Arc::new(Mutex::new(Repo { commit: "a".repeat(40), up: true, ..Default::default() }));
     {
         let mut g = gh.lock().unwrap();
-        g.files.insert("sec/policies/models.yaml".into(), "kind: a3t/policy # v1".into());
+        g.files.insert("sec/policies/models.yaml".into(), "kind: a3t/policy # v1 NEEDS:roles/lead.yaml".into());
         g.files.insert("sec/roles/lead.yaml".into(), "kind: a3t/role".into());
         g.files.insert("sec/README.md".into(), "not ours".into());
         g.files.insert("other/policies/x.yaml".into(), "outside the folder".into());
@@ -191,6 +198,39 @@ async fn an_orgs_files_sync_from_its_repo_whole_commits_or_not_at_all() {
     let kept = flowr_ce::org_policy::all_org_files(storage.as_ref()).await;
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].0, "acme");
+
+    // Which files are enforced is chosen; the others stay kept and listed.
+    let enforce = |paths: Value| json!({ "enforced": paths });
+    // A rule without the role it names doesn't work alone: refused, nothing changes.
+    let (st, b) = call(M::PUT, "/security/orgs/acme/files/enforced", "ann/Viewer", Some(enforce(json!(["policies/models.yaml"])))).await;
+    assert_eq!(st, 422, "{b}");
+    assert_eq!(b["errors"], json!(["policies/models.yaml: needs roles/lead.yaml"]));
+    assert_eq!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await[0].2.len(), 2);
+    // Not theirs, or not a kept file: refused.
+    assert_eq!(call(M::PUT, "/security/orgs/acme/files/enforced", "bob/Operator", Some(enforce(json!([])))).await.0, 404);
+    assert_eq!(call(M::PUT, "/security/orgs/acme/files/enforced", "ann/Viewer", Some(enforce(json!(["policies/nope.yaml"])))).await.0, 400);
+    // The rule switched off: still listed, not enforced.
+    let (st, b) = call(M::PUT, "/security/orgs/acme/files/enforced", "ann/Viewer", Some(enforce(json!(["roles/lead.yaml"])))).await;
+    assert_eq!(st, 200, "{b}");
+    let (_, f) = call(M::GET, "/security/orgs/acme/files", "ann/Viewer", None).await;
+    let state: Vec<(String, bool)> = f["files"].as_array().unwrap().iter().map(|x| (x["path"].as_str().unwrap().to_string(), x["enforced"].as_bool().unwrap())).collect();
+    assert_eq!(state, [("policies/models.yaml".to_string(), false), ("roles/lead.yaml".to_string(), true)]);
+    let kept = flowr_ce::org_policy::all_org_files(storage.as_ref()).await;
+    assert_eq!(kept[0].2.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["roles/lead.yaml"]);
+    // The same commit read again: it stays off.
+    let (st, b) = call(M::POST, "/security/orgs/acme/sync", "ann/Viewer", None).await;
+    assert_eq!(st, 200, "{b}");
+    assert_eq!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await[0].2.len(), 1);
+    // The role can't be switched off while the rule needs it... unless the rule goes too.
+    let (st, _) = call(M::PUT, "/security/orgs/acme/files/enforced", "ann/Viewer", Some(enforce(json!([])))).await;
+    assert_eq!(st, 200);
+    assert!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await.is_empty());
+    let (_, f) = call(M::GET, "/security/orgs/acme/files", "ann/Viewer", None).await;
+    assert_eq!(f["files"].as_array().unwrap().len(), 2, "switched off, never out of sight: {f}");
+    // Both back on.
+    let (st, b) = call(M::PUT, "/security/orgs/acme/files/enforced", "ann/Viewer", Some(enforce(json!(["policies/models.yaml", "roles/lead.yaml"])))).await;
+    assert_eq!(st, 200, "{b}");
+    assert_eq!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await[0].2.len(), 2);
 
     // A push with one broken file: refused whole, the last good set stays.
     {
@@ -242,12 +282,13 @@ async fn an_orgs_files_sync_from_its_repo_whole_commits_or_not_at_all() {
     let (st, b) = call(M::POST, "/security/orgs/globex/sync", "gil/Admin", None).await;
     assert_eq!(st, 200, "{b}");
     assert_eq!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await.len(), 2);
-    assert_eq!(call(M::DELETE, "/security/orgs/globex/files", "gil/Admin", None).await.0, 200);
+    assert_eq!(call(M::PUT, "/security/orgs/globex/files/enforced", "gil/Admin", Some(enforce(json!([])))).await.0, 200);
 
-    // Disconnecting the repo keeps enforcing the files; removing the files stops it.
+    // Disconnecting the repo keeps enforcing the files; switching them off stops it.
     assert_eq!(call(M::DELETE, "/security/orgs/acme/source", "ann/Viewer", None).await.0, 200);
     assert_eq!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await.len(), 1);
-    assert_eq!(call(M::DELETE, "/security/orgs/acme/files", "bob/Operator", None).await.0, 404);
-    assert_eq!(call(M::DELETE, "/security/orgs/acme/files", "root/SecurityAdmin", None).await.0, 200);
+    assert_eq!(call(M::PUT, "/security/orgs/acme/files/enforced", "root/SecurityAdmin", Some(enforce(json!([])))).await.0, 200);
     assert!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await.is_empty());
+    let (_, f) = call(M::GET, "/security/orgs/acme/files", "root/SecurityAdmin", None).await;
+    assert_eq!(f["files"].as_array().unwrap().len(), 1, "kept and listed: {f}");
 }
