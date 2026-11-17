@@ -28,6 +28,7 @@
   let view = $state<'policy' | 'identity' | 'org' | 'new' | null>(null);
   let orgH = $state('');
   let orgProject = $state('');
+  let orgSection = $state<'identity' | 'policy'>('identity');
   // Policies change only by InfoSec; an org's admins and security admins read theirs.
   const infosec = isInfosec();
   const NO_SECURITY = "Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.";
@@ -58,7 +59,7 @@
     // org:<handle>[:<tab>] — the org's identity; orgfiles:<handle> — its policy files.
     if (id.startsWith('org:') || id.startsWith('orgfiles:')) {
       const [kind, h, t, ns] = id.split(':');
-      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; tab = t || (kind === 'orgfiles' ? 'files' : 'overview'); return;
+      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; orgSection = kind === 'orgfiles' ? 'policy' : 'identity'; tab = t || (kind === 'orgfiles' ? 'files' : 'overview'); return;
     }
     const platformOnly = id === 'identity' || id === 'policies' || id.startsWith('identity:') || id === 'baseline';
     if (platformOnly && !infosec) { denied = "The platform's sign-in realm and baseline are for SuperAdmin and SecurityAdmin."; view = 'policy'; pol = null; return; }
@@ -411,7 +412,7 @@
     </div>
 
   {:else if view === 'org'}
-    <OrgSecurity org={orgH} project={orgProject} bind:tab />
+    <OrgSecurity org={orgH} section={orgSection} project={orgProject} bind:tab />
 
   {:else if view === 'identity'}
     <div class="panel-layout">

@@ -10,6 +10,7 @@
   /// SecurityAdmin reads members and sign-in and manages policy files. The
   /// server checks every one of these; this page only offers what will work.
   import { untrack } from 'svelte';
+  import * as YAML from 'yaml';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
@@ -20,7 +21,9 @@
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
 
   /// `project`: open People filtered to who reaches that project.
-  let { org: handle, project = '', tab = $bindable('overview') }: { org: string; project?: string; tab?: string } = $props();
+  /// `section`: identity (who people are: sign-in, members, roles and groups)
+  /// or policy (what is allowed: the org's policy files). Two pages, one org.
+  let { org: handle, section = 'identity', project = '', tab = $bindable('overview') }: { org: string; section?: 'identity' | 'policy'; project?: string; tab?: string } = $props();
 
   const ROLES: OrgRole[] = ['member', 'admin', 'securityadmin'];
   const ROLE_LABEL: Record<string, string> = { member: 'Member', admin: 'Admin', securityadmin: 'Security admin' };
@@ -212,18 +215,36 @@
   const KIND_LABEL: Record<string, string> = { policy: 'rule', role: 'role', access: 'access' };
   const when = (s: string) => { const t = Date.parse(s); return Number.isFinite(t) ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'; };
 
-  const STEPS = [
-    { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: 'The org at a glance, and who looks after what' },
+  const ALL_STEPS = [
+    { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: "The org's people at a glance, and who looks after what" },
     { id: 'people', label: 'People', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its members and everyone who reaches its projects, and how' },
     { id: 'members', label: 'Members', icon: '<circle cx="8" cy="5" r="2.5"/><path d="M3 13a5 5 0 0110 0"/>', hint: 'Who is in the org, and as what' },
     { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
+    { id: 'roles', label: 'Roles & groups', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has, and which groups and people hold them' },
     { id: 'files', label: 'Policy files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
   ];
+  const IDENTITY_TABS = ['overview', 'people', 'members', 'signin', 'roles'];
+  const STEPS = $derived(section === 'policy' ? ALL_STEPS.filter((x) => x.id === 'files') : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
+  // A tab from the other page (an old link) lands on this page's first tab.
+  $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
+
+  // ── Roles & groups: read from the org's role and access files (and sign-in) ──
+  const BASELINE = [
+    { name: 'Admin', what: 'builds and changes flows, agents and resources' },
+    { name: 'Operator', what: 'runs them' },
+    { name: 'Viewer', what: 'reads them' },
+  ];
+  const parse = (t: string): any => { try { return YAML.parse(t) ?? {}; } catch { return {}; } };
+  const orgRoles = $derived((files?.files ?? []).filter((f) => f.kind === 'role').map((f) => ({ f, y: parse(f.content) })));
+  const accessFiles = $derived((files?.files ?? []).filter((f) => f.kind === 'access').map((f) => ({ f, y: parse(f.content) })));
+  const pairs = (m: any): [string, string][] => (m && typeof m === 'object' ? Object.entries(m).map(([k, v]) => [k, String(v)] as [string, string]) : []);
+  const savedVersion = (v: string) => (/^v\d+$/.test(v) ? v : 'imported');
+
   const memberCount = (r: string) => (org?.members ?? []).filter((m) => m.role === r).length;
 </script>
 
 <div class="panel-layout">
-  <PropertiesTree icon="ID" color="#5530a8" name={org?.display_name ?? handle} meta={`org ${handle} · security`} nodes={[]} steps={STEPS} activeNode={tab} onselect={(id) => (tab = id)} />
+  <PropertiesTree icon={section === 'policy' ? 'PF' : 'ID'} color="#5530a8" name={section === 'policy' ? 'Policy files' : 'Identity'} meta={`org ${org?.display_name ?? handle} · ${section === 'policy' ? 'what is allowed' : 'who people are'}`} nodes={[]} steps={STEPS} activeNode={tab} onselect={(id) => (tab = id)} />
   <div class="panel-col"><div class="panel-content"><div class="pf">
     <WizardHead step={STEPS.find((s) => s.id === tab)} />
     <section class="agt">
@@ -245,7 +266,7 @@
             <li><span class="lbl">People</span><span class="val">{aud ? `${aud.count} can reach its projects or are in it${outsiders ? `, ${outsiders} from outside the org` : ''}` : audErr || '…'}</span><button class="btn2" onclick={() => (tab = 'people')}>Audit</button></li>
             <li><span class="lbl">Members</span><span class="val">{org.members.length} · {memberCount('admin')} admin{memberCount('admin') === 1 ? '' : 's'}, {memberCount('securityadmin')} security admin{memberCount('securityadmin') === 1 ? '' : 's'}</span><button class="btn2" onclick={() => (tab = 'members')}>{canAdmin ? 'Manage' : 'See'}</button></li>
             <li><span class="lbl">Sign-in</span><span class="val">{org.sso?.idp_alias ? `through ${org.sso.idp_alias}${org.sso.domains?.length ? ` for ${org.sso.domains.join(', ')}` : ''}` : "A3T's own sign-in"}</span><button class="btn2" onclick={() => (tab = 'signin')}>{canAdmin ? 'Set up' : 'See'}</button></li>
-            <li><span class="lbl">Policy files</span><span class="val">{#if files}{files.files.length ? `${enforcedNow} of ${files.files.length} file${files.files.length === 1 ? '' : 's'} enforced` : 'none yet'}{:else}{filesErr || '…'}{/if}</span><button class="btn2" onclick={() => (tab = 'files')}>{managesFiles ? 'Manage' : 'See'}</button></li>
+            <li><span class="lbl">Roles</span><span class="val">{BASELINE.length} baseline{orgRoles.length ? ` + ${orgRoles.length} of its own (${orgRoles.map((r) => r.y.name ?? r.f.path).join(', ')})` : ''} · {accessFiles.length} project{accessFiles.length === 1 ? '' : 's'} with group mappings</span><button class="btn2" onclick={() => (tab = 'roles')}>See</button></li>
           </ul>
         </div>
         <div class="card">
@@ -341,6 +362,37 @@
           {#if canAdmin}<div class="acts"><button class="btn2 primary" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Save sign-in'}</button></div>{/if}
         </div>
 
+      {:else if tab === 'roles'}
+        <div class="card">
+          <div class="card-head"><h3>1 · Roles</h3><span>what each role may do is in the policy files</span></div>
+          <ul class="olist">
+            {#each BASELINE as r (r.name)}<li class="rrow"><b>{r.name}</b><span class="dim">baseline · {r.what}</span><span></span></li>{/each}
+            {#each orgRoles as r (r.f.path)}
+              <li class="rrow"><b>{r.y.name ?? r.f.path}</b><span class="dim">{handle}'s own · {r.y.extends ?? '—'}{(r.y.remove ?? []).length ? ` without ${(r.y.remove ?? []).join(', ')}` : ''}{r.f.enforced ? '' : ' · switched off'}{r.y.description ? ` · ${r.y.description}` : ''}</span>
+                <button class="lnk2" onclick={() => openFileInStudio(r.f.path)}>Edit in Studio</button></li>
+            {/each}
+          </ul>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>2 · Groups and people</h3><span>who holds which role</span></div>
+          <h4 class="sub">In the org, at sign-in</h4>
+          {#if org.sso?.idp_alias}
+            <ul class="olist">
+              {#each pairs(org.sso.role_map) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>org {ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
+              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{org.sso.default_role ? `org ${ROLE_LABEL[org.sso.default_role]?.toLowerCase()}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in</button></li>
+            </ul>
+          {:else}<p class="dim">No sign-in of its own: people are added under Members.</p>{/if}
+          <h4 class="sub">On its projects</h4>
+          {#each accessFiles as a (a.f.path)}
+            <div class="proj"><span class="mono">{a.y.project ?? '?'}</span>{#if !a.f.enforced}<span class="dim"> · switched off</span>{/if}<button class="lnk2" onclick={() => openFileInStudio(a.f.path)}>Edit in Studio</button></div>
+            <ul class="olist">
+              {#each pairs(a.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{r}</span><span class="dim">group</span></li>{/each}
+              {#each pairs(a.y.users) as [u, r] (u)}<li class="rrow"><span class="mono">{u}</span><span>{r}</span><span class="dim">person</span></li>{/each}
+            </ul>
+          {:else}<p class="dim">No access files: people hold project roles as project members (Projects › Access).</p>{/each}
+          {#if managesFiles}<p class="dim small">Group mappings are access files: create one under Policy files.</p>{/if}
+        </div>
+
       {:else}
         {#if filesErr && !files}<div class="note bad">{filesErr}</div>{/if}
         <div class="card">
@@ -365,7 +417,7 @@
                 <li class="frow" class:off={!picked[f.path]}>
                   <label class="fpick"><input type="checkbox" bind:checked={picked[f.path]} disabled={!managesFiles || !!busy} aria-label="Enforce {f.path}" /></label>
                   <button class="link mono" onclick={() => openFileInStudio(f.path)} title="Edit in Studio">{f.path}</button>
-                  <span class="fkind"><button class="lnk2" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{openFile === f.path ? 'hide' : 'show'}</button> · {KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.version}</span></span>
+                  <span class="fkind"><button class="lnk2" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{openFile === f.path ? 'hide' : 'show'}</button> · {KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{savedVersion(f.version)}</span></span>
                   <span class="fstate" class:on={f.enforced !== false}>{f.enforced !== false ? 'enforced' : 'off'}</span>
                   {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}</li>
               {/each}
@@ -435,10 +487,14 @@
   .fpick input { width: 16px; height: 16px; margin: 0; }
   .fstate { font-size: 11.5px; color: var(--text-4); text-align: right; }
   .fstate.on { color: var(--ok, #1a7158); }
+  .rrow { display: grid; grid-template-columns: minmax(120px, 0.6fr) minmax(0, 1.4fr) auto; gap: 10px; align-items: baseline; }
+  .sub { margin: 6px 0 0; font: 600 12.5px var(--font-sans); color: var(--text-2); }
+  .proj { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 13px; }
+  .proj .lnk2 { margin-left: auto; }
   .stop { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
   textarea.mono { font-family: var(--font-mono); font-size: 12.5px; }
   @container details (max-width: 560px) {
-    .ul .urow, .mrow { grid-template-columns: 1fr; }
+    .ul .urow, .mrow, .rrow { grid-template-columns: 1fr; }
     .frow { grid-template-columns: 22px minmax(0, 1fr) 56px; }
     .frow .fkind { grid-column: 2 / -1; grid-row: 2; }
     .uprojects li { grid-template-columns: 1fr; }
