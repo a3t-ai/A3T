@@ -152,7 +152,8 @@ pub fn project_namespaces_only(aql: &str, project: &str) -> std::result::Result<
 
 /// AC-6: `aql` as a run on branch `branch` sends it: `BRANCH` added after its `NAMESPACE`.
 /// A write with no `NAMESPACE`, or naming another branch, is refused: it would reach
-/// memory outside the branch. A read with no `NAMESPACE` stays as it is.
+/// memory outside the branch. A read with no `NAMESPACE` stays as it is. Topic
+/// statements (SUBSCRIBE, PUBLISH, ACK, UNSUBSCRIBE) take no `BRANCH` and stay as they are.
 pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<String, String> {
     // Words outside string literals, with where each ends.
     let mut words: Vec<(String, usize)> = Vec::new();
@@ -179,6 +180,11 @@ pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<String, String>
     }
     if !word.is_empty() {
         words.push((word.to_ascii_uppercase(), aql.len()));
+    }
+    // Topics aren't on branches (AQL v0.12): a topic statement goes as it is,
+    // on its NAMESPACE, from a branch run as from any other.
+    if words.first().is_some_and(|(w, _)| ["SUBSCRIBE", "PUBLISH", "ACK", "UNSUBSCRIBE"].contains(&w.as_str())) {
+        return Ok(aql.to_string());
     }
     let position = |w: &str| words.iter().position(|(x, _)| x == w);
     if let Some(i) = position("BRANCH") {
@@ -236,6 +242,17 @@ mod on_branch_tests {
         assert!(on_branch(r#"RECALL FROM SEMANTIC ALL NAMESPACE "crm" BRANCH "other""#, "try").is_err());
         assert!(on_branch(r#"STORE INTO WORKING (key = "k")"#, "try").is_err());
         assert_eq!(on_branch(r#"RECALL FROM WORKING ALL"#, "try").unwrap(), r#"RECALL FROM WORKING ALL"#);
+    }
+
+    #[test]
+    fn links_go_on_the_branch_and_topics_stay_off_it() {
+        assert_eq!(on_branch(r#"LINK FROM "a" TO "b" TYPE "knows" NAMESPACE "crm""#, "try").unwrap(),
+            r#"LINK FROM "a" TO "b" TYPE "knows" NAMESPACE "crm" BRANCH "try""#);
+        assert!(on_branch(r#"UNLINK FROM "a" TO "b" TYPE "knows""#, "try").is_err(), "a link write names its NAMESPACE");
+        for q in [r#"PUBLISH TOPIC "orders" (id = 1) NAMESPACE "crm""#, r#"SUBSCRIBE TOPIC "orders" NAMESPACE "crm""#,
+                  r#"ACK "sub-1" OFFSET 3 NAMESPACE "crm""#, r#"unsubscribe "sub-1" NAMESPACE "crm""#] {
+            assert_eq!(on_branch(q, "try").unwrap(), q);
+        }
     }
 }
 
