@@ -223,6 +223,23 @@ fn a_set_with_any_bad_file_is_refused_whole_and_names_each_file() {
     }
 }
 
+/// A rule binds a role that exists: the org's own (with or without the org
+/// prefix), a baseline one, or a platform one. A misnamed role would bind nobody.
+#[test]
+fn a_rule_names_only_roles_that_exist() {
+    let projects = vec!["acme-crm".to_string()];
+    let rule = |roles: &str| file("policies/leads.yaml", &format!("kind: a3t/policy\nname: leads\napplies_to: {{ org: true }}\nrules:\n  - who: {{ roles: [{roles}] }}\n    cannot: [flows.delete]\n    reason: r\n"));
+    for ok in ["support-lead", "acme/support-lead", "Operator", "SecurityAdmin"] {
+        compile_org_set("acme", &projects, &[rule(ok), file("roles/lead.yaml", ROLE)]).unwrap_or_else(|e| panic!("{ok}: {e:?}"));
+    }
+    for bad in ["support-leed", "globex/support-lead"] {
+        let errs = compile_org_set("acme", &projects, &[rule(bad), file("roles/lead.yaml", ROLE)]).unwrap_err().join("\n");
+        assert!(errs.contains(&format!("policies/leads.yaml: rule 1: who.roles names {bad:?}")), "{bad}: {errs}");
+    }
+    // The role file gone: the rule that binds it no longer compiles.
+    assert!(compile_org_set("acme", &projects, &[rule("support-lead")]).is_err());
+}
+
 /// The test policy repo in this repo (`tests/policy-repo/acme`, what vc-dev's
 /// org `acme` syncs from) compiles as FlowR will compile it.
 #[test]

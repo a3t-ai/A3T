@@ -396,6 +396,8 @@ pub fn compile_org_set(org: &str, projects: &[String], files: &[OrgFile]) -> Res
     let mut names = std::collections::BTreeSet::new();
     let mut roles: Vec<String> = Vec::new();
     let mut access_files = Vec::new();
+    // Roles the org's rules bind (`who.roles`), checked once every role file is known.
+    let mut named_roles: Vec<(String, usize, String)> = Vec::new();
     let place = |c: &Compiled, path: &str, errors: &mut Vec<String>| -> Vec<String> {
         match &c.placement {
             Placement::Org => projects.to_vec(),
@@ -412,6 +414,15 @@ pub fn compile_org_set(org: &str, projects: &[String], files: &[OrgFile]) -> Res
     };
     for f in files {
         let Some(kind) = kind_of_path(&f.path) else { continue };
+        if kind == "policy" {
+            if let Ok(p) = PolicyFile::parse(&f.content) {
+                for (i, r) in p.rules.iter().enumerate() {
+                    for role in r.who.iter().flat_map(|w| w.roles.iter()) {
+                        named_roles.push((f.path.clone(), i + 1, role.clone()));
+                    }
+                }
+            }
+        }
         let compiled = match kind {
             "policy" => compile_policy(org, &f.content),
             "role" => compile_role(org, &f.content),
@@ -444,6 +455,17 @@ pub fn compile_org_set(org: &str, projects: &[String], files: &[OrgFile]) -> Res
         }
         set.hidden_apps.extend(c.hidden_apps.iter().cloned());
         set.files.push(serde_json::json!({ "path": f.path, "kind": kind, "name": c.name, "placement": c.placement }));
+    }
+    // A rule must bind a role that exists: one it misnames would bind nobody,
+    // silently. A baseline role, a platform role, or one of the org's roles/ files.
+    for (path, rule, role) in named_roles {
+        let own = role.strip_prefix(&format!("{org}/")).unwrap_or(&role);
+        let known = BASELINE_ROLES.contains(&role.as_str()) || role == "SuperAdmin" || role == "SecurityAdmin"
+            || (!own.contains('/') && roles.iter().any(|r| r == own));
+        if !known {
+            errors.push(format!("{path}: rule {rule}: who.roles names {role:?}: not a baseline role ({}), SuperAdmin, SecurityAdmin or one of the org's roles/ files",
+                BASELINE_ROLES.join(", ")));
+        }
     }
     // Access files last: they may name the org's own roles.
     let mut mapped = std::collections::BTreeSet::new();
