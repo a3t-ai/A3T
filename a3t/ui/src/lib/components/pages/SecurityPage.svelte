@@ -466,11 +466,11 @@
                   {@const ru = realmUser(u.id)}
                   <li class="urow">
                     <button class="uwho" onclick={() => (openRow = openRow === u.id ? '' : u.id)} aria-expanded={openRow === u.id}>
-                      <b>{u.name || u.email || u.id}</b><small>{u.name ? u.email : ''}{!u.account ? 'no sign-in account' : ''}{u.enabled === false && u.account ? ' · disabled' : ''}</small>
+                      <b>{u.name || u.email || u.id}</b><small>{[u.name ? u.email : '', !u.account ? 'no sign-in account' : '', u.account && u.enabled === false ? 'disabled' : ''].filter(Boolean).join(' · ')}</small>
                     </button>
                     <span class="uchips">
                       {#each u.realm_roles as r}<span class="chip" class:sec={r === 'superadmin' || r === 'securityadmin'} title={REALM_ROLES.find((x) => x.id === r)?.what ?? ''}>{REALM_ROLES.find((x) => x.id === r)?.label ?? r}</span>{/each}
-                      {#if u.here}{#each u.here.capacities as c}<span class="chip here">{CAP_LABEL[c] ?? c}</span>{/each}<span class="dim small">{ACCESS_WORD[u.here.access] ?? u.here.access}</span>
+                      {#if u.here}<span class="dim small here-lbl">{u.realm_roles.length ? '· ' : ''}in {fProject}:</span>{#each u.here.capacities as c}<span class="chip here">{CAP_LABEL[c] ?? c}</span>{/each}<span class="dim small">{ACCESS_WORD[u.here.access] ?? u.here.access}</span>
                       {:else}<span class="dim small">{u.orgs.length} org{u.orgs.length === 1 ? '' : 's'} · {u.projects.length} project{u.projects.length === 1 ? '' : 's'}</span>{/if}
                     </span>
                     <span class="acts">{#if ru}<button class="btn2" onclick={() => editUser(ru)}>Edit</button><button class="btn2 quiet" onclick={() => deleteUser(ru)}>Delete</button>{/if}</span>
@@ -522,8 +522,8 @@
   .fld.chk { flex-direction: row; align-items: center; gap: 8px; }
   .fld.chk input { width: auto; height: auto; }
   .uf { display: flex; flex-wrap: wrap; gap: 8px; }
-  .uf .grow { flex: 1 1 220px; }
-  .uf select { flex: 0 0 auto; }
+  .uf .grow { flex: 1 1 220px; width: auto !important; }
+  .uf select { flex: 0 1 170px; width: auto !important; min-width: 0; }
   .small { font-size: 12.5px; margin: 0; }
   .ul .urow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr) auto; align-items: center; gap: 10px; }
   .uwho { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; font: inherit; color: inherit; }
