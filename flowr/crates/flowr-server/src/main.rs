@@ -18,6 +18,7 @@ mod first_password;
 mod change_password;
 mod refresh;
 mod directory;
+mod people;
 mod config;
 
 use flowr_ce::flowr_storage::{SettingsStore, StorageBackend};
@@ -301,6 +302,9 @@ async fn main() -> anyhow::Result<()> {
                             .route("/auth/change-password", post(change_password::change_password_handler))
                             // People a member can be picked from, for project owners and org admins (directory.rs).
                             .route("/directory/users", get(directory::directory_users_handler))
+                            // Who can reach a project, and how; everyone's access for an audit (people.rs).
+                            .route("/projects/:project/people", get(people::project_people_handler))
+                            .route("/security/people", get(people::security_people_handler))
                             .layer(Extension(idp_admin)),
                     );
 

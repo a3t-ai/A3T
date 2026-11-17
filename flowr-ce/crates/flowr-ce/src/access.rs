@@ -206,6 +206,317 @@ impl Snapshot {
         }
     }
 
+    /// Every way someone reaches `namespace`, from the same rows and rules as
+    /// [`Snapshot::decide`]: the people it names (each route: owner, member
+    /// role, org role, SuperAdmin) and the groups too wide to name (everyone
+    /// signed in, another org's members through exposure). `supers` holds the
+    /// SuperAdmins (their role lives in the IdP, not here). A person's best
+    /// route is what `decide` gives them — the tests hold the two together.
+    pub fn routes(&self, namespace: &str, supers: &[String]) -> ProjectRoutes {
+        use NsAccess::{Read, Run, Write};
+        let mut people: Vec<Route> = Vec::new();
+        let push = |people: &mut Vec<Route>, user: &str, capacity: &'static str, access: NsAccess| {
+            if !user.is_empty() && access > NsAccess::None {
+                people.push(Route { user: user.to_string(), capacity, access: access_name(access) });
+            }
+        };
+        let org_rows = |org_id: &str| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = self.org_roles.iter()
+                .filter(|((o, _), _)| o == org_id).map(|((_, u), r)| (u.clone(), r.clone())).collect();
+            v.sort();
+            v
+        };
+        let mut groups: Vec<GroupRoute> = Vec::new();
+        if PLATFORM.contains(&namespace) {
+            let org = PLATFORM_ORGS.iter().find(|(ns, _)| *ns == namespace).map(|(_, id)| *id).unwrap_or_default();
+            for (u, r) in org_rows(org) {
+                if r == "admin" { push(&mut people, &u, "org-admin", Write); }
+            }
+            for s in supers { push(&mut people, s, "superadmin", Write); }
+            groups.push(GroupRoute { group: "everyone".into(), capacity: "everyone", access: access_name(Run) });
+            return ProjectRoutes { namespace: namespace.into(), kind: "platform", owner: namespace.into(), private: false, people, groups };
+        }
+        let Some(p) = self.projects.get(namespace) else {
+            for (u, r) in org_rows(LEGACY_ORG) {
+                match r.as_str() {
+                    "admin" => push(&mut people, &u, "org-admin", Write),
+                    "member" => push(&mut people, &u, "org-member", Write),
+                    "securityadmin" => push(&mut people, &u, "org-securityadmin", Read),
+                    _ => {}
+                }
+            }
+            for s in supers { push(&mut people, s, "superadmin", Write); }
+            return ProjectRoutes { namespace: namespace.into(), kind: "legacy", owner: "a3t".into(), private: false, people, groups };
+        };
+        let by_role = |role: &str| -> Option<(&'static str, NsAccess)> {
+            match role {
+                "owner" => Some(("owner", Write)),
+                "developer" => Some(("developer", Write)),
+                "operator" => Some(("operator", Run)),
+                "viewer" => Some(("viewer", Read)),
+                _ => None,
+            }
+        };
+        let is_member = |u: &str| p.members.iter().any(|(id, _)| id == u);
+        for (id, role) in &p.members {
+            if let Some((cap, a)) = by_role(role) { push(&mut people, id, cap, a); }
+        }
+        if p.owner_kind == "user" {
+            push(&mut people, &p.owner_id, "owner", Write);
+            // A member's role is what they have; SuperAdmin reads a personal
+            // project only when it is not private and they are not a member.
+            if !p.private {
+                for s in supers.iter().filter(|s| !is_member(s)) { push(&mut people, s, "superadmin", Read); }
+            }
+        } else {
+            for (u, r) in org_rows(&p.owner_id) {
+                match r.as_str() {
+                    "admin" => push(&mut people, &u, "org-admin", Write),
+                    "securityadmin" => push(&mut people, &u, "org-securityadmin", Read),
+                    _ if !p.private => push(&mut people, &u, "org-member", Read),
+                    _ => {}
+                }
+            }
+            for s in supers { push(&mut people, s, "superadmin", Write); }
+        }
+        let system = p.owner_kind == "org" && p.owner == "system";
+        match p.exposure.as_str() {
+            "public" if !system => groups.push(GroupRoute { group: "everyone".into(), capacity: "exposed", access: access_name(Run) }),
+            "orgs" => {
+                for h in p.exposed_to.iter().filter(|h| (!system || h.as_str() == "a3t") && self.orgs.contains_key(h.as_str())) {
+                    groups.push(GroupRoute { group: format!("org:{h}"), capacity: "exposed", access: access_name(Run) });
+                }
+            }
+            _ => {}
+        }
+        ProjectRoutes {
+            namespace: namespace.into(),
+            kind: if p.owner_kind == "user" { "personal" } else { "org" },
+            owner: p.owner.clone(),
+            private: p.private,
+            people,
+            groups,
+        }
+    }
+
+    /// Every project namespace, and the platform's.
+    pub fn namespaces(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.projects.keys().cloned().chain(PLATFORM.iter().map(|s| s.to_string())).collect();
+        v.sort();
+        v
+    }
+
+    /// The members (any role) of the org with this handle.
+    pub fn members_of(&self, handle: &str) -> Vec<String> {
+        let Some(id) = self.orgs.get(handle) else { return Vec::new() };
+        let mut v: Vec<String> = self.org_roles.keys().filter(|(o, _)| o == id).map(|(_, u)| u.clone()).collect();
+        v.sort();
+        v
+    }
+
+    /// `user`'s orgs: `(handle, role)`.
+    pub fn orgs_of(&self, user: &str) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self.orgs.iter()
+            .filter_map(|(h, id)| self.org_role(id, user).map(|r| (h.clone(), r.to_string()))).collect();
+        v.sort();
+        v
+    }
+
+    /// Every org handle.
+    pub fn org_handles(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.orgs.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// Everyone the rows name: project owners and members, org members.
+    pub fn known_users(&self) -> Vec<String> {
+        let mut v: std::collections::BTreeSet<String> = self.org_roles.keys().map(|(_, u)| u.clone()).collect();
+        for p in self.projects.values() {
+            if p.owner_kind == "user" && !p.owner_id.is_empty() { v.insert(p.owner_id.clone()); }
+            v.extend(p.members.iter().map(|(id, _)| id.clone()));
+        }
+        v.into_iter().collect()
+    }
+}
+
+/// One way a person reaches a project. `capacity`: `owner`, `developer`,
+/// `operator`, `viewer` (named members), `org-admin`, `org-securityadmin`,
+/// `org-member` (through the owning org), `superadmin`; `access`: `read`,
+/// `run` or `write` (what it lets them do).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Route {
+    pub user: String,
+    pub capacity: &'static str,
+    pub access: &'static str,
+}
+
+/// A group reaches a project: `everyone` (signed in), or `org:<handle>` (that
+/// org's members). `capacity`: `everyone` (the platform's own namespaces) or
+/// `exposed` (the project is shared with them: read, clone, run).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GroupRoute {
+    pub group: String,
+    pub capacity: &'static str,
+    pub access: &'static str,
+}
+
+/// Who reaches a project, and how. `kind`: `personal`, `org`, `platform` or
+/// `legacy` (a namespace from before projects, org a3t's).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProjectRoutes {
+    pub namespace: String,
+    pub kind: &'static str,
+    pub owner: String,
+    pub private: bool,
+    pub people: Vec<Route>,
+    pub groups: Vec<GroupRoute>,
+}
+
+pub fn access_name(a: NsAccess) -> &'static str {
+    match a {
+        NsAccess::None => "none",
+        NsAccess::Read => "read",
+        NsAccess::Run => "run",
+        NsAccess::Write => "write",
+    }
+}
+
+/// Platform SecurityAdmins: Security and the Decision log over every project,
+/// no project work. Not a route into a project; listed so people see who audits.
+pub const SECURITY_ADMIN_CAPACITY: &str = "security-admin";
+
+/// How far up a capacity sits: 1 reads, 2 runs, 3 builds, 4 manages; 5 audits
+/// (security, beside the line rather than above it).
+pub fn capacity_rank(capacity: &str) -> u8 {
+    match capacity {
+        "viewer" | "org-member" | "exposed" | "everyone" => 1,
+        "operator" => 2,
+        "developer" => 3,
+        "owner" | "org-admin" | "superadmin" => 4,
+        "org-securityadmin" | SECURITY_ADMIN_CAPACITY => 5,
+        _ => 0,
+    }
+}
+
+/// Whether someone holding `mine` in a project sees a person who holds
+/// `theirs` there. Managers (owner, org admin, SuperAdmin) and security (org or
+/// platform) see everyone; `infosec` (platform SuperAdmin or SecurityAdmin)
+/// too. Others see their own level and below — viewers only viewers, operators
+/// operators and viewers — and from developer up also who audits (security).
+/// Nobody below a manager sees the managers.
+pub fn sees(mine: &[&str], infosec: bool, theirs: &str) -> bool {
+    if infosec || mine.iter().any(|c| matches!(capacity_rank(c), 4 | 5)) {
+        return true;
+    }
+    let r = mine.iter().map(|c| capacity_rank(c)).max().unwrap_or(0);
+    match capacity_rank(theirs) {
+        0 | 4 => false,
+        5 => r >= 3,
+        t => r >= 1 && t <= r,
+    }
+}
+
+/// The access snapshot now (refreshed if stale), when the project guard is
+/// installed (FlowR EE, enforcing).
+pub async fn current_snapshot() -> Option<Arc<Snapshot>> {
+    let g = PROJECT_GUARD.get()?;
+    Some(g.snapshot().await)
+}
+
+impl Snapshot {
+    /// Whether this snapshot knows `namespace` as a project.
+    pub fn has_project(&self, namespace: &str) -> bool {
+        self.projects.contains_key(namespace)
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn fixture() -> Snapshot {
+        Snapshot::from_rows(
+            &[
+                json!({ "namespace": "ann-orders", "owner_kind": "user", "owner": "ann", "owner_id": "ann", "private": "true", "members": "[{\"id\":\"root\",\"role\":\"viewer\"}]" }),
+                json!({ "namespace": "ann-blog", "owner_kind": "user", "owner": "ann", "owner_id": "ann", "private": "false", "members": "[{\"id\":\"bob\",\"role\":\"viewer\"},{\"id\":\"carl\",\"role\":\"operator\"}]" }),
+                json!({ "namespace": "acme-web", "owner_kind": "org", "owner": "acme", "owner_id": "org-acme", "private": "true", "members": "[{\"id\":\"carl\",\"role\":\"operator\"},{\"id\":\"dev\",\"role\":\"developer\"}]" }),
+                json!({ "namespace": "acme-docs", "owner_kind": "org", "owner": "acme", "owner_id": "org-acme", "private": "false", "members": "[{\"id\":\"zed\",\"role\":\"viewer\"}]",
+                        "policy": "{\"exposure\":{\"audience\":\"orgs\",\"orgs\":[\"globex\"]}}" }),
+                json!({ "namespace": "acme-pub", "owner_kind": "org", "owner": "acme", "owner_id": "org-acme", "private": "false", "members": "[]",
+                        "policy": "{\"exposure\":{\"audience\":\"public\"}}" }),
+                json!({ "namespace": "sys-guards", "owner_kind": "org", "owner": "system", "owner_id": "org-system", "private": "true", "members": "[]",
+                        "policy": "{\"exposure\":{\"audience\":\"orgs\",\"orgs\":[\"a3t\",\"globex\"]}}" }),
+            ],
+            &[
+                json!({ "org_id": "org-acme", "user_id": "bob", "role": "admin" }),
+                json!({ "org_id": "org-acme", "user_id": "carl", "role": "member" }),
+                json!({ "org_id": "org-acme", "user_id": "sec", "role": "securityadmin" }),
+                json!({ "org_id": "org-globex", "user_id": "gus", "role": "member" }),
+                json!({ "org_id": "org-default", "user_id": "dora", "role": "member" }),
+                json!({ "org_id": "org-default", "user_id": "ops", "role": "admin" }),
+                json!({ "org_id": "org-system", "user_id": "sre", "role": "admin" }),
+            ],
+            &[json!({ "id": "org-acme", "slug": "acme" }), json!({ "id": "org-globex", "slug": "globex" }),
+              json!({ "id": "org-default", "slug": "a3t" }), json!({ "id": "org-system", "slug": "system" })],
+        )
+    }
+
+    fn rank(a: &str) -> NsAccess {
+        match a { "read" => NsAccess::Read, "run" => NsAccess::Run, "write" => NsAccess::Write, _ => NsAccess::None }
+    }
+
+    /// What the routes give `user`: their best named route, or a group they are in.
+    fn via_routes(s: &Snapshot, r: &ProjectRoutes, user: &str) -> NsAccess {
+        let named = r.people.iter().filter(|p| p.user == user).map(|p| rank(p.access)).max().unwrap_or(NsAccess::None);
+        let grouped = r.groups.iter().filter(|g| match g.group.strip_prefix("org:") {
+            Some(h) => s.members_of(h).iter().any(|m| m == user),
+            None => true,
+        }).map(|g| rank(g.access)).max().unwrap_or(NsAccess::None);
+        named.max(grouped)
+    }
+
+    #[test]
+    fn routes_agree_with_the_decision_for_everyone() {
+        let s = fixture();
+        let users = ["ann", "bob", "carl", "sec", "gus", "dora", "ops", "sre", "dev", "zed", "root", "nobody"];
+        let mut namespaces = s.namespaces();
+        namespaces.push("default".into());
+        for ns in &namespaces {
+            let r = s.routes(ns, &["root".to_string()]);
+            for u in users {
+                assert_eq!(via_routes(&s, &r, u), s.decide(u, u == "root", ns), "{u} in {ns}");
+            }
+        }
+    }
+
+    #[test]
+    fn routes_say_how_each_person_gets_in() {
+        let s = fixture();
+        let r = s.routes("acme-web", &["root".to_string()]);
+        let has = |u: &str, c: &str| r.people.iter().any(|p| p.user == u && p.capacity == c);
+        assert!(has("carl", "operator") && has("dev", "developer") && has("bob", "org-admin") && has("sec", "org-securityadmin") && has("root", "superadmin"));
+        assert!(!r.people.iter().any(|p| p.capacity == "org-member"), "private: plain org members are not in");
+        let d = s.routes("acme-docs", &[]);
+        assert!(d.people.iter().any(|p| p.user == "carl" && p.capacity == "org-member"));
+        assert_eq!(d.groups, vec![GroupRoute { group: "org:globex".into(), capacity: "exposed", access: "run" }]);
+        assert_eq!(s.routes("sys-guards", &[]).groups.len(), 1, "system exposes to a3t only");
+        assert_eq!(s.routes("ann-orders", &["root".to_string()]).people.iter().filter(|p| p.user == "root").count(), 1, "a member's role, not SuperAdmin's read");
+    }
+
+    #[test]
+    fn who_sees_whom() {
+        let all = ["viewer", "org-member", "operator", "developer", "owner", "org-admin", "superadmin", "org-securityadmin", "security-admin"];
+        let seen = |mine: &[&str]| -> Vec<&str> { all.iter().copied().filter(|t| sees(mine, false, t)).collect() };
+        assert_eq!(seen(&["viewer"]), vec!["viewer", "org-member"]);
+        assert_eq!(seen(&["operator"]), vec!["viewer", "org-member", "operator"]);
+        assert_eq!(seen(&["developer"]), vec!["viewer", "org-member", "operator", "developer", "org-securityadmin", "security-admin"]);
+        assert_eq!(seen(&["owner"]).len(), all.len());
+        assert_eq!(seen(&["org-securityadmin"]).len(), all.len());
+        assert_eq!(seen(&[]), Vec::<&str>::new());
+        assert!(sees(&[], true, "superadmin"), "platform InfoSec sees everyone");
+    }
 }
 
 pub struct ProjectGuard {
