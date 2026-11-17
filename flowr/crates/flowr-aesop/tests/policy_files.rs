@@ -154,3 +154,22 @@ async fn an_agents_own_policy_binds_that_agent_only() {
     assert!(denied(&hook(&[copy.cedar]).check(&as_agent("agt-9")).await).is_some());
     assert!(compile_agent_policy("acme-crm", "agt-1", "kind: a3t/policy\nname: x\napplies_to: { org: true }\nrules:\n  - cannot: [flows.run]\n    reason: r\n").is_err());
 }
+
+/// A chat turn: the agent (acting for a user, with its session id as its id)
+/// calls its model; the runtime stamps `template.agent`.
+#[tokio::test]
+async fn an_agents_model_rule_holds_on_its_chat_turns() {
+    let yaml = "kind: a3t/policy\nname: profile\nrules:\n  - cannot: [models.use]\n    on: { models: { not_in: [a3t/approved] } }\n    reason: It runs only on the approved model.\n";
+    let h = hook(&[compile_agent_policy("acme-crm", "agt-1", yaml).unwrap().cedar]);
+    let turn = |agent: &str, model: &str| {
+        let mut r = llm_call(Principal::Agent {
+            memory_branch: None, agent_id: flowr_policy::AgentId(format!("agent:{agent}:s1")),
+            on_behalf_of: Some("u1".into()), flow_id: None, roles: vec!["Operator".into()], owner: None,
+        }, model);
+        r.attributes = serde_json::json!({ "template": { "agent": agent } }).as_object().unwrap().clone();
+        r
+    };
+    assert!(denied(&h.check(&turn("agt-1", "a3t/other")).await).is_some(), "another model is refused");
+    assert!(denied(&h.check(&turn("agt-1", "a3t/approved")).await).is_none(), "the approved model runs");
+    assert!(denied(&h.check(&turn("agt-2", "a3t/other")).await).is_none(), "other agents are not bound");
+}

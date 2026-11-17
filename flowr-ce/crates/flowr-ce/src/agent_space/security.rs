@@ -63,9 +63,17 @@ async fn policy_of(s: &dyn StorageBackend, id: &str) -> Option<Value> {
 }
 
 /// The rules of a policy file in plain words (empty when it doesn't parse).
+/// The file applies to this agent alone, so a rule naming nobody reads as
+/// "This agent may not …" rather than "Nobody may …".
 fn sentences(yaml: &str) -> Vec<String> {
     flowr_policy::policy_file::PolicyFile::parse(yaml)
-        .map(|f| f.rules.iter().map(flowr_policy::policy_file::describe_rule).collect())
+        .map(|f| f.rules.iter().map(|r| {
+            let s = flowr_policy::policy_file::describe_rule(r);
+            match s.strip_prefix("Nobody may ") {
+                Some(rest) => format!("This agent may not {rest}"),
+                None => s,
+            }
+        }).collect())
         .unwrap_or_default()
 }
 

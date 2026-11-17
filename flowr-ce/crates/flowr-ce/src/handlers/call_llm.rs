@@ -41,7 +41,9 @@ impl TaskHandler for LlmHandler {
         };
         let resource = with.get("_resource").and_then(|v| v.as_str()).unwrap_or("default-llm");
         let model = with.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        // `name` is what model rules match on (`models.use` in policy files).
         flowr_policy::Resource::new("Llm", resource)
+            .with_attr("name", resource)
             .with_attr("task_type", "call:llm")
             .with_attr("model", model)
     }

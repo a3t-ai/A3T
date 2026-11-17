@@ -643,6 +643,16 @@ impl TaskHandler for AgentHandler {
             // ── Phase 7: REASONING LOOP ────────────────────
             let llm_resource = config.config.llm_resource.as_deref().unwrap_or("default-llm");
 
+            // The model is a governed resource like any tool: `llm:call` on it,
+            // as the agent, with the turn's template data (`template.agent`), so
+            // an agent's own policy and the org's model rules apply to chat turns
+            // too, not only to `call:llm` steps in flows. The forced last answer
+            // and the reflection below use the same model in the same turn, so
+            // this one check covers them.
+            if let Err(why) = authorize_model(&agent_principal, llm_resource, &ctx.template_meta).await {
+                return Err(RuntimeError::task_failed(&task.name, why));
+            }
+
             // Build tool list: merge inline tools + tool_flows (fetch flow metadata)
             // The same ceiling the gate will apply, so the advertised permission
             // state matches what actually happens when the tool is called.
@@ -1532,6 +1542,31 @@ fn llm_error(e: String) -> RuntimeError {
             "this agent's model resource '{name}' does not exist (it was deleted or renamed); pick another model in the agent's Settings"
         )),
         None => RuntimeError::Communication(format!("LLM call failed: {e}")),
+    }
+}
+
+/// `llm:call` on the model resource the turn will use. A model has no one to
+/// ask mid-turn, so `Ask` counts as a refusal (with its reason).
+async fn authorize_model(
+    agent: &flowr_mcp_core::Principal,
+    llm_resource: &str,
+    attributes: &serde_json::Map<String, Value>,
+) -> std::result::Result<(), String> {
+    let req = flowr_policy::ExecutionRequest {
+        principal: agent.clone(),
+        action: flowr_policy::actions::llm_call(),
+        resource: flowr_policy::Resource::new("Llm", llm_resource)
+            .with_attr("name", llm_resource)
+            .with_attr("task_type", "call:agent"),
+        attributes: attributes.clone(),
+        context: flowr_policy::ExecContext::default(),
+        params: Value::Null,
+    };
+    let decision = flowr_policy::policy_hook().check(&req).await;
+    flowr_policy::audit::record(&req, &decision);
+    match decision.non_interactive() {
+        flowr_policy::PolicyDecision::Deny { reason, .. } => Err(format!("denied: model {llm_resource}: {reason}")),
+        _ => Ok(()),
     }
 }
 
