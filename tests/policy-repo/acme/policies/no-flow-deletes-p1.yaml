@@ -1,0 +1,8 @@
+kind: a3t/policy
+name: no-flow-deletes-p1
+description: Nobody but Admins deletes flows in acme-p1.
+applies_to: { projects: [acme-p1] }
+rules:
+  - who: { roles: [Operator, Viewer] }
+    cannot: [flows.delete]
+    reason: In acme-p1 only Admins delete flows.

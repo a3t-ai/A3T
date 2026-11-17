@@ -1,0 +1,8 @@
+kind: a3t/policy
+name: approved-models
+description: Acme runs on its approved model only.
+applies_to: { org: true }
+rules:
+  - cannot: [models.use]
+    on: { models: { not_in: [a3t/claude-cli-max] } }
+    reason: Acme uses only its approved model (a3t/claude-cli-max).

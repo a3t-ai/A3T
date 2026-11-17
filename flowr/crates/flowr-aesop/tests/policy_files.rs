@@ -222,3 +222,22 @@ fn a_set_with_any_bad_file_is_refused_whole_and_names_each_file() {
         assert!(all.contains(needle), "expected {needle:?} in:\n{all}");
     }
 }
+
+/// The test policy repo in this repo (`tests/policy-repo/acme`, what vc-dev's
+/// org `acme` syncs from) compiles as FlowR will compile it.
+#[test]
+fn the_test_policy_repo_compiles() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/policy-repo/acme");
+    let mut files = Vec::new();
+    for dir in ["policies", "roles", "access"] {
+        for e in std::fs::read_dir(root.join(dir)).unwrap() {
+            let p = e.unwrap().path();
+            files.push(file(&format!("{dir}/{}", p.file_name().unwrap().to_str().unwrap()), &std::fs::read_to_string(&p).unwrap()));
+        }
+    }
+    let set = compile_org_set("acme", &["acme-p1".to_string(), "acme-sam1".to_string()], &files).expect("the test repo compiles");
+    assert_eq!(set.files.len(), 4);
+    let p1: Vec<&str> = set.policies.iter().filter(|(p, _, _)| p == "acme-p1").map(|(_, n, _)| n.as_str()).collect();
+    assert!(p1.contains(&"org.acme.policy.no-flow-deletes-p1") && p1.contains(&"org.acme.policy.approved-models"), "{p1:?}");
+    assert!(!set.policies.iter().any(|(p, n, _)| p == "acme-sam1" && n.contains("no-flow-deletes")), "p1's rule stays in p1");
+}

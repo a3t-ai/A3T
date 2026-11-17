@@ -1,0 +1,5 @@
+kind: a3t/role
+name: support-lead
+description: An Operator who doesn't change memory.
+extends: Operator
+remove: [memory.change]

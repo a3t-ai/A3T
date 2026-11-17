@@ -1,0 +1,8 @@
+kind: a3t/access
+project: acme-p1
+description: Who holds which role on acme-p1.
+groups:
+  acme-support: Operator
+  acme-leads: support-lead
+users:
+  jane@acme.test: Admin
