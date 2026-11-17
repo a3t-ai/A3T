@@ -9,7 +9,7 @@
 
 import { mcpCall, projectsApi, type ProjectInfo, type ProfileInfo, type OrgRole } from '$lib/services/api';
 import { bumpContext } from './apps.svelte.ts';
-import { getSession } from './auth';
+import { getSession, orgSecurity } from './auth';
 
 export type Project = {
   name: string;
@@ -316,6 +316,7 @@ async function loadProjectsNow() {
   everyProject = [...hidden].sort();
   profile = mine.ok ? (mine.data?.profile ?? null) : null;
   myOrgs = mine.ok ? (mine.data?.orgs ?? []) : [];
+  orgSecurity.set(myOrgs.filter((o) => o.role === 'admin' || o.role === 'securityadmin').map((o) => o.handle));
   if (!list.length && !infos.length) return; // keep the fallback
   const byName = new Map(list.map((p) => [p.name, p]));
   // A project that holds nothing yet isn't in the registry's namespace list.

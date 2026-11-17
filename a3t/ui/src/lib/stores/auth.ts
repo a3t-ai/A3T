@@ -180,6 +180,7 @@ export async function signup(name: string, email: string, password: string): Pro
 
 export function signOut() {
   sessionStore.set(null);
+  orgSecurity.set([]);
   api.clearTokens();
   if (typeof window !== 'undefined') {
     localStorage.removeItem(STORAGE_KEY);
@@ -323,9 +324,13 @@ export function checkPermission(action: Action, resource: ResourceType): boolean
 
 import { getMenusForRole } from '$lib/core/auth/menu';
 
+/// The orgs whose security you look after (admin or securityadmin there): they
+/// open Security for those orgs. Set when the projects and orgs load.
+export const orgSecurity = writable<string[]>([]);
+
 /** Reactive store: sidebar menu groups filtered for the current user's role */
-export const menuGroups = derived(userRole, ($role) =>
-  $role ? getMenusForRole($role) : []
+export const menuGroups = derived([userRole, orgSecurity], ([$role, $orgs]) =>
+  $role ? getMenusForRole($role, $orgs.length > 0) : []
 );
 
 /// SuperAdmin or SecurityAdmin: who may see Security and the Decision log (the
@@ -333,4 +338,10 @@ export const menuGroups = derived(userRole, ($role) =>
 export function isInfosec(): boolean {
   const r = getSession()?.user?.role;
   return r === 'superadmin' || r === 'securityadmin';
+}
+
+/// Who opens Security: InfoSec (every org), or an org's admin or security admin
+/// (their orgs only).
+export function opensSecurity(): boolean {
+  return isInfosec() || get(orgSecurity).length > 0;
 }

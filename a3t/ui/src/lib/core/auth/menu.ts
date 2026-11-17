@@ -82,12 +82,14 @@ export const MENU_CONFIG: MenuGroup[] = [
  * Filter menu groups and items for the given role.
  * Removes empty groups after filtering.
  */
-export function getMenusForRole(role: UserRole): MenuGroup[] {
+/// `orgSecurity`: the user is an admin or security admin of some org, so
+/// Security is theirs too (for those orgs only; the server scopes it).
+export function getMenusForRole(role: UserRole, orgSecurity = false): MenuGroup[] {
   return MENU_CONFIG
     .filter(group => group.roles.includes(role))
     .map(group => ({
       ...group,
-      items: group.items.filter(item => item.roles.includes(role)),
+      items: group.items.filter(item => item.roles.includes(role) || (orgSecurity && item.type === 'security')),
     }))
     .filter(group => group.items.length > 0);
 }

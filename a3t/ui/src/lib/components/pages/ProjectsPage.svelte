@@ -19,7 +19,7 @@
   import AppHome from '$lib/shell/AppHome.svelte';
   import { onMount, untrack } from 'svelte';
   import { getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
-  import { currentUser, isInfosec } from '$lib/stores/auth';
+  import { currentUser, isInfosec, orgSecurity } from '$lib/stores/auth';
   import {
     getProjects, getShowPlatform, loadProjects, setProject, roleIn, isMine, getProfile, getMyOrgs, type Project,
   } from '$lib/stores/context.svelte.ts';
@@ -678,7 +678,8 @@
       <section class="ap-card">
         <header class="ap-head">
           <div><h3>Who can access it</h3><p>Everyone who can reach this project and how — from its members, its org and the platform roles, as the server enforces them.</p></div>
-          {#if isInfosec() && info}<button class="link" onclick={() => navigateToDetail('security', 'Security', `identity:users:${info.namespace}`)}>Audit in Identity →</button>{/if}
+          {#if isInfosec() && info}<button class="link" onclick={() => navigateToDetail('security', 'Security', `identity:users:${info.namespace}`)}>Audit in Identity →</button>
+          {:else if info && info.owner_kind === 'org' && $orgSecurity.includes(info.owner)}<button class="link" onclick={() => navigateToDetail('security', 'Security', `org:${info.owner}:people:${info.namespace}`)}>Audit in {info.owner}'s Identity →</button>{/if}
         </header>
         {#if ppErr}
           <p class="ap-none">{ppErr}</p>

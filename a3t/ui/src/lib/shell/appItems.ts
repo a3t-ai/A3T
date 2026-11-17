@@ -7,7 +7,7 @@
 
 import { mcpCall, fetchChatSessions, opsApi, canvasApi } from '$lib/services/api';
 import { RESOURCE_CATEGORIES, categorize } from '$lib/core/resources/categories';
-import { namespacesFor, inContext, canvasKind, projectOf, itemProject, getProjects, getShowPlatform, getProfile, loadProjects, canSee, roleIn, type ListKind } from '$lib/stores/context.svelte.ts';
+import { namespacesFor, inContext, getProject, canvasKind, projectOf, itemProject, getProjects, getShowPlatform, getProfile, loadProjects, canSee, roleIn, type ListKind } from '$lib/stores/context.svelte.ts';
 
 export type AppItem = {
   /// What navigation addresses. For chat this is the *client* conversation id,
@@ -110,6 +110,9 @@ export function ownerOfNamespace(ns: string): string {
 
 /// Groups as above, each folded under its owner: owner → its projects → items.
 /// An owner with one project named after it (the platform's `a3t`) is one level.
+/// The group for what covers every org (the sign-in realm, the baseline).
+export const PLATFORM_GROUP = 'platform · all orgs';
+
 export function groupByOwner(groups: { ns: string; items: AppItem[] }[]): { owner: string; projects: { ns: string; items: AppItem[] }[]; count: number }[] {
   const me = getProfile()?.handle ?? '';
   const byOwner = new Map<string, { ns: string; items: AppItem[] }[]>();
@@ -118,7 +121,7 @@ export function groupByOwner(groups: { ns: string; items: AppItem[] }[]): { owne
     (byOwner.get(o) ?? byOwner.set(o, []).get(o)!).push(g);
   }
   const platform = (o: string) => o === 'a3t' || o === 'system';
-  const rank = (o: string) => (o === me ? 0 : !o ? 3 : platform(o) ? 2 : 1);
+  const rank = (o: string) => (o === PLATFORM_GROUP ? -1 : o === me ? 0 : !o ? 3 : platform(o) ? 2 : 1);
   return [...byOwner.entries()]
     .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
     .map(([owner, projects]) => ({ owner, projects, count: projects.reduce((n, p) => n + p.items.length, 0) }));
@@ -133,6 +136,7 @@ export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: str
   }
   const rank = (ns: string) => {
     if (!ns) return [2, ''];
+    if (ns === PLATFORM_GROUP) return [-1, ''];
     const i = PREFERRED.indexOf(ns);
     return i >= 0 ? [0, String(i)] : [1, ns];
   };
@@ -376,21 +380,33 @@ async function loadAll(source: string): Promise<AppItem[]> {
     ];
   }
   if (source === 'security-sections') {
-    // Fixed sections, like Resources' categories.
-    // Identity (the SSO realm, platform-wide), then each project's Cedar policies
-    // — only the projects in view — and the compiled baseline. InfoSec only: the
-    // server answers 403 to anyone else, and the menu does not offer it.
-    const { isInfosec } = await import('$lib/stores/auth');
-    if (!isInfosec()) throw new Error('Security is for SuperAdmin and SecurityAdmin.');
-    const { securityPolicies } = await import('$lib/services/api');
-    const out: AppItem[] = [{ id: 'identity', label: 'Identity', sub: 'sign-in provider and users · platform-wide', namespace: 'platform' }];
-    const r = await securityPolicies.list();
-    if (r.status === 403) throw new Error('Security is for SuperAdmin and SecurityAdmin.');
+    // The platform first (Identity: the sign-in realm; the compiled baseline) for
+    // SuperAdmin and SecurityAdmin; then one group per org: its identity (members,
+    // sign-in, who reaches its projects), its policy files from its own GitHub,
+    // and its projects' Cedar policies folded under it. An org's admins and
+    // security admins see only their own orgs (the server scopes what it answers).
+    const { isInfosec, opensSecurity } = await import('$lib/stores/auth');
+    if (!opensSecurity()) throw new Error("Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.");
+    const infosec = isInfosec();
+    const { securityPolicies, orgsApi } = await import('$lib/services/api');
+    const out: AppItem[] = [];
+    if (infosec) out.push({ id: 'identity', label: 'Identity', sub: 'sign-in realm, every user and their platform roles', namespace: PLATFORM_GROUP });
+    const [r, o] = await Promise.all([securityPolicies.list(), orgsApi.list()]);
+    if (r.status === 403) throw new Error("Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.");
+    const orgs = (o.ok ? o.data?.orgs ?? [] : []).filter((x: any) => x.can_audit);
+    const viewing = getProject() ? ownerOfNamespace(getProject()) : '';
+    for (const org of orgs as any[]) {
+      if (viewing && viewing !== org.handle) continue;
+      const n = (org.members ?? []).length;
+      out.push({ id: `org:${org.handle}`, label: 'Identity', namespace: org.handle,
+        sub: `${n} member${n === 1 ? '' : 's'}${org.sso?.idp_alias ? ` · signs in through ${org.sso.idp_alias}` : ''} · who reaches its projects` });
+      out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: "roles, rules and access from the org's GitHub" });
+    }
     for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
       if (!inContext(p.namespace, 'shared')) continue;
       out.push({ id: `policy:${p.namespace}/${p.name}`, label: p.name, namespace: p.namespace, sub: p.description || 'Cedar policy' });
     }
-    out.push({ id: 'baseline', label: 'baseline', namespace: 'platform', sub: 'compiled deny-by-default guardrails · read only' });
+    if (infosec) out.push({ id: 'baseline', label: 'baseline', namespace: PLATFORM_GROUP, sub: 'compiled deny-by-default guardrails · read only' });
     return out;
   }
   if (source === 'canvases') {

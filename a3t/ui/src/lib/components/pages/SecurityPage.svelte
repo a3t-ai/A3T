@@ -1,8 +1,9 @@
 <script lang="ts">
-  /// Security — for SuperAdmin and SecurityAdmin only (the server refuses anyone
-  /// else). Items lists Identity (the SSO realm, platform-wide) and the Cedar
-  /// policies of the projects in view, with the compiled baseline. The one picked
-  /// opens here in the agents' frame:
+  /// Security — SuperAdmin and SecurityAdmin see the platform (Identity: the SSO
+  /// realm; the compiled baseline) and every org; an org's admins and security
+  /// admins see their own orgs (the server scopes each answer). Each org has its
+  /// identity and policy files (OrgSecurity), with its projects' Cedar policies
+  /// under it. The one picked opens here in the agents' frame:
   ///   a policy — Overview, Policy (its Cedar), Test (a dry run), Decisions (the
   ///   decision log entries it made);
   ///   Identity — Overview (the IdP connection), Users (realm users and roles).
@@ -12,18 +13,24 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import '$lib/components/agent/agent.css';
   import '$lib/components/triggers/triggers.css';
+  import OrgSecurity from '$lib/components/security/OrgSecurity.svelte';
   import { securityPolicies, idp, audit, getEdition, people as peopleApi, type PolicyTestBody, type AuditPeople, type AuditPerson } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { getProject, namespacesFor, allProjectNamespaces } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
-  import { isInfosec, userRole } from '$lib/stores/auth';
+  import { isInfosec, opensSecurity, userRole } from '$lib/stores/auth';
   import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
 
   type Policy = { namespace: string; name: string; cedar: string; description?: string | null; readOnly?: boolean };
   const BASELINE: Policy = { namespace: 'system', name: 'baseline', cedar: BASELINE_POLICY, readOnly: true,
     description: 'Deny-by-default guardrails compiled into the EE runtime. Always applies beneath every project policy; forbid overrides permit.' };
 
-  let view = $state<'policy' | 'identity' | 'new' | null>(null);
+  let view = $state<'policy' | 'identity' | 'org' | 'new' | null>(null);
+  let orgH = $state('');
+  let orgProject = $state('');
+  // Policies change only by InfoSec; an org's admins and security admins read theirs.
+  const infosec = isInfosec();
+  const NO_SECURITY = "Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.";
   let pol = $state<Policy | null>(null);
   let edition = $state<'ce' | 'ee' | null>(null);
   let denied = $state('');
@@ -44,8 +51,15 @@
   async function ensureEdition() { if (!edition) { const e = await getEdition(); edition = e.ok && e.data?.edition === 'ee' ? 'ee' : 'ce'; } }
   async function open(id: string) {
     await ensureEdition(); denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
-    // InfoSec only: say so, and ask the server nothing it would refuse.
-    if (!isInfosec()) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; view = 'policy'; pol = null; return; }
+    // Say who it is for, and ask the server nothing it would refuse.
+    if (!opensSecurity()) { denied = NO_SECURITY; view = 'policy'; pol = null; return; }
+    // org:<handle>[:<tab>] — the org's identity; orgfiles:<handle> — its policy files.
+    if (id.startsWith('org:') || id.startsWith('orgfiles:')) {
+      const [kind, h, t, ns] = id.split(':');
+      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; tab = t || (kind === 'orgfiles' ? 'files' : 'overview'); return;
+    }
+    const platformOnly = id === 'identity' || id === 'policies' || id.startsWith('identity:') || id === 'baseline';
+    if (platformOnly && !infosec) { denied = "The platform's sign-in realm and baseline are for SuperAdmin and SecurityAdmin."; view = 'policy'; pol = null; return; }
     if (id === 'identity' || id === 'policies' || id.startsWith('identity:')) {
       view = 'identity'; pol = null;
       // identity:users[:<project>] — the Users tab, filtered to a project.
@@ -57,7 +71,7 @@
     const ref = id.replace(/^policy:/, '');
     const [ns, ...rest] = ref.split('/'); const name = rest.join('/');
     const r = await securityPolicies.list();
-    if (!r.ok) { denied = r.status === 403 ? 'Security is for SuperAdmin and SecurityAdmin.' : (r.error ?? 'Policies could not be read.'); view = 'policy'; pol = null; return; }
+    if (!r.ok) { denied = r.status === 403 ? NO_SECURITY : (r.error ?? 'Policies could not be read.'); view = 'policy'; pol = null; return; }
     const p = ((r.data?.policies ?? []) as Policy[]).find((x) => x.namespace === ns && x.name === name);
     view = 'policy'; pol = p ? { ...p } : null; saved = p?.cedar ?? '';
     if (!p) denied = `No policy ${ref}.`;
@@ -68,7 +82,9 @@
   let saved = $state('');
   let msg = $state('');
   let busy = $state('');
-  const dirty = $derived(!!pol && !pol.readOnly && pol.cedar !== saved);
+  // Not changed here: the baseline (compiled in), or anyone but InfoSec.
+  const locked = $derived(!pol || !!pol.readOnly || !infosec);
+  const dirty = $derived(!!pol && !locked && pol.cedar !== saved);
   /// What a Cedar text says, roughly: how many permits and forbids, and what they name.
   const shape = $derived.by(() => {
     const t = pol?.cedar ?? '';
@@ -81,7 +97,7 @@
     };
   });
   async function save(apply = true) {
-    if (!pol || pol.readOnly) return;
+    if (!pol || locked) return;
     busy = 'save'; msg = '';
     const r = await securityPolicies.update(pol.namespace, pol.name, pol.cedar, pol.description || undefined);
     if (!r.ok) { busy = ''; msg = r.error ?? 'Not saved.'; return; }
@@ -96,7 +112,7 @@
   }
   let delName = $state('');
   async function remove() {
-    if (!pol || pol.readOnly || delName !== pol.name) return;
+    if (!pol || locked || delName !== pol.name) return;
     busy = 'delete';
     const r = await securityPolicies.remove(pol.namespace, pol.name);
     if (r.ok) { await securityPolicies.reload(); busy = ''; bumpItems(); close(); } else { busy = ''; msg = r.error ?? 'Not deleted.'; }
@@ -255,6 +271,7 @@
     { id: 'test', label: 'Test', icon: '<polygon points="4,2 13,8 4,14"/>', hint: 'A dry run: what would be decided, with this text in place' },
     { id: 'decisions', label: 'Decisions', icon: '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h3"/>', hint: 'What it decided recently' },
   ];
+  const policySteps = $derived(infosec ? POLICY_STEPS : POLICY_STEPS.filter((x) => x.id === 'overview' || x.id === 'policy'));
   const ID_STEPS = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: 'The sign-in provider, and how its roles become A3T roles' },
     { id: 'users', label: 'Users', icon: '<circle cx="8" cy="5" r="2.5"/><path d="M3 13a5 5 0 0110 0"/>', hint: 'Who can sign in, and their roles' },
@@ -299,9 +316,9 @@
 
   {:else if view === 'policy'}
     <div class="panel-layout">
-      <PropertiesTree icon={pol?.readOnly ? 'BL' : 'P'} color="#5530a8" name={pol?.name ?? 'Policy'} meta={pol ? (pol.readOnly ? 'compiled baseline · read only' : `policy · ${pol.namespace}`) : ''} nodes={[]} steps={POLICY_STEPS} activeNode={tab} onselect={(id) => (tab = id)} />
+      <PropertiesTree icon={pol?.readOnly ? 'BL' : 'P'} color="#5530a8" name={pol?.name ?? 'Policy'} meta={pol ? (pol.readOnly ? 'compiled baseline · read only' : `policy · ${pol.namespace}`) : ''} nodes={[]} steps={policySteps} activeNode={tab} onselect={(id) => (tab = id)} />
       <div class="panel-col"><div class="panel-content"><div class="pf">
-        <WizardHead step={POLICY_STEPS.find((s) => s.id === tab)} />
+        <WizardHead step={policySteps.find((s) => s.id === tab)} />
         <section class="agt">
         {#if denied}<div class="note bad">{denied}</div>
         {:else if pol}
@@ -318,15 +335,16 @@
               <ul class="rows">
                 {#if shape.actions.length}<li><span class="lbl">Actions</span><span class="val mono">{shape.actions.join(', ')}</span><span></span></li>{/if}
                 {#if shape.roles.length}<li><span class="lbl">Roles</span><span class="val">{shape.roles.join(', ')}</span><span></span></li>{/if}
-                <li><span class="lbl">Where</span><span class="val">{pol.readOnly ? 'everywhere, beneath every project policy' : ['default', 'a3t', 'system'].includes(pol.namespace) ? 'everywhere: every call in every project' : `project ${pol.namespace}`}</span><button class="btn2" onclick={() => (tab = 'policy')}>{pol.readOnly ? 'Read' : 'Edit'}</button></li>
+                <li><span class="lbl">Where</span><span class="val">{pol.readOnly ? 'everywhere, beneath every project policy' : ['default', 'a3t', 'system'].includes(pol.namespace) ? 'everywhere: every call in every project' : `project ${pol.namespace}`}</span><button class="btn2" onclick={() => (tab = 'policy')}>{locked ? 'Read' : 'Edit'}</button></li>
               </ul>
             </div>
             <div class="card">
               <div class="card-head"><h3>2 · How decisions are made</h3><span>the same rule everywhere</span></div>
               <p class="dim">Every call is checked at its choke point: the compiled baseline and the project's policies together. Anything not permitted is denied, and a forbid beats any permit. Each decision is written to the Decision log.</p>
-              <div class="acts"><button class="btn2" onclick={() => (tab = 'test')}>Try a decision</button><button class="btn2" onclick={() => navigateToDetail('logs', 'Decision log', 'all')}>Decision log</button></div>
+              {#if infosec}<div class="acts"><button class="btn2" onclick={() => (tab = 'test')}>Try a decision</button><button class="btn2" onclick={() => navigateToDetail('logs', 'Decision log', 'all')}>Decision log</button></div>
+              {:else}<p class="dim">Changing it, trying a decision and the Decision log are for SuperAdmin and SecurityAdmin. The org's own rules live in its policy files.</p>{/if}
             </div>
-            {#if !pol.readOnly}
+            {#if !locked}
               <div class="card">
                 <div class="card-head"><h3>3 · Delete</h3><span>its project falls back to the baseline</span></div>
                 <div class="row"><input class="grow tin" type="text" bind:value={delName} placeholder="Type {pol.name} to delete it" />
@@ -336,9 +354,9 @@
 
           {:else if tab === 'policy'}
             <div class="card">
-              <div class="card-head"><h3>Cedar</h3><span>{pol.readOnly ? 'read only — compiled into the runtime' : 'forbid overrides permit; anything not permitted is denied'}</span></div>
-              <textarea class="cedar" rows="20" spellcheck="false" bind:value={pol.cedar} readonly={pol.readOnly}></textarea>
-              {#if !pol.readOnly}
+              <div class="card-head"><h3>Cedar</h3><span>{pol.readOnly ? 'read only — compiled into the runtime' : locked ? 'read only — SuperAdmin and SecurityAdmin change it' : 'forbid overrides permit; anything not permitted is denied'}</span></div>
+              <textarea class="cedar" rows="20" spellcheck="false" bind:value={pol.cedar} readonly={locked}></textarea>
+              {#if !locked}
                 <div class="acts">
                   <button class="btn2 primary" disabled={!dirty || !!busy} onclick={() => save(true)}>{busy === 'save' || busy === 'apply' ? 'Applying…' : 'Save and apply'}</button>
                   <button class="btn2 quiet" disabled={!dirty || !!busy} onclick={() => (pol!.cedar = saved)}>Discard</button>
@@ -390,6 +408,9 @@
       </div></div></div>
     </div>
 
+  {:else if view === 'org'}
+    <OrgSecurity org={orgH} project={orgProject} bind:tab />
+
   {:else if view === 'identity'}
     <div class="panel-layout">
       <PropertiesTree icon="ID" color="#5530a8" name="Identity" meta="sign-in · platform-wide" nodes={[]} steps={ID_STEPS} activeNode={tab} onselect={(id) => (tab = id)} />
@@ -413,7 +434,7 @@
             <ul class="rows wide">
               <li><span class="lbl">SuperAdmin</span><span class="val">everything, every org — including Security and the Decision log</span><span></span></li>
               <li><span class="lbl">SecurityAdmin</span><span class="val">Security and the Decision log: policies, identity, every decision</span><span></span></li>
-              <li><span class="lbl">Admin</span><span class="val">runs projects; does not see Security or the Decision log</span><span></span></li>
+              <li><span class="lbl">Admin</span><span class="val">runs projects; sees Security only for an org they are an admin or security admin of, never the Decision log</span><span></span></li>
               <li><span class="lbl">Operator</span><span class="val">today the same as Admin in their projects (A3T maps it to Admin)</span><span></span></li>
               <li><span class="lbl">Viewer</span><span class="val">reads what is in their projects</span><span></span></li>
             </ul>

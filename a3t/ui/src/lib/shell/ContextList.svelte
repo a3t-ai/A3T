@@ -382,7 +382,9 @@
             {#if o.projects.length === 1 && o.projects[0].ns === o.owner}
               {@render list(sorted(o.projects[0].items))}
             {:else}
-              {#each o.projects as g (g.ns)}
+              <!-- The owner's own items (an org's Identity, say) sit right under it; its projects fold below. -->
+              {#each o.projects.filter((g) => g.ns === o.owner) as g (g.ns)}{@render list(sorted(g.items))}{/each}
+              {#each o.projects.filter((g) => g.ns !== o.owner) as g (g.ns)}
                 <section class="ctx-group ctx-sub">
                   <button class="ctx-ghead" onclick={() => toggleGroup(g.ns)} aria-expanded={isOpen(g.ns)}>
                     <svg class="ctx-chev" class:open={isOpen(g.ns)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>

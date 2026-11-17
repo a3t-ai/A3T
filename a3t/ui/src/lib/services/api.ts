@@ -338,6 +338,9 @@ export type OrgRole = 'member' | 'admin' | 'securityadmin';
 export type OrgInfo = {
   id: string; handle: string; display_name: string; created_at?: string;
   my_role: OrgRole | null; can_admin: boolean;
+  /// Sees its members and sign-in without changing them: SuperAdmin,
+  /// SecurityAdmin, the org's admins and security admins.
+  can_audit?: boolean;
   /// Where the org's flows run: its own runtimes only, or the shared ones.
   runtime: 'isolated' | 'shared';
   /// Sign-in through the org's own identity provider (admins see it); null = off.
@@ -626,7 +629,7 @@ export interface AuditPerson {
 export interface AuditPeople {
   count: number; users: AuditPerson[];
   projects: { namespace: string; kind: string; owner: string; private: boolean; everyone: boolean; people: number }[];
-  orgs: string[]; idp_error?: string | null;
+  orgs: string[]; org?: string | null; idp_error?: string | null;
 }
 export const people = {
   /** Who can reach a project, and how — what you see depends on your place in it. */
@@ -636,8 +639,29 @@ export const people = {
     const tail = qs.toString();
     return request<ProjectPeople>(`/projects/${encodeURIComponent(ns)}/people${tail ? `?${tail}` : ''}`, { method: 'GET' });
   },
-  /** Everyone, their platform roles, orgs and project access (SuperAdmin / SecurityAdmin). */
-  audit: () => request<AuditPeople>('/security/people', { method: 'GET' }),
+  /** Everyone, their platform roles, orgs and project access (SuperAdmin / SecurityAdmin);
+   *  with `org`, that org's members and who reaches its projects (also its own
+   *  admins and security admins; no platform roles then). */
+  audit: (org?: string) => request<AuditPeople>(`/security/people${org ? `?org=${encodeURIComponent(org)}` : ''}`, { method: 'GET' }),
+};
+
+/// An org's policy files, kept in the org's own GitHub repo (A3T keeps a copy).
+export interface OrgPolicySource {
+  repo: string; ref: string; folder: string; mode: 'live' | 'import' | string;
+  token_secret: string; webhook_secret: string;
+  last_commit: string; last_sync: string; last_error: string; updated_by: string; updated_at: string;
+}
+export interface OrgPolicyFiles {
+  org: string; projects: string[]; source: OrgPolicySource | null;
+  files: { path: string; kind: string; content: string; commit: string }[];
+}
+export const orgPolicy = {
+  files: (org: string) => request<OrgPolicyFiles>(`/security/orgs/${encodeURIComponent(org)}/files`, { method: 'GET' }),
+  setSource: (org: string, src: { repo: string; ref?: string; folder?: string; mode?: string; token_secret?: string; webhook_secret?: string }) =>
+    request<{ org: string; source: OrgPolicySource }>(`/security/orgs/${encodeURIComponent(org)}/source`, { method: 'PUT', body: JSON.stringify(src) }),
+  disconnect: (org: string) => request(`/security/orgs/${encodeURIComponent(org)}/source`, { method: 'DELETE' }),
+  sync: (org: string) => request<{ org: string; commit: string; changed: boolean }>(`/security/orgs/${encodeURIComponent(org)}/sync`, { method: 'POST' }),
+  stopEnforcing: (org: string) => request(`/security/orgs/${encodeURIComponent(org)}/files`, { method: 'DELETE' }),
 };
 
 export const idp = {
