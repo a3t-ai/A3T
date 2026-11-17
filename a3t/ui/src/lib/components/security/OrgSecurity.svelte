@@ -51,7 +51,7 @@
   });
 
   async function load(p = '') {
-    err = ''; msg = ''; org = null; aud = null; files = null; openRow = ''; fQ = ''; fProject = p; fCap = ''; fRole = '';
+    err = ''; msg = ''; stopName = ''; org = null; aud = null; files = null; openRow = ''; fQ = ''; fProject = p; fCap = ''; fRole = '';
     const h = handle;
     const [o, a, f] = await Promise.all([orgsApi.list(), peopleApi.audit(h), orgPolicy.files(h)]);
     if (h !== handle) return;
@@ -183,12 +183,14 @@
     if (!r.ok) say(r.error ?? 'Not disconnected.'); else say('Disconnected. The kept files are still enforced.', true);
     await reloadFiles(); fillSource();
   }
+  // Typed, not clicked: dropping an org's rules is a deliberate act.
+  let stopName = $state('');
   async function stopEnforcing() {
-    if (!confirm(`Stop enforcing ${handle}'s policy files? Its projects fall back to the platform's rules.`)) return;
+    if (stopName.trim() !== handle) return;
     busy = 'files';
     const r = await orgPolicy.stopEnforcing(handle);
     busy = '';
-    if (!r.ok) say(r.error ?? 'Not changed.'); else say('Its files are no longer enforced.', true);
+    if (!r.ok) say(r.error ?? 'Not changed.'); else { stopName = ''; say('Its files are no longer enforced.', true); }
     await reloadFiles();
   }
   const KIND_LABEL: Record<string, string> = { 'a3t/policy': 'rule', 'a3t/role': 'role', 'a3t/access': 'access' };
@@ -358,7 +360,13 @@
                   {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}</li>
               {/each}
             </ul>
-            {#if managesFiles}<div class="acts"><button class="btn2 quiet" disabled={!!busy} onclick={stopEnforcing}>Stop enforcing them</button></div>{/if}
+            {#if managesFiles}
+              <div class="stop">
+                <p class="dim small">Stop enforcing: the org's projects fall back to the platform's rules and their own policies at once. The repo stays connected; reading it again brings the files back.</p>
+                <div class="uf"><input class="tin grow" type="text" bind:value={stopName} placeholder="Type {handle} to stop enforcing" aria-label="Type the org's handle to confirm" />
+                  <button class="btn2 danger" disabled={stopName.trim() !== handle || !!busy} onclick={stopEnforcing}>{busy === 'files' ? 'Stopping…' : 'Stop enforcing them'}</button></div>
+              </div>
+            {/if}
           {:else}<p class="empty">No files enforced. Its projects follow the platform's rules and their own policies.</p>{/if}
         </div>
       {/if}
@@ -397,6 +405,7 @@
   .link { border: 0; background: none; padding: 0; color: var(--accent, #5530a8); cursor: pointer; font: inherit; text-align: left; }
   .frow { flex-wrap: wrap; }
   .fsrc { flex: 1 1 100%; margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; background: #111214; color: #f4f4f5; font: 12px/1.55 var(--font-mono); white-space: pre-wrap; overflow-x: auto; max-height: 360px; }
+  .stop { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
   textarea.mono { font-family: var(--font-mono); font-size: 12.5px; }
   @container details (max-width: 560px) {
     .ul .urow, .mrow { grid-template-columns: 1fr; }
