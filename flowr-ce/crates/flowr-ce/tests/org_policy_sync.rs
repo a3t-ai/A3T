@@ -25,28 +25,32 @@ struct Repo {
 }
 type Gh = Arc<Mutex<Repo>>;
 
-fn authed(h: &HeaderMap) -> bool {
-    h.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer gh-token")
+/// The org's token, or none at all for the public repo (owner `pub`).
+fn authed(h: &HeaderMap, owner: &str) -> bool {
+    match h.get("authorization").and_then(|v| v.to_str().ok()) {
+        Some(a) => a == "Bearer gh-token",
+        None => owner == "pub",
+    }
 }
 
-async fn commit(State(g): State<Gh>, h: HeaderMap, Path((_o, _r, _ref)): Path<(String, String, String)>) -> axum::response::Response {
+async fn commit(State(g): State<Gh>, h: HeaderMap, Path((o, _r, _ref)): Path<(String, String, String)>) -> axum::response::Response {
     let g = g.lock().unwrap();
     if !g.up { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
-    if !authed(&h) { return StatusCode::UNAUTHORIZED.into_response(); }
+    if !authed(&h, &o) { return StatusCode::UNAUTHORIZED.into_response(); }
     Json(json!({ "sha": g.commit })).into_response()
 }
 
-async fn tree(State(g): State<Gh>, h: HeaderMap, Path((_o, _r, sha)): Path<(String, String, String)>) -> axum::response::Response {
+async fn tree(State(g): State<Gh>, h: HeaderMap, Path((o, _r, sha)): Path<(String, String, String)>) -> axum::response::Response {
     let g = g.lock().unwrap();
-    if !authed(&h) || sha != g.commit { return StatusCode::NOT_FOUND.into_response(); }
+    if !authed(&h, &o) || sha != g.commit { return StatusCode::NOT_FOUND.into_response(); }
     let tree: Vec<Value> = g.files.iter().map(|(p, t)| json!({ "path": p, "type": "blob", "sha": blob_sha(p), "size": t.len() }))
         .chain([json!({ "path": "sec/policies", "type": "tree", "sha": "t1" })]).collect();
     Json(json!({ "sha": sha, "tree": tree, "truncated": false })).into_response()
 }
 
-async fn blob(State(g): State<Gh>, h: HeaderMap, Path((_o, _r, sha)): Path<(String, String, String)>) -> axum::response::Response {
+async fn blob(State(g): State<Gh>, h: HeaderMap, Path((o, _r, sha)): Path<(String, String, String)>) -> axum::response::Response {
     let g = g.lock().unwrap();
-    if !authed(&h) { return StatusCode::UNAUTHORIZED.into_response(); }
+    if !authed(&h, &o) { return StatusCode::UNAUTHORIZED.into_response(); }
     match g.files.iter().find(|(p, _)| blob_sha(p) == sha) {
         Some((_, t)) => t.clone().into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
@@ -230,6 +234,15 @@ async fn an_orgs_files_sync_from_its_repo_whole_commits_or_not_at_all() {
     assert!(f["files"].to_string().contains("# v2"));
     assert_eq!(f["source"]["last_commit"], "c".repeat(40));
     assert_eq!(f["source"]["last_error"], "");
+
+    // A public repo needs no token: globex's admin connects one and syncs it.
+    let public = json!({ "repo": "pub/policies", "ref": "main", "folder": "sec", "mode": "import" });
+    let (st, b) = call(M::PUT, "/security/orgs/globex/source", "gil/Admin", Some(public)).await;
+    assert_eq!(st, 200, "{b}");
+    let (st, b) = call(M::POST, "/security/orgs/globex/sync", "gil/Admin", None).await;
+    assert_eq!(st, 200, "{b}");
+    assert_eq!(flowr_ce::org_policy::all_org_files(storage.as_ref()).await.len(), 2);
+    assert_eq!(call(M::DELETE, "/security/orgs/globex/files", "gil/Admin", None).await.0, 200);
 
     // Disconnecting the repo keeps enforcing the files; removing the files stops it.
     assert_eq!(call(M::DELETE, "/security/orgs/acme/source", "ann/Viewer", None).await.0, 200);

@@ -4,10 +4,12 @@
 //!
 //! An org connects a repo (`owner/name`, a branch or tag or commit, a folder)
 //! with a read token the org gives A3T (a registry secret in one of the org's
-//! projects). Two ways the copy is refreshed:
+//! projects); a public repo needs none. Two ways the copy is refreshed:
 //!
 //! - `import`: only when someone asks (`POST /security/orgs/{org}/sync`).
 //! - `live`: pulled at runtime: on every push (GitHub webhook) and every 60 s.
+//!   Without a token GitHub allows 60 calls an hour, so a source with no token
+//!   isn't polled: it follows pushes by webhook, or is synced when asked.
 //!
 //! Either way the database copy is the last good set. A sync fetches the whole
 //! folder at one commit, compiles every file and checks it loads with every
@@ -230,8 +232,11 @@ async fn put_source(State(s): St, p: P, Path(org): Path<String>, Json(b): Json<V
         if mode != "live" && mode != "import" {
             return Err(err(StatusCode::BAD_REQUEST, "mode: live (pulled on every push and every minute) or import (only when asked)"));
         }
+        // No token: a public repo.
         let token_secret = get("token_secret");
-        check_secret_ref(s, &org, &token_secret).await?;
+        if !token_secret.is_empty() {
+            check_secret_ref(s, &org, &token_secret).await?;
+        }
         let webhook_secret = get("webhook_secret");
         if !webhook_secret.is_empty() {
             check_secret_ref(s, &org, &webhook_secret).await?;
@@ -295,15 +300,22 @@ fn github_api() -> String {
         .unwrap_or_else(|| "https://api.github.com".into()).trim_end_matches('/').to_string()
 }
 
+/// A GitHub API GET, with the org's token when it gave one (`""`: a public repo).
 async fn gh(client: &reqwest::Client, token: &str, url: &str, raw: bool) -> Result<reqwest::Response, String> {
     let accept = if raw { "application/vnd.github.raw" } else { "application/vnd.github+json" };
-    let r = client.get(url).bearer_auth(token).header("Accept", accept)
+    let mut req = client.get(url);
+    if !token.is_empty() {
+        req = req.bearer_auth(token);
+    }
+    let r = req.header("Accept", accept)
         .header("User-Agent", "a3t-flowr").header("X-GitHub-Api-Version", "2022-11-28")
         .timeout(Duration::from_secs(20)).send().await
         .map_err(|e| format!("GitHub did not answer: {}", e.without_url()))?;
     match r.status().as_u16() {
         200 => Ok(r),
         401 => Err("GitHub refused the token (401): check the org's token secret".into()),
+        403 | 429 if token.is_empty() && r.headers().get("x-ratelimit-remaining").and_then(|v| v.to_str().ok()) == Some("0") =>
+            Err("GitHub's limit for calls without a token is used up (60 an hour): give the source a token".into()),
         403 | 404 => Err(format!("GitHub: {} not found or the token can't read it ({})", url.trim_start_matches(&github_api()), r.status().as_u16())),
         c => Err(format!("GitHub answered {c} for {}", url.trim_start_matches(&github_api()))),
     }
@@ -372,8 +384,10 @@ pub async fn sync(s: &dyn StorageBackend, org: &str, known_commit: Option<String
             }
         }
     };
-    let token = match secret_value(s, &col(&src, "token_secret")).await {
+    let token_ref = col(&src, "token_secret");
+    let token = match secret_value(s, &token_ref).await {
         Some(t) => t,
+        None if token_ref.is_empty() => String::new(),
         None => {
             let e = format!("the token secret {:?} is missing or empty", col(&src, "token_secret"));
             note(&e).await;
@@ -476,6 +490,7 @@ async fn poll_once(s: &dyn StorageBackend) {
     let client = swf_runtime::handlers::call_http::shared_client();
     for src in sources {
         let org = col(&src, "org");
+        // No token: not polled (GitHub's 60 calls an hour); pushes reach it by webhook.
         let Some(token) = secret_value(s, &col(&src, "token_secret")).await else { continue };
         match resolve_commit(&client, &token, &col(&src, "repo"), &col(&src, "git_ref")).await {
             Ok(c) if c == col(&src, "last_commit") => {}
