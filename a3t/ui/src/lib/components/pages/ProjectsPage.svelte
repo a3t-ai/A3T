@@ -24,8 +24,8 @@
     getProjects, getShowPlatform, loadProjects, setProject, roleIn, isMine, getProfile, getMyOrgs, type Project,
   } from '$lib/stores/context.svelte.ts';
   import {
-    projectsApi, profileApi, loadDirectory, releasesApi, mcpCall, canvasApi, executions, opsApi,
-    type ProjectMember, type ProjectRole, type DirectoryUser,
+    projectsApi, profileApi, loadDirectory, releasesApi, mcpCall, canvasApi, executions, opsApi, people as peopleApi,
+    type ProjectMember, type ProjectRole, type DirectoryUser, type ProjectPeople, type ProjectPerson,
   } from '$lib/services/api';
   import { categorize } from '$lib/core/resources/categories';
 
@@ -44,6 +44,54 @@
     { key: 'agent_memory_per_user', label: 'Agents remember per user', hint: "An agent's memory of one member isn't visible to another." },
   ];
   const ENVIRONMENTS = ['dev', 'staging', 'prod'];
+
+  // ── Who can access it: everyone who reaches the project and the route they
+  // take, computed by the server from the rules it enforces. What you see
+  // depends on your place in the project (viewers see viewers; developers see
+  // who builds, runs, reads and audits; owners, org admins and security see all).
+  const CAPACITY: Record<string, string> = {
+    owner: 'Owner', developer: 'Developer', operator: 'Operator', viewer: 'Viewer',
+    'org-admin': 'Org admin', 'org-securityadmin': 'Org security admin', 'org-member': 'Org member',
+    superadmin: 'SuperAdmin', 'security-admin': 'SecurityAdmin', exposed: 'Shared with them', everyone: 'Everyone',
+  };
+  const CAPACITY_HINT: Record<string, string> = {
+    owner: 'Named as owner (or owns this personal project)', developer: 'Named as developer', operator: 'Named as operator', viewer: 'Named as viewer',
+    'org-admin': "An admin of the org that owns it", 'org-securityadmin': "A security admin of the org that owns it",
+    'org-member': 'A member of the org that owns it (the project is not private)',
+    superadmin: 'Platform SuperAdmin', 'security-admin': 'Platform SecurityAdmin: Security and the Decision log, no project work',
+  };
+  const ACCESS_WORD: Record<string, string> = { write: 'builds and changes', run: 'runs', read: 'reads', audit: 'audits' };
+  const PEOPLE_PREVIEW = 5;
+  let pp = $state<ProjectPeople | null>(null);
+  let ppErr = $state('');
+  let ppFor = '';
+  let ppAll = $state(false);
+  let ppQ = $state('');
+  let ppCap = $state('');
+  let ppRows = $state<ProjectPerson[]>([]);
+  async function loadPeople(ns: string) {
+    ppFor = ns; pp = null; ppErr = ''; ppAll = false; ppQ = ''; ppCap = ''; ppRows = [];
+    const r = await peopleApi.ofProject(ns, { limit: PEOPLE_PREVIEW });
+    if (ppFor !== ns) return;
+    if (r.ok && r.data) pp = r.data; else ppErr = r.error ?? 'Who can access it could not be read.';
+  }
+  let ppTimer: ReturnType<typeof setTimeout> | undefined;
+  async function loadAllPeople(more = false) {
+    const ns = ppFor;
+    const r = await peopleApi.ofProject(ns, { q: ppQ.trim(), capacity: ppCap, offset: more ? ppRows.length : 0, limit: 200 });
+    if (ppFor !== ns) return;
+    if (r.ok && r.data) { ppRows = more ? [...ppRows, ...r.data.people] : r.data.people; ppTotalShown = r.data.total; } else ppErr = r.error ?? 'Not read.';
+  }
+  let ppTotalShown = $state(0);
+  function filterPeople() { clearTimeout(ppTimer); ppTimer = setTimeout(() => void loadAllPeople(), 250); }
+  function groupLabel(g: { group: string; capacity: string }) {
+    if (g.group === 'everyone') return g.capacity === 'everyone' ? 'Everyone signed in' : 'Everyone signed in (shared publicly)';
+    return `Members of org ${g.group.replace(/^org:/, '')} (shared with them)`;
+  }
+  $effect(() => {
+    const ns = panel === 'detail' && tab === 'access' ? selectedName : '';
+    untrack(() => { if (ns && ns !== ppFor) void loadPeople(ns); if (!ns) ppFor = ''; });
+  });
   const SLUG = /^[a-z0-9]([a-z0-9-]{0,36}[a-z0-9])?$/;
   const HANDLE = /^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$/;
 
@@ -587,7 +635,7 @@
     {#snippet membersBlock()}
       <section class="ap-card">
         <header class="ap-head">
-          <div><h3>1 · People</h3><p>Who can see and work in this project.</p></div>
+          <div><h3>1 · Members</h3><p>People named in this project, with their role. Who else gets in, and how, is under “Who can access it”.</p></div>
           <button class="link" onclick={() => (showRoles = !showRoles)}>{showRoles ? 'Hide roles' : 'What can each role do?'}</button>
         </header>
         {#if showRoles}
@@ -614,6 +662,56 @@
             <select bind:value={addRole} title={ROLE_HINT[addRole]} aria-label="Their role">{#each ROLES as r}<option value={r}>{r}</option>{/each}</select>
             <button class="pj-btn" onclick={addMember} disabled={!addWho.trim()}>Add</button>
           </div>
+        {/if}
+      </section>
+    {/snippet}
+    {#snippet personRow(m: ProjectPerson)}
+      <li>
+        <span class="ap-av" aria-hidden="true">{initialsOf(m.name || m.email || m.id)}</span>
+        <span class="ap-who"><b>{m.name || m.email || m.id}{#if m.you} <em class="ap-you">you</em>{/if}</b>
+          <small>{m.account ? (m.name ? m.email : '') : 'no sign-in account'}</small></span>
+        <span class="ap-caps">{#each m.capacities as c}<span class="ap-cap" class:ap-cap-sec={c.includes('security')} title={CAPACITY_HINT[c] ?? ''}>{CAPACITY[c] ?? c}</span>{/each}</span>
+        <span class="ap-acc">{ACCESS_WORD[m.access] ?? m.access}</span>
+      </li>
+    {/snippet}
+    {#snippet accessBlock()}
+      <section class="ap-card">
+        <header class="ap-head">
+          <div><h3>Who can access it</h3><p>Everyone who can reach this project and how — from its members, its org and the platform roles, as the server enforces them.</p></div>
+          {#if isInfosec() && info}<button class="link" onclick={() => navigateToDetail('security', 'Security', `identity:users:${info.namespace}`)}>Audit in Identity →</button>{/if}
+        </header>
+        {#if ppErr}
+          <p class="ap-none">{ppErr}</p>
+        {:else if !pp}
+          <p class="ap-none">Reading…</p>
+        {:else}
+          {#if !pp.you.sees_all}<p class="ap-scope">You see people at your level{pp.you.capacities.includes('developer') ? ', below it, and who audits' : ' and below'}. Owners, org admins and security see everyone.</p>{/if}
+          {#if pp.idp_error}<p class="ap-scope">Names and platform roles could not be read from the sign-in realm ({pp.idp_error}); some people may show by id, and SuperAdmins may be missing.</p>{/if}
+          {#if !ppAll}
+            <ul class="ap-people">
+              {#each pp.people as m (m.id)}{@render personRow(m)}{:else}<li class="ap-none">Nobody you can see.</li>{/each}
+              {#each pp.groups as g (g.group + g.capacity)}
+                <li><span class="ap-av ap-grp" aria-hidden="true">∗</span><span class="ap-who"><b>{groupLabel(g)}</b><small>{g.capacity === 'exposed' ? 'read, clone and run — never change' : 'the platform’s own flows'}</small></span><span class="ap-acc">{ACCESS_WORD[g.access] ?? g.access}</span></li>
+              {/each}
+            </ul>
+            {#if pp.total > pp.people.length}
+              <button class="pj-btn ap-all" onclick={() => { ppAll = true; void loadAllPeople(); }}>See all {pp.total} people</button>
+            {/if}
+          {:else}
+            <div class="ap-filter">
+              <input type="search" bind:value={ppQ} oninput={filterPeople} placeholder="Find by name or email" aria-label="Find a person" />
+              <select bind:value={ppCap} onchange={() => void loadAllPeople()} aria-label="Only people who are">
+                <option value="">Any capacity</option>
+                {#each Object.keys(CAPACITY).filter((c) => c !== 'everyone' && c !== 'exposed') as c}<option value={c}>{CAPACITY[c]}</option>{/each}
+              </select>
+              <button class="link" onclick={() => { ppAll = false; }}>Show fewer</button>
+            </div>
+            <p class="ap-scope">{ppTotalShown} {ppTotalShown === 1 ? 'person' : 'people'}{ppQ || ppCap ? ' match' : ''}.</p>
+            <ul class="ap-people ap-scroll">
+              {#each ppRows as m (m.id)}{@render personRow(m)}{:else}<li class="ap-none">Nobody matches.</li>{/each}
+            </ul>
+            {#if ppRows.length < ppTotalShown}<button class="pj-btn ap-all" onclick={() => void loadAllPeople(true)}>Show more</button>{/if}
+          {/if}
         {/if}
       </section>
     {/snippet}
@@ -908,6 +1006,7 @@
 
     {:else if tab === 'access' && info}
       <div class="ap">
+        {@render accessBlock()}
         {@render membersBlock()}
         {@render policyBlock()}
         {#if isInfosec()}<button class="ap-link" onclick={() => navigateToDetail('logs', 'Decision log', 'all', { q: info.namespace })}>See what was allowed and blocked in this project →</button>{/if}
@@ -1192,6 +1291,19 @@
   .ap-people li:hover .ap-rm, .ap-rm:focus-visible { opacity: 1; }
   .ap-rm:hover { color: var(--err, #b42318); }
   .ap-none { color: var(--text-3); font-size: 13px; }
+  .ap-scope { margin: 0; font-size: 12.5px; color: var(--text-3); }
+  .ap-you { font: 500 11px var(--font-sans); color: var(--text-4); font-style: normal; margin-left: 4px; }
+  .ap-caps { flex: 0 1 auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+  .ap-cap { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+  .ap-cap-sec { border-color: color-mix(in srgb, var(--spec) 40%, var(--border)); color: var(--spec); }
+  .ap-acc { flex: 0 0 auto; width: 110px; text-align: right; font-size: 12px; color: var(--text-3); }
+  .ap-grp { background: var(--bg-subtle); color: var(--text-3); }
+  .ap-all { align-self: flex-start; }
+  .ap-filter { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ap-filter input { flex: 1 1 200px; min-width: 0; }
+  .ap-filter select { flex: 0 0 auto; width: auto; }
+  .ap-scroll { max-height: 480px; overflow-y: auto; }
+  @container details (max-width: 560px) { .ap-acc { display: none; } .ap-people li { flex-wrap: wrap; } .ap-caps { justify-content: flex-start; } }
   .ap-add { display: flex; gap: 8px; align-items: center; }
   .ap-add input { flex: 1 1 auto; }
   .ap-add select { width: auto !important; flex: 0 0 auto; }

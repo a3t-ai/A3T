@@ -608,6 +608,38 @@ export const impersonateApi = (body: { user_id: string } | { role: string }) =>
   request<{ access_token: string; expires_in: number; user: { id: string; email: string; name: string; role: string; org_id: string }; act: { sub: string; email: string } }>(
     '/auth/impersonate', { method: 'POST', body: JSON.stringify(body) });
 
+/** One way someone reaches a project (see flowr-server people.rs). */
+export type PeopleCapacity = 'owner' | 'developer' | 'operator' | 'viewer' | 'org-admin' | 'org-securityadmin' | 'org-member' | 'superadmin' | 'security-admin' | 'exposed';
+export interface ProjectPerson { id: string; email: string; name: string; account: boolean; access: 'write' | 'run' | 'read' | 'audit'; capacities: PeopleCapacity[]; you: boolean }
+export interface ProjectPeople {
+  namespace: string; kind: 'personal' | 'org' | 'platform' | 'legacy'; owner: string; private: boolean;
+  you: { capacities: PeopleCapacity[]; access: string; sees_all: boolean };
+  total: number; offset: number; people: ProjectPerson[];
+  groups: { group: string; capacity: 'everyone' | 'exposed'; access: string }[];
+  idp_error?: string | null;
+}
+export interface AuditPerson {
+  id: string; email: string; name: string; enabled: boolean; account: boolean; roles: string[];
+  orgs: { org: string; role: string }[];
+  projects: { namespace: string; access: string; capacities: PeopleCapacity[] }[];
+}
+export interface AuditPeople {
+  count: number; users: AuditPerson[];
+  projects: { namespace: string; kind: string; owner: string; private: boolean; everyone: boolean; people: number }[];
+  orgs: string[]; idp_error?: string | null;
+}
+export const people = {
+  /** Who can reach a project, and how — what you see depends on your place in it. */
+  ofProject: (ns: string, opts: { q?: string; capacity?: string; offset?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== '') qs.set(k, String(v));
+    const tail = qs.toString();
+    return request<ProjectPeople>(`/projects/${encodeURIComponent(ns)}/people${tail ? `?${tail}` : ''}`, { method: 'GET' });
+  },
+  /** Everyone, their platform roles, orgs and project access (SuperAdmin / SecurityAdmin). */
+  audit: () => request<AuditPeople>('/security/people', { method: 'GET' }),
+};
+
 export const idp = {
   /** Is Keycloak admin configured + reachable? */
   status: () => request('/security/idp/status', { method: 'GET' }),

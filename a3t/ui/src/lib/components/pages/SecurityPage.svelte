@@ -12,7 +12,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import '$lib/components/agent/agent.css';
   import '$lib/components/triggers/triggers.css';
-  import { securityPolicies, idp, audit, getEdition, type PolicyTestBody } from '$lib/services/api';
+  import { securityPolicies, idp, audit, getEdition, people as peopleApi, type PolicyTestBody, type AuditPeople, type AuditPerson } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { getProject, namespacesFor, allProjectNamespaces } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -46,7 +46,13 @@
     await ensureEdition(); denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
     // InfoSec only: say so, and ask the server nothing it would refuse.
     if (!isInfosec()) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; view = 'policy'; pol = null; return; }
-    if (id === 'identity' || id === 'policies') { view = 'identity'; pol = null; void loadIdp(); return; }
+    if (id === 'identity' || id === 'policies' || id.startsWith('identity:')) {
+      view = 'identity'; pol = null;
+      // identity:users[:<project>] — the Users tab, filtered to a project.
+      const [, sub, ns] = id.split(':');
+      if (sub === 'users') { tab = 'users'; fQ = ''; fRole = ''; fOrg = ''; fCap = ''; fProject = ns ?? ''; }
+      void loadIdp(); return;
+    }
     if (id === 'baseline') { view = 'policy'; pol = { ...BASELINE }; return; }
     const ref = id.replace(/^policy:/, '');
     const [ns, ...rest] = ref.split('/'); const name = rest.join('/');
@@ -151,12 +157,45 @@
   // ── Identity ──
   let idpStatus = $state<any>(null);
   let users = $state<any[]>([]);
+  // Everyone with their platform roles, orgs and project access (the audit
+  // view); falls back to the plain realm list if that can't be read.
+  let aud = $state<AuditPeople | null>(null);
+  let audErr = $state('');
   async function loadIdp() {
     const st = await idp.status();
     if (st.status === 403) { denied = 'Security is for SuperAdmin and SecurityAdmin.'; return; }
     idpStatus = st.ok ? st.data : { error: st.error };
-    if (idpStatus?.connected) { const u = await idp.users(); users = u.ok ? (u.data?.users ?? []) : []; }
+    if (idpStatus?.connected) {
+      const [u, a] = await Promise.all([idp.users(), peopleApi.audit()]);
+      users = u.ok ? (u.data?.users ?? []) : [];
+      aud = a.ok ? (a.data ?? null) : null; audErr = a.ok ? '' : (a.error ?? 'Project access could not be read.');
+    }
   }
+  // Filters: who, platform role, org, project (and their capacity in it).
+  let fQ = $state(''); let fRole = $state(''); let fOrg = $state(''); let fProject = $state(''); let fCap = $state('');
+  let openRow = $state('');
+  const CAP_LABEL: Record<string, string> = {
+    owner: 'Owner', developer: 'Developer', operator: 'Operator', viewer: 'Viewer', 'org-admin': 'Org admin',
+    'org-securityadmin': 'Org security admin', 'org-member': 'Org member', superadmin: 'SuperAdmin', exposed: 'Shared with them',
+  };
+  const ACCESS_WORD: Record<string, string> = { write: 'builds and changes', run: 'runs', read: 'reads' };
+  const audRows = $derived.by(() => {
+    if (!aud) return [] as (AuditPerson & { here?: AuditPerson['projects'][number] })[];
+    const q = fQ.trim().toLowerCase();
+    return aud.users.filter((u) => {
+      if (q && ![u.email, u.name, u.id].some((x) => (x ?? '').toLowerCase().includes(q))) return false;
+      if (fRole === '-' ? u.roles.length > 0 : fRole && !u.roles.includes(fRole)) return false;
+      if (fOrg && !u.orgs.some((o) => o.org === fOrg)) return false;
+      if (fProject) {
+        const here = u.projects.find((p) => p.namespace === fProject);
+        if (!here) return false;
+        if (fCap && !here.capacities.includes(fCap as any)) return false;
+      }
+      return true;
+    }).map((u) => ({ ...u, here: fProject ? u.projects.find((p) => p.namespace === fProject) : undefined }));
+  });
+  const fProjectInfo = $derived(aud?.projects.find((p) => p.namespace === fProject));
+  const realmUser = (id: string) => users.find((u) => u.id === id);
   // The realm roles a person can hold. Only a SuperAdmin gives SuperAdmin or
   // SecurityAdmin (the server enforces it too).
   const REALM_ROLES = [
@@ -383,7 +422,7 @@
           <div class="note warn">No sign-in provider is connected{idpStatus.error ? `: ${idpStatus.error}` : ''} — users and their roles live there. See Overview.</div>
         {:else}
           <div class="card">
-            <div class="card-head"><h3>Users</h3><span>{users.length} in the realm</span><span class="grow"></span><button class="btn2 rm" onclick={() => editUser(null)}>+ User</button></div>
+            <div class="card-head"><h3>Users</h3><span>{users.length} in the realm{aud && aud.count > users.length ? ` · ${aud.count - users.length} more named by projects or orgs` : ''}</span><span class="grow"></span><button class="btn2 rm" onclick={() => editUser(null)}>+ User</button></div>
             {#if uEdit}
               <div class="review">
                 <div class="fields">
@@ -404,12 +443,60 @@
                 <div class="acts"><button class="btn2 primary" disabled={busy === 'user'} onclick={saveUser}>{uEdit.id ? 'Save' : 'Create user'}</button><button class="btn2 quiet" onclick={() => (uEdit = null)}>Cancel</button>{#if uMsg}<span class="err">{uMsg}</span>{/if}</div>
               </div>
             {/if}
-            <ul class="rows wide">
-              {#each users as u (u.id)}
-                <li><span class="lbl">{u.email ?? u.username}</span><span class="val">{u.name ?? ''} <span class="dim">{u.enabled === false ? '· disabled' : ''}</span></span>
-                  <span class="acts"><button class="btn2" onclick={() => editUser(u)}>Edit</button><button class="btn2 quiet" onclick={() => deleteUser(u)}>Delete</button></span></li>
-              {:else}<li><span class="dim">No users yet.</span><span></span><span></span></li>{/each}
-            </ul>
+            {#if aud}
+              <div class="uf">
+                <input class="tin grow" type="search" bind:value={fQ} placeholder="Find by name or email" aria-label="Find a person" />
+                <select class="tin" bind:value={fRole} aria-label="Platform role">
+                  <option value="">Any platform role</option>
+                  {#each ['SuperAdmin', 'SecurityAdmin', 'Admin', 'Operator', 'Viewer'] as r}<option value={r}>{r}</option>{/each}
+                  <option value="-">No platform role</option>
+                </select>
+                <select class="tin" bind:value={fOrg} aria-label="Org"><option value="">Any org</option>{#each aud.orgs as o}<option value={o}>{o}</option>{/each}</select>
+                <select class="tin" bind:value={fProject} onchange={() => (fCap = '')} aria-label="Has access to project">
+                  <option value="">Any project</option>{#each aud.projects as p (p.namespace)}<option value={p.namespace}>{p.namespace}</option>{/each}
+                </select>
+                {#if fProject}
+                  <select class="tin" bind:value={fCap} aria-label="Their capacity there"><option value="">Any capacity</option>{#each Object.keys(CAP_LABEL) as c}<option value={c}>{CAP_LABEL[c]}</option>{/each}</select>
+                {/if}
+              </div>
+              <p class="dim small">{audRows.length} of {aud.count} {aud.count === 1 ? 'person' : 'people'}{fProject ? ` can reach ${fProject}` : ''}{fProjectInfo?.everyone ? ' — and everyone signed in can run it' : ''}{fProjectInfo?.private ? ' (private)' : ''}.
+                {#if aud.idp_error}Platform roles may be incomplete: {aud.idp_error}.{/if}</p>
+              <ul class="rows wide ul">
+                {#each audRows as u (u.id)}
+                  {@const ru = realmUser(u.id)}
+                  <li class="urow">
+                    <button class="uwho" onclick={() => (openRow = openRow === u.id ? '' : u.id)} aria-expanded={openRow === u.id}>
+                      <b>{u.name || u.email || u.id}</b><small>{u.name ? u.email : ''}{!u.account ? 'no sign-in account' : ''}{u.enabled === false && u.account ? ' · disabled' : ''}</small>
+                    </button>
+                    <span class="uchips">
+                      {#each u.roles as r}<span class="chip" class:sec={r === 'SuperAdmin' || r === 'SecurityAdmin'}>{r}</span>{/each}
+                      {#if u.here}{#each u.here.capacities as c}<span class="chip here">{CAP_LABEL[c] ?? c}</span>{/each}<span class="dim small">{ACCESS_WORD[u.here.access] ?? u.here.access}</span>
+                      {:else}<span class="dim small">{u.orgs.length} org{u.orgs.length === 1 ? '' : 's'} · {u.projects.length} project{u.projects.length === 1 ? '' : 's'}</span>{/if}
+                    </span>
+                    <span class="acts">{#if ru}<button class="btn2" onclick={() => editUser(ru)}>Edit</button><button class="btn2 quiet" onclick={() => deleteUser(ru)}>Delete</button>{/if}</span>
+                    {#if openRow === u.id}
+                      <div class="udetail">
+                        <div><span class="lbl">Orgs</span>{#each u.orgs as o}<span class="chip">{o.org} · {o.role}</span>{:else}<span class="dim">none</span>{/each}</div>
+                        <div><span class="lbl">Projects</span>
+                          <ul class="uprojects">{#each u.projects as p (p.namespace)}
+                            <li><button class="link" onclick={() => { fProject = p.namespace; fCap = ''; openRow = ''; }}>{p.namespace}</button>
+                              <span>{p.capacities.map((c) => CAP_LABEL[c] ?? c).join(', ')}</span><span class="dim">{ACCESS_WORD[p.access] ?? p.access}</span></li>
+                          {:else}<li class="dim">none</li>{/each}</ul>
+                        </div>
+                      </div>
+                    {/if}
+                  </li>
+                {:else}<li><span class="dim">Nobody matches.</span><span></span><span></span></li>{/each}
+              </ul>
+            {:else}
+              {#if audErr}<p class="dim small">Project access could not be read ({audErr}); showing the sign-in realm only.</p>{/if}
+              <ul class="rows wide">
+                {#each users as u (u.id)}
+                  <li><span class="lbl">{u.email ?? u.username}</span><span class="val">{u.name ?? ''} <span class="dim">{u.enabled === false ? '· disabled' : ''}</span></span>
+                    <span class="acts"><button class="btn2" onclick={() => editUser(u)}>Edit</button><button class="btn2 quiet" onclick={() => deleteUser(u)}>Delete</button></span></li>
+                {:else}<li><span class="dim">No users yet.</span><span></span><span></span></li>{/each}
+              </ul>
+            {/if}
           </div>
         {/if}
         </section>
@@ -434,4 +521,23 @@
   .review { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-page); }
   .fld.chk { flex-direction: row; align-items: center; gap: 8px; }
   .fld.chk input { width: auto; height: auto; }
+  .uf { display: flex; flex-wrap: wrap; gap: 8px; }
+  .uf .grow { flex: 1 1 220px; }
+  .uf select { flex: 0 0 auto; }
+  .small { font-size: 12.5px; margin: 0; }
+  .ul .urow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr) auto; align-items: center; gap: 10px; }
+  .uwho { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; font: inherit; color: inherit; }
+  .uwho b { font-size: 13.5px; color: var(--text-1); }
+  .uwho small { font-size: 12px; color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .uchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+  .chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+  .chip.sec { border-color: color-mix(in srgb, #5530a8 40%, var(--border)); color: #5530a8; }
+  .chip.here { background: var(--bg-surface); }
+  .udetail { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg-page); }
+  .udetail > div { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+  .udetail .lbl { min-width: 70px; }
+  .uprojects { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; }
+  .uprojects li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 120px; gap: 8px; font-size: 12.5px; }
+  .link { border: 0; background: none; padding: 0; color: var(--accent, #5530a8); cursor: pointer; font: inherit; text-align: left; }
+  @container details (max-width: 560px) { .ul .urow { grid-template-columns: 1fr; } .uprojects li { grid-template-columns: 1fr; } }
 </style>
