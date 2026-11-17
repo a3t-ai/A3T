@@ -103,7 +103,12 @@ const PREFERRED = ['a3t', 'default', 'system'];
 /// not projects-first and alphabetical.
 /// Who owns a project namespace: its owner handle (a user's or an org's) —
 /// `ann-blog` is ann's, `a3t` the platform's.
+/// Org handles a list has named (Security lists orgs): an org's own items group
+/// under the org, even when its handle has a dash in it like a project's name.
+const ORG_HANDLES = new Set<string>();
+
 export function ownerOfNamespace(ns: string): string {
+  if (ORG_HANDLES.has(ns)) return ns;
   const p = getProjects().find((x) => x.name === ns);
   return p?.info?.owner || (ns.includes('-') ? ns.slice(0, ns.indexOf('-')) : ns);
 }
@@ -386,6 +391,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
     // and its projects' Cedar policies folded under it. An org's admins and
     // security admins see only their own orgs (the server scopes what it answers).
     const { isInfosec, opensSecurity } = await import('$lib/stores/auth');
+    await loadProjects();
     if (!opensSecurity()) throw new Error("Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.");
     const infosec = isInfosec();
     const { securityPolicies, orgsApi } = await import('$lib/services/api');
@@ -395,6 +401,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
     if (r.status === 403) throw new Error("Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.");
     const orgs = (o.ok ? o.data?.orgs ?? [] : []).filter((x: any) => x.can_audit);
     const viewing = getProject() ? ownerOfNamespace(getProject()) : '';
+    for (const org of orgs as any[]) ORG_HANDLES.add(org.handle);
     for (const org of orgs as any[]) {
       if (viewing && viewing !== org.handle) continue;
       const n = (org.members ?? []).length;

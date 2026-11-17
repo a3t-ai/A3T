@@ -16,7 +16,7 @@
   import OrgSecurity from '$lib/components/security/OrgSecurity.svelte';
   import { securityPolicies, idp, audit, getEdition, people as peopleApi, type PolicyTestBody, type AuditPeople, type AuditPerson } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
-  import { getProject, namespacesFor, allProjectNamespaces } from '$lib/stores/context.svelte.ts';
+  import { getProject, namespacesFor, allProjectNamespaces, loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { isInfosec, opensSecurity, userRole } from '$lib/stores/auth';
   import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
@@ -50,7 +50,9 @@
 
   async function ensureEdition() { if (!edition) { const e = await getEdition(); edition = e.ok && e.data?.edition === 'ee' ? 'ee' : 'ce'; } }
   async function open(id: string) {
-    await ensureEdition(); denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
+    // Your orgs (whose security you look after) must be known before deciding.
+    await Promise.all([ensureEdition(), loadProjects()]);
+    denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
     // Say who it is for, and ask the server nothing it would refuse.
     if (!opensSecurity()) { denied = NO_SECURITY; view = 'policy'; pol = null; return; }
     // org:<handle>[:<tab>] — the org's identity; orgfiles:<handle> — its policy files.
