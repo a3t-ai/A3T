@@ -274,26 +274,47 @@ pub async fn project_people_handler(
     })).into_response()
 }
 
-/// `GET /security/people` — everyone, for an audit.
+#[derive(serde::Deserialize, Default)]
+pub struct AuditQuery {
+    /// One org's handle: its members, its projects and who reaches them.
+    #[serde(default)]
+    org: Option<String>,
+}
+
+/// `GET /security/people` — everyone, for an audit; `?org=<handle>` for one org.
+///
+/// The whole platform is SuperAdmin's and SecurityAdmin's. One org is also its
+/// own admins' and security admins': its members, its projects and everyone who
+/// reaches them, but not anyone's platform roles or other orgs (those are the
+/// platform's business, not the org's).
 pub async fn security_people_handler(
     Extension(idp): Extension<crate::IdpAdminState>,
     principal: Option<Extension<Principal>>,
+    Query(q): Query<AuditQuery>,
 ) -> Response {
-    let Some((_, my_roles)) = human(principal) else {
+    let Some((me, my_roles)) = human(principal) else {
         return refuse(StatusCode::UNAUTHORIZED, "Sign in first.");
     };
-    if !infosec(&my_roles) {
-        return refuse(StatusCode::FORBIDDEN, "SuperAdmin or SecurityAdmin role required");
-    }
+    let is_infosec = infosec(&my_roles);
     let Some(snap) = access::current_snapshot().await else {
         return refuse(StatusCode::NOT_IMPLEMENTED, "Project access is known when it is enforced (FlowR EE).");
     };
-    let dir = directory(&idp, true).await;
+    let org = q.org.as_deref().map(str::trim).filter(|o| !o.is_empty()).map(String::from);
+    match &org {
+        None if !is_infosec => return refuse(StatusCode::FORBIDDEN, "SuperAdmin or SecurityAdmin role required"),
+        Some(h) if !snap.org_handles().contains(h) || (!is_infosec && !snap.security_orgs_of(&me).contains(h)) => {
+            return refuse(StatusCode::NOT_FOUND, &format!("No org {h:?} whose security you look after."));
+        }
+        _ => {}
+    }
+    // Platform roles are read only for the whole-platform view.
+    let dir = directory(&idp, org.is_none()).await;
+    let namespaces = match &org { Some(h) => snap.org_namespaces(h), None => snap.namespaces() };
     // person → namespace → (best access, capacities)
     let mut reach: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     let mut projects: Vec<Value> = Vec::new();
-    for ns in snap.namespaces() {
-        let r = routes_with_audit(&snap, &ns, &dir);
+    for ns in &namespaces {
+        let r = routes_with_audit(&snap, ns, &dir);
         let mut named: Vec<Route> = r.people.iter().filter(|p| p.capacity != SECURITY_ADMIN_CAPACITY).cloned().collect();
         // Another org reaching it through exposure: its members, by name.
         for g in &r.groups {
@@ -309,21 +330,28 @@ pub async fn security_people_handler(
         projects.push(json!({ "namespace": ns, "kind": r.kind, "owner": r.owner, "private": r.private,
             "everyone": r.groups.iter().any(|g| g.group == "everyone"), "people": named.iter().map(|p| &p.user).collect::<BTreeSet<_>>().len() }));
     }
-    let mut ids: BTreeSet<String> = dir.people.keys().cloned().collect();
-    ids.extend(snap.known_users());
+    let ids: BTreeSet<String> = match &org {
+        // The org's members and whoever reaches its projects.
+        Some(h) => snap.members_of(h).into_iter().chain(reach.keys().cloned()).collect(),
+        None => dir.people.keys().cloned().chain(snap.known_users()).collect(),
+    };
     let users: Vec<Value> = ids.iter().map(|u| {
         let p = person(&dir, &snap, u);
-        let mut roles: Vec<&String> = dir.roles.get(u).map(|r| r.iter().collect()).unwrap_or_default();
+        let mut roles: Vec<&String> = if org.is_none() { dir.roles.get(u).map(|r| r.iter().collect()).unwrap_or_default() } else { Vec::new() };
         roles.sort_by_key(|r| roles::ALL.iter().position(|x| x == r).unwrap_or(99));
+        let orgs: Vec<Value> = snap.orgs_of(u).into_iter()
+            .filter(|(h, _)| org.as_ref().is_none_or(|o| o == h))
+            .map(|(org, role)| json!({ "org": org, "role": role })).collect();
         json!({
             "id": u, "email": p.email, "name": p.name, "enabled": p.enabled, "account": dir.people.contains_key(u),
             "roles": roles,
-            "realm_roles": dir.realm.get(u).map(|r| r.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
-            "orgs": snap.orgs_of(u).into_iter().map(|(org, role)| json!({ "org": org, "role": role })).collect::<Vec<_>>(),
+            "realm_roles": if org.is_none() { dir.realm.get(u).map(|r| r.iter().cloned().collect::<Vec<_>>()).unwrap_or_default() } else { Vec::new() },
+            "orgs": orgs,
             "projects": reach.remove(u).unwrap_or_default(),
         })
     }).collect();
-    Json(json!({ "count": users.len(), "users": users, "projects": projects, "orgs": snap.org_handles(), "idp_error": dir.error })).into_response()
+    let orgs = match &org { Some(h) => vec![h.clone()], None => snap.org_handles() };
+    Json(json!({ "count": users.len(), "org": org, "users": users, "projects": projects, "orgs": orgs, "idp_error": dir.error })).into_response()
 }
 
 #[cfg(test)]

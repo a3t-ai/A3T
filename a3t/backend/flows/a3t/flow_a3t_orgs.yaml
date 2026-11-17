@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_orgs
-  version: 1.2.1
+  version: 1.3.0
   metadata:
     description: >
       Organisations and their members. A user is independent and can be in
@@ -15,6 +15,8 @@ document:
       only, with the role role_map gives their groups (else default_role; "" = none).
       Members added at sign-in carry added_by "sso" and are rewritten at every
       sign-in; members added here are invites and sign-in never touches them.
+      Platform SecurityAdmin and an org's securityadmin see its members and
+      sign-in (can_audit) without changing them; Security › Identity shows them.
       See .ai/A3T_ORG_SSO_SPEC.md.
       Org quota (set_quota { org, max_active_runs }): superadmin only. FlowR refuses new runs
       once the org has that many active across its projects (AC-18).
@@ -33,6 +35,7 @@ do:
     set:
       _me: '${ ($context._principal // {}).user }'
       _super: '${ (($context._principal // {}).roles // []) | index("SuperAdmin") != null }'
+      _sec: '${ (($context._principal // {}).roles // []) | index("SecurityAdmin") != null }'
       _args: '${ . }'
     export:
       as: "."
@@ -76,12 +79,13 @@ do:
         ${ [ $context._orgs[] | . as $o
              | ($context._members | map(select(.org_id == $o.id))) as $m
              | (($m | map(select(.user_id == $context._me)) | .[0]) // {}).role as $mine
-             | select($context._super or $mine != null)
+             | select($context._super or $context._sec or $mine != null)
              | { id: $o.id, handle: $o.slug, display_name: $o.name, created_at: $o.created_at,
                  my_role: $mine,
                  runtime: ((($o.settings // "{}") | fromjson).runtime // "shared"),
                  can_admin: ($context._super or $mine == "admin"),
-                 sso: (if ($context._super or $mine == "admin") then ((($o.settings // "{}") | fromjson).sso // null) else null end),
+                 can_audit: ($context._super or $context._sec or $mine == "admin" or $mine == "securityadmin"),
+                 sso: (if ($context._super or $context._sec or $mine == "admin" or $mine == "securityadmin") then ((($o.settings // "{}") | fromjson).sso // null) else null end),
                  members: ($m | map({ user_id, email, name, role, source: (if .added_by == "sso" then "sso" else "invite" end) })) } ] }
       _target: '${ $context._orgs | map(select(.slug == ($context._args.org // ""))) | .[0] // null }'
     export:

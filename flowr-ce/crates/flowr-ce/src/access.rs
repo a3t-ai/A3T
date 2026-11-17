@@ -343,6 +343,21 @@ impl Snapshot {
         v
     }
 
+    /// The projects (namespaces) the org with this handle owns.
+    pub fn org_namespaces(&self, handle: &str) -> Vec<String> {
+        let mut v: Vec<String> = self.projects.iter()
+            .filter(|(_, p)| p.owner_kind == "org" && p.owner == handle)
+            .map(|(ns, _)| ns.clone()).collect();
+        v.sort();
+        v
+    }
+
+    /// The orgs whose security `user` looks after: admin or securityadmin there.
+    pub fn security_orgs_of(&self, user: &str) -> Vec<String> {
+        self.orgs_of(user).into_iter()
+            .filter(|(_, r)| r == "admin" || r == "securityadmin").map(|(h, _)| h).collect()
+    }
+
     /// Every org handle.
     pub fn org_handles(&self) -> Vec<String> {
         let mut v: Vec<String> = self.orgs.keys().cloned().collect();
@@ -524,6 +539,17 @@ mod route_tests {
         assert_eq!(d.groups, vec![GroupRoute { group: "org:globex".into(), capacity: "exposed", access: "run" }]);
         assert_eq!(s.routes("sys-guards", &[]).groups.len(), 1, "system exposes to a3t only");
         assert_eq!(s.routes("ann-orders", &["root".to_string()]).people.iter().filter(|p| p.user == "root").count(), 1, "a member's role, not SuperAdmin's read");
+    }
+
+    #[test]
+    fn an_orgs_projects_and_who_looks_after_its_security() {
+        let s = fixture();
+        assert_eq!(s.org_namespaces("acme"), vec!["acme-docs", "acme-pub", "acme-web"]);
+        assert!(s.org_namespaces("globex").is_empty());
+        assert_eq!(s.security_orgs_of("bob"), vec!["acme"]);
+        assert_eq!(s.security_orgs_of("sec"), vec!["acme"]);
+        assert!(s.security_orgs_of("carl").is_empty());
+        assert!(s.security_orgs_of("gus").is_empty());
     }
 
     #[test]

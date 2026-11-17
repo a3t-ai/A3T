@@ -636,17 +636,33 @@ fn is_infosec(principal: Option<&flowr_policy::Principal>) -> bool {
 
 /// `GET /security/policies` — list InfoSec-owned Cedar policy resources
 /// (`type_ref == "cedar"`) with their source, so the UI has a first-class
-/// Policies view instead of the generic resource form. Admin-gated.
+/// Policies view instead of the generic resource form. SuperAdmin and
+/// SecurityAdmin see every policy; an org's admins and security admins see
+/// those of the org's projects (reading them; changing them stays InfoSec's).
 async fn policies_list_handler(
     Extension(state): Extension<PolicyAdminState>,
     principal: Option<Extension<flowr_policy::Principal>>,
 ) -> impl IntoResponse {
-    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
-        return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "SuperAdmin or SecurityAdmin role required" }))).into_response();
-    }
+    let p = principal.as_ref().map(|e| &e.0);
+    // None: every namespace; Some: only these.
+    let scope: Option<std::collections::HashSet<String>> = if is_infosec(p) {
+        None
+    } else {
+        let user = p.and_then(flowr_policy::namespace::acting_user).map(String::from);
+        let snap = flowr_ce::access::current_snapshot().await;
+        let orgs = match (&user, &snap) { (Some(u), Some(s)) => s.security_orgs_of(u), _ => Vec::new() };
+        if orgs.is_empty() {
+            return (axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({ "error": "SuperAdmin, SecurityAdmin or an org's admin or security admin role required" }))).into_response();
+        }
+        let snap = snap.expect("orgs come from the snapshot");
+        Some(orgs.iter().flat_map(|h| snap.org_namespaces(h)).collect())
+    };
     let mut policies = Vec::new();
     for (ns, name, _) in collect_registry_cedar_policies(&state.storage).await {
+        if scope.as_ref().is_some_and(|s| !s.contains(&ns)) {
+            continue;
+        }
         if let Ok(r) = state.storage.resources().get(&ns, &name).await {
             let platform = ["system", "a3t", "default"].contains(&ns.as_str());
             policies.push(serde_json::json!({
