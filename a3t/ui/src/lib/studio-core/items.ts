@@ -7,7 +7,9 @@
 /// trigger, template, canvas, agent…); which behaviour module handles it is decided by
 /// the kinds registry (`kinds/`), which may look at `type` too.
 
-export type ItemSort = 'flow' | 'resource' | 'trigger' | 'template' | 'canvas' | 'agent';
+/// `policy`: an org's policy file; its `project` is `org:<handle>` and its
+/// name the file's path (`policies/x.yaml`).
+export type ItemSort = 'flow' | 'resource' | 'trigger' | 'template' | 'canvas' | 'agent' | 'policy';
 
 export type ItemRef = {
   project: string;

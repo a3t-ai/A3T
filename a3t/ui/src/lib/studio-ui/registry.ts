@@ -14,6 +14,8 @@ import CanvasView from './views/CanvasView.svelte';
 import AgentView from './views/AgentView.svelte';
 import AgentFormPanel from './panels/AgentFormPanel.svelte';
 import VersionsPanel from './panels/VersionsPanel.svelte';
+import PolicyCheckPanel from './panels/PolicyCheckPanel.svelte';
+import PolicyVersionsPanel from './panels/PolicyVersionsPanel.svelte';
 import TemplateFieldsPanel from './panels/TemplateFieldsPanel.svelte';
 import TemplateAgentsPanel from './panels/TemplateAgentsPanel.svelte';
 import AgentRunsPanel from './panels/AgentRunsPanel.svelte';
@@ -49,6 +51,8 @@ export const PANELS: Record<string, Component<any>> = {
   'agent-runs': AgentRunsPanel,
   runs: RunsPanel,
   versions: VersionsPanel,
+  'policy-check': PolicyCheckPanel,
+  'policy-versions': PolicyVersionsPanel,
   problems: ProblemsPanel,
   results: ResultsPanel,
   history: HistoryPanel,

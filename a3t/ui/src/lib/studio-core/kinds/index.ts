@@ -6,12 +6,14 @@ import { agentKind, templateKind } from './agents';
 import { canvasKind, runtimeKind } from './operate';
 import { databaseKind } from './database';
 import { llmKind, mcpKind } from './act';
+import { policyKind } from './policy';
 
 export type { ItemKind, Capability, PanelDef } from './types';
 export { languagesOf } from './database';
+export { STARTERS as POLICY_STARTERS, type PolicyDir } from './policy';
 
 /// First match wins: specific kinds before the ones they refine.
-export const KINDS: ItemKind[] = [flowKind, triggerKind, templateKind, agentKind, canvasKind, databaseKind, llmKind, mcpKind, runtimeKind, resourceKind];
+export const KINDS: ItemKind[] = [policyKind, flowKind, triggerKind, templateKind, agentKind, canvasKind, databaseKind, llmKind, mcpKind, runtimeKind, resourceKind];
 
 export function kindFor(item: Item): ItemKind {
   return KINDS.find((k) => k.match(item)) ?? resourceKind;

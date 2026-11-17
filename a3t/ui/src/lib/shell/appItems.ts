@@ -387,7 +387,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
   if (source === 'security-sections') {
     // The platform first (Identity: the sign-in realm; the compiled baseline) for
     // SuperAdmin and SecurityAdmin; then one group per org: its identity (members,
-    // sign-in, who reaches its projects), its policy files from its own GitHub,
+    // sign-in, who reaches its projects), its policy files (kept in A3T, edited in Studio),
     // and its projects' Cedar policies folded under it. An org's admins and
     // security admins see only their own orgs (the server scopes what it answers).
     const { isInfosec, opensSecurity } = await import('$lib/stores/auth');
@@ -407,7 +407,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
       const n = (org.members ?? []).length;
       out.push({ id: `org:${org.handle}`, label: 'Identity', namespace: org.handle,
         sub: `${n} member${n === 1 ? '' : 's'}${org.sso?.idp_alias ? ` · signs in through ${org.sso.idp_alias}` : ''} · who reaches its projects` });
-      out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: "roles, rules and access from the org's GitHub" });
+      out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: 'its roles, rules and access, as files' });
     }
     for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
       if (!inContext(p.namespace, 'shared')) continue;

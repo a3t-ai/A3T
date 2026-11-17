@@ -4,7 +4,7 @@
   ///   People — its members and everyone who reaches its projects, and how (audit);
   ///   Members — who is in it, and as what (its admins change it);
   ///   Sign-in — its own identity provider and which groups get which role;
-  ///   Policy files — roles, rules and access from the org's own GitHub repo.
+  ///   Policy files — its roles, rules and access, kept as files in A3T (edited in Studio).
   /// Its admins change members and sign-in; its security admins read them. Both
   /// manage the policy files (the org's security). SuperAdmin does everything;
   /// SecurityAdmin reads members and sign-in and manages policy files. The
@@ -12,6 +12,8 @@
   import { untrack } from 'svelte';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
+  import { openInStudio } from '$lib/stores/panels.svelte.ts';
   import { orgsApi, orgPolicy, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
@@ -60,7 +62,7 @@
     org = found; fillSso(found);
     aud = a.ok ? a.data ?? null : null; audErr = a.ok ? '' : (a.error ?? `HTTP ${a.status}`);
     files = f.ok ? f.data ?? null : null; filesErr = f.ok ? '' : (f.error ?? `HTTP ${f.status}`);
-    fillSource(); pickFrom(files);
+    pickFrom(files);
     if (found.can_admin && !directory.length) directory = await loadDirectory();
   }
   async function refreshOrg() {
@@ -149,41 +151,37 @@
   }
 
   // ── Policy files ──
-  let src = $state({ repo: '', ref: 'main', folder: '', mode: 'live', token_secret: '', webhook_secret: '' });
   let openFile = $state('');
-  function fillSource() {
-    const s = files?.source;
-    src = { repo: s?.repo ?? '', ref: s?.ref || 'main', folder: s?.folder ?? '', mode: s?.mode || 'live', token_secret: s?.token_secret ?? '', webhook_secret: s?.webhook_secret ?? '' };
-  }
   async function reloadFiles() {
     const f = await orgPolicy.files(handle);
     files = f.ok ? f.data ?? null : files; filesErr = f.ok ? '' : (f.error ?? `HTTP ${f.status}`);
     pickFrom(files);
   }
-  async function saveSource(syncAfter: boolean) {
-    busy = 'source';
-    const r = await orgPolicy.setSource(handle, { ...src, repo: src.repo.trim(), ref: src.ref.trim(), folder: src.folder.trim(), token_secret: src.token_secret.trim(), webhook_secret: src.webhook_secret.trim() });
-    if (!r.ok) { busy = ''; say(r.error ?? 'Not saved.'); return; }
-    if (syncAfter) { await syncNow(); return; }
-    busy = ''; say('Saved. Nothing changes until it is read from GitHub.', true);
+  // ── New file: a working example of its kind, saved (it must pass the check),
+  // then opened in Studio to change.
+  let nDir = $state<PolicyDir>('policies');
+  let nName = $state('');
+  let nProject = $state('');
+  async function newFile() {
+    const name = nName.trim();
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(name)) { say('Name it with letters, digits, - and _.'); return; }
+    const path = `${nDir}/${name}.yaml`;
+    if (files?.files.some((f) => f.path === path)) { say(`${path} already exists.`); return; }
+    let text = POLICY_STARTERS[nDir](name, handle);
+    if (nDir === 'access') {
+      if (!nProject) { say('Pick the project it gives access to.'); return; }
+      text = text.replace(`project: ${handle}-<project>`, `project: ${nProject}`).replace(/^users:\n  someone@example.com: Viewer\n/m, '');
+    }
+    busy = 'new';
+    const r = await orgPolicy.save(handle, path, text);
+    busy = '';
+    if (!r.ok) { const errs = ((r as any).detail?.errors ?? []) as string[]; say(`Not created: ${r.error ?? `HTTP ${r.status}`}${errs.length ? ` (${errs.join('; ')})` : ''}`); return; }
+    nName = '';
     await reloadFiles();
+    openInStudio('policy', `org:${handle}`, path);
   }
-  async function syncNow() {
-    busy = 'sync';
-    const r = await orgPolicy.sync(handle);
-    busy = '';
-    if (!r.ok) say(`Not applied: ${r.error ?? `HTTP ${r.status}`}. The last good files stay enforced.`);
-    else say(r.data?.changed ? `Applied commit ${String(r.data.commit).slice(0, 10)}.` : `Already at commit ${String(r.data?.commit ?? '').slice(0, 10)}: nothing changed.`, true);
-    await reloadFiles(); fillSource();
-  }
-  async function disconnect() {
-    if (!confirm(`Stop reading ${handle}'s policy repo? The files A3T keeps stay as they are: enforced ones stay enforced.`)) return;
-    busy = 'source';
-    const r = await orgPolicy.disconnect(handle);
-    busy = '';
-    if (!r.ok) say(r.error ?? 'Not disconnected.'); else say('Disconnected. The kept files are still enforced.', true);
-    await reloadFiles(); fillSource();
-  }
+  const openFileInStudio = (path: string) => openInStudio('policy', `org:${handle}`, path);
+
   // Which files are enforced: ticked here, applied together. Turning any off
   // needs the org's handle typed (it drops rules); turning them on doesn't.
   let picked = $state<Record<string, boolean>>({});
@@ -211,7 +209,7 @@
     say(`${want.length} of ${files?.files.length ?? 0} file${files?.files.length === 1 ? '' : 's'} enforced.`, true);
     await reloadFiles();
   }
-  const KIND_LABEL: Record<string, string> = { 'a3t/policy': 'rule', 'a3t/role': 'role', 'a3t/access': 'access' };
+  const KIND_LABEL: Record<string, string> = { policy: 'rule', role: 'role', access: 'access' };
   const when = (s: string) => { const t = Date.parse(s); return Number.isFinite(t) ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'; };
 
   const STEPS = [
@@ -219,7 +217,7 @@
     { id: 'people', label: 'People', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its members and everyone who reaches its projects, and how' },
     { id: 'members', label: 'Members', icon: '<circle cx="8" cy="5" r="2.5"/><path d="M3 13a5 5 0 0110 0"/>', hint: 'Who is in the org, and as what' },
     { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
-    { id: 'files', label: 'Policy files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: "Roles, rules and access from the org's own GitHub repo" },
+    { id: 'files', label: 'Policy files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
   ];
   const memberCount = (r: string) => (org?.members ?? []).filter((m) => m.role === r).length;
 </script>
@@ -247,7 +245,7 @@
             <li><span class="lbl">People</span><span class="val">{aud ? `${aud.count} can reach its projects or are in it${outsiders ? `, ${outsiders} from outside the org` : ''}` : audErr || '…'}</span><button class="btn2" onclick={() => (tab = 'people')}>Audit</button></li>
             <li><span class="lbl">Members</span><span class="val">{org.members.length} · {memberCount('admin')} admin{memberCount('admin') === 1 ? '' : 's'}, {memberCount('securityadmin')} security admin{memberCount('securityadmin') === 1 ? '' : 's'}</span><button class="btn2" onclick={() => (tab = 'members')}>{canAdmin ? 'Manage' : 'See'}</button></li>
             <li><span class="lbl">Sign-in</span><span class="val">{org.sso?.idp_alias ? `through ${org.sso.idp_alias}${org.sso.domains?.length ? ` for ${org.sso.domains.join(', ')}` : ''}` : "A3T's own sign-in"}</span><button class="btn2" onclick={() => (tab = 'signin')}>{canAdmin ? 'Set up' : 'See'}</button></li>
-            <li><span class="lbl">Policy files</span><span class="val">{#if files?.source}<span class="mono">{files.source.repo}@{files.source.ref}</span> · {files.source.last_error ? 'last read failed' : files.source.last_commit ? `at ${files.source.last_commit.slice(0, 10)}` : 'not read yet'} · {enforcedNow} of {files.files.length} file{files.files.length === 1 ? '' : 's'} enforced{:else if files}{files.files.length ? `${files.files.length} kept files, no repo connected` : 'no repo connected'}{:else}{filesErr || '…'}{/if}</span><button class="btn2" onclick={() => (tab = 'files')}>{managesFiles ? 'Manage' : 'See'}</button></li>
+            <li><span class="lbl">Policy files</span><span class="val">{#if files}{files.files.length ? `${enforcedNow} of ${files.files.length} file${files.files.length === 1 ? '' : 's'} enforced` : 'none yet'}{:else}{filesErr || '…'}{/if}</span><button class="btn2" onclick={() => (tab = 'files')}>{managesFiles ? 'Manage' : 'See'}</button></li>
           </ul>
         </div>
         <div class="card">
@@ -346,39 +344,28 @@
       {:else}
         {#if filesErr && !files}<div class="note bad">{filesErr}</div>{/if}
         <div class="card">
-          <div class="card-head"><h3>1 · The repo</h3><span>A3T reads it and keeps a copy; the org's GitHub stays the source</span></div>
-          {#if files?.source}
-            <ul class="rows">
-              <li><span class="lbl">State</span><span class="val">{#if files.source.last_error}<span class="dot err"></span> last read refused: {files.source.last_error}{:else if files.source.last_commit}<span class="dot ok"></span> enforcing commit <span class="mono">{files.source.last_commit.slice(0, 10)}</span>{:else}not read yet{/if}</span><span></span></li>
-              <li><span class="lbl">Last read</span><span class="val">{when(files.source.last_sync)}{files.source.mode === 'live' ? ' · follows pushes, and every minute with a token' : ' · only when asked'}</span><span></span></li>
-            </ul>
-          {/if}
-          <div class="fields">
-            <label class="fld">Repo <small>owner/name</small><input class="mono" bind:value={src.repo} readonly={!managesFiles} placeholder="acme/a3t-policy" /></label>
-            <label class="fld">Branch, tag or commit<input class="mono" bind:value={src.ref} readonly={!managesFiles} placeholder="main" /></label>
-            <label class="fld">Folder<input class="mono" bind:value={src.folder} readonly={!managesFiles} placeholder="(the repo root)" /></label>
-            <label class="fld">Read<select bind:value={src.mode} disabled={!managesFiles}><option value="live">Live: on every push, and every minute</option><option value="import">Only when asked</option></select></label>
-            <label class="fld">Read token <small>a secret in one of its projects; empty for a public repo</small><input class="mono" bind:value={src.token_secret} readonly={!managesFiles} placeholder="{handle}-ops/github-read" /></label>
-            <label class="fld">Webhook secret <small>optional</small><input class="mono" bind:value={src.webhook_secret} readonly={!managesFiles} placeholder="{handle}-ops/github-hook" /></label>
-          </div>
+          <div class="card-head"><h3>1 · What they are</h3><span>files kept in A3T, every save a version</span></div>
+          <p class="dim">An org's rules (<span class="mono">policies/</span>), its own roles (<span class="mono">roles/</span>) and who holds which role on its projects (<span class="mono">access/</span>), as YAML files. Open one to edit it in Studio: it's checked against the org's other files as you type, and a save that would break them is refused.</p>
           {#if managesFiles}
-            <div class="acts">
-              <button class="btn2 primary" disabled={!!busy || !/^[\w.-]+\/[\w.-]+$/.test(src.repo.trim())} onclick={() => saveSource(true)}>{busy === 'sync' ? 'Reading…' : files?.source ? 'Save and read now' : 'Connect and read'}</button>
-              {#if files?.source}<button class="btn2" disabled={!!busy} onclick={syncNow}>Read now</button><button class="btn2 quiet" disabled={!!busy} onclick={disconnect}>Disconnect</button>{/if}
+            <div class="uf">
+              <select class="tin" bind:value={nDir} aria-label="Kind of file"><option value="policies">Rule (policies/)</option><option value="roles">Role (roles/)</option><option value="access">Access (access/)</option></select>
+              <input class="tin grow mono" bind:value={nName} placeholder={nDir === 'policies' ? 'no-external-models' : nDir === 'roles' ? 'support-lead' : 'support-team'} aria-label="File name" onkeydown={(e) => { if (e.key === 'Enter') newFile(); }} />
+              {#if nDir === 'access'}<select class="tin" bind:value={nProject} aria-label="Project"><option value="">Project…</option>{#each files?.projects ?? [] as p}<option value={p}>{p}</option>{/each}</select>{/if}
+              <button class="btn2 primary" disabled={!!busy || !nName.trim()} onclick={newFile}>{busy === 'new' ? 'Creating…' : 'New file'}</button>
             </div>
-            <p class="dim small">A read takes every file at one commit. If any file fails to compile, the whole commit is refused and the last good files stay enforced.</p>
+            <p class="dim small">It starts as a working example of its kind and opens in Studio.</p>
           {/if}
         </div>
         <div class="card">
-          <div class="card-head"><h3>2 · Files</h3><span>{files ? `${enforcedNow} of ${files.files.length} enforced · for ${files.projects.length} project${files.projects.length === 1 ? '' : 's'}` : ''}</span></div>
+          <div class="card-head"><h3>2 · Files</h3><span>{files ? `${enforcedNow} of ${files.files.length} enforced · for ${files.projects.length} project${files.projects.length === 1 ? '' : 's'}` : ''}</span><span class="grow"></span>{#if files?.files.length}<button class="btn2" onclick={() => openInStudio('policy', `org:${handle}`, files!.files[0].path)}>Open in Studio</button>{/if}</div>
           {#if files?.files.length}
             {#if managesFiles}<div class="acts"><button class="btn2 quiet" disabled={!!busy} onclick={() => pickAll(true)}>Enforce all</button><button class="btn2 quiet" disabled={!!busy} onclick={() => pickAll(false)}>Enforce none</button></div>{/if}
             <ul class="olist">
               {#each files.files as f (f.path)}
                 <li class="frow" class:off={!picked[f.path]}>
                   <label class="fpick"><input type="checkbox" bind:checked={picked[f.path]} disabled={!managesFiles || !!busy} aria-label="Enforce {f.path}" /></label>
-                  <button class="link mono" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{f.path}</button>
-                  <span class="fkind">{KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.commit.slice(0, 10)}</span></span>
+                  <button class="link mono" onclick={() => openFileInStudio(f.path)} title="Edit in Studio">{f.path}</button>
+                  <span class="fkind"><button class="lnk2" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{openFile === f.path ? 'hide' : 'show'}</button> · {KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.version}</span></span>
                   <span class="fstate" class:on={f.enforced !== false}>{f.enforced !== false ? 'enforced' : 'off'}</span>
                   {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}</li>
               {/each}
@@ -395,7 +382,7 @@
                 </div>
               </div>
             {/if}
-          {:else}<p class="empty">No files kept yet. Connect the repo and read it.</p>{/if}
+          {:else}<p class="empty">No files yet. Its projects follow the platform's rules and their own policies.</p>{/if}
         </div>
       {/if}
     {/if}
@@ -439,6 +426,7 @@
   .olist > li:first-child { border-top: 0; }
   .frow { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 64px; align-items: center; gap: 10px; }
   .frow .link { overflow-wrap: anywhere; }
+  .lnk2 { border: 0; background: none; padding: 0; color: var(--accent, #5530a8); cursor: pointer; font: inherit; }
   .fkind { font-size: 12.5px; color: var(--text-3); white-space: nowrap; }
   .frow.off .link, .frow.off .fkind { opacity: 0.55; }
   .mname { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

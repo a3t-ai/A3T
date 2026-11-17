@@ -645,27 +645,31 @@ export const people = {
   audit: (org?: string) => request<AuditPeople>(`/security/people${org ? `?org=${encodeURIComponent(org)}` : ''}`, { method: 'GET' }),
 };
 
-/// An org's policy files, kept in the org's own GitHub repo (A3T keeps a copy).
-export interface OrgPolicySource {
-  repo: string; ref: string; folder: string; mode: 'live' | 'import' | string;
-  token_secret: string; webhook_secret: string;
-  last_commit: string; last_sync: string; last_error: string; updated_by: string; updated_at: string;
+/// An org's policy files (policies/, roles/, access/ YAML), kept as files in
+/// A3T's database: every save is a version; each file is switched on or off.
+export interface OrgPolicyFile { path: string; kind: string; content: string; version: string; updated_at: string; enforced: boolean }
+export interface OrgPolicyFiles { org: string; projects: string[]; files: OrgPolicyFile[] }
+export interface OrgPolicyFileDetail {
+  org: string; path: string;
+  file: { kind: string; content: string; version: string; updated_at: string; enforced: boolean } | null;
+  history: { version: string; action: 'create' | 'save' | 'delete' | 'on' | 'off' | string; content: string; by: string; at: string }[];
 }
-export interface OrgPolicyFiles {
-  org: string; projects: string[]; source: OrgPolicySource | null;
-  /// Every kept file; `enforced: false` ones are kept and listed but not applied.
-  files: { path: string; kind: string; content: string; commit: string; enforced: boolean }[];
-}
+/// A check of the org's enforced files with drafts in place: nothing is saved.
+export interface OrgPolicyCheck { ok: boolean; checked: string[]; errors?: string[]; compiled?: any }
+const orgBase = (org: string) => `/security/orgs/${encodeURIComponent(org)}`;
 export const orgPolicy = {
-  files: (org: string) => request<OrgPolicyFiles>(`/security/orgs/${encodeURIComponent(org)}/files`, { method: 'GET' }),
-  setSource: (org: string, src: { repo: string; ref?: string; folder?: string; mode?: string; token_secret?: string; webhook_secret?: string }) =>
-    request<{ org: string; source: OrgPolicySource }>(`/security/orgs/${encodeURIComponent(org)}/source`, { method: 'PUT', body: JSON.stringify(src) }),
-  disconnect: (org: string) => request(`/security/orgs/${encodeURIComponent(org)}/source`, { method: 'DELETE' }),
-  sync: (org: string) => request<{ org: string; commit: string; changed: boolean }>(`/security/orgs/${encodeURIComponent(org)}/sync`, { method: 'POST' }),
-  /// Which kept files are enforced (the rest stay kept, switched off). Refused
+  files: (org: string) => request<OrgPolicyFiles>(`${orgBase(org)}/files`, { method: 'GET' }),
+  file: (org: string, path: string) => request<OrgPolicyFileDetail>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'GET' }),
+  /// Saved only if the org's enforced files still work with it (422 + `errors` otherwise).
+  save: (org: string, path: string, content: string) =>
+    request<{ path: string; version: string; changed: boolean; enforced: boolean }>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  remove: (org: string, path: string) => request(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  validate: (org: string, files: { path: string; content: string }[] = [], removed: string[] = []) =>
+    request<OrgPolicyCheck>(`${orgBase(org)}/validate`, { method: 'POST', body: JSON.stringify({ files, removed }) }),
+  /// Which files are enforced (the rest stay kept, switched off). Refused
   /// (422, `errors`) if those files don't work on their own.
   setEnforced: (org: string, enforced: string[]) =>
-    request<{ org: string; enforced: number; off: number; errors?: string[] }>(`/security/orgs/${encodeURIComponent(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+    request<{ org: string; enforced: number; off: number; switched: number; errors?: string[] }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
 };
 
 export const idp = {

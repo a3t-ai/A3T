@@ -5,6 +5,7 @@
 import { catMeta } from '$lib/core/resources/categories';
 import * as flows from './adapters/flows';
 import * as registry from './adapters/registry';
+import * as orgPolicy from './adapters/orgPolicy';
 import { address, type Item } from './items';
 import { categoryOf, TYPES_BY_CATEGORY } from './resourceTypes';
 
@@ -92,6 +93,27 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
       ],
     };
   });
+  // The orgs whose policy files you manage: one node each, beside the projects,
+  // with its policies, roles and access files in folders.
+  const orgs = await orgPolicy.managedOrgs();
+  if (orgs.ok) {
+    for (const org of orgs.data) {
+      const r = await orgPolicy.files(org);
+      if (!r.ok) { errors.push(r.error); continue; }
+      const project = `${orgPolicy.ORG_PREFIX}${org}`;
+      const dir = (d: string, label: string): TreeNode => {
+        const list = r.data.files.filter((f) => f.path.startsWith(`${d}/`)).sort((a, b) => a.path.localeCompare(b.path));
+        return {
+          key: `${project}/${d}`, label, count: list.length, open: true, create: { kind: 'policy', type: d },
+          children: list.map((f) => {
+            const item: Item = { project, kind: 'policy', name: f.path, data: f };
+            return { key: address(item), label: `${f.path.slice(d.length + 1)}${f.enforced ? '' : ' (off)'}`, item };
+          }),
+        };
+      };
+      tree.push({ key: project, label: `${org} · org policies`, children: [dir('policies', 'Policies'), dir('roles', 'Roles'), dir('access', 'Access')] });
+    }
+  }
   return { tree, errors };
 }
 
