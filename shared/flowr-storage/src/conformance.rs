@@ -129,11 +129,19 @@ async fn enqueue_dedupe_until_acked<S: EngineStore>(s: &S) {
 async fn delayed_visibility<S: EngineStore>(s: &S) {
     let run = new_run("p", "f");
     let mut task = NewTask::start(&run);
-    task.visible_at = Utc::now() + chrono::Duration::milliseconds(80);
+    let visible_at = Utc::now() + chrono::Duration::milliseconds(500);
+    task.visible_at = visible_at;
     s.start(run, task).await.unwrap();
-    assert!(s.claim_runs(DEFAULT_POOL, "w", 1, LEASE).await.unwrap().is_empty(), "not visible yet");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(s.claim_runs(DEFAULT_POOL, "w", 1, LEASE).await.unwrap().len(), 1, "visible after visible_at");
+    // A claim made wholly before visible_at finds nothing. (Checked against the
+    // clock, not a fixed sleep: on a loaded machine the start alone can take longer.)
+    let early = s.claim_runs(DEFAULT_POOL, "w", 1, LEASE).await.unwrap();
+    if Utc::now() < visible_at {
+        assert!(early.is_empty(), "not visible yet");
+    }
+    let wait = (visible_at - Utc::now()).to_std().unwrap_or_default() + Duration::from_millis(20);
+    tokio::time::sleep(wait).await;
+    let claimed = early.len() + s.claim_runs(DEFAULT_POOL, "w", 1, LEASE).await.unwrap().len();
+    assert_eq!(claimed, 1, "visible after visible_at");
 }
 
 async fn lease_expiry_reclaim_and_fencing<S: EngineStore>(s: &S) {
