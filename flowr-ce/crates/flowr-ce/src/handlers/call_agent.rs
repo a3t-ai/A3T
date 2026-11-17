@@ -649,8 +649,9 @@ impl TaskHandler for AgentHandler {
             // too, not only to `call:llm` steps in flows. The forced last answer
             // and the reflection below use the same model in the same turn, so
             // this one check covers them.
-            if let Err(why) = authorize_model(&agent_principal, llm_resource, &ctx.template_meta).await {
-                return Err(RuntimeError::task_failed(&task.name, why));
+            // A refusal is a policy decision ("Not allowed: <reason>"), not a fault.
+            if let Err((reason, policy_ids)) = authorize_model(&agent_principal, llm_resource, &ctx.template_meta).await {
+                return Err(RuntimeError::Denied { task: task.name.clone(), reason, policy_ids });
             }
 
             // Build tool list: merge inline tools + tool_flows (fetch flow metadata)
@@ -1551,7 +1552,7 @@ async fn authorize_model(
     agent: &flowr_mcp_core::Principal,
     llm_resource: &str,
     attributes: &serde_json::Map<String, Value>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), (String, Vec<String>)> {
     let req = flowr_policy::ExecutionRequest {
         principal: agent.clone(),
         action: flowr_policy::actions::llm_call(),
@@ -1565,7 +1566,7 @@ async fn authorize_model(
     let decision = flowr_policy::policy_hook().check(&req).await;
     flowr_policy::audit::record(&req, &decision);
     match decision.non_interactive() {
-        flowr_policy::PolicyDecision::Deny { reason, .. } => Err(format!("denied: model {llm_resource}: {reason}")),
+        flowr_policy::PolicyDecision::Deny { reason, policy_ids } => Err((format!("model {llm_resource}: {reason}"), policy_ids)),
         _ => Ok(()),
     }
 }
