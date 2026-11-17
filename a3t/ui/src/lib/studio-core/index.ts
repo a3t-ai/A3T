@@ -13,7 +13,7 @@ export * as flows from './adapters/flows';
 export * as orgPolicy from './adapters/orgPolicy';
 export { history, remember, saved, saveQuery, forget, type HistoryEntry, type SavedQuery } from './queries';
 export { Workspace, emptyWorkspace, type Doc, type WorkspaceState } from './workspace';
-export { maskedPaths, getAt, setAt, removeAt, pathKey, fromText, toText, type Path } from './config';
+export { maskedPaths, getAt, setAt, removeAt, pathKey, fromText, fromYamlText, toText, type Path } from './config';
 export { TYPES_BY_CATEGORY, startingConfig, categoryOf, typesLike } from './resourceTypes';
 export * as agentModel from './agent/model';
 export { PALETTE, STEP_MIME, paletteStep, libraryOf, taskForItem, addTask, insertTask, setThen, addCase, type PaletteGroup, type PaletteStep } from './flow/compose';

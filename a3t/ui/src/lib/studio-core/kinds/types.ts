@@ -75,6 +75,8 @@ export interface ItemKind {
   remove?(item: Item): Promise<Result>;
   rename?(item: Item, to: string): Promise<Result>;
   duplicate?(item: Item, to: string): Promise<Result>;
+  /// What its text is, as the code view checks it (default JSON).
+  format?: 'json' | 'yaml';
   /// The item's name is a field of its text (flows' `document.name`, a
   /// trigger's `name`), not typed separately when it is new.
   nameInText?: boolean;

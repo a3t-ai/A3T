@@ -50,6 +50,7 @@ export const policyKind: ItemKind = {
   id: 'policy', label: 'Policy file', icon: '§',
   match: (it) => it.kind === 'policy',
   capabilities: ['edit', 'create', 'delete'],
+  format: 'yaml',
   views: {
     center: 'code', code: 'code',
     right: [{ id: 'policy-check', title: 'Validate' }],

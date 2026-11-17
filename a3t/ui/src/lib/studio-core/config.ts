@@ -1,3 +1,4 @@
+import * as YAML from 'yaml';
 /// Config documents: a resource's, trigger's or canvas's config as plain JSON,
 /// edited by key and value. Paths address values inside it; edits are
 /// immutable (a new object each time), so views and dirty checks stay simple.
@@ -53,6 +54,11 @@ export function maskedPaths(type: string, config: unknown): Set<string> {
 }
 
 export const toText = (v: unknown) => JSON.stringify(v ?? {}, null, 2);
+
+/// The same for a YAML document (kinds whose text is YAML: `format: 'yaml'`).
+export function fromYamlText(text: string | undefined): { value: any; error: string | null } {
+  try { return { value: YAML.parse(text ?? ''), error: null }; } catch (e) { return { value: null, error: (e as Error).message }; }
+}
 
 export function fromText(text: string | undefined): { value: any; error: string | null } {
   try { return { value: JSON.parse(text ?? '{}'), error: null }; } catch (e) { return { value: null, error: (e as Error).message }; }
