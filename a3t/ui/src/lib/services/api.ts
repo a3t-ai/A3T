@@ -653,7 +653,8 @@ export interface OrgPolicySource {
 }
 export interface OrgPolicyFiles {
   org: string; projects: string[]; source: OrgPolicySource | null;
-  files: { path: string; kind: string; content: string; commit: string }[];
+  /// Every kept file; `enforced: false` ones are kept and listed but not applied.
+  files: { path: string; kind: string; content: string; commit: string; enforced: boolean }[];
 }
 export const orgPolicy = {
   files: (org: string) => request<OrgPolicyFiles>(`/security/orgs/${encodeURIComponent(org)}/files`, { method: 'GET' }),
@@ -661,7 +662,10 @@ export const orgPolicy = {
     request<{ org: string; source: OrgPolicySource }>(`/security/orgs/${encodeURIComponent(org)}/source`, { method: 'PUT', body: JSON.stringify(src) }),
   disconnect: (org: string) => request(`/security/orgs/${encodeURIComponent(org)}/source`, { method: 'DELETE' }),
   sync: (org: string) => request<{ org: string; commit: string; changed: boolean }>(`/security/orgs/${encodeURIComponent(org)}/sync`, { method: 'POST' }),
-  stopEnforcing: (org: string) => request(`/security/orgs/${encodeURIComponent(org)}/files`, { method: 'DELETE' }),
+  /// Which kept files are enforced (the rest stay kept, switched off). Refused
+  /// (422, `errors`) if those files don't work on their own.
+  setEnforced: (org: string, enforced: string[]) =>
+    request<{ org: string; enforced: number; off: number; errors?: string[] }>(`/security/orgs/${encodeURIComponent(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
 };
 
 export const idp = {

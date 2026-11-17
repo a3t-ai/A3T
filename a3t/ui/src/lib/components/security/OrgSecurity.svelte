@@ -60,7 +60,7 @@
     org = found; fillSso(found);
     aud = a.ok ? a.data ?? null : null; audErr = a.ok ? '' : (a.error ?? `HTTP ${a.status}`);
     files = f.ok ? f.data ?? null : null; filesErr = f.ok ? '' : (f.error ?? `HTTP ${f.status}`);
-    fillSource();
+    fillSource(); pickFrom(files);
     if (found.can_admin && !directory.length) directory = await loadDirectory();
   }
   async function refreshOrg() {
@@ -158,6 +158,7 @@
   async function reloadFiles() {
     const f = await orgPolicy.files(handle);
     files = f.ok ? f.data ?? null : files; filesErr = f.ok ? '' : (f.error ?? `HTTP ${f.status}`);
+    pickFrom(files);
   }
   async function saveSource(syncAfter: boolean) {
     busy = 'source';
@@ -176,21 +177,38 @@
     await reloadFiles(); fillSource();
   }
   async function disconnect() {
-    if (!confirm(`Stop reading ${handle}'s policy repo? The files A3T keeps stay enforced until you stop enforcing them.`)) return;
+    if (!confirm(`Stop reading ${handle}'s policy repo? The files A3T keeps stay as they are: enforced ones stay enforced.`)) return;
     busy = 'source';
     const r = await orgPolicy.disconnect(handle);
     busy = '';
     if (!r.ok) say(r.error ?? 'Not disconnected.'); else say('Disconnected. The kept files are still enforced.', true);
     await reloadFiles(); fillSource();
   }
-  // Typed, not clicked: dropping an org's rules is a deliberate act.
+  // Which files are enforced: ticked here, applied together. Turning any off
+  // needs the org's handle typed (it drops rules); turning them on doesn't.
+  let picked = $state<Record<string, boolean>>({});
   let stopName = $state('');
-  async function stopEnforcing() {
-    if (stopName.trim() !== handle) return;
-    busy = 'files';
-    const r = await orgPolicy.stopEnforcing(handle);
+  let enforceErrors = $state<string[]>([]);
+  function pickFrom(f: OrgPolicyFiles | null) {
+    picked = Object.fromEntries((f?.files ?? []).map((x) => [x.path, x.enforced !== false]));
+    stopName = ''; enforceErrors = [];
+  }
+  const turningOff = $derived((files?.files ?? []).filter((f) => f.enforced !== false && !picked[f.path]).map((f) => f.path));
+  const turningOn = $derived((files?.files ?? []).filter((f) => f.enforced === false && picked[f.path]).map((f) => f.path));
+  const enforcedNow = $derived((files?.files ?? []).filter((f) => f.enforced !== false).length);
+  const pickAll = (on: boolean) => { picked = Object.fromEntries((files?.files ?? []).map((x) => [x.path, on])); };
+  async function applyEnforced() {
+    if (turningOff.length && stopName.trim() !== handle) return;
+    busy = 'files'; enforceErrors = [];
+    const want = (files?.files ?? []).filter((f) => picked[f.path]).map((f) => f.path);
+    const r = await orgPolicy.setEnforced(handle, want);
     busy = '';
-    if (!r.ok) say(r.error ?? 'Not changed.'); else { stopName = ''; say('Its files are no longer enforced.', true); }
+    if (!r.ok) {
+      enforceErrors = ((r as any).detail?.errors ?? []) as string[];
+      say(`Not changed: ${r.error ?? `HTTP ${r.status}`}.`);
+      return;
+    }
+    say(`${want.length} of ${files?.files.length ?? 0} file${files?.files.length === 1 ? '' : 's'} enforced.`, true);
     await reloadFiles();
   }
   const KIND_LABEL: Record<string, string> = { 'a3t/policy': 'rule', 'a3t/role': 'role', 'a3t/access': 'access' };
@@ -229,7 +247,7 @@
             <li><span class="lbl">People</span><span class="val">{aud ? `${aud.count} can reach its projects or are in it${outsiders ? `, ${outsiders} from outside the org` : ''}` : audErr || '…'}</span><button class="btn2" onclick={() => (tab = 'people')}>Audit</button></li>
             <li><span class="lbl">Members</span><span class="val">{org.members.length} · {memberCount('admin')} admin{memberCount('admin') === 1 ? '' : 's'}, {memberCount('securityadmin')} security admin{memberCount('securityadmin') === 1 ? '' : 's'}</span><button class="btn2" onclick={() => (tab = 'members')}>{canAdmin ? 'Manage' : 'See'}</button></li>
             <li><span class="lbl">Sign-in</span><span class="val">{org.sso?.idp_alias ? `through ${org.sso.idp_alias}${org.sso.domains?.length ? ` for ${org.sso.domains.join(', ')}` : ''}` : "A3T's own sign-in"}</span><button class="btn2" onclick={() => (tab = 'signin')}>{canAdmin ? 'Set up' : 'See'}</button></li>
-            <li><span class="lbl">Policy files</span><span class="val">{#if files?.source}<span class="mono">{files.source.repo}@{files.source.ref}</span> · {files.source.last_error ? 'last read failed' : files.source.last_commit ? `at ${files.source.last_commit.slice(0, 10)}` : 'not read yet'} · {files.files.length} file{files.files.length === 1 ? '' : 's'} enforced{:else if files}{files.files.length ? `${files.files.length} kept files, no repo connected` : 'no repo connected'}{:else}{filesErr || '…'}{/if}</span><button class="btn2" onclick={() => (tab = 'files')}>{managesFiles ? 'Manage' : 'See'}</button></li>
+            <li><span class="lbl">Policy files</span><span class="val">{#if files?.source}<span class="mono">{files.source.repo}@{files.source.ref}</span> · {files.source.last_error ? 'last read failed' : files.source.last_commit ? `at ${files.source.last_commit.slice(0, 10)}` : 'not read yet'} · {enforcedNow} of {files.files.length} file{files.files.length === 1 ? '' : 's'} enforced{:else if files}{files.files.length ? `${files.files.length} kept files, no repo connected` : 'no repo connected'}{:else}{filesErr || '…'}{/if}</span><button class="btn2" onclick={() => (tab = 'files')}>{managesFiles ? 'Manage' : 'See'}</button></li>
           </ul>
         </div>
         <div class="card">
@@ -352,22 +370,32 @@
           {/if}
         </div>
         <div class="card">
-          <div class="card-head"><h3>2 · Files enforced</h3><span>{files ? `${files.files.length} file${files.files.length === 1 ? '' : 's'} · for ${files.projects.length} project${files.projects.length === 1 ? '' : 's'}` : ''}</span></div>
+          <div class="card-head"><h3>2 · Files</h3><span>{files ? `${enforcedNow} of ${files.files.length} enforced · for ${files.projects.length} project${files.projects.length === 1 ? '' : 's'}` : ''}</span></div>
           {#if files?.files.length}
+            {#if managesFiles}<div class="acts"><button class="btn2 quiet" disabled={!!busy} onclick={() => pickAll(true)}>Enforce all</button><button class="btn2 quiet" disabled={!!busy} onclick={() => pickAll(false)}>Enforce none</button></div>{/if}
             <ul class="rows wide">
               {#each files.files as f (f.path)}
-                <li class="frow"><button class="link mono" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{f.path}</button><span class="val">{KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.commit.slice(0, 10)}</span></span><span></span>
+                <li class="frow" class:off={!picked[f.path]}>
+                  <label class="fpick"><input type="checkbox" bind:checked={picked[f.path]} disabled={!managesFiles || !!busy} aria-label="Enforce {f.path}" /></label>
+                  <button class="link mono" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{f.path}</button>
+                  <span class="val">{KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.commit.slice(0, 10)}</span></span>
+                  <span class="fstate" class:on={f.enforced !== false}>{f.enforced !== false ? 'enforced' : 'off'}</span>
                   {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}</li>
               {/each}
             </ul>
-            {#if managesFiles}
+            {#if enforceErrors.length}<div class="note bad">Those files don't work on their own: {enforceErrors.join('; ')}</div>{/if}
+            {#if managesFiles && (turningOff.length || turningOn.length)}
               <div class="stop">
-                <p class="dim small">Stop enforcing: the org's projects fall back to the platform's rules and their own policies at once. The repo stays connected; reading it again brings the files back.</p>
-                <div class="uf"><input class="tin grow" type="text" bind:value={stopName} placeholder="Type {handle} to stop enforcing" aria-label="Type the org's handle to confirm" />
-                  <button class="btn2 danger" disabled={stopName.trim() !== handle || !!busy} onclick={stopEnforcing}>{busy === 'files' ? 'Stopping…' : 'Stop enforcing them'}</button></div>
+                <p class="dim small">{[turningOn.length ? `turns on ${turningOn.length}` : '', turningOff.length ? `turns off ${turningOff.length}` : ''].filter(Boolean).join(', ')}.
+                  {#if turningOff.length}A file switched off stops applying at once; it stays here, and stays off when the repo is read again, until you switch it back on.{/if}</p>
+                <div class="uf">
+                  {#if turningOff.length}<input class="tin grow" type="text" bind:value={stopName} placeholder="Type {handle} to switch them off" aria-label="Type the org's handle to confirm" />{/if}
+                  <button class="btn2 {turningOff.length ? 'danger' : 'primary'}" disabled={!!busy || (turningOff.length > 0 && stopName.trim() !== handle)} onclick={applyEnforced}>{busy === 'files' ? 'Applying…' : turningOff.length ? `Switch off ${turningOff.length}${turningOn.length ? ` and on ${turningOn.length}` : ''}` : `Enforce ${turningOn.length}`}</button>
+                  <button class="btn2 quiet" disabled={!!busy} onclick={() => pickFrom(files)}>Undo</button>
+                </div>
               </div>
             {/if}
-          {:else}<p class="empty">No files enforced. Its projects follow the platform's rules and their own policies.</p>{/if}
+          {:else}<p class="empty">No files kept yet. Connect the repo and read it.</p>{/if}
         </div>
       {/if}
     {/if}
@@ -403,12 +431,19 @@
   .uprojects { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .uprojects li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 120px; gap: 8px; font-size: 12.5px; }
   .link { border: 0; background: none; padding: 0; color: var(--accent, #5530a8); cursor: pointer; font: inherit; text-align: left; }
-  .frow { flex-wrap: wrap; }
   .fsrc { flex: 1 1 100%; margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; background: #111214; color: #f4f4f5; font: 12px/1.55 var(--font-mono); white-space: pre-wrap; overflow-x: auto; max-height: 360px; }
+  .frow { display: grid !important; grid-template-columns: 24px minmax(0, 1fr) auto 70px; align-items: center; gap: 8px; }
+  .frow.off .link, .frow.off .val { opacity: 0.55; }
+  .frow .fsrc { grid-column: 1 / -1; }
+  .fpick input { width: 16px; height: 16px; margin: 0; }
+  .fstate { font-size: 11.5px; color: var(--text-4); text-align: right; }
+  .fstate.on { color: var(--ok, #1a7158); }
   .stop { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
   textarea.mono { font-family: var(--font-mono); font-size: 12.5px; }
   @container details (max-width: 560px) {
     .ul .urow, .mrow { grid-template-columns: 1fr; }
+    .frow { grid-template-columns: 24px minmax(0, 1fr) 60px; }
+    .frow .val { grid-column: 2 / -1; grid-row: 2; }
     .uprojects li { grid-template-columns: 1fr; }
   }
 </style>
