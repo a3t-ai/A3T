@@ -184,7 +184,7 @@
     const q = fQ.trim().toLowerCase();
     return aud.users.filter((u) => {
       if (q && ![u.email, u.name, u.id].some((x) => (x ?? '').toLowerCase().includes(q))) return false;
-      if (fRole === '-' ? u.roles.length > 0 : fRole && !u.roles.includes(fRole)) return false;
+      if (fRole === '-' ? u.realm_roles.length > 0 : fRole && !u.realm_roles.includes(fRole)) return false;
       if (fOrg && !u.orgs.some((o) => o.org === fOrg)) return false;
       if (fProject) {
         const here = u.projects.find((p) => p.namespace === fProject);
@@ -448,7 +448,7 @@
                 <input class="tin grow" type="search" bind:value={fQ} placeholder="Find by name or email" aria-label="Find a person" />
                 <select class="tin" bind:value={fRole} aria-label="Platform role">
                   <option value="">Any platform role</option>
-                  {#each ['SuperAdmin', 'SecurityAdmin', 'Admin', 'Operator', 'Viewer'] as r}<option value={r}>{r}</option>{/each}
+                  {#each REALM_ROLES as r (r.id)}<option value={r.id}>{r.label}</option>{/each}
                   <option value="-">No platform role</option>
                 </select>
                 <select class="tin" bind:value={fOrg} aria-label="Org"><option value="">Any org</option>{#each aud.orgs as o}<option value={o}>{o}</option>{/each}</select>
@@ -469,7 +469,7 @@
                       <b>{u.name || u.email || u.id}</b><small>{u.name ? u.email : ''}{!u.account ? 'no sign-in account' : ''}{u.enabled === false && u.account ? ' · disabled' : ''}</small>
                     </button>
                     <span class="uchips">
-                      {#each u.roles as r}<span class="chip" class:sec={r === 'SuperAdmin' || r === 'SecurityAdmin'}>{r}</span>{/each}
+                      {#each u.realm_roles as r}<span class="chip" class:sec={r === 'superadmin' || r === 'securityadmin'} title={REALM_ROLES.find((x) => x.id === r)?.what ?? ''}>{REALM_ROLES.find((x) => x.id === r)?.label ?? r}</span>{/each}
                       {#if u.here}{#each u.here.capacities as c}<span class="chip here">{CAP_LABEL[c] ?? c}</span>{/each}<span class="dim small">{ACCESS_WORD[u.here.access] ?? u.here.access}</span>
                       {:else}<span class="dim small">{u.orgs.length} org{u.orgs.length === 1 ? '' : 's'} · {u.projects.length} project{u.projects.length === 1 ? '' : 's'}</span>{/if}
                     </span>

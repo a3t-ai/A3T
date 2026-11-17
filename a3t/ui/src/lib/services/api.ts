@@ -619,7 +619,7 @@ export interface ProjectPeople {
   idp_error?: string | null;
 }
 export interface AuditPerson {
-  id: string; email: string; name: string; enabled: boolean; account: boolean; roles: string[];
+  id: string; email: string; name: string; enabled: boolean; account: boolean; roles: string[]; realm_roles: string[];
   orgs: { org: string; role: string }[];
   projects: { namespace: string; access: string; capacities: PeopleCapacity[] }[];
 }
