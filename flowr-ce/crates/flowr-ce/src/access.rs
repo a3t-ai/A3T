@@ -72,6 +72,9 @@ pub struct Snapshot {
     org_runtime: HashMap<String, String>,
     /// org handle → the most runs active at once (`settings.quota.max_active_runs`, AC-18)
     org_max_runs: HashMap<String, usize>,
+    /// user id → (email, name) as project members and org members record them
+    /// (people who sign in through an org's own IdP may have no realm account).
+    contacts: HashMap<String, (String, String)>,
 }
 
 impl Snapshot {
@@ -79,8 +82,11 @@ impl Snapshot {
         let s = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
         let mut snap = Snapshot::default();
         for p in projects {
-            let members = serde_json::from_str::<Vec<Value>>(&s(p, "members")).unwrap_or_default()
-                .iter().map(|m| (s(m, "id"), s(m, "role"))).filter(|(id, _)| !id.is_empty()).collect();
+            let listed = serde_json::from_str::<Vec<Value>>(&s(p, "members")).unwrap_or_default();
+            for m in &listed {
+                snap.note_contact(&s(m, "id"), &s(m, "email"), &s(m, "name"));
+            }
+            let members = listed.iter().map(|m| (s(m, "id"), s(m, "role"))).filter(|(id, _)| !id.is_empty()).collect();
             let policy = serde_json::from_str::<Value>(&s(p, "policy")).unwrap_or(Value::Null);
             let runtime = policy.get("runtime").and_then(|r| r.as_str()).unwrap_or_default().to_string();
             let exposure = policy.get("exposure").and_then(|e| e.get("audience")).and_then(|a| a.as_str()).unwrap_or_default().to_string();
@@ -92,6 +98,7 @@ impl Snapshot {
             });
         }
         for m in members {
+            snap.note_contact(&s(m, "user_id"), &s(m, "email"), &s(m, "name"));
             snap.org_roles.insert((s(m, "org_id"), s(m, "user_id")), s(m, "role"));
         }
         for o in orgs {
@@ -108,6 +115,20 @@ impl Snapshot {
             }
         }
         snap
+    }
+
+    fn note_contact(&mut self, user: &str, email: &str, name: &str) {
+        if user.is_empty() || (email.is_empty() && name.is_empty()) {
+            return;
+        }
+        let e = self.contacts.entry(user.to_string()).or_default();
+        if e.0.is_empty() { e.0 = email.to_string(); }
+        if e.1.is_empty() { e.1 = name.to_string(); }
+    }
+
+    /// `(email, name)` as the project and org rows record `user`.
+    pub fn contact(&self, user: &str) -> Option<(String, String)> {
+        self.contacts.get(user).cloned()
     }
 
     fn org_role(&self, org_id: &str, user: &str) -> Option<&str> {

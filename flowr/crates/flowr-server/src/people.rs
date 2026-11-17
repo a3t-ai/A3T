@@ -46,6 +46,9 @@ struct Directory {
     people: HashMap<String, Person>,
     /// user id → A3T roles (canonical: SuperAdmin, SecurityAdmin, Admin, …).
     roles: HashMap<String, BTreeSet<String>>,
+    /// user id → the realm roles they were given that mean an A3T role
+    /// (`superadmin`, `admin`, …: what Identity › Users › Edit sets).
+    realm: HashMap<String, BTreeSet<String>>,
     /// Why the realm could not be read (people then show by id).
     error: Option<String>,
 }
@@ -119,7 +122,8 @@ async fn directory(idp: &crate::IdpAdminState, all_roles: bool) -> Directory {
             Err(e) => { d.error = Some(e.to_string()); Vec::new() }
         };
         for role in realm_roles {
-            let a3t = roles::canonicalize(&role);
+            // Only roles that mean an A3T role (not the IdP's own, like default-roles-<realm>).
+            let a3t: Vec<String> = roles::canonicalize(&role).into_iter().filter(|r| roles::ALL.contains(&r.as_str())).collect();
             let wanted = all_roles || a3t.iter().any(|r| r == roles::SUPER_ADMIN || r == roles::SECURITY_ADMIN);
             if a3t.is_empty() || !wanted {
                 continue;
@@ -130,6 +134,7 @@ async fn directory(idp: &crate::IdpAdminState, all_roles: bool) -> Directory {
                     for m in members {
                         if let Some(id) = m.get("id").and_then(|v| v.as_str()) {
                             d.roles.entry(id.to_string()).or_default().extend(a3t.iter().cloned());
+                            d.realm.entry(id.to_string()).or_default().insert(role.to_ascii_lowercase());
                         }
                     }
                 }
@@ -143,6 +148,14 @@ async fn directory(idp: &crate::IdpAdminState, all_roles: bool) -> Directory {
         let _ = (idp, all_roles);
         Directory { error: Some("the sign-in realm is read by FlowR EE".into()), ..Default::default() }
     }
+}
+
+/// A person by id: the realm's record, else what the project and org rows say.
+fn person(dir: &Directory, snap: &access::Snapshot, user: &str) -> Person {
+    dir.people.get(user).cloned().unwrap_or_else(|| {
+        let (email, name) = snap.contact(user).unwrap_or_default();
+        Person { email, name, enabled: false }
+    })
 }
 
 fn human(principal: Option<Extension<Principal>>) -> Option<(String, Vec<String>)> {
@@ -234,7 +247,7 @@ pub async fn project_people_handler(
         .filter(|(u, (_, caps))| **u == me || caps.iter().all(|c| access::sees(&my_caps, is_infosec, c)))
         .filter(|(_, (_, caps))| q.capacity.as_deref().is_none_or(|want| caps.iter().any(|c| *c == want)))
         .map(|(u, (best, caps))| {
-            let p = dir.people.get(u).cloned().unwrap_or_default();
+            let p = person(&dir, &snap, u);
             json!({ "id": u, "email": p.email, "name": p.name, "account": dir.people.contains_key(u),
                     "access": best, "capacities": caps, "you": *u == me })
         })
@@ -299,12 +312,13 @@ pub async fn security_people_handler(
     let mut ids: BTreeSet<String> = dir.people.keys().cloned().collect();
     ids.extend(snap.known_users());
     let users: Vec<Value> = ids.iter().map(|u| {
-        let p = dir.people.get(u).cloned().unwrap_or_default();
+        let p = person(&dir, &snap, u);
         let mut roles: Vec<&String> = dir.roles.get(u).map(|r| r.iter().collect()).unwrap_or_default();
         roles.sort_by_key(|r| roles::ALL.iter().position(|x| x == r).unwrap_or(99));
         json!({
             "id": u, "email": p.email, "name": p.name, "enabled": p.enabled, "account": dir.people.contains_key(u),
             "roles": roles,
+            "realm_roles": dir.realm.get(u).map(|r| r.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
             "orgs": snap.orgs_of(u).into_iter().map(|(org, role)| json!({ "org": org, "role": role })).collect::<Vec<_>>(),
             "projects": reach.remove(u).unwrap_or_default(),
         })
