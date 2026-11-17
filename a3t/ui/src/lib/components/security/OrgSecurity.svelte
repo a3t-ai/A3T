@@ -306,18 +306,18 @@
       {:else if tab === 'members'}
         <div class="card">
           <div class="card-head"><h3>Members</h3><span>{canAdmin ? 'you can change them' : 'read only: its admins change them'}</span></div>
-          <ul class="rows wide">
+          <ul class="olist">
             {#each org.members as m (m.user_id)}
               <li class="mrow">
-                <span class="mwho"><b>{m.name || m.email || m.user_id}</b>{#if m.source === 'sso'} <span class="chip" title="From the org's sign-in: its groups set the role at every sign-in">SSO</span>{/if}<small>{m.email || m.user_id}</small></span>
+                <span class="mwho"><span class="mname"><b>{m.name || m.email || m.user_id}</b>{#if m.source === 'sso'}<span class="chip" title="From the org's sign-in: its groups set the role at every sign-in">SSO</span>{/if}</span><small>{m.email || m.user_id}</small></span>
                 {#if canAdmin}
                   <select class="tin" value={m.role} disabled={!!busy} onchange={(e) => setRole(m, e.currentTarget.value as OrgRole)} aria-label="Role">
                     {#each ROLES as r}<option value={r}>{ROLE_LABEL[r]}</option>{/each}
                   </select>
                   <button class="btn2 quiet" disabled={!!busy} onclick={() => removeMember(m)}>Remove</button>
-                {:else}<span class="val">{ROLE_LABEL[m.role] ?? m.role}</span><span></span>{/if}
+                {:else}<span class="mrole">{ROLE_LABEL[m.role] ?? m.role}</span>{/if}
               </li>
-            {:else}<li><span class="dim">No members yet.</span><span></span><span></span></li>{/each}
+            {:else}<li class="dim">No members yet.</li>{/each}
           </ul>
           {#if canAdmin}
             <div class="uf">
@@ -326,7 +326,7 @@
               <select class="tin" bind:value={addRole} aria-label="As">{#each ROLES as r}<option value={r}>{ROLE_LABEL[r]}</option>{/each}</select>
               <button class="btn2 primary" onclick={addMember} disabled={!!busy || !addWho.trim()}>Add</button>
             </div>
-            <p class="dim small">Members sees the org's projects that aren't private; admins build in all of them; security admins read all of them and look after the org's security. People who sign in through the org's provider are added at sign-in.</p>
+            <p class="dim small">Members see the org's projects that aren't private; admins build in all of them; security admins read all of them and look after the org's security. People who sign in through the org's provider are added at sign-in.</p>
           {/if}
         </div>
 
@@ -373,12 +373,12 @@
           <div class="card-head"><h3>2 · Files</h3><span>{files ? `${enforcedNow} of ${files.files.length} enforced · for ${files.projects.length} project${files.projects.length === 1 ? '' : 's'}` : ''}</span></div>
           {#if files?.files.length}
             {#if managesFiles}<div class="acts"><button class="btn2 quiet" disabled={!!busy} onclick={() => pickAll(true)}>Enforce all</button><button class="btn2 quiet" disabled={!!busy} onclick={() => pickAll(false)}>Enforce none</button></div>{/if}
-            <ul class="rows wide">
+            <ul class="olist">
               {#each files.files as f (f.path)}
                 <li class="frow" class:off={!picked[f.path]}>
                   <label class="fpick"><input type="checkbox" bind:checked={picked[f.path]} disabled={!managesFiles || !!busy} aria-label="Enforce {f.path}" /></label>
                   <button class="link mono" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{f.path}</button>
-                  <span class="val">{KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.commit.slice(0, 10)}</span></span>
+                  <span class="fkind">{KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{f.commit.slice(0, 10)}</span></span>
                   <span class="fstate" class:on={f.enforced !== false}>{f.enforced !== false ? 'enforced' : 'off'}</span>
                   {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}</li>
               {/each}
@@ -420,7 +420,7 @@
   .uwho { cursor: pointer; }
   .uwho b, .mwho b { font-size: 13.5px; color: var(--text-1); }
   .uwho small, .mwho small { font-size: 12px; color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-  .mrow { display: grid !important; grid-template-columns: minmax(0, 1fr) 170px auto; align-items: center; gap: 10px; }
+  .mrow { display: grid; grid-template-columns: minmax(0, 1fr) 170px auto; align-items: center; gap: 10px; }
   .mrow select { width: 100%; }
   .uchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
   .chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
@@ -432,8 +432,17 @@
   .uprojects li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 120px; gap: 8px; font-size: 12.5px; }
   .link { border: 0; background: none; padding: 0; color: var(--accent, #5530a8); cursor: pointer; font: inherit; text-align: left; }
   .fsrc { flex: 1 1 100%; margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; background: #111214; color: #f4f4f5; font: 12px/1.55 var(--font-mono); white-space: pre-wrap; overflow-x: auto; max-height: 360px; }
-  .frow { display: grid !important; grid-template-columns: 24px minmax(0, 1fr) auto 70px; align-items: center; gap: 8px; }
-  .frow.off .link, .frow.off .val { opacity: 0.55; }
+  /* Own lists, not the shared .rows grid (its label column and narrow-width
+     reordering are for label/value rows). */
+  .olist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .olist > li { padding: 10px 0; border-top: 1px solid var(--divider, var(--border)); }
+  .olist > li:first-child { border-top: 0; }
+  .frow { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 64px; align-items: center; gap: 10px; }
+  .frow .link { overflow-wrap: anywhere; }
+  .fkind { font-size: 12.5px; color: var(--text-3); white-space: nowrap; }
+  .frow.off .link, .frow.off .fkind { opacity: 0.55; }
+  .mname { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .mrole { font-size: 13px; color: var(--text-2); }
   .frow .fsrc { grid-column: 1 / -1; }
   .fpick input { width: 16px; height: 16px; margin: 0; }
   .fstate { font-size: 11.5px; color: var(--text-4); text-align: right; }
@@ -442,8 +451,8 @@
   textarea.mono { font-family: var(--font-mono); font-size: 12.5px; }
   @container details (max-width: 560px) {
     .ul .urow, .mrow { grid-template-columns: 1fr; }
-    .frow { grid-template-columns: 24px minmax(0, 1fr) 60px; }
-    .frow .val { grid-column: 2 / -1; grid-row: 2; }
+    .frow { grid-template-columns: 22px minmax(0, 1fr) 56px; }
+    .frow .fkind { grid-column: 2 / -1; grid-row: 2; }
     .uprojects li { grid-template-columns: 1fr; }
   }
 </style>
