@@ -64,13 +64,36 @@ pub fn spawn(storage: Arc<dyn StorageBackend>) -> JoinHandle<()> {
     })
 }
 
-/// What a reader depends on (resource, topic, filter); not the subscription id,
-/// which the reader sets itself.
+/// What a reader depends on (resource, topic, filter, the topic's namespace);
+/// not the subscription id, which the reader sets itself.
 fn reader_key(t: &Trigger) -> String {
     match &t.config {
-        TriggerConfig::AdbTopic { resource, topic, filter, .. } => json!([resource, topic, filter]).to_string(),
+        TriggerConfig::AdbTopic { resource, topic, filter, .. } => json!([resource, topic, filter, topic_namespace(t)]).to_string(),
         _ => String::new(),
     }
+}
+
+/// The ADB namespace a trigger's topic lives in: its project's. A project's
+/// trigger reads only that project's topics (`… NAMESPACE "<project>"`, the
+/// topic ADB stores as `<project>/<topic>`), never another project's or the
+/// org-wide ones. `None` (org-wide) only for the platform's own triggers and a
+/// runtime pod's canvas trigger, whose topic (`canvas.<ns>.<name>`) already
+/// names its project and is published by A3T itself.
+fn topic_namespace(t: &Trigger) -> Option<String> {
+    if flowr_policy::namespace::PLATFORM_NAMESPACES.contains(&t.namespace.as_str()) {
+        return None;
+    }
+    if let (Some((ns, name)), TriggerConfig::AdbTopic { topic, .. }) = (crate::runtime_canvas(), &t.config) {
+        if t.id == format!("runtime-{ns}-{name}") && *topic == crate::canvas_topic(&ns, &name) {
+            return None;
+        }
+    }
+    Some(if t.namespace.is_empty() { "default".to_string() } else { t.namespace.clone() })
+}
+
+/// ` NAMESPACE "<ns>"`, last in a topic statement (or nothing: org-wide).
+fn in_namespace(ns: &Option<String>) -> String {
+    ns.as_ref().map(|n| format!(" NAMESPACE {}", aql_str(n))).unwrap_or_default()
 }
 
 /// A double-quoted AQL string literal.
@@ -87,7 +110,7 @@ fn literal(v: &Value) -> String {
     }
 }
 
-fn subscribe_aql(topic: &str, filter: &Option<Value>) -> String {
+fn subscribe_aql(topic: &str, filter: &Option<Value>, ns: &Option<String>) -> String {
     let mut q = format!("SUBSCRIBE TOPIC {}", aql_str(topic));
     let conds: Vec<String> = filter
         .as_ref()
@@ -97,6 +120,7 @@ fn subscribe_aql(topic: &str, filter: &Option<Value>) -> String {
     if !conds.is_empty() {
         q.push_str(&format!(" WHERE {}", conds.join(" AND ")));
     }
+    q.push_str(&in_namespace(ns));
     q
 }
 
@@ -168,6 +192,7 @@ async fn read_topic(storage: Arc<dyn StorageBackend>, client: reqwest::Client, t
     let mut from: Option<u64> = None;
     loop {
         let Some(t) = flowr_ce_agents::trigger_manager().get(&trigger_id).await else { return };
+        let ns = topic_namespace(&t);
         let TriggerConfig::AdbTopic { resource, topic, filter, subscription, .. } = t.config else { return };
         let ep = match resolve_adb(storage.as_ref(), &resource).await {
             Ok(e) => e,
@@ -179,7 +204,7 @@ async fn read_topic(storage: Arc<dyn StorageBackend>, client: reqwest::Client, t
         };
         let sub = match subscription {
             Some(s) => s,
-            None => match adb_query(&ep, &subscribe_aql(&topic, &filter), None).await {
+            None => match adb_query(&ep, &subscribe_aql(&topic, &filter, &ns), None).await {
                 Ok(r) => {
                     let Some(id) = r.pointer("/data/subscription").and_then(|v| v.as_str()).map(String::from) else {
                         warn!(trigger = %trigger_id, result = %r, "adb_topic: SUBSCRIBE returned no id");
@@ -241,6 +266,11 @@ async fn read_topic(storage: Arc<dyn StorageBackend>, client: reqwest::Client, t
             // `_reply_topic` on this same ADB.
             if let Some(m) = message.as_object_mut().filter(|m| m.contains_key("_reply_topic")) {
                 m.insert("_adb_resource".into(), json!(resource));
+                // A project's reply stays in its project: the topic as ADB stores
+                // it there (`<project>/<topic>`), whatever the message asked for.
+                if let (Some(n), Some(r)) = (&ns, m.get("_reply_topic").and_then(|v| v.as_str()).map(String::from)) {
+                    m.insert("_reply_topic".into(), json!(format!("{n}/{r}")));
+                }
             }
             // Trigger runs have no caller: targets run as the runtime service.
             let flows = crate::TriggerWorkflowAdapter { principal: None, blocked: Default::default() };
@@ -252,8 +282,17 @@ async fn read_topic(storage: Arc<dyn StorageBackend>, client: reqwest::Client, t
             }
         }
         if let Some(offset) = last {
-            let ack = format!("ACK {} OFFSET {offset}", aql_str(&sub));
+            let ack = format!("ACK {} OFFSET {offset}{}", aql_str(&sub), in_namespace(&ns));
             if let Err(e) = adb_query(&ep, &ack, None).await {
+                // A subscription made before topics were per project (org-wide)
+                // isn't this namespace's: subscribe again, in the namespace.
+                if ns.is_some() && e.to_lowercase().contains("not found") {
+                    warn!(trigger = %trigger_id, error = %e, "adb_topic: the subscription is not in the project's namespace; subscribing again");
+                    flowr_ce_agents::trigger_manager().set_topic_subscription(&trigger_id, None).await;
+                    crate::persist_triggers().await;
+                    from = None;
+                    continue;
+                }
                 warn!(trigger = %trigger_id, error = %e, "adb_topic: ack failed; those messages may be delivered again");
             }
         }
@@ -267,10 +306,32 @@ mod tests {
 
     #[test]
     fn subscribe_statement_quotes_and_filters() {
-        assert_eq!(subscribe_aql("orders", &None), r#"SUBSCRIBE TOPIC "orders""#);
+        assert_eq!(subscribe_aql("orders", &None, &None), r#"SUBSCRIBE TOPIC "orders""#);
+        assert_eq!(subscribe_aql("orders", &None, &Some("acme-crm".into())), r#"SUBSCRIBE TOPIC "orders" NAMESPACE "acme-crm""#);
         let f = Some(json!({ "status": "paid", "n": 2 }));
-        let q = subscribe_aql(r#"a"b"#, &f);
+        let q = subscribe_aql(r#"a"b"#, &f, &Some("p".into()));
+        assert!(q.ends_with(r#" NAMESPACE "p""#), "NAMESPACE goes last: {q}");
         assert!(q.starts_with(r#"SUBSCRIBE TOPIC "a\"b" WHERE "#), "{q}");
         assert!(q.contains(r#"status = "paid""#) && q.contains("n = 2"), "{q}");
+    }
+
+    fn trigger(ns: &str) -> Trigger {
+        Trigger {
+            environment: None, id: "t1".into(), name: "t".into(), namespace: ns.into(),
+            config: TriggerConfig::AdbTopic { resource: "a3t/agent-memory".into(), topic: "orders".into(), filter: None, message_template: None, subscription: None },
+            targets: vec![], enabled: true, status: Default::default(), description: None,
+        }
+    }
+
+    #[test]
+    fn a_projects_trigger_reads_its_projects_topics_only() {
+        assert_eq!(topic_namespace(&trigger("acme-crm")), Some("acme-crm".into()));
+        assert_eq!(topic_namespace(&trigger("")), Some("default".into()));
+        assert_eq!(topic_namespace(&trigger("system")), None, "platform triggers stay org-wide");
+        // A trigger named like a runtime's canvas trigger, on a FlowR that is no runtime, is still a project's.
+        let mut t = trigger("acme-crm");
+        t.id = "runtime-acme-crm-shop".into();
+        assert_eq!(topic_namespace(&t), Some("acme-crm".into()));
+        assert_eq!(in_namespace(&None), "");
     }
 }
