@@ -290,7 +290,12 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
         let off = off_of(s, &org).await;
         let set = enforced_with(&files, &off, &[(q.path.clone(), content.to_string())], &[]);
         let compiled = check(s, &org, &set).await.map_err(|e| refused(e, "the file doesn't work with the org's other files"))?;
-        let n = prev.map(|r| col(r, "commit").trim_start_matches('v').parse::<u64>().unwrap_or(0)).unwrap_or(0) + 1;
+        // Numbering continues across a removal: a path's versions are never reused.
+        let num = |v: &str| v.strip_prefix('v').and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+        let path_filter = format!("org = {} AND path = {}", sql_quote(&org), sql_quote(&q.path));
+        let last = query_platform_table(s, HISTORY, Some(path_filter), 10_000).await.unwrap_or_default()
+            .iter().map(|h| num(&col(h, "version"))).chain(prev.map(|r| num(&col(r, "commit")))).max().unwrap_or(0);
+        let n = last + 1;
         let version = format!("v{n}");
         let by = principal.id();
         let db = db(s).await.map_err(internal)?;

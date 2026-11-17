@@ -182,4 +182,7 @@ async fn an_orgs_policy_files_are_kept_versioned_and_switched() {
     assert!(h["file"].is_null());
     assert_eq!(h["history"][0]["action"], "delete");
     assert_eq!(h["history"].as_array().unwrap().len(), 6, "{h}");
+    // Made again: its numbering goes on, so a version label always means one text.
+    let (_, b) = call(M::PUT, &file("policies/models.yaml"), "ann/Viewer", body("kind: a3t/policy # v4")).await;
+    assert_eq!(b["version"], "v4", "{b}");
 }
