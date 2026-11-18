@@ -1011,7 +1011,7 @@
               oninput={(e) => setTier(tier, 'limit', e.currentTarget.value === '' ? '' : Number(e.currentTarget.value))} /></label>
         {/if}
         {#if tier === 'semantic'}
-          <label class="mem-num" title="The least similarity (0–1) a fact needs to reach the prompt (AQL MIN_CONFIDENCE); empty = no threshold">min conf
+          <label class="mem-num" title="The least similarity (0–1) a fact needs to reach the prompt (AQL CONFIDENCE); empty = no threshold">min conf
             <input type="number" min="0" max="1" step="0.05" value={t.min_confidence ?? ''} placeholder="—"
               oninput={(e) => setTier(tier, 'min_confidence', e.currentTarget.value === '' ? '' : Number(e.currentTarget.value))} /></label>
         {/if}

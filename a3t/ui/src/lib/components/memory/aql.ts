@@ -17,11 +17,11 @@ export interface Rec { id: string; key: string; at: string; data: Record<string,
 
 const q = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-/// RECALL FROM <kind> [ALL | WHERE f = "v" [AND …]] NAMESPACE "<space>" LIMIT n
+/// RECALL FROM <kind> [WHERE f = "v" [AND …]] NAMESPACE "<space>" LIMIT n
 export function recall(kind: Kind, space: string, where: { field: string; value: string }[] = [], limit = 100): string {
   const w = where.filter((c) => c.field.trim() && c.value !== '');
-  const cond = w.length ? `WHERE ${w.map((c) => `${c.field.trim()} = ${/^-?\d+(\.\d+)?$/.test(c.value) ? c.value : q(c.value)}`).join(' AND ')}` : 'ALL';
-  return `RECALL FROM ${kind} ${cond} NAMESPACE ${q(space)} LIMIT ${limit}`;
+  const cond = w.length ? `WHERE ${w.map((c) => `${c.field.trim()} = ${/^-?\d+(\.\d+)?$/.test(c.value) ? c.value : q(c.value)}`).join(' AND ')}` : '';
+  return `RECALL FROM ${kind} ${cond ? cond + ' ' : ''}NAMESPACE ${q(space)} LIMIT ${limit}`;
 }
 
 export const isRead = (aql: string) => /^\s*RECALL\b/i.test(aql) && !/\b(STORE|UPDATE|FORGET|DELETE|DROP)\b/i.test(aql.replace(/"(?:[^"\\]|\\.)*"/g, '""'));

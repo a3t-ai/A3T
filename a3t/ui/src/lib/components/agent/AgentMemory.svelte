@@ -169,7 +169,7 @@
   /// The same memory as AQL in the Studio's query view on the org's ADB.
   function studio() {
     const ns = open === 'semantic' && space !== 'all' && space !== 'own' ? space : own;
-    const aql = `RECALL FROM ${open.toUpperCase()} ALL NAMESPACE "${ns}" LIMIT 100\n\n-- Change one entry:\n-- UPDATE INTO ${open.toUpperCase()} WHERE key = "<key>" (field = "value") NAMESPACE "${ns}"\n-- FORGET FROM ${open.toUpperCase()} WHERE key = "<key>" NAMESPACE "${ns}"`;
+    const aql = `RECALL FROM ${open.toUpperCase()} NAMESPACE "${ns}" LIMIT 100\n\n-- Change one entry:\n-- UPDATE INTO ${open.toUpperCase()} WHERE key = "<key>" (field = "value") NAMESPACE "${ns}"\n-- FORGET FROM ${open.toUpperCase()} WHERE key = "<key>" NAMESPACE "${ns}"`;
     try { localStorage.setItem('a3t.studio.db.draft.a3t://a3t/resource/adb', JSON.stringify(aql)); } catch { /* private window: opens without it */ }
     openInStudio('resource', 'a3t', 'adb');
   }
