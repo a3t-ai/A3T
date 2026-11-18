@@ -2,13 +2,13 @@ document:
   dsl: 1.0.3
   namespace: default
   name: test-call-clawdb
-  version: 1.0.0
+  version: 1.0.1
 do:
 - store-working-memory:
     call: clawdb
     with:
       query: "STORE INTO WORKING (\n  test_key = \"clawdb-test-value\",\n  counter\
-        \ = 42\n) SCOPE private NAMESPACE \"test\"\n"
+        \ = 42\n) NAMESPACE \"test\"\n"
       _resource: agent-memory
     export:
       as: .

@@ -282,8 +282,9 @@ async fn read_topic(storage: Arc<dyn StorageBackend>, client: reqwest::Client, t
             }
         }
         if let Some(offset) = last {
-            let ack = format!("ACK {} OFFSET {offset}{}", aql_str(&sub), in_namespace(&ns));
-            if let Err(e) = adb_query(&ep, &ack, None).await {
+            // ACK is the API's in AQL v0.13: ADB's MCP `ack` tool (the subscription's
+            // namespace checked as an ACK … NAMESPACE was).
+            if let Err(e) = mcp_tool(&client, &ep, "ack", json!({ "subscription": sub, "offset": offset, "namespace": ns })).await {
                 // A subscription made before topics were per project (org-wide)
                 // isn't this namespace's: subscribe again, in the namespace.
                 if ns.is_some() && e.to_lowercase().contains("not found") {

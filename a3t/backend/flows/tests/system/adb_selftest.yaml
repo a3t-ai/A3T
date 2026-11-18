@@ -2,12 +2,12 @@ document:
   dsl: 1.0.3
   namespace: system-tests
   name: adb-selftest
-  version: 1.0.0
+  version: 1.0.1
   metadata:
     description: >
       ADB end-to-end self-test, run from A3T. Checks memory (store, UPDATE supersedes,
-      links, FORGET removes links), subscriptions (SUBSCRIBE / PUBLISH / next_events /
-      ACK over MCP), and platform tables (call:lancedb insert / update / query /
+      links, FORGET removes links), subscriptions (SUBSCRIBE / PUBLISH, next_events
+      and ACK over MCP), and platform tables (call:lancedb insert / update / query /
       delete on whichever backend a3t-platform-db uses). Returns a report:
       {passed, failed, ok, checks: [{check, ok, got}]}. Cleans up after itself.
       Input (all optional): {"adb_resource": "a3t/adb",
@@ -51,7 +51,7 @@ do:
 - m_lookup_fact:
     call: adb
     with:
-      query: '${ "LOOKUP FROM SEMANTIC KEY id = \"" + $context._fact + "\"" }'
+      query: '${ "RECALL FROM SEMANTIC WHERE key = \"" + $context._fact + "\"" }'
       _resource: ${ $context._adb }
     export:
       as: '${ $context + {m_lookup_fact: .} }'
@@ -65,7 +65,7 @@ do:
 - m_link:
     call: adb
     with:
-      query: '${ "LINK FROM SEMANTIC WHERE key = \"" + $context._fact + "\" TO EPISODIC WHERE key = \"" + $context._ep + "\" TYPE \"adbtest\" WEIGHT 0.9" }'
+      query: '${ "LINK FROM SEMANTIC WHERE key = \"" + $context._fact + "\" INTO EPISODIC WHERE key = \"" + $context._ep + "\" TYPE \"adbtest\" WEIGHT 0.9" }'
       _resource: ${ $context._adb }
     export:
       as: '${ $context + {m_link: .} }'
@@ -86,7 +86,7 @@ do:
 - m_links_after_forget:
     call: adb
     with:
-      query: '${ "RECALL FROM SEMANTIC WHERE key = \"" + $context._fact + "\" WITH LINKS ALL" }'
+      query: '${ "RECALL FROM SEMANTIC WHERE key = \"" + $context._fact + "\" WITH LINKS" }'
       _resource: ${ $context._adb }
     export:
       as: '${ $context + {m_links_after_forget: .} }'
@@ -124,13 +124,18 @@ do:
       _resource: ${ $context._mcp }
     export:
       as: '${ $context + {e_next_events: (if type == "string" then fromjson else . end)} }'
+# ACK is the API's in AQL v0.13: the MCP `ack` tool.
 - e_ack:
-    call: adb
+    if: ${ $context._mcp != null }
+    call: mcp
     with:
-      query: '${ "ACK \"" + $context.e_subscribe.data.subscription + "\" OFFSET " + ($context.e_publish_2.data.offset | tostring) }'
-      _resource: ${ $context._adb }
+      tool: ack
+      arguments:
+        subscription: ${ $context.e_subscribe.data.subscription }
+        offset: ${ $context.e_publish_2.data.offset }
+      _resource: ${ $context._mcp }
     export:
-      as: '${ $context + {e_ack: .} }'
+      as: '${ $context + {e_ack: (if type == "string" then fromjson else . end)} }'
 - e_unsubscribe:
     call: adb
     with:
@@ -222,7 +227,7 @@ do:
           {check: "memory: its link is gone", ok: ((($context.m_links_after_forget.data.records[0].data.links // []) | length) == 0), got: ($context.m_links_after_forget.data.records[0].data.links // [])},
           {check: "subscriptions: SUBSCRIBE", ok: ($context.e_subscribe.data.subscription != null), got: $context.e_subscribe.data.subscription},
           (if $context._mcp == null then empty else {check: "subscriptions: next_events delivers both messages in order", ok: ([$context.e_next_events.deliveries[]? | .offset] == [$context.e_publish_1.data.offset, $context.e_publish_2.data.offset]), got: {published: [$context.e_publish_1.data.offset, $context.e_publish_2.data.offset], delivered: [$context.e_next_events.deliveries[]? | .offset]}} end),
-          {check: "subscriptions: ACK moves the cursor", ok: ($context.e_ack.data.cursor == $context.e_publish_2.data.offset), got: $context.e_ack.data.cursor},
+          (if $context._mcp == null then empty else {check: "subscriptions: ACK moves the cursor", ok: ($context.e_ack.data.cursor == $context.e_publish_2.data.offset), got: $context.e_ack.data.cursor} end),
           {check: "subscriptions: UNSUBSCRIBE", ok: ($context.e_unsubscribe.data.unsubscribed == true), got: $context.e_unsubscribe.data},
           {check: "platform: insert", ok: ($context.g_insert.inserted == 1), got: $context.g_insert},
           {check: "platform: update + query", ok: ($context.g_query[0].status == "done"), got: $context.g_query},
@@ -239,5 +244,5 @@ do:
       failed: ${ [$context.checks[] | select(.ok | not)] | length }
       ok: ${ ([$context.checks[] | select(.ok | not)] | length) == 0 }
       failures: ${ [$context.checks[] | select(.ok | not) | .check] }
-      skipped: '${ if $context._mcp == null then ["subscriptions: next_events delivers both messages in order (no mcp_resource)"] else [] end }'
+      skipped: '${ if $context._mcp == null then ["subscriptions: next_events delivers both messages in order (no mcp_resource)", "subscriptions: ACK moves the cursor (no mcp_resource)"] else [] end }'
       checks: ${ $context.checks }

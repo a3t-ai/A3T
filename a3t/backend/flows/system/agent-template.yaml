@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: system
   name: agent-template
-  version: '2.0.1'
+  version: '2.0.2'
 
 metadata:
   a3t:
@@ -15,7 +15,7 @@ use:
         query: >
           RECALL FROM WORKING
           WHERE session_id = "${ $context.session_id }"
-          SCOPE private NAMESPACE "${ $context._memory_namespace }"
+          NAMESPACE "${ $context._memory_namespace }"
           LIMIT 20
         _resource: default/default-memory
 
@@ -57,7 +57,7 @@ use:
             session_id = "${ $context.session_id }",
             role = "${ $context._store_role }",
             content = "${ $context._store_content }"
-          ) SCOPE private NAMESPACE "${ $context._memory_namespace }"
+          ) NAMESPACE "${ $context._memory_namespace }"
         _resource: default/default-memory
 
     storeEpisodic:

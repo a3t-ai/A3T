@@ -225,7 +225,7 @@ do:
   check('compare: config changed → evolve', r.out?.mergeable === false && (r.out?.changed ?? []).includes('values.system_prompt'), JSON.stringify(r.out));
   r = await ctl({ action: 'merge', id: 'agt-fork-ok' });
   check('merge: procedures into the source', r.out?.ok === true && r.out?.procedures === 2, r.text);
-  const merged = await aql('RECALL FROM PROCEDURAL ALL NAMESPACE "acme--agt-parent" LIMIT 10');
+  const merged = await aql('RECALL FROM PROCEDURAL NAMESPACE "acme--agt-parent" LIMIT 10');
   check('  source has the new and the updated procedure', merged.length === 2 && merged.some(m => m.data?.key === 'proc-refund' && JSON.stringify(m.data?.steps) === JSON.stringify(['get_order then refund'])), JSON.stringify(merged.map(m => m.data)));
   r = await ctl({ action: 'merge', id: 'agt-fork-changed' });
   check('merge: refused when more than procedures changed', r.isError && /evolve/i.test(r.text), r.text);

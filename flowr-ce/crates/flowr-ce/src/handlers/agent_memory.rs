@@ -7,7 +7,7 @@
 //!   `RECALL … LIKE $q`, MVP W4; `memory_config.semantic.{limit, min_confidence}`,
 //!   default 5 and none; the newest facts on an ADB without it), and — when
 //!   PROCEDURAL reads are on — the procedure whose pattern best matches the message
-//!   (ADB's `PATTERN $p`, its overlap score in `metadata.confidence`);
+//!   (ADB's `LIKE $p` on PROCEDURAL, its overlap score in `metadata.confidence`);
 //! - pulls in **related** knowledge (ADB P1.5, `P1_GRAPH.md` D3): other facts about the
 //!   entities of the recalled facts, and the records linked to the recalled ones, by
 //!   link weight (`memory_config.semantic.{related, related_min_weight}`, default 5
@@ -45,7 +45,7 @@ pub struct TierMode {
     /// How many records a read brings back (AQL `LIMIT`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
-    /// SEMANTIC: the least similarity a fact needs (AQL `MIN_CONFIDENCE`, 0–1).
+    /// SEMANTIC: the least similarity a fact needs (AQL `CONFIDENCE`, 0–1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_confidence: Option<f64>,
     /// SEMANTIC: how many related facts / linked records to add (default 5, 0 = none).
@@ -228,9 +228,10 @@ impl AgentMemory {
                 Err(_) => resolve_adb(storage, &format!("a3t/{resource}")).await?,
             },
         };
-        // AC-6: on a branch every statement's `NAMESPACE x` is `NAMESPACE x BRANCH y`.
+        // AC-6: on a branch every statement names the branch's namespace, `x@y` (AQL
+        // v0.13: a branch is a namespace).
         let namespace_clause = match branch {
-            Some(b) => format!("{} BRANCH {}", aql_str(namespace), aql_str(b)),
+            Some(b) => aql_str(&format!("{namespace}@{b}")),
             None => aql_str(namespace),
         };
         Ok(Self { ep, namespace_clause, session_id: session_id.to_string(), owner: owner.to_string(), point: Default::default() })
@@ -261,7 +262,7 @@ impl AgentMemory {
     async fn relevant_facts(&self, message: &str, tier: &TierMode) -> Option<Vec<Value>> {
         let mut aql = format!("RECALL FROM SEMANTIC LIKE $q NAMESPACE {}", self.namespace_clause.clone());
         if let Some(c) = tier.min_confidence {
-            aql.push_str(&format!(" MIN_CONFIDENCE {c:?}"));
+            aql.push_str(&format!(" CONFIDENCE {c:?}"));
         }
         aql.push_str(&format!(" LIMIT {}", tier.limit.unwrap_or(FACTS as u64)));
         match adb_query(&self.ep, &aql, Some(&serde_json::json!({ "q": message }))).await {
@@ -298,7 +299,7 @@ impl AgentMemory {
         if !records.is_empty() {
             found.extend(
                 self.query(&format!(
-                    "RECALL FROM SEMANTIC WHERE key IN {} NAMESPACE {ns} FOLLOW LINKS ALL BOTH MIN_WEIGHT {min_weight:?}",
+                    "RECALL FROM SEMANTIC WHERE key IN {} NAMESPACE {ns} FOLLOW LINKS WEIGHT {min_weight:?}",
                     aql_list(&records)
                 ))
                 .await,
@@ -359,7 +360,7 @@ impl AgentMemory {
             // ADB matches (F-L2): the best procedure at or above the suggestion
             // threshold, scored in `metadata.confidence`. Procedures carry no
             // namespace yet.
-            let aql = format!("RECALL FROM PROCEDURAL PATTERN $m THRESHOLD {PROCEDURE_SUGGESTS:?} LIMIT 1");
+            let aql = format!("RECALL FROM PROCEDURAL LIKE $m CONFIDENCE {PROCEDURE_SUGGESTS:?} LIMIT 1");
             out.procedure = match adb_query(&self.ep, &aql, Some(&serde_json::json!({ "m": message }))).await {
                 Ok(r) => records(&r).into_iter().next().map(|p| {
                     let score = p.pointer("/metadata/confidence").and_then(|v| v.as_f64());
@@ -409,8 +410,24 @@ impl AgentMemory {
             }
             fields.push(format!("confidence = {:?}", f.confidence.clamp(0.0, 1.0)));
             fields.push(format!("source = \"reflection\", owner = {}, session_id = {}", aql_str(&self.owner), aql_str(&self.session_id)));
-            let aql = format!("STORE INTO SEMANTIC FACT ({}) NAMESPACE {ns}", fields.join(", "));
-            match adb_query(&self.ep, &aql, None).await {
+            // AQL v0.13 has no facts: a reflected fact is a record keyed by its subject
+            // and predicate (one current value each, as facts were), updated in place
+            // when it is known already.
+            let key = format!("fact:{}|{}", end(&f.subject), f.predicate);
+            let update = format!("UPDATE INTO SEMANTIC WHERE key = {} ({}) NAMESPACE {ns}", aql_str(&key), fields.join(", "));
+            let updated = match adb_query(&self.ep, &update, None).await {
+                Ok(r) => r.pointer("/data/count").and_then(|c| c.as_u64()).unwrap_or(0) > 0,
+                Err(e) => {
+                    warn!(error = %e, "agent memory: a reflected fact was not stored");
+                    continue;
+                }
+            };
+            if updated {
+                stored += 1;
+                continue;
+            }
+            let store = format!("STORE INTO SEMANTIC (key = {}, {}) NAMESPACE {ns}", aql_str(&key), fields.join(", "));
+            match adb_query(&self.ep, &store, None).await {
                 Ok(_) => stored += 1,
                 Err(e) => warn!(error = %e, "agent memory: a reflected fact was not stored"),
             }

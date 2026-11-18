@@ -23,7 +23,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_knowledge
-  version: 1.2.0
+  version: 1.2.1
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -191,7 +191,7 @@ do:
 - from-semantic-read:
     call: adb
     with:
-      query: '${ "RECALL FROM SEMANTIC ALL NAMESPACE \"" + $context._ns + "\" LIMIT " + ($context._lim | tostring) }'
+      query: '${ "RECALL FROM SEMANTIC NAMESPACE \"" + $context._ns + "\" LIMIT " + ($context._lim | tostring) }'
       _resource: '${ $context._res }'
     export:
       as: >-

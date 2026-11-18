@@ -180,7 +180,7 @@ for (const f of ALL) {
   failed++; console.log(`✗ ${x.key}: ${r.text.replace(/\s+/g, ' ').slice(0, 200)}`);
 }
 if (!DRY) {
-  const r = await aql(`RECALL FROM SEMANTIC ALL NAMESPACE ${q(NS)} LIMIT 5000`);
+  const r = await aql(`RECALL FROM SEMANTIC NAMESPACE ${q(NS)} LIMIT 5000`);
   const n = (r.text.match(/"subject"/g) ?? []).length;
   console.log(`${NS}: ${stored} stored, ${updated} updated, ${failed} failed; ${n} facts read back`);
   process.exit(failed ? 1 : 0);

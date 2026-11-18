@@ -14,11 +14,6 @@ pub fn non_prod_resource() -> Option<String> {
     std::env::var("A3T_NONPROD_ADB_RESOURCE").ok().filter(|v| !v.is_empty())
 }
 
-/// The non-prod pod's Flight URL, as branches are placed on it (`A3T_NONPROD_ADB_FLIGHT`).
-pub fn non_prod_flight() -> Option<String> {
-    std::env::var("A3T_NONPROD_ADB_FLIGHT").ok().filter(|v| !v.is_empty())
-}
-
 pub(super) fn routes() -> Router<Arc<dyn StorageBackend>> {
     Router::new()
         .route("/projects/:project/environments", get(list))

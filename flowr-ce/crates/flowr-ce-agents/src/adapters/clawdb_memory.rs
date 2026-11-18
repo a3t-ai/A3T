@@ -72,7 +72,7 @@ impl Memory for ClawDbMemory {
         let escaped_content = content.replace('"', r#"\""#);
 
         let query = format!(
-            r#"STORE INTO {} (key = "{}", content = "{}") SCOPE private NAMESPACE "{}""#,
+            r#"STORE INTO {} (key = "{}", content = "{}") NAMESPACE "{}""#,
             memory_type, escaped_key, escaped_content, self.namespace
         );
 

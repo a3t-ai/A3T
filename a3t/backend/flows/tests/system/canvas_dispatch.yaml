@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: system-tests
   name: canvas-dispatch
-  version: 1.0.0
+  version: 1.0.1
   metadata:
     description: >
       Sends one request to a deployed canvas through ADB and waits for its reply
@@ -60,7 +60,7 @@ do:
 - memory:
     call: adb
     with:
-      query: '${ "LOOKUP FROM SEMANTIC KEY id = \"echo-" + $context._req + "\"" }'
+      query: '${ "RECALL FROM SEMANTIC WHERE key = \"echo-" + $context._req + "\"" }'
       _resource: ${ $context._adb }
     export:
       as: '${ $context + {memory: .} }'

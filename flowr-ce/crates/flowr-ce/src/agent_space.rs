@@ -389,11 +389,8 @@ async fn create_branch(State(s): St, p: P, Path(id): Path<String>, Json(b): Json
         }
         let r = adb(s.as_ref(), &sp, "branch_create", body).await?;
         merge_requests::snapshot_branch_flows(s.as_ref(), &id, name).await?;
-        // D4: with a non-prod pod, branch memory lives there, off prod's compute.
-        let r = match environments::non_prod_flight() {
-            Some(url) => adb(s.as_ref(), &sp, "branch_place", json!({ "name": name, "url": url })).await?,
-            None => r,
-        };
+        // A branch is a namespace of the agent's space (ADB `<ns>@<name>`), on the
+        // same infra: there's no placement step any more.
         Ok((StatusCode::CREATED, Json(r)).into_response())
     }.await)
 }

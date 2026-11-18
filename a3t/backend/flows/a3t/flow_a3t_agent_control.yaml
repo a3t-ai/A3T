@@ -2,7 +2,7 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: flow_a3t_agent_control
-  version: '1.5.1'
+  version: '1.5.2'
   metadata:
     description: >
       The agents control plane. One flow, one action per call (input.action):
@@ -552,7 +552,7 @@ do:
   - merge_read:
       call: adb
       with:
-        query: '${ "RECALL FROM PROCEDURAL ALL NAMESPACE \"" + $context._fork_ns + "\" LIMIT 1000" }'
+        query: '${ "RECALL FROM PROCEDURAL NAMESPACE \"" + $context._fork_ns + "\" LIMIT 1000" }'
         _resource: '${ $context._in.memory_resource // "a3t/adb" }'
       export:
         as: '${ $context + {_procs: ((.data.records // .data.data.records // .records // []) | map(.data) | map(select((.kind // "") != "tool")) | map(del(.pattern_id, .severity, .confidence, .source, .success_count, .failure_count, .variables, .metadata, .version))), merged: 0, merge_failed: []} }'
@@ -919,7 +919,7 @@ do:
                   - recall_space:
                       call: adb
                       with:
-                        query: '${ "RECALL FROM SEMANTIC ALL NAMESPACE \"" + $_sp + "\" LIMIT " + ($context._lim | tostring) }'
+                        query: '${ "RECALL FROM SEMANTIC NAMESPACE \"" + $_sp + "\" LIMIT " + ($context._lim | tostring) }'
                         _resource: '${ $context._in.memory_resource // "a3t/adb" }'
                       export:
                         as: >-

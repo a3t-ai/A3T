@@ -58,10 +58,7 @@ impl TaskHandler for AdbHandler {
         let ep = if let Some(u) = with.get("url").and_then(|v| v.as_str()) {
             adb_endpoint(u, with.get("flight_url").and_then(|v| v.as_str()))
         } else if let Some(r) = with.get("_resource").and_then(|v| v.as_str()) {
-            // D4: a run on a branch reaches memory through the non-prod ADB when there is one.
-            let org = crate::agent_space::org_adb("");
-            let swapped = ctx.principal.memory_branch().filter(|_| r == org).and_then(|_| crate::agent_space::environments::non_prod_resource());
-            let r = swapped.as_deref().unwrap_or(r);
+            // A run on a branch uses the same ADB: its namespaces become `<ns>@<branch>`.
             let storage = ctx
                 .storage
                 .as_ref()
@@ -96,12 +93,25 @@ impl TaskHandler for AdbHandler {
         }
 
         // AC-6: a run on a memory branch reads and writes that branch.
+        let mut variables = with.get("variables").cloned();
         let query = match ctx.principal.memory_branch() {
-            Some(b) => on_branch(&query, b).map_err(|e| RuntimeError::task_failed(&task.name, e))?,
+            Some(b) => {
+                let (q, vars) = on_branch(&query, b).map_err(|e| RuntimeError::task_failed(&task.name, e))?;
+                // A namespace passed in a variable: the branch's too.
+                for v in vars {
+                    if let Some(slot) = variables.as_mut().and_then(|m| m.get_mut(&v)).filter(|x| x.is_string()) {
+                        let ns = slot.as_str().unwrap_or_default().to_string();
+                        if !ns.contains('@') {
+                            *slot = serde_json::Value::String(format!("{ns}@{b}"));
+                        }
+                    }
+                }
+                q
+            }
             None => query,
         };
         info!(task = %task.name, flight = %ep.flight, "calling ADB");
-        let result = adb_query(&ep, &query, with.get("variables"))
+        let result = adb_query(&ep, &query, variables.as_ref())
             .await
             .map_err(|e| RuntimeError::Communication(e))?;
         Ok(TaskResult::new(result))
@@ -150,61 +160,116 @@ pub fn project_namespaces_only(aql: &str, project: &str) -> std::result::Result<
     }
 }
 
-/// AC-6: `aql` as a run on branch `branch` sends it: `BRANCH` added after its `NAMESPACE`.
-/// A write with no `NAMESPACE`, or naming another branch, is refused: it would reach
-/// memory outside the branch. A read with no `NAMESPACE` stays as it is. Topic
-/// statements (SUBSCRIBE, PUBLISH, ACK, UNSUBSCRIBE) take no `BRANCH` and stay as they are.
-pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<String, String> {
-    // Words outside string literals, with where each ends.
-    let mut words: Vec<(String, usize)> = Vec::new();
-    let (mut quoted, mut escaped, mut word) = (false, false, String::new());
-    for (i, c) in aql.char_indices() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                quoted = false;
-                words.push(("\"".into(), i + 1));
-            }
+/// AC-6: `aql` as a run on memory branch `branch` sends it (AQL v0.13: a branch is the
+/// namespace `<ns>@<branch>`): every namespace it names — after `NAMESPACE` (a literal,
+/// each of a `("a", "b")` list, or a `$variable`, returned for the caller to rewrite in
+/// the variables) and after `USE` — becomes `<ns>@<branch>`. A write with no namespace is
+/// refused (it would reach main); a namespace of another branch too. A read with no
+/// namespace, and topic statements (topics aren't on branches), stay as they are.
+pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<(String, Vec<String>), String> {
+    let suffix = format!("@{branch}");
+    let chars: Vec<(usize, char)> = aql.char_indices().collect();
+    // Tokens outside strings: (upper-cased word or the literal's inner text, kind, start, end).
+    #[derive(PartialEq)]
+    enum K { Word, Str, Var, Open, Close, Other }
+    let mut toks: Vec<(String, K, usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (pos, c) = chars[i];
+        if c.is_whitespace() {
+            i += 1;
         } else if c == '"' {
-            quoted = true;
-        } else if c.is_alphanumeric() || c == '_' || c == '$' {
-            word.push(c);
-            continue;
+            let mut j = i + 1;
+            let mut inner = String::new();
+            while j < chars.len() {
+                let (_, d) = chars[j];
+                if d == '\\' && j + 1 < chars.len() {
+                    inner.push(d);
+                    inner.push(chars[j + 1].1);
+                    j += 2;
+                    continue;
+                }
+                if d == '"' {
+                    break;
+                }
+                inner.push(d);
+                j += 1;
+            }
+            let end = chars.get(j).map(|(p, _)| *p).unwrap_or(aql.len());
+            toks.push((inner, K::Str, pos, end)); // end = the closing quote's position
+            i = j + 1;
+        } else if c == '{' {
+            // `{name}`: a variable.
+            let j = (i + 1..chars.len()).find(|&j| chars[j].1 == '}').unwrap_or(chars.len() - 1);
+            let end = chars.get(j + 1).map(|(p, _)| *p).unwrap_or(aql.len());
+            toks.push((aql[pos + 1..chars[j].0].to_string(), K::Var, pos, end));
+            i = j + 1;
+        } else if c == '$' || c.is_alphanumeric() || c == '_' {
+            // A word, or `$name`.
+            let mut j = i + 1;
+            while j < chars.len() && (chars[j].1.is_alphanumeric() || chars[j].1 == '_' || chars[j].1 == '-') {
+                j += 1;
+            }
+            let end = chars.get(j).map(|(p, _)| *p).unwrap_or(aql.len());
+            let w = &aql[pos..end];
+            match w.strip_prefix('$') {
+                Some(v) => toks.push((v.to_string(), K::Var, pos, end)),
+                None => toks.push((w.to_ascii_uppercase(), K::Word, pos, end)),
+            }
+            i = j;
+        } else {
+            toks.push((c.to_string(), match c { '(' => K::Open, ')' => K::Close, _ => K::Other }, pos, pos + c.len_utf8()));
+            i += 1;
         }
-        if !word.is_empty() {
-            words.push((std::mem::take(&mut word).to_ascii_uppercase(), i));
+    }
+    let first = toks.iter().find(|t| t.1 == K::Word).map(|t| t.0.as_str()).unwrap_or("");
+    let second = toks.iter().filter(|t| t.1 == K::Word).nth(1).map(|t| t.0.as_str()).unwrap_or("");
+    // Topics aren't on branches: a topic statement goes as it is.
+    if first == "PUBLISH" || first == "UNSUBSCRIBE" || (first == "SUBSCRIBE" && second == "TOPIC") {
+        return Ok((aql.to_string(), Vec::new()));
+    }
+    // Insert `@branch` before each named namespace literal's closing quote.
+    let mut inserts: Vec<usize> = Vec::new();
+    let mut vars: Vec<String> = Vec::new();
+    let mut named = false;
+    let mut name = |t: &(String, K, usize, usize), inserts: &mut Vec<usize>| -> std::result::Result<(), String> {
+        if let Some((_, b)) = t.0.rsplit_once('@') {
+            return if b == branch { Ok(()) } else { Err(format!("this run is on memory branch {branch:?} and can't reach branch {b:?}")) };
         }
-    }
-    if !word.is_empty() {
-        words.push((word.to_ascii_uppercase(), aql.len()));
-    }
-    // Topics aren't on branches (AQL v0.12): a topic statement goes as it is,
-    // on its NAMESPACE, from a branch run as from any other.
-    if words.first().is_some_and(|(w, _)| ["SUBSCRIBE", "PUBLISH", "ACK", "UNSUBSCRIBE"].contains(&w.as_str())) {
-        return Ok(aql.to_string());
-    }
-    let position = |w: &str| words.iter().position(|(x, _)| x == w);
-    if let Some(i) = position("BRANCH") {
-        let same = words.get(i + 1).map(|(_, end)| aql[..*end].ends_with(&format!("\"{branch}\""))).unwrap_or(false);
-        return if same { Ok(aql.to_string()) } else { Err(format!("this run is on memory branch {branch:?} and can't reach another branch")) };
-    }
-    match position("NAMESPACE") {
-        Some(i) => {
-            let end = words.get(i + 1).map(|(_, e)| *e).ok_or("NAMESPACE names nothing")?;
-            Ok(format!("{} BRANCH {}{}", &aql[..end], crate::handlers::agent_memory::aql_str(branch), &aql[end..]))
-        }
-        None => {
-            let writes = ["STORE", "UPDATE", "FORGET", "LINK", "UNLINK", "MERGE"];
-            if words.first().is_some_and(|(w, _)| writes.contains(&w.as_str())) {
-                Err(format!("this run is on memory branch {branch:?}: a memory write must name its NAMESPACE, or it would reach main"))
-            } else {
-                Ok(aql.to_string())
+        inserts.push(t.3);
+        Ok(())
+    };
+    let mut k = 0;
+    while k < toks.len() {
+        let t = &toks[k];
+        if t.1 == K::Word && (t.0 == "NAMESPACE" || t.0 == "USE") {
+            named = true;
+            match toks.get(k + 1) {
+                Some(n) if n.1 == K::Str => name(n, &mut inserts)?,
+                Some(n) if n.1 == K::Var => vars.push(n.0.clone()),
+                Some(n) if n.1 == K::Open => {
+                    let mut m = k + 2;
+                    while let Some(x) = toks.get(m).filter(|x| x.1 != K::Close) {
+                        if x.1 == K::Str {
+                            name(x, &mut inserts)?;
+                        }
+                        m += 1;
+                    }
+                }
+                _ => return Err("NAMESPACE names nothing".into()),
             }
         }
+        k += 1;
     }
+    if !named && ["STORE", "UPDATE", "FORGET", "LINK", "UNLINK"].contains(&first) {
+        return Err(format!("this run is on memory branch {branch:?}: a memory write must name its NAMESPACE, or it would reach main"));
+    }
+    let mut out = aql.to_string();
+    inserts.sort_unstable();
+    for at in inserts.into_iter().rev() {
+        out.insert_str(at, &suffix);
+    }
+    Ok((out, vars))
 }
 
 #[cfg(test)]
@@ -233,25 +298,21 @@ mod on_branch_tests {
     use super::on_branch;
 
     #[test]
-    fn branch_goes_after_namespace_and_writes_stay_on_it() {
-        let got = on_branch(r#"STORE INTO SEMANTIC (key = "NAMESPACE x", v = 1) NAMESPACE "crm" TTL 1h"#, "try").unwrap();
-        assert_eq!(got, r#"STORE INTO SEMANTIC (key = "NAMESPACE x", v = 1) NAMESPACE "crm" BRANCH "try" TTL 1h"#);
-        assert_eq!(on_branch(r#"RECALL FROM SEMANTIC ALL NAMESPACE $ns LIMIT 1"#, "try").unwrap(), r#"RECALL FROM SEMANTIC ALL NAMESPACE $ns BRANCH "try" LIMIT 1"#);
-        let same = r#"RECALL FROM SEMANTIC ALL NAMESPACE "crm" BRANCH "try""#;
-        assert_eq!(on_branch(same, "try").unwrap(), same);
-        assert!(on_branch(r#"RECALL FROM SEMANTIC ALL NAMESPACE "crm" BRANCH "other""#, "try").is_err());
-        assert!(on_branch(r#"STORE INTO WORKING (key = "k")"#, "try").is_err());
-        assert_eq!(on_branch(r#"RECALL FROM WORKING ALL"#, "try").unwrap(), r#"RECALL FROM WORKING ALL"#);
-    }
-
-    #[test]
-    fn links_go_on_the_branch_and_topics_stay_off_it() {
-        assert_eq!(on_branch(r#"LINK FROM "a" TO "b" TYPE "knows" NAMESPACE "crm""#, "try").unwrap(),
-            r#"LINK FROM "a" TO "b" TYPE "knows" NAMESPACE "crm" BRANCH "try""#);
-        assert!(on_branch(r#"UNLINK FROM "a" TO "b" TYPE "knows""#, "try").is_err(), "a link write names its NAMESPACE");
-        for q in [r#"PUBLISH TOPIC "orders" (id = 1) NAMESPACE "crm""#, r#"SUBSCRIBE TOPIC "orders" NAMESPACE "crm""#,
-                  r#"ACK "sub-1" OFFSET 3 NAMESPACE "crm""#, r#"unsubscribe "sub-1" NAMESPACE "crm""#] {
-            assert_eq!(on_branch(q, "try").unwrap(), q);
+    fn a_branch_run_names_the_branch_namespace() {
+        let b = |q: &str| on_branch(q, "try").map(|(s, _)| s);
+        assert_eq!(b(r#"STORE INTO SEMANTIC (key = "NAMESPACE x", v = 1) NAMESPACE "crm" TTL 1h"#).unwrap(), r#"STORE INTO SEMANTIC (key = "NAMESPACE x", v = 1) NAMESPACE "crm@try" TTL 1h"#);
+        assert_eq!(on_branch(r#"RECALL FROM SEMANTIC NAMESPACE $ns LIMIT 1"#, "try").unwrap(), (r#"RECALL FROM SEMANTIC NAMESPACE $ns LIMIT 1"#.to_string(), vec!["ns".to_string()]));
+        assert_eq!(b(r#"RECALL FROM SEMANTIC NAMESPACE "crm@try""#).unwrap(), r#"RECALL FROM SEMANTIC NAMESPACE "crm@try""#);
+        assert!(b(r#"RECALL FROM SEMANTIC NAMESPACE "crm@other""#).is_err());
+        assert_eq!(b(r#"RECALL FROM SEMANTIC LIKE $q NAMESPACE ("crm", "kb")"#).unwrap(), r#"RECALL FROM SEMANTIC LIKE $q NAMESPACE ("crm@try", "kb@try")"#);
+        assert_eq!(b(r#"USE "crm"; STORE INTO EPISODIC (e = 1)"#).unwrap(), r#"USE "crm@try"; STORE INTO EPISODIC (e = 1)"#);
+        assert!(b(r#"STORE INTO WORKING (key = "k")"#).is_err());
+        assert_eq!(b(r#"RECALL FROM WORKING"#).unwrap(), r#"RECALL FROM WORKING"#);
+        assert_eq!(b(r#"LINK FROM SEMANTIC WHERE key = "a" INTO SEMANTIC WHERE key = "b" TYPE "knows" NAMESPACE "crm""#).unwrap(),
+            r#"LINK FROM SEMANTIC WHERE key = "a" INTO SEMANTIC WHERE key = "b" TYPE "knows" NAMESPACE "crm@try""#);
+        assert!(b(r#"UNLINK FROM SEMANTIC WHERE key = "a" INTO SEMANTIC WHERE key = "b""#).is_err(), "a link write names its NAMESPACE");
+        for q in [r#"PUBLISH TOPIC "orders" (id = 1) NAMESPACE "crm""#, r#"SUBSCRIBE TOPIC "orders" NAMESPACE "crm""#, r#"unsubscribe "sub-1" NAMESPACE "crm""#] {
+            assert_eq!(b(q).unwrap(), q);
         }
     }
 }
@@ -410,7 +471,7 @@ fn again(r: &std::result::Result<impl Sized, String>, repeatable: bool) -> bool 
     matches!(r, Err(e) if not_served(e) || (repeatable && cut_off(e)))
 }
 
-/// C-16: reads (table and SQL reads, AQL RECALL / LOOKUP / SCAN) go to the replica set's
+/// C-16: reads (table and SQL reads, AQL RECALL) go to the replica set's
 /// nodes in turn — ADB followers answer them as fresh as the leader — instead of all
 /// to the leader. Writes stay with the node calls use now (the leader).
 static READ_TURN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -426,11 +487,12 @@ fn read_node(ep: &AdbEndpoint) -> Option<usize> {
     (n > 1).then(|| READ_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % n)
 }
 
-/// An AQL statement a follower answers (RECALL, LOOKUP, SCAN).
+/// An AQL statement a follower answers: a RECALL (AQL v0.13's only read). A script
+/// (`USE …; …`) may write, so it goes to the leader.
 fn aql_read(body: &Value) -> bool {
     let q = body.get("query").and_then(|q| q.as_str()).unwrap_or("");
     let first = q.split_whitespace().find(|w| !w.starts_with("--")).unwrap_or("");
-    ["RECALL", "LOOKUP", "SCAN"].iter().any(|v| first.eq_ignore_ascii_case(v))
+    first.eq_ignore_ascii_case("RECALL")
 }
 
 /// How long a call waits for a leader when no node serves it (an election, C-21).
