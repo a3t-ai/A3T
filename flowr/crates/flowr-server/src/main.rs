@@ -161,14 +161,16 @@ async fn main() -> anyhow::Result<()> {
         "features": if cfg!(feature = "ee") { serde_json::json!(["cedar"]) } else { serde_json::json!([]) },
     }));
     info!(policy_hook = %effective_hook, edition = %edition, "AESOP policy hook installed");
-    // HS256 tokens (console login, Act as, refresh, SSO state) are signed with
-    // this secret. Where policy is enforced, a known secret lets anyone mint a
-    // token for any role, so the server refuses to start with one.
+    // HS256 tokens (console login, Act as, refresh) are signed with this secret.
+    // A server that accepts them (`hs256`, `dual`) and enforces policy would take
+    // a token anyone can mint with a known secret, for any role: it refuses to
+    // start. One that takes OIDC tokens only never accepts them, so it warns.
     if let Some(why) = flowr_config.auth.weak_jwt_secret() {
-        if enforcing {
-            anyhow::bail!("{why}; set it from a secret store (32+ random bytes) before starting with policy enforced");
+        let accepts_hs256 = authn != "oidc";
+        if enforcing && accepts_hs256 {
+            anyhow::bail!("{why}; set it from a secret store (32+ random bytes) before starting with policy enforced and HS256 tokens accepted (security.authn = {authn})");
         }
-        warn!("{why}; tolerated only because no policy is enforced (allow_all)");
+        warn!(authn = %authn, enforcing, "{why}; tolerated only because this server enforces no policy or accepts OIDC tokens only");
     }
     // Projects: with policy enforcing, a caller sees and changes only the
     // namespaces (projects), runs and runtimes it may — the rules of the A3T
