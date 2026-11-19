@@ -14,8 +14,13 @@
 //!   and 0.5; `related: 0` turns it off); a fact's confidence also weighs its rank;
 //! - adds the facts, the related ones (and a weaker procedure match) to the system
 //!   prompt, bounded;
-//! - **stores** the user turn in WORKING (TTL = the session's) and the reply in
-//!   EPISODIC;
+//! - recalls **earlier conversations**: the session owner's own turns from their
+//!   other sessions in this space — the ones about the same item first, then the
+//!   ones most like the message (`RECALL FROM EPISODIC LIKE $m`) — at most
+//!   `memory_config.episodic.earlier` (default 8, 0 = none), never another owner's;
+//! - **stores** the user turn in WORKING (TTL = the session's) and BOTH sides of
+//!   the turn in EPISODIC (with the owner, and the app and item the user was on),
+//!   so every conversation is kept in ADB, not only in the session row;
 //! - with `memory_config.semantic.reflect`, **reflects** (F-L3): after the turn, in
 //!   the background, the agent's LLM picks out the lasting facts the exchange stated
 //!   and they go to SEMANTIC as facts (`source = "reflection"`), so long-term memory
@@ -57,6 +62,9 @@ pub struct TierMode {
     /// SEMANTIC: turn each exchange's lasting facts into SEMANTIC facts (F-L3, default off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reflect: Option<bool>,
+    /// EPISODIC: how many turns of the owner's other sessions to recall (default 8, 0 = none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earlier: Option<u64>,
 }
 
 /// `memory_config` (F3 defaults: WORKING and EPISODIC read/write, SEMANTIC read only —
@@ -90,6 +98,9 @@ pub const PROCEDURE_SUGGESTS: f64 = 0.2;
 /// The "What you remember" section's budget (F2).
 const PROMPT_BUDGET: usize = 3_000;
 const FACTS: usize = 5;
+/// Turns of earlier conversations recalled by default, and each one's length in the prompt.
+const EARLIER: u64 = 8;
+const EARLIER_CHARS: usize = 400;
 const RELATED: u64 = 5;
 const RELATED_MIN_WEIGHT: f64 = 0.5;
 /// The most facts one reflection stores.
@@ -107,6 +118,8 @@ pub struct Recalled {
     pub related: Vec<(f64, Value)>,
     /// The best-matching procedure and its pattern overlap.
     pub procedure: Option<(f64, Value)>,
+    /// The owner's turns from their other sessions: same item first, then most alike.
+    pub earlier: Vec<Value>,
 }
 
 /// An agent's memory for one session.
@@ -116,8 +129,13 @@ pub struct AgentMemory {
     /// What follows `NAMESPACE` in each statement: the space, and its branch if any.
     namespace_clause: String,
     session_id: String,
-    /// Who the session belongs to (the principal): reflected facts carry it.
+    /// Who the session belongs to (the principal): reflected facts and stored
+    /// turns carry it, and only their own turns are recalled across sessions.
     owner: String,
+    /// Where the user was (the console app, and the item open there), from the
+    /// turn's `ui_context`: stored with each turn, and same-item turns recall first.
+    app: Option<String>,
+    item: Option<String>,
     /// AC-20: the newest memory point of an answer this turn (DB-7): what it read.
     point: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
 }
@@ -234,7 +252,53 @@ impl AgentMemory {
             Some(b) => aql_str(&format!("{namespace}@{b}")),
             None => aql_str(namespace),
         };
-        Ok(Self { ep, namespace_clause, session_id: session_id.to_string(), owner: owner.to_string(), point: Default::default() })
+        Ok(Self { ep, namespace_clause, session_id: session_id.to_string(), owner: owner.to_string(), app: None, item: None, point: Default::default() })
+    }
+
+    /// Where the user is, from the turn's `ui_context` (`app`; `kind` and `name`).
+    pub fn at(mut self, ui: Option<&Value>) -> Self {
+        let s = |k: &str| ui.and_then(|u| u.get(k)).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        self.app = s("app").or_else(|| s("section"));
+        self.item = match (s("kind"), s("name")) {
+            (Some(k), Some(n)) => Some(format!("{k} {n}")),
+            (None, Some(n)) => Some(n),
+            _ => None,
+        };
+        self
+    }
+
+    /// The owner's turns from their other sessions (see `Recalled::earlier`).
+    async fn earlier(&self, message: &str, limit: usize) -> Vec<Value> {
+        let ns = self.namespace_clause.clone();
+        let mut found: Vec<Value> = Vec::new();
+        if let Some(item) = &self.item {
+            let mut same = self.query(&format!("RECALL FROM EPISODIC WHERE owner = {} AND item = {} NAMESPACE {ns} LIMIT 40", aql_str(&self.owner), aql_str(item))).await;
+            same.sort_by_key(|r| std::cmp::Reverse(created_at(r)));
+            found.extend(same);
+        }
+        if !message.trim().is_empty() {
+            let aql = format!("RECALL FROM EPISODIC LIKE $m NAMESPACE {ns} LIMIT 40");
+            match adb_query(&self.ep, &aql, Some(&serde_json::json!({ "m": message }))).await {
+                Ok(r) => found.extend(records(&r)),
+                Err(e) => warn!(error = %e, "agent memory: earlier conversations not recalled"),
+            }
+        }
+        let mut seen = HashSet::new();
+        found
+            .into_iter()
+            .filter(|r| self.earlier_turn(r))
+            .filter(|r| key(r).is_some_and(|k| seen.insert(k)))
+            .take(limit)
+            .collect()
+    }
+
+    /// Whether `r` is one of this owner's turns from another session: a turn with
+    /// no owner (stored before turns carried one) is left out, as the space is
+    /// shared by the agent's users.
+    fn earlier_turn(&self, r: &Value) -> bool {
+        r.pointer("/data/owner").and_then(|o| o.as_str()) == Some(self.owner.as_str())
+            && r.pointer("/data/session_id").and_then(|s| s.as_str()) != Some(self.session_id.as_str())
+            && r.pointer("/data/content").and_then(|c| c.as_str()).is_some_and(|c| !c.trim().is_empty())
     }
 
     /// AC-20: the memory point of what this turn read (`None`: an ADB without DB-7, or no read).
@@ -341,7 +405,7 @@ impl AgentMemory {
                 Some(facts) => facts,
                 // No message, or an ADB that can't rank: the newest facts.
                 None => {
-                    let mut facts = self.query(&format!("RECALL FROM SEMANTIC ALL NAMESPACE {ns} LIMIT 200")).await;
+                    let mut facts = self.query(&format!("RECALL FROM SEMANTIC NAMESPACE {ns} LIMIT 200")).await;
                     facts.sort_by_key(|r| std::cmp::Reverse(created_at(r)));
                     facts.truncate(limit);
                     facts
@@ -354,6 +418,12 @@ impl AgentMemory {
             if related > 0 && !out.facts.is_empty() {
                 let min = tiers.semantic.related_min_weight.unwrap_or(RELATED_MIN_WEIGHT);
                 out.related = self.related(&out.facts, related, min).await;
+            }
+        }
+        if tiers.episodic_read() {
+            let n = tiers.episodic.earlier.unwrap_or(EARLIER) as usize;
+            if n > 0 {
+                out.earlier = self.earlier(message, n).await;
             }
         }
         if tiers.procedural_read() && !message.trim().is_empty() {
@@ -435,9 +505,17 @@ impl AgentMemory {
         stored
     }
 
-    /// Store the turn: the user message in WORKING, the reply in EPISODIC.
+    /// Store the turn: the user message in WORKING (for the session, with its
+    /// TTL), and both sides in EPISODIC, kept, with the owner and where they were.
     pub async fn store_turn(&self, tiers: &MemoryTierConfig, ttl_secs: u64, user: &str, reply: &str, tool_calls: u32, iterations: u32) {
         let (sid, ns) = (aql_str(&self.session_id), self.namespace_clause.clone());
+        let mut whose = format!("owner = {}", aql_str(&self.owner));
+        if let Some(a) = &self.app {
+            whose.push_str(&format!(", app = {}", aql_str(a)));
+        }
+        if let Some(i) = &self.item {
+            whose.push_str(&format!(", item = {}", aql_str(i)));
+        }
         let mut writes = Vec::new();
         if tiers.working_write() && !user.is_empty() {
             writes.push(format!(
@@ -445,9 +523,15 @@ impl AgentMemory {
                 aql_str(user)
             ));
         }
+        if tiers.episodic_write() && !user.is_empty() {
+            writes.push(format!(
+                "STORE INTO EPISODIC (session_id = {sid}, role = \"user\", content = {}, {whose}) NAMESPACE {ns}",
+                aql_str(user)
+            ));
+        }
         if tiers.episodic_write() && !reply.is_empty() {
             writes.push(format!(
-                "STORE INTO EPISODIC (session_id = {sid}, role = \"assistant\", content = {}, tool_calls_made = {tool_calls}, iterations = {iterations}) NAMESPACE {ns}",
+                "STORE INTO EPISODIC (session_id = {sid}, role = \"assistant\", content = {}, tool_calls_made = {tool_calls}, iterations = {iterations}, {whose}) NAMESPACE {ns}",
                 aql_str(reply)
             ));
         }
@@ -571,18 +655,51 @@ impl Recalled {
                 lines.push(format!("- A procedure that may apply (for \"{pattern}\"): {}", steps(p)));
             }
         }
-        if lines.is_empty() {
+        let mut section = String::new();
+        if !lines.is_empty() {
+            section.push_str("\n\n## What you remember\nFrom your long-term memory (most relevant first); use it if relevant:\n");
+            for l in lines {
+                if section.len() + l.len() + 1 > PROMPT_BUDGET {
+                    break;
+                }
+                section.push_str(&l);
+                section.push('\n');
+            }
+        }
+        if let Some(e) = self.earlier_section() {
+            section.push_str(&e);
+        }
+        (!section.is_empty()).then_some(section)
+    }
+
+    /// "Your earlier conversations": this user's turns from their other sessions.
+    fn earlier_section(&self) -> Option<String> {
+        if self.earlier.is_empty() {
             return None;
         }
-        let mut section = String::from("\n\n## What you remember\nFrom your long-term memory (most relevant first); use it if relevant:\n");
-        for l in lines {
-            if section.len() + l.len() + 1 > PROMPT_BUDGET {
+        let mut s = String::from(
+            "\n\n## Your earlier conversations with this user\n\
+             From their other sessions (same item first, then the most alike); use them if relevant, \
+             and say so when you rely on one:\n",
+        );
+        let start = s.len();
+        for r in &self.earlier {
+            let d = r.get("data").cloned().unwrap_or(Value::Null);
+            let get = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let mut said: String = get("content").chars().take(EARLIER_CHARS).collect();
+            if get("content").chars().count() > EARLIER_CHARS {
+                said.push('…');
+            }
+            let place = [get("app"), get("item")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+            let when: String = created_at(r).chars().take(10).collect();
+            let who = if get("role") == "assistant" { "you" } else { "they" };
+            let line = format!("- [{when}{}] {who}: {}\n", if place.is_empty() { String::new() } else { format!(", {place}") }, said.replace('\n', " "));
+            if s.len() - start + line.len() > PROMPT_BUDGET {
                 break;
             }
-            section.push_str(&l);
-            section.push('\n');
+            s.push_str(&line);
         }
-        Some(section)
+        Some(s)
     }
 }
 
@@ -643,6 +760,57 @@ mod tests {
         let s = r.prompt_section().unwrap();
         let (a, b) = (s.find("Ada works at Acme").unwrap(), s.find("(related, link weight 0.80) Acme is based in London").unwrap());
         assert!(a < b, "{s}");
+    }
+
+    #[test]
+    fn earlier_conversations_are_the_owners_from_other_sessions() {
+        let m = AgentMemory {
+            ep: AdbEndpoint { http: String::new(), flight: String::new() },
+            namespace_clause: aql_str("ns"),
+            session_id: "a:s1".into(),
+            owner: "u1".into(),
+            app: None,
+            item: None,
+            point: Default::default(),
+        };
+        let turn = |owner: Option<&str>, sid: &str| {
+            let mut d = json!({ "session_id": sid, "role": "user", "content": "hello" });
+            if let Some(o) = owner { d["owner"] = json!(o); }
+            json!({ "data": d })
+        };
+        assert!(m.earlier_turn(&turn(Some("u1"), "a:s0")));
+        assert!(!m.earlier_turn(&turn(Some("u1"), "a:s1")), "this session's turns are its history already");
+        assert!(!m.earlier_turn(&turn(Some("u2"), "a:s0")), "never another user's");
+        assert!(!m.earlier_turn(&turn(None, "a:s0")), "a turn with no owner could be anyone's");
+    }
+
+    #[test]
+    fn where_the_user_is_comes_from_ui_context() {
+        let m = AgentMemory {
+            ep: AdbEndpoint { http: String::new(), flight: String::new() }, namespace_clause: aql_str("ns"), session_id: "s".into(), owner: "u".into(),
+            app: None, item: None, point: Default::default(),
+        }
+        .at(Some(&json!({ "app": "Studio", "kind": "flow", "name": "acme-p1/hello" })));
+        assert_eq!((m.app.as_deref(), m.item.as_deref()), (Some("Studio"), Some("flow acme-p1/hello")));
+    }
+
+    #[test]
+    fn earlier_turns_follow_what_is_remembered() {
+        let r = Recalled {
+            facts: vec![json!({ "data": { "content": "Ada works at Acme" } })],
+            earlier: vec![
+                json!({ "data": { "role": "user", "content": "Why does st1-fault fail?", "app": "Studio", "item": "flow a3t-test/st1-fault" }, "metadata": { "created_at": "2026-11-18T10:00:00Z" } }),
+                json!({ "data": { "role": "assistant", "content": "Its second step raises on purpose." }, "metadata": { "created_at": "2026-11-18T10:00:01Z" } }),
+            ],
+            ..Default::default()
+        };
+        let s = r.prompt_section().unwrap();
+        let (a, b) = (s.find("Ada works at Acme").unwrap(), s.find("## Your earlier conversations").unwrap());
+        assert!(a < b, "{s}");
+        assert!(s.contains("[2026-11-18, Studio · flow a3t-test/st1-fault] they: Why does st1-fault fail?"), "{s}");
+        assert!(s.contains("you: Its second step raises on purpose."), "{s}");
+        let only = Recalled { earlier: r.earlier.clone(), ..Default::default() };
+        assert!(only.prompt_section().unwrap().starts_with("\n\n## Your earlier conversations"));
     }
 
     #[test]

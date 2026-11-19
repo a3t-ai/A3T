@@ -349,6 +349,9 @@ on the strength of an older message.";
         if let Some(sec) = ui.get("section").and_then(|v| v.as_str()) {
             bits.push(format!("the \"{sec}\" section"));
         }
+        if let Some(app) = ui.get("app").and_then(|v| v.as_str()).filter(|a| !a.trim().is_empty()) {
+            bits.push(format!("in the {app} app"));
+        }
         if bits.is_empty() { return base; }
         let mut out = format!(
             "{base}\n\n## What the user is looking at\n\
@@ -407,6 +410,15 @@ on the strength of an older message.";
                          all of it. Say so if the answer depends on the rest.)",
                     );
                 }
+            }
+        } else if let Some(txt) = ui.get("text").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+            // Saved, as on screen: the agent needn't have a tool to read it.
+            out.push_str("\n\n### Its contents (saved)\n```\n");
+            out.push_str(txt);
+            if !txt.ends_with('\n') { out.push('\n'); }
+            out.push_str("```");
+            if ui.get("text_truncated").and_then(|v| v.as_bool()).unwrap_or(false) {
+                out.push_str("\n\n(Truncated — the beginning only. Say so if the answer depends on the rest.)");
             }
         }
         out
@@ -580,7 +592,8 @@ impl TaskHandler for AgentHandler {
             )
             .await
             {
-                Ok(m) => Some(m),
+                // Where the user is (console app, open item): stored with the turn.
+                Ok(m) => Some(m.at(config.ui_context.as_ref())),
                 Err(e) => {
                     warn!(error = %e, "agent memory unavailable; this turn runs without it");
                     None
@@ -2397,6 +2410,16 @@ mod tests {
     }
 
     /// A clean pane must not claim anything about unsaved edits.
+    #[test]
+    fn saved_contents_and_the_app_reach_the_prompt() {
+        let p = AgentState::prompt_with_ui_context(&cfg_with_ui(Some(json!({
+            "app": "Studio", "kind": "flow", "name": "a3t-test/st1-fault", "text": "do:\n  - fail: {}"
+        }))));
+        assert!(p.contains("flow `a3t-test/st1-fault`, viewing in the Studio app"), "{p}");
+        assert!(p.contains("### Its contents (saved)") && p.contains("- fail: {}"), "{p}");
+        assert!(!p.contains("NOT saved"), "{p}");
+    }
+
     #[test]
     fn ui_context_without_dirty_says_nothing_about_unsaved_edits() {
         let p = AgentState::prompt_with_ui_context(&cfg_with_ui(Some(json!({
