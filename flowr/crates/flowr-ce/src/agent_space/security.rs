@@ -58,7 +58,10 @@ async fn agent_for(s: &dyn StorageBackend, principal: &Principal, id: &str, writ
     let project = project_of(&row);
     if write {
         crate::access::rest_write(principal, &project).await.map_err(IntoResponse::into_response)?;
-    } else if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await {
+    } else if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await
+        // Its org's security managers see its security profile, member of its project or not.
+        && !crate::org_policy::manages_org_security(s, principal, &col(&row, "org_id")).await
+    {
         return Err(err(StatusCode::NOT_FOUND, format!("no agent {id:?}")));
     }
     Ok(row)
