@@ -142,7 +142,7 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
         dir('roles', 'Roles', () => true, 'roles'),
         dir('access', 'Access', (f) => accessFor(f.content) === ns, `access:${ns}`),
       ];
-      node.children!.push({ key: `${ns}/policies`, label: `Policies · ${org}`, count: kids.reduce((n, k) => n + (k.count ?? 0), 0), children: kids });
+      node.children!.push({ key: `${ns}/policies`, label: 'Policies', count: kids.reduce((n, k) => n + (k.count ?? 0), 0), children: kids });
     }
   }
   return { tree, errors };
