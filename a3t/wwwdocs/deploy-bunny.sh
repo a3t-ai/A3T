@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and deploy the A3T docs (wwwdocs/, docs.a3t.io) to Bunny.net Storage. Same flow as www/ and wwwblog/.
+# Build and deploy the A3T docs (wwwdocs/, docs.a3t.io) to Bunny.net Storage. Same flow as the a3t.io site and blog (now in the A3T-EE repository).
 #
 # Required env (or put them in an untracked .env.bunny next to this script):
 #   BUNNY_STORAGE_ZONE   Storage Zone name for docs.a3t.io (a3t-docs)

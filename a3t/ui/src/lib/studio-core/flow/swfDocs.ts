@@ -1,5 +1,5 @@
 // The CNCF Serverless Workflow DSL 1.0 reference as a tree: what each key is
-// for and an example. A COPY of a3t/wwwblog/src/lib/swf-schema.ts (the tree
+// for and an example. A COPY of wwwblog/src/lib/swf-schema.ts in the A3T-EE repository (the tree
 // on blog.a3t.io/cncf-workflow-dsl-explained) — change both together.
 // The editor's structure (what may go where) is in ./schema.ts; this file
 // gives it words and examples.
