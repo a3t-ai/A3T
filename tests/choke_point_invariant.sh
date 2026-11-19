@@ -33,8 +33,8 @@ grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
 declare -a SITES=(
   "shared/flowr-mcp-core/src/tools.rs|flowr_policy::policy_hook()|site A — mcp:call (handle_tool_call)"
   "shared/swf-runtime/src/executor/mod.rs|flowr_policy::policy_hook().check(|site B — tool:invoke (executor dispatch)"
-  "flowr-ce/crates/flowr-ce/src/lib.rs|flowr_policy::policy_hook().check(|agent-tool dispatch (GATED_WRITES)"
-  "flowr-ce/crates/flowr-ce/src/registry.rs|flowr_policy::policy_hook().check(|registry write"
+  "flowr/crates/flowr-ce/src/lib.rs|flowr_policy::policy_hook().check(|agent-tool dispatch (GATED_WRITES)"
+  "flowr/crates/flowr-ce/src/registry.rs|flowr_policy::policy_hook().check(|registry write"
 )
 
 echo "== 1. pinned enforcement sites still gated =="

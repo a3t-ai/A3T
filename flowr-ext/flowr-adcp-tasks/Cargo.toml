@@ -12,7 +12,7 @@ default = []
 
 [dependencies]
 # ClawdFlow core (for TaskExecutor trait)
-flowr-ce-core = { path = "../../flowr-ce/crates/flowr-ce-core" }
+flowr-ce-core = { path = "../../flowr/crates/flowr-ce-core" }
 flowr-expr = { path = "../../shared/flowr-expr" }
 flowr-types = { path = "../../shared/flowr-types" }
 

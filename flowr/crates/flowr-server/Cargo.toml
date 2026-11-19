@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # CE server library — runtime + all task handlers (lancedb, LLM, agent, MCP, …)
-flowr-ce = { path = "../../../flowr-ce/crates/flowr-ce" }
+flowr-ce = { path = "../flowr-ce" }
 
 # Policy contract — map validated JWT claims → Principal at the AuthN layer (E0.4a)
 flowr-policy = { workspace = true }

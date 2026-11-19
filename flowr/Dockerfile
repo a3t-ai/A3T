@@ -27,14 +27,7 @@ COPY proto /build/proto
 # Copy AQL/ClawDB crates (workspace dependency)
 COPY AQL /AQL
 
-# Copy clawdflow crates (flowr-mcp depends on flowr-ce-storage → flowr-ce-agents → flowr-ce-core)
-COPY flowr-ce/Cargo.toml flowr-ce/Cargo.lock /build/flowr-ce/
-COPY flowr-ce/crates/flowr-ce-storage /build/flowr-ce/crates/flowr-ce-storage
-COPY flowr-ce/crates/flowr-ce-agents /build/flowr-ce/crates/flowr-ce-agents
-COPY flowr-ce/crates/flowr-ce-core /build/flowr-ce/crates/flowr-ce-core
-COPY flowr-ce/crates/flowr-ce /build/flowr-ce/crates/flowr-ce
-
-# Copy flowr workspace
+# Copy the flowr workspace (all FlowR crates)
 COPY flowr/Cargo.toml flowr/Cargo.lock /build/flowr/
 COPY flowr/crates /build/flowr/crates
 

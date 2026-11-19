@@ -2,7 +2,7 @@ A3T
 Copyright 2026 A3T
 
 Licensed under the Elastic License 2.0 (ELv2); see LICENSE. This covers the whole
-repository: FlowR (shared/, flowr-ce/, flowr/), a3t-security, the A3T UI, flows,
+repository: FlowR (shared/, flowr/), a3t-security, the A3T UI, flows,
 policies and deploy files. No licence key is needed for any feature.
 
 Dependencies with their own licences:
