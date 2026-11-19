@@ -86,7 +86,7 @@ aql-parser = { path = "../../AQL/crates/aql-parser" }
 
 # ADB takes the AQL parser from git; FlowR builds against the sibling AQL
 # checkout. One parser for both (stage H).
-[patch."https://github.com/srirammails/AQL.git"]
+[patch."https://github.com/a3t-ai/AQL.git"]
 aql-parser = { path = "../../AQL/crates/aql-parser" }
 
 # ADB's crates (embedded ADB) need ADB's copy of Lance (third_party/lance: compaction
