@@ -10,7 +10,6 @@ default = []
 
 [dependencies]
 # Core
-flowr-ce-core.workspace = true
 flowr-storage.workspace = true
 flowr-types.workspace = true
 

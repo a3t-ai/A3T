@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tracing::{info, warn};
+use tracing::warn;
 
 use flowr_storage::{StateStore, TriggerStore};
 use flowr_types::FlowResult;

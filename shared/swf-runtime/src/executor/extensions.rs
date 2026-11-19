@@ -6,11 +6,7 @@
 
 use serde_json::Value;
 use swf_parser::Extension;
-use tracing::{debug, warn};
 
-use crate::context::ExecutionContext;
-use crate::error::{Result, RuntimeError};
-use crate::traits::{FlowDirective, TaskResult};
 
 /// Resolved extension ready for dispatch. Wraps the parsed Extension
 /// with no additional state — matching and dispatch use the parsed fields directly.
@@ -48,13 +44,6 @@ impl ResolvedExtension {
         }
         // Exact match or prefix match (e.g., "call" matches "call:llm", "call:http")
         task_type == extend || task_type.starts_with(&format!("{}:", extend))
-    }
-
-    /// Check if this extension matches a task by name (for `when` expressions referencing $task.name)
-    pub fn matches_task_name(&self, task_name: &str) -> bool {
-        // Some extensions use extend field as task name match (e.g., "dispatch_tools")
-        // This is checked via the `when` condition, not here
-        false
     }
 }
 

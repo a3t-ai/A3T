@@ -1272,7 +1272,7 @@ pub async fn tool_permission(
     name: &str,
     attributes: serde_json::Map<String, Value>,
 ) -> ToolPermission {
-    use flowr_policy::grants::{consult, decision_key, Verdict};
+    use flowr_policy::grants::{decision_key, Verdict};
     let key = decision_key(flowr_policy::actions::MCP_CALL, "Tool", name);
     // A recorded answer wins: it is what the runtime will act on.
     if let Some(d) = consult_readonly(session_id, &key) {
@@ -1692,43 +1692,6 @@ async fn get_task_type(args: &Value) -> CallToolResult {
                 "config": {
                     "key": "last_processed",
                     "value": "${ .output }"
-                }
-            }
-        }),
-        "call:llm" => json!({
-            "name": "call:llm",
-            "description": "Call a Large Language Model for text generation",
-            "resource_config": {
-                "provider": "LLM provider: 'anthropic', 'openai', or 'ollama' (required)",
-                "api_key": "API key for the provider (required)",
-                "model": "Default model to use (e.g., 'claude-sonnet-4-20250514')",
-                "api_url": "Custom API endpoint URL (optional)",
-                "system_prompt": "Default system prompt (optional)",
-                "max_tokens": "Default max tokens (default: 4096)",
-                "temperature": "Default temperature (default: 0.7)"
-            },
-            "config": {
-                "prompt": "User prompt / instruction (required)",
-                "system_prompt": "Override system prompt",
-                "model": "Override model",
-                "temperature": "Override temperature",
-                "max_tokens": "Override max tokens",
-                "output_schema": "Expected JSON schema for structured output",
-                "messages": "Additional conversation history"
-            },
-            "example": {
-                "name": "analyze-data",
-                "type": "call:llm",
-                "resource": "claude-sonnet",
-                "config": {
-                    "prompt": "Analyze this data: ${ .input | tojson }",
-                    "output_schema": {
-                        "type": "object",
-                        "properties": {
-                            "summary": { "type": "string" },
-                            "risk_level": { "type": "string" }
-                        }
-                    }
                 }
             }
         }),
@@ -2665,7 +2628,7 @@ async fn create_resource(storage: &dyn StorageBackend, args: &Value) -> CallTool
     }
 
     match storage.resources().create(resource).await {
-        Ok(created) => {
+        Ok(_) => {
             info!(namespace = %namespace, name = %name, type_ref = %type_ref, "Resource created");
             CallToolResult::text(format!(
                 "Resource created successfully!\n\n- Namespace: {}\n- Name: {}\n- Type: {}\n\nUse in workflows with `resource: {}/{}`",

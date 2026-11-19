@@ -89,9 +89,9 @@ impl TaskHandler for RunWorkflowHandler {
         crate::subflow::attach(&mut child_executor, &namespace, &name);
 
         // Wire expression engine
-        let expr_engine = flowr_core::ExpressionEngine::new();
+        let expr_engine = flowr_expr::ExpressionEngine::new();
         child_executor.set_eval_fn(move |input, expr, context| {
-            use flowr_core::Scope;
+            use flowr_expr::Scope;
             let scope = Scope::builder()
                 .context(context.clone())
                 .build();

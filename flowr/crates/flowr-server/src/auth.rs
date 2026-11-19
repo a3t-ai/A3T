@@ -15,7 +15,6 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 /// JWT claims embedded in every token
@@ -87,33 +86,6 @@ pub struct AuthConfig {
     pub oidc_issuer: String,
     /// Public OIDC client id for the password-grant login fallback.
     pub oidc_client_id: String,
-}
-
-impl AuthConfig {
-    pub fn from_env() -> Self {
-        Self {
-            jwt_secret: std::env::var("FLOWR_JWT_SECRET")
-                .unwrap_or_else(|_| "flowr-dev-secret-change-in-production".to_string()),
-            token_expiry_secs: std::env::var("FLOWR_TOKEN_EXPIRY")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(24 * 60 * 60),
-            refresh_expiry_secs: std::env::var("FLOWR_REFRESH_EXPIRY")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(7 * 24 * 60 * 60),
-            a3t_db_path: std::env::var("A3T_DB_PATH")
-                .unwrap_or_else(|_| "/data/a3t/a3t-platform.lance".to_string()),
-            platform: flowr_ce::platform_db::PlatformSource::Fixed(Arc::new(flowr_ce::platform_db::LanceDbPlatform::new(
-                std::env::var("A3T_DB_PATH").unwrap_or_else(|_| "/data/a3t/a3t-platform.lance".to_string()),
-            ))),
-            resource_uri: std::env::var("MCP_RESOURCE_URI")
-                .unwrap_or_else(|_| "http://localhost:3002".to_string()),
-            oidc_issuer: std::env::var("FLOWR_SECURITY_OIDC_ISSUER").unwrap_or_default(),
-            oidc_client_id: std::env::var("FLOWR_SECURITY_OIDC_CLIENT_ID")
-                .unwrap_or_else(|_| "a3t-ee".to_string()),
-        }
-    }
 }
 
 /// Endpoints reachable without a bearer token.

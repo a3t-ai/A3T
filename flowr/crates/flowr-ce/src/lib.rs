@@ -6,7 +6,6 @@
 //! Exposes `build_ce_router()` which returns an Axum Router with all CE endpoints.
 //! The FlowR EE binary can merge additional routes (UI, etc.) before serving.
 
-pub(crate) mod server;
 pub mod access;
 pub mod tool_flows;
 pub mod agent_keys;
@@ -49,7 +48,7 @@ use axum::{
 };
 use flowr_ce_storage::LanceStorage;
 use flowr_mcp_core::{
-    error_codes, get_tools, handle_tool_call, CallToolParams, InitializeParams, InitializeResult,
+    error_codes, get_tools, handle_tool_call, CallToolParams, InitializeResult,
     JsonRpcRequest, JsonRpcResponse, Principal, ServerCapabilities, ServerInfo, ToolsCapability,
     ToolsListResult,
 };
@@ -59,7 +58,7 @@ use futures::stream::{self, Stream};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 // Re-export crates for downstream use
@@ -74,7 +73,6 @@ pub struct ServerConfig {
     pub port: u16,
     pub mode: String,
     pub data_dir: String,
-    pub ui_enabled: bool,
 }
 
 impl Default for ServerConfig {
@@ -88,7 +86,6 @@ impl Default for ServerConfig {
             port: 3002,
             mode: "http".to_string(),
             data_dir,
-            ui_enabled: false,
         }
     }
 }
@@ -3110,13 +3107,13 @@ async fn run_request_raw(
     }
 
     // Wire flowr-expr jq engine for runtime expressions
-    let expr_engine = flowr_core::ExpressionEngine::new();
+    let expr_engine = flowr_expr::ExpressionEngine::new();
     let wf_namespace = request.namespace.clone();
     let wf_name = request.name.clone();
     let wf_version = record.version().to_string();
     let wf_instance_id = request.instance_id.to_string();
     executor.set_eval_fn(move |input, expr, context| {
-        use flowr_core::Scope;
+        use flowr_expr::Scope;
         let scope = Scope::builder()
             .context(context.clone())
             .workflow(serde_json::json!({

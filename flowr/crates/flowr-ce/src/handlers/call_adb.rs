@@ -232,7 +232,7 @@ pub fn on_branch(aql: &str, branch: &str) -> std::result::Result<(String, Vec<St
     let mut inserts: Vec<usize> = Vec::new();
     let mut vars: Vec<String> = Vec::new();
     let mut named = false;
-    let mut name = |t: &(String, K, usize, usize), inserts: &mut Vec<usize>| -> std::result::Result<(), String> {
+    let name = |t: &(String, K, usize, usize), inserts: &mut Vec<usize>| -> std::result::Result<(), String> {
         if let Some((_, b)) = t.0.rsplit_once('@') {
             return if b == branch { Ok(()) } else { Err(format!("this run is on memory branch {branch:?} and can't reach branch {b:?}")) };
         }

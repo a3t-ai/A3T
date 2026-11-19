@@ -223,12 +223,6 @@ pub(crate) async fn op_list_presets(storage: &dyn StorageBackend) -> serde_json:
     json!({ "count": presets.len(), "presets": presets })
 }
 
-/// Every runtime pool, with the labels placement selects on.
-pub(crate) async fn op_list_runtimes(storage: &dyn StorageBackend) -> serde_json::Value {
-    let runtimes = collect_runtimes(storage).await;
-    json!({ "count": runtimes.len(), "runtimes": runtimes })
-}
-
 /// One canvas, preset or bound, as stored.
 pub(crate) async fn op_get_canvas(
     storage: &dyn StorageBackend,

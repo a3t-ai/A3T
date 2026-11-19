@@ -6,7 +6,6 @@ use serde_json::Value;
 
 use crate::auth::Authentication;
 use crate::catalog::Catalog;
-use crate::extension::Extension;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UseBlock {

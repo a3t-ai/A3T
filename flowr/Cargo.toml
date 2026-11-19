@@ -2,7 +2,6 @@
 resolver = "2"
 # FlowR: one workspace (flowr-ce and flowr merged 19 Nov 2026).
 members = [
-    "crates/flowr-ce-core",
     "crates/flowr-ce-storage",
     "crates/flowr-ce-agents",
     "crates/flowr-ce",
@@ -35,13 +34,11 @@ swf-runtime = { path = "../shared/swf-runtime" }
 flowr-expr = { path = "../shared/flowr-expr" }
 flowr-types = { path = "../shared/flowr-types" }
 flowr-storage = { path = "../shared/flowr-storage" }
-flowr-core = { path = "../shared/flowr-core" }
 flowr-mcp-core = { path = "../shared/flowr-mcp-core" }
 flowr-policy = { path = "../shared/flowr-policy" }
 flowr-metrics = { path = "../shared/flowr-metrics" }
 
 # This workspace's crates
-flowr-ce-core = { path = "crates/flowr-ce-core" }
 flowr-ce-storage = { path = "crates/flowr-ce-storage" }
 flowr-ce-agents = { path = "crates/flowr-ce-agents" }
 

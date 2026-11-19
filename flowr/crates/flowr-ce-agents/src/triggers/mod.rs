@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
-use tracing::{info, warn, debug, error};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use types::*;

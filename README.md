@@ -1,71 +1,42 @@
-# Flowr System - POC
+# A3T
 
-Proof of Concept for the Flowr workflow runtime.
+A3T runs AI agents and workflows. Workflows are written in the CNCF Serverless
+Workflow DSL (1.0) and executed by **FlowR**. Agent memory and platform data live
+in **ADB** and are queried with **AQL**.
 
-## Overview
+Licensed under the [Elastic License 2.0](LICENSE) (ELv2); no licence key is needed
+for any feature. See [NOTICE](NOTICE).
 
-Flowr is an open-source workflow runtime built for latency-sensitive, event-driven infrastructure. This POC validates the core infrastructure concepts before full implementation.
+## Repository layout
 
-## Goals
+| Path | What it is |
+|---|---|
+| `shared/` | Workflow DSL parser (`swf-parser`), runtime (`swf-runtime`), expressions (`flowr-expr`), types, storage traits, MCP core, policy contract, metrics |
+| `flowr/` | The FlowR workspace: `flowr-ce` (engine, handlers, MCP tools), `flowr-ce-storage`, `flowr-ce-agents`, `flowr-server` (the HTTP server and binary), `flowr-canvas` (Kubernetes controller) and `a3t-security` (Cedar policy, OIDC; built with `--features ee`) |
+| `a3t/ui/` | The A3T console and Studio (SvelteKit) |
+| `a3t/backend/flows/` | A3T's own flows (installers, platform and agent flows) |
+| `a3t/policies/` | Cedar schema, baseline policy and the policy catalogue |
+| `a3t/wwwdocs/` | Developer docs (docs.a3t.io) |
+| `claude-wrapper/` | The Claude CLI wrapper image |
+| `deploy/` | Kubernetes manifests |
+| `tests/` | Workflow test flows and runner, policy fixtures, the choke-point check |
 
-1. **Validate Iggy** - Deploy and verify queue behavior matches Flowr spec requirements
-2. **Validate Dragonfly** - Deploy and explore as flow registry/hot state store
-3. **Validate Rust Stack** - Basic Tokio/Kameo POC proving the execution model
+## Building
 
-## Quick Start
-
-### Local Development (Docker Compose)
-
-```bash
-# Start Iggy and Dragonfly
-cd deployment
-docker-compose up -d
-
-# Verify services
-docker-compose ps
-```
-
-### Run POC Tests
-
-```bash
-cd poc
-
-# Run Iggy validation
-cargo run -p iggy-poc
-
-# Run Dragonfly validation
-cargo run -p dragonfly-poc
-
-# Run Flowr core POC
-cargo run -p flowr-poc
-```
-
-## Directory Structure
+FlowR builds next to sibling checkouts of [ADB](https://github.com/a3t-ai/ADB) and
+[AQL](https://github.com/a3t-ai/AQL):
 
 ```
-flowr-system/
-├── deployment/           # Docker and K8s deployment files
-│   ├── docker-compose.yml
-│   ├── iggy/            # Iggy K8s manifests
-│   └── dragonfly/       # Dragonfly K8s manifests
-├── poc/                  # Proof of Concept code
-│   ├── iggy-poc/        # Iggy validation
-│   ├── dragonfly-poc/   # Dragonfly exploration
-│   └── flowr-poc/       # Core Flowr POC
-└── docs/                 # Documentation
+Dev/
+  A3T/   this repository
+  ADB/
+  AQL/
 ```
 
-## Infrastructure Dependencies
+```
+cd flowr && cargo build --release -p flowr-server                  # local edition
+cd flowr && cargo build --release -p flowr-server --features ee    # with a3t-security
+```
 
-| Component | Purpose | Port |
-|-----------|---------|------|
-| Apache Iggy | Audit log, checkpoints, durability | 8090 (TCP), 3000 (HTTP) |
-| Dragonfly | Flow registry, hot state, signal bus | 6379 |
-
-## Success Criteria
-
-- [ ] Iggy async write latency < 10μs
-- [ ] Iggy sync write latency < 5ms
-- [ ] Dragonfly read latency < 1ms
-- [ ] Tokio mpsc transition latency < 1μs
-- [ ] Kameo actor suspend/resume works
+`./deploy.sh` builds, packages and rolls the images (`./deploy.sh` with no arguments
+prints its usage).

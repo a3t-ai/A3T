@@ -6,10 +6,7 @@ members = [
     "flowr-expr",
     "flowr-types",
     "flowr-storage",
-    "flowr-storage-dragonfly",
-    "flowr-core",
     "flowr-mcp-core",
-    "flowr-wasm",
     "flowr-policy",
 ]
 
@@ -64,7 +61,6 @@ prost = "0.13"
 flowr-types = { path = "flowr-types" }
 flowr-expr = { path = "flowr-expr" }
 flowr-storage = { path = "flowr-storage" }
-flowr-core = { path = "flowr-core" }
 flowr-mcp-core = { path = "flowr-mcp-core" }
 
 # External crates (for embedded ClawDB support)

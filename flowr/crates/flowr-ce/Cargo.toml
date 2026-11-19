@@ -1,6 +1,6 @@
 [package]
 # FlowR-CE: the community-edition runtime (executor + LanceDB + MCP, no AuthN).
-# The CE server/MCP crate; sits alongside flowr-ce-core / -storage / -agents in
+# The CE server/MCP crate; sits alongside flowr-ce-storage / -agents in
 # the flowr/ workspace (all renamed from the historical clawdflow-* scheme).
 name = "flowr-ce"
 description = "FlowR-CE — community runtime: executor + LanceDB storage, exposed as MCP (no AuthN)"
@@ -23,7 +23,6 @@ swf-runtime.workspace = true
 flowr-expr.workspace = true
 
 # Shared crates
-flowr-core.workspace = true
 flowr-types.workspace = true
 flowr-storage.workspace = true
 flowr-mcp-core.workspace = true

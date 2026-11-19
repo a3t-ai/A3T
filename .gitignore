@@ -47,6 +47,4 @@ data/lancedb/
 # a k8s Secret reference) and remove these lines to bring them under version
 # control. See the commit message for the full list.
 a3t/backend/resources/a3t-resources.yaml
-flowr/deploy/k3d/my-agent.yaml
-deployment/iggy/connectors.yaml
 tests/run_tests.py

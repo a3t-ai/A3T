@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use swf_parser::{WorkflowDefinition, NamedTask, Task};
+use swf_parser::{WorkflowDefinition, NamedTask};
 
 use crate::context::ExecutionContext;
 use crate::error::RuntimeError;

@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{RwLock, oneshot};
-use tracing::{info, warn, debug};
-use uuid::Uuid;
+use tracing::{info, warn};
 
 /// A pending human input request
 #[derive(Debug, Clone, Serialize, Deserialize)]

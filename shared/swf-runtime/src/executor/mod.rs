@@ -17,7 +17,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn, Instrument};
 
 use swf_parser::{NamedTask, Task, WorkflowDefinition};
-use swf_parser::flow_control::{DoTask, ForTask, SwitchTask, TryTask, ForkTask};
+use swf_parser::flow_control::{ForTask, SwitchTask, TryTask, ForkTask};
 use swf_parser::directive::FlowDirective as ParsedDirective;
 
 use crate::context::ExecutionContext;

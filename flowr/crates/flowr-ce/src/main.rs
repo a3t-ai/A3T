@@ -10,9 +10,8 @@
 //! clawdflow --mode http --port 3002
 //! ```
 
-use std::sync::Arc;
 use flowr_ce::{init_storage, build_ce_router, restore_triggers, spawn_worker, serve, run_stdio, ServerConfig};
-use tracing::{info, error};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -42,7 +41,6 @@ async fn main() -> anyhow::Result<()> {
                 .map(|p| p.join("clawdflow").to_string_lossy().to_string())
                 .unwrap_or_else(|| ".clawdflow".to_string())
         }),
-        ui_enabled: false,
     };
 
     let storage = init_storage(&config.data_dir).await?;

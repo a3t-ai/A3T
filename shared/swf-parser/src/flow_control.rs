@@ -1,7 +1,6 @@
 //! Flow control tasks: do, for, fork, switch, try
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::directive::FlowDirective;
 use crate::retry::RetryPolicy;

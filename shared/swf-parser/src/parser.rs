@@ -8,11 +8,10 @@ use crate::call::{CallTarget, CallTask, HttpCall, HttpEndpoint};
 use crate::document::WorkflowDefinition;
 use crate::error::{SwfError, Result};
 use crate::event::{EmitTask, ListenTask};
-use crate::extension::Extension;
 use crate::flow_control::{DoTask, ForTask, ForkTask, SwitchCase, SwitchTask, TryTask, CatchBlock};
 use crate::run::{RunTask, ShellProcess, ScriptProcess, WorkflowProcess, ContainerProcess};
 use crate::schema::{InputDefinition, OutputDefinition, ExportDefinition};
-use crate::task::{NamedTask, Task, SetTask, RaiseTask, RaiseError, WaitTask};
+use crate::task::{NamedTask, Task, SetTask, RaiseTask, WaitTask};
 use crate::timeout::Timeout;
 use crate::directive::FlowDirective;
 

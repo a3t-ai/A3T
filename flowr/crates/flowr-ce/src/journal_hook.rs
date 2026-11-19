@@ -322,8 +322,8 @@ fn correlation_of(listen: &swf_parser::ListenTask, input: &Value, context: &Valu
     } else {
         return Err("listen needs `to.one`, `to.all` or `to.any`".into());
     };
-    let engine = flowr_core::ExpressionEngine::new();
-    let scope = flowr_core::Scope::builder().context(context.clone()).build();
+    let engine = flowr_expr::ExpressionEngine::new();
+    let scope = flowr_expr::Scope::builder().context(context.clone()).build();
     let filters = filters
         .into_iter()
         .map(|f| {
@@ -340,7 +340,7 @@ fn correlation_of(listen: &swf_parser::ListenTask, input: &Value, context: &Valu
     Ok(correlation)
 }
 
-fn resolved(engine: &flowr_core::ExpressionEngine, scope: &flowr_core::Scope, v: &Value, input: &Value) -> std::result::Result<Value, String> {
+fn resolved(engine: &flowr_expr::ExpressionEngine, scope: &flowr_expr::Scope, v: &Value, input: &Value) -> std::result::Result<Value, String> {
     Ok(match v {
         Value::String(s) if s.trim_start().starts_with("${") && s.trim_end().ends_with('}') => {
             engine.eval(input, s, scope).map_err(|e| format!("listen filter `{s}`: {e}"))?
@@ -567,8 +567,8 @@ impl JournalHook {
                 continue;
             }
             if let Some(cond) = &bp.condition {
-                let engine = flowr_core::ExpressionEngine::new();
-                let scope = flowr_core::Scope::builder().build();
+                let engine = flowr_expr::ExpressionEngine::new();
+                let scope = flowr_expr::Scope::builder().build();
                 if engine.eval(input, cond, &scope).ok() != Some(Value::Bool(true)) {
                     continue;
                 }

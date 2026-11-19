@@ -7,7 +7,6 @@
 //! - Settings table in system DB
 //! - Auth routes: /auth/login, /auth/signup, /auth/me
 //! - CORS
-//! - Web UI dashboard (--ui flag)
 
 mod auth;
 mod auth_routes;
@@ -21,13 +20,13 @@ mod directory;
 mod people;
 mod config;
 
-use flowr_ce::flowr_storage::{SettingsStore, StorageBackend};
+use flowr_ce::flowr_storage::StorageBackend;
 
 use axum::{
     middleware,
     routing::{get, post},
     Extension, Router,
-    response::{IntoResponse, Html},
+    response::IntoResponse,
 };
 use flowr_ce::{
     build_ce_router, init_storage, restore_triggers, run_stdio, serve, spawn_worker, ServerConfig,
@@ -56,7 +55,6 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(3002);
     // MCP URLs on this port are FlowR itself (served in-process).
     flowr_mcp_core::set_self_port(port);
-    let ui_enabled = args.contains(&"--ui".to_string());
     let config_path = get_arg(&args, "--config").unwrap_or_else(|| "config/flowr.yaml".to_string());
 
     // Load config
@@ -66,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     // Authentication is unconditional. There is deliberately no switch to turn
     // it off: `bootstrap::seed_platform` provisions the first credential, so no
     // unauthenticated window is ever needed to install the platform.
-    info!(mode = %mode, ui = ui_enabled, auth = true, "Starting FlowR server");
+    info!(mode = %mode, auth = true, "Starting FlowR server");
 
     let server_config = ServerConfig {
         port,
@@ -76,7 +74,6 @@ async fn main() -> anyhow::Result<()> {
                 .map(|p| p.join("clawdflow").to_string_lossy().to_string())
                 .unwrap_or_else(|| ".clawdflow".to_string())
         }),
-        ui_enabled,
     };
 
     // Storage backend selection. CE always uses embedded LanceDB. EE may request an
@@ -353,12 +350,6 @@ async fn main() -> anyhow::Result<()> {
                 }
                 secured.merge(auth_routes).merge(forgot_routes)
             };
-
-            // Add UI routes
-            if ui_enabled {
-                info!("UI enabled at /ui/");
-                router = router.merge(build_ui_router());
-            }
 
             // CORS
             let cors_origins: Vec<axum::http::HeaderValue> = flowr_config.cors.origins.iter()
@@ -1400,38 +1391,4 @@ async fn oauth_authorization_server() -> impl IntoResponse {
         "response_types_supported": ["token"],
         "code_challenge_methods_supported": ["S256"],
     }))
-}
-
-// =============================================================================
-// UI Router (EE feature)
-// =============================================================================
-
-fn build_ui_router() -> Router {
-    Router::new()
-        .route("/ui", get(ui_redirect))
-        .route("/ui/", get(ui_index))
-        .route("/ui/app.js", get(ui_js))
-        .route("/ui/style.css", get(ui_css))
-}
-
-async fn ui_redirect() -> impl IntoResponse {
-    axum::response::Redirect::permanent("/ui/")
-}
-
-async fn ui_index() -> impl IntoResponse {
-    Html(include_str!("../ui/index.html"))
-}
-
-async fn ui_js() -> impl IntoResponse {
-    (
-        [("content-type", "application/javascript")],
-        include_str!("../ui/app.js"),
-    )
-}
-
-async fn ui_css() -> impl IntoResponse {
-    (
-        [("content-type", "text/css")],
-        include_str!("../ui/style.css"),
-    )
 }

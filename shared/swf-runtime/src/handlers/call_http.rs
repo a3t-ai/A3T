@@ -43,7 +43,7 @@ impl TaskHandler for HttpHandler {
     async fn execute(
         &self,
         task: &NamedTask,
-        input: Value,
+        _input: Value,
         _ctx: &mut ExecutionContext,
     ) -> Result<TaskResult> {
         let call_task = match &task.task {

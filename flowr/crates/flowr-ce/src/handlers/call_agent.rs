@@ -21,13 +21,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info, warn};
 
 use swf_parser::{NamedTask, Task};
 use swf_runtime::context::ExecutionContext;
 use swf_runtime::error::{RuntimeError, Result};
-use swf_runtime::traits::{TaskHandler, TaskResult, FlowDirective};
-use swf_runtime::executor::extensions::ResolvedExtension;
+use swf_runtime::traits::{TaskHandler, TaskResult};
 
 use flowr_storage::StorageBackend;
 
@@ -522,12 +521,12 @@ impl TaskHandler for AgentHandler {
         ctx.context = state.to_context_value(&config);
 
         // ── Phase 1: INIT TURN ─────────────────────────────
-        fire_before(self, ctx, "init_turn", "set").await;
+        fire_before(ctx, "init_turn", "set").await;
         debug!("phase 1: init_turn");
-        fire_after(self, ctx, "init_turn", "set").await;
+        fire_after(ctx, "init_turn", "set").await;
 
         // ── Phase 2: LOAD SESSION ──────────────────────────
-        fire_before(self, ctx, "load_session", "call:state:get").await;
+        fire_before(ctx, "load_session", "call:state:get").await;
         let session_key = session_key(&config.session_id);
         if let Ok(Some(session)) = storage.state().get(&session_key).await {
             // A conversation belongs to whoever started it. Continuing someone
@@ -553,7 +552,7 @@ impl TaskHandler for AgentHandler {
         // Approvals given in this conversation on another process (L39).
         crate::grants_store::load(storage.as_ref(), &config.session_id).await;
         ctx.context = state.to_context_value(&config);
-        fire_after(self, ctx, "load_session", "call:state:get").await;
+        fire_after(ctx, "load_session", "call:state:get").await;
 
         // ── Its hooks: on_turn_start (may change the message, or refuse the turn) ──
         let hooks = config.config.hooks.clone();
@@ -568,7 +567,7 @@ impl TaskHandler for AgentHandler {
 
         // ── Phase 3: RECALL MEMORY ─────────────────────────
         // Only with `memory_resource` (an ADB resource): agent_memory.rs, F1–F2.
-        fire_before(self, ctx, "recall_memory", "call:adb").await;
+        fire_before(ctx, "recall_memory", "call:adb").await;
         // An agent with a memory space of its own (`agent_memory`, agent_space.rs) uses
         // it: a namespace in the org's ADB. Otherwise the template's resource and
         // namespace, as before.
@@ -625,7 +624,7 @@ impl TaskHandler for AgentHandler {
         if let (Some(sp), Some(m)) = (&own, &memory) {
             crate::agent_space::record_run(storage.as_ref(), &ctx.instance_id, sp, ctx.principal.memory_branch(), m.memory_point()).await;
         }
-        fire_after(self, ctx, "recall_memory", "call:adb").await;
+        fire_after(ctx, "recall_memory", "call:adb").await;
 
         // ── Phase 4: PROCEDURAL CHECK ──────────────────────
         // A procedure whose pattern matches the message well enough answers without
@@ -775,7 +774,7 @@ impl TaskHandler for AgentHandler {
 
                 // Fire before_llm extension
                 ctx.context = state.to_context_value(&config);
-                fire_before(self, ctx, "call_llm", "call:llm").await;
+                fire_before(ctx, "call_llm", "call:llm").await;
                 // before_llm: replace the system prompt, or add to it for this call.
                 let mut call_prompt = state.system_prompt.clone();
                 match run_hooks(&storage, ctx, &hooks, "before_llm",
@@ -818,7 +817,7 @@ impl TaskHandler for AgentHandler {
                 // Fire on_llm_response extension
                 ctx.context = state.to_context_value(&config);
                 ctx.context["_llm_result"] = llm_result.clone();
-                fire_after(self, ctx, "call_llm", "call:llm").await;
+                fire_after(ctx, "call_llm", "call:llm").await;
                 // after_llm: sees what the model said and asked for (its text has streamed).
                 if hooks.get("after_llm").is_some_and(|h| !h.is_empty()) {
                     let asked: Vec<Value> = llm_result.get("tool_calls").and_then(|v| v.as_array()).map(|a| a.iter()
@@ -851,7 +850,7 @@ impl TaskHandler for AgentHandler {
                     });
 
                     // Fire on_tool_call extension
-                    fire_before(self, ctx, "dispatch_tools", "call:mcp").await;
+                    fire_before(ctx, "dispatch_tools", "call:mcp").await;
 
                     for (call_no, tc) in tool_calls.iter().enumerate() {
                         let tool_name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -1147,7 +1146,7 @@ impl TaskHandler for AgentHandler {
 
                     // Fire after dispatch_tools extension
                     ctx.context = state.to_context_value(&config);
-                    fire_after(self, ctx, "dispatch_tools", "call:mcp").await;
+                    fire_after(ctx, "dispatch_tools", "call:mcp").await;
                 } else {
                     // No tool calls — LLM produced final response
                     let content = llm_result.get("content")
@@ -1238,7 +1237,7 @@ impl TaskHandler for AgentHandler {
             crate::agent_space::record_usage(storage.as_ref(), &ctx.instance_id, sp, config.config.llm_resource.as_deref().unwrap_or_default(), turn_usage, turn_started.elapsed()).await;
         }
         ctx.context = state.to_context_value(&config);
-        fire_before(self, ctx, "store_memory", "call:adb").await;
+        fire_before(ctx, "store_memory", "call:adb").await;
         // before_store: what is remembered of this turn (`reply`), or nothing (`skip`).
         let mut remembered = state.agent_response.clone().unwrap_or_default();
         let mut skip_store = false;
@@ -1307,10 +1306,10 @@ impl TaskHandler for AgentHandler {
                 .await?;
             }
         }
-        fire_after(self, ctx, "store_memory", "call:adb").await;
+        fire_after(ctx, "store_memory", "call:adb").await;
 
         // ── Phase 9: SAVE SESSION ──────────────────────────
-        fire_before(self, ctx, "save_session", "call:state:set").await;
+        fire_before(ctx, "save_session", "call:state:set").await;
         // `owner` is what makes a transcript belong to somebody. Without it a
         // session row was reachable only by whoever still remembered its random
         // id, so signing in on another device showed an empty sidebar even though
@@ -1341,7 +1340,7 @@ impl TaskHandler for AgentHandler {
             // it must not fail the turn.
             warn!(error = %e, owner = %owner, "failed to update chat session index");
         }
-        fire_after(self, ctx, "save_session", "call:state:set").await;
+        fire_after(ctx, "save_session", "call:state:set").await;
 
         // ── Phase 10: EMIT RESPONSE ────────────────────────
         let response = json!({
@@ -1366,9 +1365,9 @@ impl TaskHandler for AgentHandler {
             warn!(error = %e, "on_turn_end hook failed");
         }
 
-        fire_before(self, ctx, "emit_response", "set").await;
+        fire_before(ctx, "emit_response", "set").await;
         ctx.context = state.to_context_value(&config);
-        fire_after(self, ctx, "emit_response", "set").await;
+        fire_after(ctx, "emit_response", "set").await;
 
         info!(task = %task.name, iterations = state.iteration, tools = state.tool_calls_made, "call:a3t:agent completed");
 
@@ -1445,7 +1444,7 @@ async fn run_hooks(
 // ═══════════════════════════════════════════════════════════════════
 
 /// Fire matching before-extensions for a named phase
-async fn fire_before(executor: &AgentHandler, ctx: &mut ExecutionContext, phase_name: &str, task_type: &str) {
+async fn fire_before(ctx: &mut ExecutionContext, phase_name: &str, task_type: &str) {
     if ctx.extensions.is_empty() { return; }
 
     let eval_fn = ctx.eval_fn.clone();
@@ -1484,7 +1483,7 @@ async fn fire_before(executor: &AgentHandler, ctx: &mut ExecutionContext, phase_
 }
 
 /// Fire matching after-extensions for a named phase
-async fn fire_after(executor: &AgentHandler, ctx: &mut ExecutionContext, phase_name: &str, task_type: &str) {
+async fn fire_after(ctx: &mut ExecutionContext, phase_name: &str, task_type: &str) {
     if ctx.extensions.is_empty() { return; }
 
     let eval_fn = ctx.eval_fn.clone();
@@ -2296,9 +2295,9 @@ async fn execute_tool_flow(
     // the tool flow rather than reporting it in doubt.
     crate::subflow::attach(&mut child_executor, namespace, name);
 
-    let expr_engine = flowr_core::ExpressionEngine::new();
+    let expr_engine = flowr_expr::ExpressionEngine::new();
     child_executor.set_eval_fn(move |input, expr, context| {
-        use flowr_core::Scope;
+        use flowr_expr::Scope;
         let scope = Scope::builder().context(context.clone()).build();
         expr_engine.eval(input, expr, &scope).map_err(|e| e.to_string())
     });

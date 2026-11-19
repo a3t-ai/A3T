@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 /// A versioned agent template
 #[derive(Debug, Clone, Serialize, Deserialize)]
