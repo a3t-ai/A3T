@@ -41,12 +41,13 @@ An AQL statement is a **verb**, a **memory type** and **clauses**. Reads say `FR
 
 | Part | Options |
 |------|---------|
-| Read verbs | `RECALL` (query), `LOOKUP` (by key), `SCAN` (recent window), `LOAD` (tools) |
+| Read verb | `RECALL`: every read, by key, condition, meaning (`LIKE`) or recent window |
 | Write verbs | `STORE`, `UPDATE`, `FORGET` |
-| Graph verbs | `LINK … TO … TYPE "…"` to connect records, `FOLLOW LINKS` to walk them |
-| Memory types | `WORKING` (current context), `EPISODIC` (what happened), `SEMANTIC` (facts), `PROCEDURAL` (how-to, with confidence), `TOOLS` |
-| Clauses | `WHERE`, `KEY`, `WINDOW LAST n`, `ORDER BY`, `LIMIT`, `RETURN`, `AGGREGATE` |
-| Modifiers | `NAMESPACE "…"` (isolation), `SCOPE private\|shared\|cluster`, `TTL 90d` |
+| Graph verbs | `LINK … INTO … TYPE "…"` to connect records, `UNLINK` to remove links, `FOLLOW LINKS` to walk them |
+| Namespace verbs | `BRANCH`, `FORK`, `MERGE` |
+| Memory types | `WORKING` (current context), `EPISODIC` (what happened), `SEMANTIC` (what is known), `PROCEDURAL` (how-to, with confidence), `TOOLS` |
+| Clauses | `WHERE`, `LIKE`, `WINDOW LAST n`, `ORDER BY`, `LIMIT`, `RETURN`, `AGGREGATE` |
+| Modifiers | `NAMESPACE "…"` (isolation), `IN SCOPE "…"`, `TTL 90d` |
 | Variables | `$name` in a `WHERE` clause, bound from the caller's `variables` |
 
 The full grammar is in the <a href="https://github.com/a3t-ai/AQL" target="_blank" rel="noopener">AQL repository</a>.
@@ -125,7 +126,7 @@ Connect them, so knowledge points to the procedure that resolves it:
 
 ```sql
 LINK FROM SEMANTIC WHERE key = "beaconing"
-  TO PROCEDURAL WHERE pattern = "isolate-host"
+  INTO PROCEDURAL WHERE pattern = "isolate-host"
   TYPE "resolved_by"
 ```
 
@@ -137,7 +138,7 @@ RECALL FROM EPISODIC WHERE host = "lt-4471" LIMIT 5 RETURN alert, outcome
 
 -- What do we know about beaconing, and how was it resolved?
 RECALL FROM SEMANTIC WHERE key = "beaconing"
-  FOLLOW LINKS TYPE "resolved_by" INTO PROCEDURAL
+  FOLLOW LINKS TYPE "resolved_by"
   RETURN pattern, confidence
 ```
 

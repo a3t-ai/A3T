@@ -1,32 +1,49 @@
 ---
 title: A3T Documentation
-description: Agent infrastructure for builders. Build, deploy, and operate AI agents as workflows.
+description: A3T runs agents that your apps call over an API, with memory that lasts, policy on every step and one place to run them.
 template: splash
 hero:
-  tagline: Build, deploy, and operate AI agents as CNCF Serverless Workflows.
+  tagline: Build agents your apps call over an API. A3T runs them, remembers what they learn and checks every step against your policies.
   actions:
-    - text: Get Started
-      link: /getting-started/introduction/
+    - text: Why A3T
+      link: getting-started/why-a3t/
       icon: right-arrow
       variant: primary
-    - text: Task Reference
-      link: /tasks/flow-control/
-      icon: open-book
+    - text: Quick start
+      link: getting-started/quickstart/
+      icon: rocket
+      variant: secondary
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Start here
 
 <CardGrid>
-  <Card title="Workflows" icon="document">
-    Define agent behavior as YAML workflows with 26 built-in task types.
-  </Card>
-  <Card title="Agents" icon="rocket">
-    4 agent modes: ephemeral, session, persistent, reactive — powered by ZeroClaw.
-  </Card>
-  <Card title="Memory" icon="puzzle">
-    5 memory types via ClawDB: working, episodic, procedural, semantic, tools.
-  </Card>
-  <Card title="MCP Native" icon="setting">
-    Full MCP (Model Context Protocol) API for tooling and integration.
-  </Card>
+  <LinkCard title="Why A3T" description="What A3T is for: agents over an API, memory that lasts, governance on every step." href="getting-started/why-a3t/" />
+  <LinkCard title="How it works" description="The parts of A3T and the path one request takes through them." href="getting-started/architecture/" />
+  <LinkCard title="Quick start" description="Make a project and an agent, give it a key and call it from your app." href="getting-started/quickstart/" />
+  <LinkCard title="Get access and sign in" description="Request early access, get your account and sign in to the console." href="console/access/" />
+</CardGrid>
+
+## The console
+
+<CardGrid>
+  <LinkCard title="Agents" description="Build, call, control, version and deploy agents." href="console/agents/" />
+  <LinkCard title="Templates" description="The code agents run, and making your own copy." href="console/templates/" />
+  <LinkCard title="Triggers" description="Start agents and flows from webhooks, schedules, ADB topics and events." href="console/triggers/" />
+  <LinkCard title="Studio" description="Write flows as a graph or as YAML, run them, and hook them into agents." href="console/studio/" />
+  <LinkCard title="Resources" description="Models, MCP tool servers, databases and secrets, set up once and used by name." href="console/resources/" />
+  <LinkCard title="Memory and knowledge" description="Read what agents remember, and build knowledge graphs from their facts." href="console/memory/" />
+  <LinkCard title="Security" description="Cedar policies per project, and the decision log of every allow and deny." href="console/security/" />
+  <LinkCard title="Runtimes and runs" description="Where agents and flows run, and every run step by step." href="console/executions/" />
+</CardGrid>
+
+## Concepts
+
+<CardGrid>
+  <LinkCard title="Agents" description="A template plus its settings: keys, memory space, hooks, versions and branches." href="concepts/agents/" />
+  <LinkCard title="Memory" description="Five kinds of memory in ADB, a space per agent, shared semantic spaces." href="concepts/memory/" />
+  <LinkCard title="AQL" description="The Agent Query Language for reading and writing memory." href="concepts/aql/" />
+  <LinkCard title="YAML and CNCF Serverless Workflow" description="The files A3T is written in, and the workflow format flows and templates use." href="concepts/yaml/" />
 </CardGrid>

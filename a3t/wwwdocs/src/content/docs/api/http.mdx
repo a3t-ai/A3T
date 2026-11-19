@@ -1,0 +1,385 @@
+---
+title: HTTP API
+description: Every HTTP endpoint an app or a backend uses with A3T, grouped by purpose, with who may call it, what to send and what comes back.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The A3T API is plain HTTP and JSON. The console at [dash.a3t.io](https://dash.a3t.io) uses the same API, so anything the console does, your code can do too.
+
+This page lists the endpoints by purpose. Most work on flows, runs, resources and triggers goes through **MCP tools** on `POST /message`; those are on [MCP tools](../mcp-tools/).
+
+## The address
+
+All examples use `$A3T_URL` for the API address. Copy it from any agent's **Overview**: it is the address under **Data plane**, without `/chat`. See the [Quick start](../../getting-started/quickstart/#4-make-a-key).
+
+```bash
+export A3T_URL="https://…"     # the API address, from Data plane on an agent's Overview
+```
+
+## How auth works
+
+Every request carries a token in the `Authorization` header:
+
+```text
+Authorization: Bearer <token>
+```
+
+There are two kinds of token.
+
+| Token | What it is | How you get it | What it may call |
+|---|---|---|---|
+| **Sign-in token** (`$A3T_TOKEN`) | A person's session. It acts with that person's role and project access | `POST /auth/login`, below | Everything that person may do. Each endpoint below says what it needs |
+| **Agent key** (`$AGENT_KEY`, `a3tk_…`) | A key for one agent, for apps. It acts with the roles of the person who made it, never more | The agent's **Access › Keys** in the console, or `POST /agents/{id}/keys` | That agent's data plane only: `POST /chat`, `GET /chat/stream/{session}` for its own sessions, and its webhook `POST /webhook/agent/{id}/…`. Anything else answers `403` |
+
+**Public endpoints** need no token: `/auth/login`, `/auth/first-password`, `/auth/forgot`, `/auth/sso/start`, `/auth/sso/callback`, `/auth/me` (it checks the token you send itself), `/health`, `/edition`, the two `/.well-known/oauth-…` documents, and `/webhook/…` (see [Webhooks](#triggers-and-webhooks)).
+
+A missing or bad token answers `401` with `{"error": "…"}` and a `WWW-Authenticate` header that points at `/.well-known/oauth-protected-resource`. A token that is valid but not allowed answers `403`.
+
+Which projects a person sees and changes follows their project membership and role, the same as in the console. See [Projects](../../console/projects/) and [Security](../../console/security/).
+
+## Sign-in and tokens
+
+### `POST /auth/login`
+
+Signs a person in with email and password. **Public.**
+
+| Field | What it is |
+|---|---|
+| `email` | The email the account was made with |
+| `password` | Its password |
+
+```bash
+curl -s -X POST "$A3T_URL/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com", "password": "…"}'
+```
+
+It answers:
+
+| Field | What it is |
+|---|---|
+| `access_token` | The sign-in token. Send it as `Authorization: Bearer …` |
+| `token_type` | Always `Bearer` |
+| `expires_in` | Seconds until the token expires. Sign in again after that |
+| `refresh_token` | Returned, but there is no endpoint that takes it yet |
+| `user` | `{id, org_id, email, name, role}`. `role` is one of `superadmin`, `securityadmin`, `admin`, `operator`, `viewer` |
+
+| Answer | Means |
+|---|---|
+| `401` `Invalid credentials` | Wrong email or password |
+| `403` with `"code": "password_change_required"` | The account still has a temporary password. Call `/auth/first-password` |
+
+### `POST /auth/first-password`
+
+The first sign-in with a temporary password an admin gave. Sets the person's own password and signs them in. **Public.**
+
+| Field | What it is |
+|---|---|
+| `email` | The account's email |
+| `password` | The temporary password |
+| `new_password` | Their own password: at least 8 characters, not the temporary one |
+
+It answers like `/auth/login`. `401` means the email or temporary password is wrong; `409` means the account is already set up, so use `/auth/login`.
+
+### `POST /auth/forgot`
+
+Sends a link to set a new password. The link works for 30 minutes. **Public.**
+
+| Field | What it is |
+|---|---|
+| `email` | The email the person signs in with |
+| `return` | Optional. The console address the link should open |
+
+The answer is the same whether or not the email has an account: `{"ok": true, "message": "…"}`. People who sign in with single sign-on get no link; their organisation sets their password.
+
+### `GET /auth/sso/start` and `GET /auth/sso/callback`
+
+Single sign-on, for a browser. **Public.** `start` takes `?org=<organisation handle>` or `?email=<work email>`, and optionally `&return=<console origin>`, and redirects to the organisation's own sign-in page. After sign-in, `callback` returns the browser to the console with the token in the address's `#` fragment. An app does not call these directly. See [Get access and sign in](../../console/access/#3-sign-in).
+
+### `GET /auth/me`
+
+Who the token belongs to: `{id, org_id, email, name, role}`. `401` if the token is missing or invalid.
+
+### `POST /auth/impersonate`
+
+**SuperAdmin only.** Acts as another user or as a role, for support. Give exactly one of:
+
+| Field | What it is |
+|---|---|
+| `user_id` | The person to act as |
+| `role` | A role to act as: `securityadmin`, `admin`, `operator` or `viewer` |
+
+It answers a token like `/auth/login`, valid for at most one hour, plus `act: {sub, email}` naming the SuperAdmin. Everything done with it is logged as done by the SuperAdmin on that person's behalf. To stop, go back to your own token.
+
+## Agents: calling an agent
+
+This is the **data plane**: what an app uses to talk to an agent. Make the agent and its key in the console first; the [Quick start](../../getting-started/quickstart/) does it step by step.
+
+### `POST /chat`
+
+Sends one message to an agent and streams the answer back. **Agent key** or **sign-in token.**
+
+The agent's id is the short id in its address and on its Overview, such as `agt-87c819a3`; its name, such as `agent_acme_support_helpdesk`, is what lists show.
+
+| Field | What it is | What to put |
+|---|---|---|
+| `session_id` | Which agent and which conversation, as `<agent id>:<conversation>` | The agent's id, a colon, then your own name for the conversation: one per customer case, chat or user. Messages with the same `session_id` share a conversation |
+| `message` | What the user said | Text |
+| `context` | Optional. Extra facts for this turn | A JSON object |
+| `memory_branch` | Optional. Run this turn on one of the agent's memory branches instead of its main memory | A branch name from `GET /agents/{id}/branches` |
+
+With an agent key, `session_id` must start with that key's agent id, or the answer is `403` with `"code": "key_scope"`. With a sign-in token you may also pass `llm_resource`, `enabled_tools`, `mcp_servers` and `ui_context`; the console uses these for its own assistant.
+
+```bash
+curl -N "$A3T_URL/chat" \
+  -H "Authorization: Bearer $AGENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "agt-87c819a3:ticket-4182", "message": "Where is my refund?"}'
+```
+
+The answer is a stream of server-sent events, one `data:` line each, in the AI SDK UI message stream format (header `x-vercel-ai-ui-message-stream: v1`):
+
+| Event `type` | What it carries |
+|---|---|
+| `start`, `start-step` | The answer starts |
+| `text-start`, `text-delta`, `text-end` | The answer's text. Join the `delta` fields of the `text-delta` events |
+| `tool-input-available`, `tool-output-available` | A tool the agent called, and what it got back |
+| `data-…` | Other progress the agent reports |
+| `error` | The run failed; `errorText` says why |
+| `finish-step`, `finish` | The answer is complete |
+
+If the run stops before it answers (a model error, a refused step), the stream says so in the text and ends. Other answers: `400` without `session_id`, `401` without a token, `429` with `"code": "org_quota"` when the organisation is over its quota.
+
+### `GET /chat/stream/{session_id}`
+
+Attaches to a conversation's live stream: every token of its runs as they happen. **Agent key** (its own sessions only) or **sign-in token.** Each event has an `id`; to resume after a dropped connection, send `Last-Event-ID: <id>` or `?after=<id>` and the missed events come first. Write the `:` in the session id as `%3A` if your client needs it.
+
+### `POST /webhook/agent/{agent id}/chat`
+
+The agent's webhook, if it has one (see the agent's **Access › Endpoints**). It takes the same `session_id` and `message`, but answers at once with the runs it started instead of streaming. **Needs a token:** one of the agent's keys, or a sign-in token. Use `POST /chat` unless you need a webhook.
+
+## Agents: keys
+
+The **control plane** for keys. **Sign-in token** of someone who may change the agent: write access to its project.
+
+| Method and path | What it does | Body | Answer |
+|---|---|---|---|
+| `GET /agents/{id}/keys` | Lists its keys | — | `{agent_id, keys: [{id, name, prefix, created_by, created_at, last_used_at, revoked_at}]}`. Only the first characters (`prefix`) of each key are kept |
+| `POST /agents/{id}/keys` | Makes a key | `{"name": "shop backend"}` (optional) | `201` with the key's record and `key`: the full `a3tk_…` key. **It is shown only this once** |
+| `DELETE /agents/{id}/keys/{key id}` | Revokes a key. The next call with it fails | — | `{agent_id, key, revoked: true}`; `404` if the agent has no such key |
+
+```bash
+curl -s -X POST "$A3T_URL/agents/agt-87c819a3/keys" \
+  -H "Authorization: Bearer $A3T_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "shop backend"}'
+```
+
+## Agents: control plane
+
+Making, changing, blocking and sharing agents goes through the **A3T agents**: built-in agents whose tools are A3T's own control plane. Each tool runs a platform flow as you, with your project access. **Sign-in token.**
+
+| Method and path | What it does |
+|---|---|
+| `GET /agents/{agent}/tools` | Lists an agent's tools: `{agent, tools: [{name, flow, description, schema}]}`. `schema` is what the tool's arguments look like |
+| `POST /agents/{agent}/tools/{tool}` | Runs one tool now, with no model in between. The body is the tool's arguments. Answers `{agent, tool, output}`; `403` if you may not, `404` if the agent has no such tool |
+
+The A3T agents and what their tools cover:
+
+| Agent | Its tools |
+|---|---|
+| `agent_a3t_agents` | Agents: `tool_a3t_agent_create`, `_list`, `_get`, `_update`, `_delete`, `_block`, `_unblock`, `_share`, `_unshare`, `_lineage`, `_memory`, `_memory_put`, `_memory_forget`, `_turns`, `_events` and more |
+| `agent_a3t_templates` | Templates: `tool_a3t_template_list`, `_get`, `_create`, `_update`, `_delete` |
+| `agent_a3t_projects` | Projects, organisations, profiles and users: `tool_a3t_project_list`, `_create`, `_update`, `_delete`, `_move`, `tool_a3t_org_…`, `tool_a3t_user_…` |
+| `agent_a3t_resources` | Resources and settings: `tool_a3t_resource_…`, `tool_a3t_setting_…`, `tool_a3t_resource_test` |
+| `agent_a3t_runtime` | Canvases, flow releases, sharing between projects: `tool_a3t_canvas_…`, `tool_a3t_release_…`, `tool_a3t_share` |
+| `agent_a3t_governance` | Audit log, error log, early-access requests |
+| `agent_a3t_knowledge` | The knowledge graph: ingest, look up, query, train |
+
+List an agent's tools first to see each one's arguments:
+
+```bash
+curl -s "$A3T_URL/agents/agent_a3t_agents/tools" -H "Authorization: Bearer $A3T_TOKEN"
+```
+
+### Memory, versions and branches
+
+An agent's memory space, its versions and its memory branches are FlowR endpoints under `/agents/{id}`. Reading needs read access to the agent's project; changing needs write access. Changes are also checked against policy; a refusal answers `403` with `"code": "policy_denied"`. See [Agents › Versions & deploy](../../console/agents/).
+
+| Method and path | What it does | Body |
+|---|---|---|
+| `GET /agents/{id}/memory` | Where its memory lives: `{agent_id, resource, namespace, own}` | — |
+| `PUT /agents/{id}/memory` | Gives it its own memory space | `{"namespace": "…"}` (optional; default `<project>--<agent>`) |
+| `GET /agents/{id}/versions` | Its versions | — |
+| `POST /agents/{id}/versions` | Makes a version now. A version never changes; a change is the next version | `{"note": "…", "flows": [{namespace, name, version}]}` (both optional) |
+| `GET /agents/{id}/versions/{version}` | One version | — |
+| `GET /agents/{id}/versions/{version}/manifest` | What that version's flows reach | — |
+| `GET /agents/{id}/branches` | Its memory branches | — |
+| `POST /agents/{id}/branches` | Makes a branch | `{"name": "…", "parent": "…"}` (`parent` optional) |
+| `DELETE /agents/{id}/branches/{name}` | Drops a branch | — |
+| `GET /agents/{id}/branches/{name}/conflicts` | What differs between the branch and main | `?memories=PROCEDURAL,SEMANTIC` narrows it |
+| `POST /agents/{id}/branches/{name}/merge` | Merges the branch's procedures back. `409` lists conflicts to resolve | `{main_offset, resolutions}` |
+| `POST /agents/{id}/branches/{name}/promote` | Makes a new agent from the branch | `{"new_agent": {"id": "…", "name": "…"}}` |
+| `POST /agents/{id}/fork` | Copies the agent into a new one | `{"new_agent": {"id": "…", "name": "…"}}` |
+| `GET /agents/{id}/deployments` | Which version each environment runs | — |
+| `PUT /agents/{id}/deployments/{environment}` | Pins an environment to a version. Rolling back is pinning the previous one | `{"version": "…"}` |
+| `GET /agents/{id}/runs` | Its recorded turns. Sort by `at` | — |
+| `GET /agents/{id}/usage` | Its usage, by environment | — |
+
+## Flows and runs
+
+Flows and runs have no REST endpoints of their own: use the MCP tools on `POST /message`. The ones you need most:
+
+| To | Tool |
+|---|---|
+| List flows, read one | `list_flows`, `get_flow` |
+| Run a flow and wait for its result | `execute_flow` |
+| Check a run | `get_execution_status`, `get_run` |
+| List runs | `list_runs`, `list_executions` |
+
+```bash
+curl -s -X POST "$A3T_URL/message" \
+  -H "Authorization: Bearer $A3T_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+       "params": {"name": "execute_flow",
+                  "arguments": {"namespace": "acme-support", "name": "flow_acme_support_refund", "input": {"order_id": "A-1042"}}}}'
+```
+
+See [MCP tools](../mcp-tools/) for every tool and its arguments.
+
+### `POST /events/{project}`
+
+Sends a CloudEvent into a project: every run waiting for it in a `listen` step wakes up, and event triggers fire. **Sign-in token** with run access to the project. Send it as JSON with at least `type` (and `source`, `subject`, `data` as your listeners need), or send the body as `data` with `ce-type`, `ce-source`, … headers. Answers `202` with `{id, woke, started}`.
+
+### Approvals: `/inputs`
+
+A run that waits for a person shows up here. **Sign-in token.**
+
+| Method and path | What it does |
+|---|---|
+| `GET /inputs` | The waiting requests: `{inputs, count}` |
+| `GET /inputs/{request id}` | One request |
+| `POST /inputs/{request id}` | Answers it; the run carries on. The body is the answer. An approval can only be answered by the person it asks; for anyone else it answers `404` |
+
+## Triggers and webhooks
+
+Triggers are made in the console ([Triggers](../../console/triggers/)) or with the trigger MCP tools (`create_trigger`, `list_triggers`, …), which check your project access.
+
+### `POST /webhook/{path}`
+
+Fires the webhook trigger whose path is `/{path}`. For example, a trigger with path `/acme/refund` is called at `POST /webhook/acme/refund`. The body is any JSON; it becomes the event's `body`.
+
+```bash
+curl -X POST "$A3T_URL/webhook/acme/refund" \
+  -H "Authorization: Bearer $A3T_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"order_id": "A-1042", "customer": "Ana Ruiz", "reason": "Refund not received after 10 days"}'
+```
+
+**Who may call it.** Webhook paths are public, so outside systems can call them. Send a token when you have one: with a sign-in token the runs act as that person, with their access; without one they act as the trigger. An agent's own webhook (`/webhook/agent/…`) always needs a token. Only `POST` is served.
+
+| Answer | Means |
+|---|---|
+| `200` `{delivered, targets, executions: [{trigger, target, instance_id}], failed, paused, path}` | It reached its targets. Follow each run with `get_execution_status` and its `instance_id` |
+| `404` | No trigger listens on this path, or what it feeds is paused and set to hide |
+| `422` `{error: "nothing delivered", failed}` | Every target failed; `failed` names each with the reason, such as a mapping error |
+| `503` `{error: "paused", message}` | Everything it feeds is paused |
+
+### `POST /triggers/mapping/check`
+
+Runs a trigger mapping on sample events, exactly as a firing would, without running anything. **Sign-in token.** The console's **Check on samples** uses it.
+
+| Field | What it is |
+|---|---|
+| `expr` | The mapping: a jq expression wrapped as `${ … }` |
+| `samples` | Sample bodies, as callers would send them |
+| `field` | Optional. Which mapping it is: `input`, `message` or `conversation` |
+| `target` | Optional. A flow as `namespace/name`, to check the result against its input schema |
+
+## Resources
+
+Resources are models, databases, MCP servers, secrets and runtimes your flows and agents use. See [Resources](../../console/resources/). **Sign-in token.** Secret values are never returned; other keys and passwords come back masked.
+
+| Method and path | What it does | Who |
+|---|---|---|
+| `GET /registry/resources` | The resources you may see: `[{name, namespace, type, config, tags}]`. `?type=<type>` filters | Signed in |
+| `POST /registry/resources` | Makes one. Body `{name, namespace, type, config, tags}`; `namespace` defaults to `default`. Answers `201` | Write access to the project. A `cedar` policy: SuperAdmin or SecurityAdmin only |
+| `GET /registry/resources/{project}/{name}` | One resource | Read access |
+| `PUT /registry/resources/{project}/{name}` | Replaces its `config`. The body is the new config object | Write access |
+| `DELETE /registry/resources/{project}/{name}` | Deletes it. Deleting a runtime answers `409` with its reschedule plan first; repeat with `?confirm=<its name>` | Write access |
+| `GET /registry/resources/{project}/{name}/used-by` | The flows and resources that name it: `{flows, resources}`. Check before changing or deleting | Signed in; lists only what you may see |
+
+### Files
+
+| Method and path | What it does |
+|---|---|
+| `GET /storage/{project}/{resource}/list?prefix=…` | Lists a storage resource's files under a prefix |
+| `GET /storage/{project}/{resource}/preview?path=…` | The first 64 KB of one file |
+
+## Runtimes and deployments
+
+What runs where. See [Runtimes](../../console/runtimes/) and [Canvas](../../console/canvas/). **Sign-in token.** Changing a runtime needs Admin; pausing in production is checked against policy.
+
+| Method and path | What it does |
+|---|---|
+| `GET /ops/overview` | Every runtime, what is deployed on it, its state and recent activity |
+| `GET /ops/deployments/{id}/probe` | A live look at one deployment |
+| `POST /ops/deployments/{id}/{action}` | `pause`, `resume`, `restart`, `undeploy` or `terminate`. Body `{"reason": "…"}` (optional) |
+| `POST /ops/runtimes/{name}/{action}` | `pause`, `resume` or `hibernate` a runtime. `terminate` needs body `{"confirm": "<its name>"}` |
+| `GET /ops/runtimes/{name}/terminate` | What terminating it would do, without doing it |
+| `PUT /ops/runtimes/{name}/paused-response` | What webhooks get while paused: `{"status": 503}` or `{"status": 404}` |
+| `GET /canvas/runtimes` | The runtimes flows can be placed on |
+| `GET /canvas/presets` | The deployment presets to choose from |
+| `GET /canvas/flows/{project}/{flow}/placement` | Where the flow would be deployed, without deploying |
+| `POST /canvas/flows/{project}/{flow}/deploy` | Deploys the flow |
+| `POST /canvas/canvases/{project}/{canvas}/deploy` | Deploys an agent's own canvas |
+| `GET /canvas/deployments` | Live deployment status |
+
+## Security and identity
+
+**SuperAdmin or SecurityAdmin** unless the row says otherwise. See [Security](../../console/security/) and [Decision log](../../console/decision-log/).
+
+| Method and path | What it does |
+|---|---|
+| `GET /security/audit` | The policy decision log. `?limit=` (default 100, at most 1000), `?denials_only=true`, `?project=<project>` (or `-` for platform-wide decisions). Answers `{count, records, scope}`; it holds the newest 1000 decisions of the server that answers |
+| `GET /security/policies` | The saved Cedar policies, with their source |
+| `POST /security/policies/reload` | Reloads the policies now. A policy that doesn't load leaves the current set in place |
+| `POST /security/policies/test` | Tries a request against the policies without changing anything. Body `{principal, action, resource: {type, id, attributes}, attributes?, draft_policies?, include_registry?, draft_namespace?}`. Answers the decision and which policies matched |
+| `GET /security/idp/status` | Whether the identity provider is set up and reachable |
+| `GET /security/idp/users` | The accounts: `{id, username, email, enabled, …}` each |
+| `POST /security/idp/users` | Makes an account. Body `{username, email?, name?, password, temporary, roles}`. `temporary: true` makes them choose their own password at first sign-in |
+| `GET /security/idp/users/{id}` | One account, with its roles |
+| `PUT /security/idp/users/{id}` | Changes it. Any of `{name, email, enabled, password, temporary, roles}`; `roles` replaces their roles |
+| `DELETE /security/idp/users/{id}` | Deletes the account |
+| `GET /directory/users` | People who can be added as members: `{count, users: [{id, email, name}]}`. **Project owners and org admins** too |
+
+## Health and status
+
+| Method and path | Who | What it answers |
+|---|---|---|
+| `GET /health` | Public | `{"status": "ok", "service": …, "version": …}` |
+| `GET /edition` | Public | `{edition, enforcing, policy_hook, features}`: whether policies are enforced on this server |
+| `GET /metrics` | Signed in | Prometheus metrics of this server |
+| `GET /admin/stats/metrics` | Signed in | The same as JSON, with p50, p90 and p99 |
+| `GET /.well-known/oauth-protected-resource` | Public | Where to get a token, for OAuth-aware clients such as MCP clients |
+
+## Your own console data
+
+The console keeps a few things per person. **Sign-in token**; each person sees only their own.
+
+| Method and path | What it does |
+|---|---|
+| `GET /chat/sessions` | Your conversations, newest first |
+| `GET /chat/sessions/{session_id}` | One transcript, as user and assistant turns |
+| `DELETE /chat/sessions/{session_id}` | Deletes a conversation. Nothing else removes it |
+| `GET /chat/sessions/{session_id}/permissions` | What you allowed or declined in it |
+| `POST /chat/sessions/{session_id}/permissions/lift` | Reopens a refusal: `{"key": "…"}`. The next matching call asks again |
+| `GET /ui/pins`, `POST /ui/pins` | Your pinned items. Body `{"kind": "chat", "id": "…", "pinned": true}` |
+
+<Aside type="note">
+Errors come back as JSON with an `error` sentence and, where it helps, a `code` such as `agent_key`, `key_scope`, `policy_denied` or `org_quota`.
+</Aside>

@@ -1,54 +1,72 @@
 ---
 title: Memory
-description: ClawDB agent memory — 5 types, AQL queries.
+description: How agents remember. Five kinds of memory in ADB, a memory space per agent, shared semantic spaces, and memory branches.
 ---
 
-ClawDB provides 5 memory types for agents, queried via AQL (Agent Query Language).
+import { Aside } from '@astrojs/starlight/components';
 
-## Memory types
+Every agent remembers in **ADB**, A3T's agent database. Its memory lasts across restarts and redeploys, it can be read and edited in the console, and every change to it is kept in its history. Agents and flows read and write it with [AQL](../aql/), the Agent Query Language.
 
-| Type | Purpose | Persistence |
-|------|---------|-------------|
-| **WORKING** | Current turn scratchpad | Per-turn |
-| **EPISODIC** | Past interactions indexed by time | Long-term |
-| **PROCEDURAL** | Learned procedures and action patterns | Long-term |
-| **SEMANTIC** | Facts, knowledge, structured data | Long-term |
-| **TOOLS** | Tool usage history and preferences | Long-term |
+This page explains the model. To read an agent's memory in the app, see [Memory](../../console/memory/); to change it, the agent's [Build › Memory](../../console/agents/#memory).
 
-## AQL operations
+## Five kinds of memory
 
-### STORE
+| Kind | What it holds | Example |
+|---|---|---|
+| **Working** | What it holds for the task at hand | The current conversation's state |
+| **Episodic** | What happened, one record per event | Each turn of a conversation |
+| **Semantic** | Facts: subject, predicate, object, or a key and content | "Refunds arrive within 7 days of approval" |
+| **Procedural** | How to do things, with a confidence | "Ask for the order number, check the status, escalate after 7 days" |
+| **Tools** | The tools it knows about | The tool catalogue |
 
-```
-STORE INTO EPISODIC (key = "incident-42", content = "Server restarted at 3am") SCOPE private NAMESPACE "agent"
-```
+## An agent's memory space
 
-### RECALL
+Each agent has its own **memory space**: a namespace of its own in its organisation's ADB, shown on its Memory tab. Every AQL statement it runs names that space (`NAMESPACE "…"`), so one agent's memory never mixes with another's.
 
-```
-RECALL FROM EPISODIC WHERE content = "server restart" LIMIT 5
-```
+How much it keeps is one of the agent's settings:
 
-### FORGET
+| Setting | What it means |
+|---|---|
+| **Across conversations** | What it learns and is told comes back in later conversations. After each exchange it also stores the lasting facts as semantic memory |
+| **One conversation** | It remembers the conversation it is in, then starts fresh |
+| **Nothing** | Every message on its own |
 
-```
-FORGET FROM WORKING WHERE key = "temp-data"
-```
+On every turn an agent built on `tmpl_a3t_agent` **recalls** the conversation's earlier turns and the facts and procedures that match the message, and **stores** the turn in its episodic memory afterwards. A [`before_recall` or `before_store` hook](../../console/studio/#hook-a-flow-into-an-agent) can change what it searches with and what it remembers.
 
-### LINK
+## Semantic spaces
 
-```
-LINK "incident-42" TO "runbook-restart" AS "resolved_by"
-```
+A **semantic space** is a namespace of facts that does not belong to one agent: a team's product knowledge, a policy handbook, A3T's own usage notes (`a3t-usage`). You **attach** a space to an agent on its **Build › Memory**, and the agent then recalls from it on every turn, by meaning, besides its own memory. Detaching it leaves the facts in ADB.
 
-## In workflows
+| Rule | Why |
+|---|---|
+| Many agents can attach the same space | Shared knowledge is written once |
+| An agent's own space can't be attached to another agent | Each agent's memory stays its own |
+| `system-*` spaces can't be attached | They are A3T's own |
 
-Use `call:clawdb` to query memory directly, or configure the agent resource with `memory` to enable automatic context loading via the `on_before_turn` and `on_complete` AQL hooks.
+A flow can fill a space with `call: adb`; the [CRUD guide](../../guides/building-crud-flow/) builds one. [Knowledge](../../console/knowledge/) builds a knowledge graph from a space's facts.
 
-```yaml
-- name: recall-context
-  type: call:clawdb
-  resource: agent-memory
-  config:
-    query: 'RECALL FROM SEMANTIC WHERE key = "user_preferences" LIMIT 1'
-```
+## Branches and versions
+
+An agent's memory is versioned with the agent.
+
+| What | What happens to memory |
+|---|---|
+| **Version** | A tag on its memory at that moment |
+| **Branch** | A branch of its memory. A turn on the branch reads and writes the branch; the agent's own memory is untouched |
+| **Merge** | Facts and procedures learned on the branch are added to the agent |
+| **Fork** | The new agent starts with a copy of this one's memory |
+
+See [Versions, branches and copies](../agents/#versions-branches-and-copies).
+
+## Forgetting
+
+`FORGET` removes an entry from every read at once. The entry's history is kept, and a forget made on the agent's **Build › Memory** is recorded in its history, with who made it.
+
+<Aside type="note">
+Sharing an agent with another project never hands over its memory. To share knowledge, put it in a semantic space and attach it.
+</Aside>
+
+## Next
+
+- [AQL](../aql/): every verb, with examples.
+- [Memory](../../console/memory/) in the console: read any agent's memory, filter it, query it.

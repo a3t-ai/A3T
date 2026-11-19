@@ -1,16 +1,47 @@
 ---
 title: Task Types
-description: Overview of all 26 built-in task types.
+description: Every task and call type, and whether it runs in A3T today.
 ---
 
-See the [Task Reference](/tasks/flow-control/) for detailed examples of each type.
+Every task in a flow's `do:` list is one of the twelve CNCF task types. `call` and `run` then name what they call or run. The [Task Reference](../../tasks/flow-control/) gives each one's fields, output and an example.
 
-## By category
+## Tasks
 
-| Category | Types |
-|----------|-------|
-| **Flow control** | `set`, `switch`, `for`, `fork`, `try`, `raise`, `wait` |
-| **I/O** | `call:http`, `input:file`, `output:file`, `state:get`, `state:set` |
-| **AI** | `call:llm`, `call:agent`, `call:human` |
-| **Script** | `run:shell`, `run:script`, `run:workflow`, `inline:lua`, `inline:js` |
-| **Integration** | `call:sql`, `call:lancedb`, `call:qdrant`, `call:clawdb`, `call:mcp` |
+| Task | What it does | Reference |
+|---|---|---|
+| `set` | Builds an object | [Flow control](../../tasks/flow-control/#set) |
+| `do` | Runs a list of tasks as one | [Flow control](../../tasks/flow-control/#do) |
+| `switch` | Branches on the first `when` that holds | [Flow control](../../tasks/flow-control/#switch) |
+| `for` | Runs its `do` for each item | [Flow control](../../tasks/flow-control/#for) |
+| `fork` | Runs branches (one after another today) | [Flow control](../../tasks/flow-control/#fork) |
+| `try` / `catch` | Handles failure, with retry | [Flow control](../../tasks/flow-control/#try-and-catch) |
+| `raise` | Fails with an error you describe | [Flow control](../../tasks/flow-control/#raise) |
+| `wait` | Pauses; long waits are durable timers | [Flow control](../../tasks/flow-control/#wait) |
+| `emit` | Sends an event | [I/O](../../tasks/io/#emit) |
+| `listen` | Waits for events (durable runs only) | [I/O](../../tasks/io/#listen) |
+| `call` | Calls something: see below | |
+| `run` | Runs something: see below | |
+
+## Calls and runs
+
+| Type | What it does | In A3T | Reference |
+|---|---|---|---|
+| `call: http` | A web API | Yes; refused outside production and on memory branches | [I/O](../../tasks/io/#call-http) |
+| `call: state:get`, `state:set`, `state:delete` | The key–value store | Yes | [I/O](../../tasks/io/#call-stateget-stateset-statedelete) |
+| `call: llm` | One model call | Yes | [AI](../../tasks/ai/#call-llm) |
+| `call: a3t:agent` | One agent turn | Yes | [AI](../../tasks/ai/#call-a3tagent) |
+| `call: adb` (alias `clawdb`) | One AQL statement on ADB | Yes | [Integration](../../tasks/integration/#call-adb) |
+| `call: mcp` | A tool on an MCP server | Yes; refused outside production and on memory branches | [Integration](../../tasks/integration/#call-mcp) |
+| `call: lancedb` | A3T's platform tables | Yes, for A3T's own flows | [Integration](../../tasks/integration/#call-lancedb) |
+| `call: rotate` | The knowledge graph | Yes | [Integration](../../tasks/integration/#call-rotate) |
+| `call: registry` | Flow versions, copies, moves | Yes | [Integration](../../tasks/integration/#call-registry) |
+| `run: workflow` | Another flow | Yes | [Script](../../tasks/script/#run-workflow) |
+| `run: script` | Inline Lua, JavaScript or Python | Yes | [Script](../../tasks/script/#run-script) |
+| `run: shell` | A shell command | Admin or SuperAdmin people only | [Script](../../tasks/script/#run-shell) |
+| `call: grpc`, `openapi`, `asyncapi`, `a2a` | CNCF call types | No: the step fails | [Integration](../../tasks/integration/#not-available-in-a3t) |
+| `run: container` | A container | No: the step fails | [Integration](../../tasks/integration/#not-available-in-a3t) |
+| `call: <function>` from `use.functions` | A named function | No: not resolved | [Integration](../../tasks/integration/#not-available-in-a3t) |
+
+## Removed
+
+`input:file`, `output:file`, `call: agent`, `call: human`, `inline:lua`, `inline:js`, `call: sql` and `call: qdrant` no longer exist. Each task page's **Not available** table says what to use instead.

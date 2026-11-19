@@ -1,121 +1,244 @@
 ---
 title: Flow Control Tasks
-description: set, switch, for, fork, try, raise, wait
+description: set, do, switch, for, fork, try and catch, raise, wait, and the fields every task can carry.
+sidebar:
+  order: 1
 ---
+
+import { Aside } from '@astrojs/starlight/components';
+
+These tasks shape the data and the path of a run. The engine runs them itself; they call nothing outside the run. For the language as a whole, see [CNCF Serverless Workflow](../../concepts/cncf-swf/).
+
+Every example is one entry of a flow's `do:` list.
+
+## Fields on every task
+
+Any task, of any type, can carry these next to its type key.
+
+| Field | What it is for | What to put |
+|---|---|---|
+| `if` | Run the task only when a test holds. Otherwise it is skipped, its input passes on unchanged, and the next task runs | `'${ .days_late >= 7 }'`. Only `true` runs it; `null` or a missing field skips it |
+| `input.from` | Reshape the task's input before it runs | `'${ {order_id: .order_id} }'` |
+| `input.schema` | Describe the input | A JSON Schema (`format: json`, `document: …`). The engine does not check it yet |
+| `output.as` | Reshape the task's result before it is passed on | `'${ .body }'` |
+| `output.schema` | Describe the result | As `input.schema` |
+| `export.as` | Save into `$context` for later tasks | `'${ $context + {order: .} }'`. The object it gives is merged key by key into `$context`; a value that is not an object is saved as `$context._export` |
+| `then` | Where to go next | `continue` (the default), `end`, `exit`, or the name of a task in the same list |
+| `timeout.after` | Fail the task if it takes too long | `{ seconds: 30 }`, also `minutes`, `hours`. The failure is a timeout error (status 408) that `try` can catch |
+| `metadata.a3t` | A3T settings for the step: `policy`, `stepClass`, `inDoubt` | See [Workflows](../../concepts/workflows/#crashes-and-resume) and [CNCF Serverless Workflow](../../concepts/cncf-swf/#a3ts-settings-metadataa3t) |
+
+The order is: `if`, `input.from`, `input.schema`, the task, `output.as`, `output.schema`, `export.as`, `then`.
+
+<Aside type="caution">
+`then: end` and `then: exit` both stop the **list the task is in**. Inside a `do`, `for`, `try` or `catch`, that is only the block: the flow carries on after it. At the top level of `do:` it ends the run. A `then:` that names a task can only jump within the same list.
+</Aside>
 
 ## set
 
-Assign values to the workflow context.
+Builds an object. Its result is **only** the keys you set: the input is not carried over, so `export` what you need first, or copy it in.
+
+| Field | What to put |
+|---|---|
+| any key | A value, or an expression. Nested objects and lists are evaluated too |
 
 ```yaml
-- name: init
-  type: set
-  config:
-    status: active
-    count: "${ .input.items | length }"
-  export.as: "."
+- prepare:
+    set:
+      order_id: ${ .order_id }
+      action: escalate
+      note: '${ "Order " + .order_id + " is " + (.days_late | tostring) + " days late" }'
+      items: ${ .items // [] }
+    export:
+      as: '${ $context + {order_id: .order_id} }'
+```
+
+## do
+
+Runs a list of tasks in order, as one task. Its result is the last task's result. Use it to group steps under one `if`, or to give a block its own `then:` targets.
+
+```yaml
+- when_late:
+    if: '${ .days_late >= 7 }'
+    do:
+      - notify:
+          set: { action: escalate }
+      - log:
+          set: { logged: true }
 ```
 
 ## switch
 
-Conditional branching. Config is an array of `when`/`then` pairs with inline steps.
+Picks the first case whose `when` is `true` and goes where its `then` says. The input passes on unchanged. If no case matches, the next task runs.
+
+| Field | What to put |
+|---|---|
+| `switch` | A list of cases, each `- <case name>: { when, then }` |
+| `when` | A test on the input. A case with no `when` is the default; put it last |
+| `then` | A task name in the same list, `continue`, `end` or `exit`. Left out: `continue` |
 
 ```yaml
-- name: route
-  type: switch
-  config:
-    - when: "${ .status == \"approved\" }"
-      then:
-        - name: approve
-          type: set
-          config:
-            result: approved
-    - default:
-        - name: fallback
-          type: set
-          config:
-            result: pending
-  export.as: "."
+- route:
+    switch:
+      - late:
+          when: '${ .days_late >= 7 }'
+          then: escalate
+      - unpaid:
+          when: '${ .status == "unpaid" }'
+          then: remind
+      - default:
+          then: wait
 ```
 
 ## for
 
-Iterate over a collection.
+Runs its own `do:` once for each item of a list.
+
+| Field | What to put |
+|---|---|
+| `for.each` | The name of the item variable. Default `item` |
+| `for.in` | An expression that gives a list. Anything else fails the task |
+| `for.at` | Optional: the name of the index variable (0, 1, …) |
+| `for.while` | Optional: checked before each item; the loop stops when it is not `true` |
+| `for.do` | The tasks to run per item. In A3T `do` sits **inside** `for:` |
+
+Inside the loop, `$<each>` and `$<at>` give the item and index in `if`, `set`, `with`, `input.from`, `output.as` and `export.as`. Elsewhere (a `switch` `when`, a `run` input, a nested `for.in`), write `$context.<each>`. The body's input is the loop's input with `$context` merged under it, and the result of the whole loop is the last item's result. To collect results, `export` them into `$context` on each pass.
 
 ```yaml
-- name: process-items
-  type: for
-  config:
-    in: "${ .items }"
-    each: item
-    at: idx
-    do:
-      - name: handle
-        type: call:http
-        config:
-          method: POST
-          endpoint:
-            uri: "${ .item.url }"
+- count_open:
+    for:
+      each: order
+      in: '${ .orders }'
+      do:
+        - check:
+            if: '${ $order.status == "open" }'
+            set:
+              seen: '${ ($context.open // 0) + 1 }'
+            export:
+              as: '${ $context + {open: .seen} }'
 ```
 
 ## fork
 
-Execute branches in parallel.
+Runs a list of branches and gives their results as a list, in branch order. Each branch is one named task.
+
+| Field | What to put |
+|---|---|
+| `fork.branches` | A list of named tasks, like `do:` |
+| `fork.compete` | Accepted, but has no effect yet |
+
+<Aside type="note">
+The engine runs the branches **one after another**, not side by side, and they share `$context`. Don't rely on `fork` for speed or isolation.
+</Aside>
 
 ```yaml
-- name: parallel
-  type: fork
-  config:
-    branches:
-      - name: branch-a
-        steps: [...]
-      - name: branch-b
-        steps: [...]
+- gather:
+    fork:
+      branches:
+        - history:
+            call: adb
+            with:
+              query: RECALL FROM EPISODIC WHERE order_id = $order LIMIT 5
+              variables: { order: '${ .order_id }' }
+              _resource: a3t/adb
+        - totals:
+            set: { total: '${ .amount }' }
 ```
 
-## try
+## try and catch
 
-Error handling with optional retry.
+Runs a list of tasks and handles their failure.
+
+| Field | What to put |
+|---|---|
+| `try` | The tasks, as a list. Or `try: { do: [...], catch: {...} }`; both shapes work |
+| `catch.errors.with` | Optional: catch only errors with this `type` and/or `status`. `type` matches the full URI or its last part (`timeout`, `authorization`, `communication`). Others go on up |
+| `catch.retry.limit.attempt.count` | Retries after the first attempt |
+| `catch.retry.delay` | Wait before a retry: `{ seconds }` or `{ minutes }` |
+| `catch.retry.backoff` | `constant` (the default), `linear` (delay × attempt) or `exponential` (delay × 2^(attempt−1)). Give it as a key: `{ exponential: {} }` |
+| `catch.do` | The tasks to run once retries are used up. Their result is the `try` task's result |
+
+In `catch.do`, `$context.error` holds what was caught: `type`, `status`, `title`, `detail`, `instance` (the failed step) and `attempts`. A policy denial (status 403) is never retried. A paused or stopped run is never caught.
+
+| Error | `status` | `type` ends in |
+|---|---|---|
+| Denied by policy | 403 | `authorization` |
+| A call to a model, MCP server, web API or ADB failed, including an HTTP status of 400 or more | 502 | `communication` |
+| `timeout.after` passed | 408 | `timeout` |
+| Bad input, `required` field missing | 400 | `validation` |
+| An expression failed | 400 | `expression` |
+| A resource that does not exist | 404 | `runtime` |
+| Anything else a task reports | 500 | `runtime` |
+| `raise` | what you set | what you set |
 
 ```yaml
-- name: safe-call
-  type: try
-  config:
-    do:
-      - name: risky
-        type: call:http
-        config:
-          method: GET
-          endpoint:
-            uri: https://unstable-api.example.com
+- lookup:
+    try:
+      - fetch:
+          call: http
+          with:
+            method: POST
+            endpoint: https://tickets.acme.com/orders/lookup
+            body:
+              order_id: ${ .order_id }
     catch:
-      - name: handle-error
-        type: set
-        config:
-          fallback: true
-    retry: 2
+      errors:
+        with: { type: communication }
+      retry:
+        delay: { seconds: 2 }
+        backoff: { exponential: {} }
+        limit: { attempt: { count: 3 } }
+      do:
+        - not_found:
+            set:
+              found: false
+              why: ${ $context.error.detail }
 ```
+
+<Aside type="caution">
+A web API that answers 404 fails the step with status **502**, not 404: the HTTP status is in `detail`. Match on `type: communication`, or test `$context.error.detail` in the catch.
+</Aside>
 
 ## raise
 
-Throw an error to stop execution.
+Fails the run (or the enclosing `try`) with an error you describe.
+
+| Field | What to put |
+|---|---|
+| `raise.error.type` | A URI naming the kind of error, e.g. `https://a3t.io/errors/input` |
+| `raise.error.status` | An HTTP-style status. Default 500 |
+| `raise.error.title` | A short title |
+| `raise.error.detail` | What went wrong, in words |
+| `raise.error.instance` | Optional: where |
+
+`type`, `title`, `detail` and `instance` may be expressions, so a catch can re-raise what it worked out.
 
 ```yaml
-- name: fail
-  type: raise
-  config:
-    error:
-      status: 400
-      message: "Validation failed"
+- not_found:
+    raise:
+      error:
+        type: https://a3t.io/errors/input
+        status: 404
+        title: Order not found
+        detail: '${ "No order " + .order_id }'
 ```
 
 ## wait
 
-Pause execution for a duration (ISO 8601).
+Pauses the run, then passes its input on unchanged.
+
+| Field | What to put |
+|---|---|
+| `wait.seconds`, `wait.minutes`, `wait.hours`, `wait.days` | Whole numbers; they add up. ISO 8601 strings such as `PT5S` are not accepted |
+
+A wait longer than 5 seconds in a durable run is a **timer**: the run lets go of its worker and is woken when the timer fires, on any worker, even after a restart. A shorter wait, or any wait in an ephemeral run, simply sleeps.
 
 ```yaml
-- name: delay
-  type: wait
-  config:
-    duration: "PT5S"
+- cool_off:
+    wait: { minutes: 10 }
 ```
+
+## Next
+
+- [I/O tasks](../io/): `call: http`, events, the key–value store
+- [Workflows](../../concepts/workflows/): how a run starts, waits, resumes and ends
+- [Expressions](../../concepts/expressions/): what you can write inside `${ … }`

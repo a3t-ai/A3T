@@ -1,54 +1,56 @@
 ---
 title: Resources
-description: Named connections to external systems.
+description: What a resource is. A connection to an outside service, set up once in a project and used by name, with keys kept in secrets.
 ---
 
-Resources store connection details for databases, LLMs, MCP servers, and APIs. Steps reference them by name.
+import { Aside } from '@astrojs/starlight/components';
 
-## Types
+A **resource** is a connection to something outside A3T: a model, an MCP tool server, a database, a secret. You set it up once, in a project, and agents and flows use it by name. Its address, keys and options live in one place, so changing them changes everything that uses it.
 
-| Type | Category | Description |
-|------|----------|-------------|
-| `openai` | AI | OpenAI API (GPT models) |
-| `anthropic` | AI | Anthropic API (Claude models) |
-| `ollama` | AI | Ollama local LLM server |
-| `postgres` | Database | PostgreSQL |
-| `mysql` | Database | MySQL |
-| `lancedb` | Database | LanceDB embedded vector store |
-| `redis` | Key-Value | Redis |
-| `qdrant` | Vector | Qdrant vector database |
-| `mcp` | MCP | MCP server connection |
-| `http` | API | HTTP/REST endpoint |
-| `clawdb` | Memory | ClawDB agent memory |
-| `agent` | Agent | ZeroClaw agent definition |
+This page explains the model. To create, test and delete resources in the app, see [Resources](../../console/resources/).
 
-## Creating a resource
+## Kinds
 
-```bash
-curl -X POST http://localhost:3002/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0", "method": "tools/call", "id": 1,
-    "params": {
-      "name": "create_resource",
-      "arguments": {
-        "name": "my-llm",
-        "namespace": "default",
-        "type_ref": "anthropic",
-        "config": {
-          "api_key": "sk-ant-...",
-          "model": "claude-sonnet-4-20250514"
-        }
-      }
-    }
-  }'
-```
+| Kind | Types | Used by |
+|---|---|---|
+| **LLM** | `openai` (any OpenAI-style API), `anthropic`, `ollama`, `groq`, `llm` | An agent's model; `call: llm` in a flow |
+| **MCP server** | `mcp` | An agent's tools; `call: mcp` in a flow |
+| **Database** | `adb`, `lancedb`, `postgres`, `mysql`, `redis`, `qdrant` | Memory (ADB); `call: adb` in a flow |
+| **Secret** | `secret`, `credential` | Other resources that need a key or password |
+| **Variable** | `variable` | A named value flows read |
+| **Function**, **Script** | `function`, `script` | Code a flow calls |
 
-## Referencing in steps
+## Naming a resource
+
+A resource is named `<project>/<name>`, for example `acme-support/tickets`. That is how an agent's settings, a flow step and a trigger refer to it:
 
 ```yaml
-- name: summarize
-  type: call:llm
-  resource: my-llm              # same namespace
-  resource: a3t/a3t-platform-db  # cross-namespace
+- ask_model:
+    call: llm
+    with:
+      prompt: ${ .question }
+      _resource: acme-support/claude
 ```
+
+`_resource` takes the full `<project>/<name>`. A resource that does not exist is an error that names it, so a deleted or renamed resource fails loudly instead of falling back to something else. The [Calls](../cncf-swf/#calls) table lists the fields each `call:` takes.
+
+## Platform resources
+
+Resources in the `a3t` project are the platform's own: the shared models, ADB (`a3t/adb`, where agents' memory lives) and A3T's own databases. Everyone can use them; only a SuperAdmin can change them.
+
+## Secrets
+
+Keep keys and passwords in a **Secret** resource, and point other resources at it by name (for example a model's key **from a secret** `acme-support/openai-key`). Once saved, a secret is shown masked and never in full again. A key typed inline is stored with the resource itself, and the resource's Overview warns about it.
+
+## Who may use one
+
+A resource belongs to its project, so who can see, change or delete it follows the project's members and roles. Using one is also a policy decision, made on every step as the person the run is for: calling a model is `llm:call`, a tool `tool:invoke` or `mcp:call`. See [Security](../../console/security/).
+
+<Aside type="tip">
+Before deleting a resource, open its **Used by** tab: it lists every agent, flow, resource, canvas and trigger that names it.
+</Aside>
+
+## Next
+
+- [Resources](../../console/resources/) in the console: each kind's settings, the Test tab, Used by.
+- [Files](../../console/files/): connect file storage.

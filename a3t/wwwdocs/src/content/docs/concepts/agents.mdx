@@ -1,47 +1,87 @@
 ---
 title: Agents
-description: ZeroClaw agent modes, configuration, and lifecycle.
+description: What an agent is in A3T. A template plus its settings, called over an API with keys, with its own memory space, hooks, versions and branches.
 ---
 
-Agents are LLM-powered entities with tool access and memory, running within FlowR workflows via ZeroClaw.
+import { Aside } from '@astrojs/starlight/components';
 
-## Modes
+An **agent** is a [template](../../console/templates/) plus its own settings. The template is the code: a flow, in [CNCF Serverless Workflow](../cncf-swf/) YAML, that says how each message is handled. The settings are what this agent decides for itself. Many agents can run one template, each with its own instructions, model, tools, memory and keys.
 
-| Mode | Lifecycle | Use case |
-|------|-----------|----------|
-| **Ephemeral** | Created per step, destroyed after | One-off tasks |
-| **Session** | Lives across calls with TTL, keyed by session_id | Conversations |
-| **Persistent** | Long-lived daemon, accepts messages via inbox | Always-on ops |
-| **Reactive** | Event-driven, wakes on webhooks/cron/events | Automation |
+Think of the template as the code and the agent as the product. Apps call the agent; A3T runs it, remembers what it learns and checks every step against policy.
 
-## Agent resource config
+This page explains the model. To make and change agents in the app, see [Agents](../../console/agents/) in the console section.
 
-```json
-{
-  "name": "my-agent",
-  "type_ref": "agent",
-  "config": {
-    "llm": "claude-sonnet",
-    "memory": "agent-memory",
-    "mode": "session",
-    "agent_id": "my-agent-001",
-    "ttl": 1800,
-    "mcp_servers": [{"url": "http://localhost:3002"}],
-    "system_prompt": "You are a helpful agent.",
-    "max_iterations": 10,
-    "flows": [
-      {"ref": "data-pipeline", "namespace": "default", "role": "data processing"}
-    ]
-  }
-}
-```
+## What an agent is made of
 
-## Task types
+| Part | What it is |
+|---|---|
+| **Template** | The flow it runs, at a version. Most agents run `tmpl_a3t_agent`, or a copy of it in their own project |
+| **Instructions** | What it is told at the start of every conversation |
+| **Model** | A model [resource](../resources/) it thinks with |
+| **Tools** | The MCP tool servers it may call, and which of their tools |
+| **Memory** | How it remembers (across conversations, one conversation, or nothing), in its own [memory space](../memory/) |
+| **Knowledge** | Semantic spaces attached to it, which it recalls from without owning them |
+| **Hooks** | Flows of yours that run at fixed points in every turn |
+| **Keys** | What apps call it with |
 
-| Type | Description |
-|------|-------------|
-| `call:agent` | Sync request-response (ephemeral or session) |
-| `send:agent` | Async fire-and-forget to persistent/session agent |
-| `ask:agent` | Async request-reply with polling |
-| `spawn:agent` | Start a persistent/reactive agent |
-| `stop:agent` | Stop a persistent/reactive agent |
+Every agent belongs to a **project**, and its name follows the [naming convention](../../console/templates/#naming): `agent_<project>_<what it does>`, for example `agent_acme_support_helpdesk`. It also has an id, such as `agt-87c819a3`, which is used in its address and its conversations.
+
+## Calling an agent
+
+An agent has two planes:
+
+| Plane | What it is for | Who uses it |
+|---|---|---|
+| **Data plane** | `POST /chat`, streamed. One message in, the answer out | Your apps, with an agent key |
+| **Control plane** | Change, block, share, version and deploy it | Your backend and the console |
+
+A **key** (`a3tk_…`) reaches only its own agent. The `session_id` of a call is `<agent id>:<conversation>`; turns with the same conversation continue it. A key acts with the roles of the person who made it, never more. See [Why A3T](../../getting-started/why-a3t/#an-example) for a call, and [Keys](../../console/agents/#keys) to make one.
+
+## One turn
+
+Each message is one **turn**: a run of the agent's template. On every turn the agent:
+
+1. loads its settings and checks it is not blocked;
+2. **recalls** from its memory space: the conversation's earlier turns, facts and procedures that match the message, and the semantic spaces attached to it;
+3. calls its model, with each model call checked as `llm:call`;
+4. uses tools, each call checked as `tool:invoke` or `mcp:call` before it runs;
+5. **stores** the turn in its episodic memory.
+
+Checks run as the user the agent acts for. [How it works](../../getting-started/architecture/#one-request-step-by-step) follows one request through every part of A3T.
+
+## Hooks
+
+A **hook** is a flow of yours that runs at a fixed point in every turn, as the caller. Use one to redact what goes in, add a rule to the prompt, block a tool call, or log to your own system. The phases are:
+
+`on_turn_start`, `before_recall`, `before_llm`, `after_llm`, `on_tool_call`, `after_tool_call`, `on_tool_error`, `before_store`, `on_turn_end`.
+
+What each phase receives and may return is in [Studio](../../console/studio/#hook-a-flow-into-an-agent).
+
+<Aside type="tip">
+A rule every agent of a kind needs belongs in the **template**, so all its agents get it. A rule only one agent needs belongs in a **hook**.
+</Aside>
+
+## Versions, branches and copies
+
+An agent is versioned like code, and its memory with it.
+
+| What | What it gives you |
+|---|---|
+| **Version** | A snapshot: its template version, a tag on its memory, a note. Every save that changes something makes one |
+| **Branch** | The same agent with a branch of its memory, to try changes on. The agent itself is untouched until you merge |
+| **Merge** | Brings a branch's facts and procedures back into the agent, if nothing conflicts |
+| **Inherit** | A new agent, a child of this one, with memory of its own |
+| **Fork** | An independent copy, starting from a copy of its memory |
+| **Evolve** | A branch that can't merge becomes a new agent |
+
+To move an agent to another project, clone it there and delete the original. Sharing an agent with other projects never hands over its memory. See [Lineage](../../console/agents/#lineage) and [Versions & deploy](../../console/agents/#versions--deploy).
+
+## Where it runs
+
+Until it is deployed, an agent runs on the shared runtime, inside FlowR. **Deploy** it from a [canvas](../../console/canvas/) and the controller gives it a runtime of its own, which can be paused and resumed. Blocking an agent refuses every call to it at once, wherever it runs; see [Controls](../../console/agents/#controls).
+
+## Next
+
+- [Memory](../memory/): what an agent remembers, and where.
+- [Triggers](../triggers/): start an agent's turn from a webhook, a schedule or an event.
+- [Agents](../../console/agents/) in the console: every tab, field by field.

@@ -1,0 +1,150 @@
+---
+title: AQL
+description: The Agent Query Language. How agents and flows read and write memory in ADB, by kind of memory, with recall by meaning and links between records.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SchemaTree from '../../../components/SchemaTree.astro';
+
+**AQL**, the Agent Query Language, is how memory is read and written in **ADB**, A3T's agent database. Agents use it on every turn; flows use it with `call: adb`; you can read with it on an agent's **Memory › AQL** tab. A statement is a **verb**, a **memory type** and **clauses**: reads say `FROM`, writes say `INTO`. This page follows **AQL 0.13**: 13 verbs, each working on every memory type, with `RECALL` as the only read. For a guided tour, read [AQL, explained](https://blog.a3t.io/aql-explained/), and for what changed in 0.13, [AQL 0.13: One Read, Thirteen Verbs](https://blog.a3t.io/aql-0-13-one-read-thirteen-verbs/); [every verb](#every-verb) is at the end of this page. The full grammar is in the [AQL repository](https://github.com/a3t-ai/AQL), with a [playground](https://a3t-ai.github.io/AQL/playground/).
+
+## Memory types
+
+| Type | What it holds | Typical use |
+|---|---|---|
+| `WORKING` | What an agent holds for the task at hand | The current conversation's state |
+| `EPISODIC` | What happened, one record per event | Each turn of a conversation |
+| `SEMANTIC` | What is known: records with a key and fields, and the links between them | What it knows; knowledge graphs are built from these |
+| `PROCEDURAL` | How to do things, with a confidence | Steps it has learned |
+| `TOOLS` | The tools it knows about | The tool catalogue |
+
+`ALL` reads every type at once; it works with `RECALL` and `FORGET` only.
+
+## Verbs and clauses
+
+| Part | Options |
+|---|---|
+| Read | `RECALL`: every read, by key, by condition, by meaning, the latest items or the tools for a task; ADB picks the access path |
+| Write | `STORE INTO`, `UPDATE INTO … WHERE … (…)`, `FORGET FROM` |
+| Links | `LINK FROM … INTO … TYPE "…"` connects records, or sets an existing link's weight; `UNLINK` removes links; `WITH LINKS` and `FOLLOW LINKS` read them |
+| Namespaces | `BRANCH`, `FORK` and `MERGE` work on whole namespaces |
+| Flow | `PIPELINE` (several reads in one request), `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` |
+| Session | `USE "…"` names the namespace for the statements after it |
+| Clauses | `WHERE`, `LIKE` (by meaning) with `CONFIDENCE`, `WINDOW LAST n`, `ORDER BY`, `LIMIT`, `RETURN`, `AGGREGATE`, `GROUP BY`, `HAVING` |
+| Modifiers | `NAMESPACE "…"` (an agent's space; a read may list several), `IN SCOPE "…"`, `TTL 90d`, `AS OF "<time>"`, `WITH HISTORY` |
+| Variables | `$name` in `WHERE` and `LIKE`, bound from the caller's `variables` |
+
+## Read
+
+```sql
+-- The help-desk agent's last turns (no WHERE reads everything, up to the LIMIT)
+RECALL FROM EPISODIC NAMESPACE "agt-87c819a3" ORDER BY created_at DESC LIMIT 50
+
+-- One conversation's turns
+RECALL FROM EPISODIC WHERE session_id = "agt-87c819a3:order-A-1042" NAMESPACE "agt-87c819a3" LIMIT 10
+
+-- Knowledge about refunds, by meaning rather than exact words
+RECALL FROM SEMANTIC LIKE "late refund" NAMESPACE "a3t-usage" LIMIT 5
+
+-- One record by its key: a key is an ordinary field
+RECALL FROM SEMANTIC WHERE key = "refund-window" NAMESPACE "a3t-usage"
+```
+
+A read answers with its records and a **memory point**: the place in ADB's log it reflects, usable with `AS OF` to read the same state again.
+
+## Write
+
+```sql
+STORE INTO SEMANTIC (key = "refund-window", content = "Refunds arrive within 7 days of approval")
+
+STORE INTO PROCEDURAL (pattern = "late-refund", steps = "Ask for the order number, check the status, escalate after 7 days", confidence = 0.9)
+
+UPDATE INTO SEMANTIC WHERE key = "refund-window" (content = "Refunds arrive within 5 working days of approval")
+
+FORGET FROM SEMANTIC WHERE key = "refund-window"
+```
+
+`FORGET` removes a record from every read at once; its history is kept. `UPDATE` keeps the old version too, so `AS OF` and `WITH HISTORY` can read it.
+
+When two keys turn out to name one thing, give the survivor the other key as an alias, then forget the duplicate. Reads and links by the alias reach the survivor:
+
+```sql
+UPDATE INTO SEMANTIC WHERE key = "refund-window" (aliases = ["refund-time"])
+FORGET FROM SEMANTIC WHERE key = "refund-time"
+```
+
+## Links
+
+```sql
+LINK FROM SEMANTIC WHERE key = "refund-window"
+  INTO PROCEDURAL WHERE pattern = "late-refund"
+  TYPE "handled_by"
+
+RECALL FROM SEMANTIC WHERE key = "refund-window"
+  FOLLOW LINKS TYPE "handled_by"
+  RETURN pattern, confidence
+```
+
+A relationship is a link, and a value is a field: there are no separate facts. Links are read in both directions.
+
+## Namespaces and branches
+
+Every statement works in one namespace: its own `NAMESPACE`, or the one named by a `USE` earlier in the same request.
+
+```sql
+USE "agt-87c819a3";
+RECALL FROM EPISODIC WHERE session_id = "agt-87c819a3:order-A-1042" LIMIT 10;
+RECALL FROM SEMANTIC LIKE "late refund" NAMESPACE "a3t-usage" LIMIT 5
+```
+
+A branch is a namespace too. `BRANCH` makes one that reads through its base and keeps its own writes; `MERGE` brings its changes back, failing on conflicts unless `PREFER SOURCE` or `PREFER TARGET` says which side wins; `FORGET FROM ALL` drops it:
+
+```sql
+BRANCH FROM "agt-87c819a3" INTO "agt-87c819a3-try"
+MERGE  FROM "agt-87c819a3-try" INTO "agt-87c819a3"
+FORGET FROM ALL NAMESPACE "agt-87c819a3-try"
+```
+
+`FORK` makes a full, independent copy instead.
+
+## AQL in a flow
+
+```yaml
+- recall_history:
+    call: adb
+    with:
+      query: RECALL FROM EPISODIC WHERE host = $host LIMIT 5 RETURN alert, outcome
+      variables:
+        host: ${ $context.alert.host }
+      _resource: a3t/adb
+    export:
+      as: '${ $context + {history: .} }'
+```
+
+`variables` bind `$names` in `WHERE` and `LIKE`. In `STORE` and `UPDATE` values, build the statement with an expression and quote values with `@json`:
+
+```yaml
+query: '${ "STORE INTO EPISODIC (host = " + ($context.alert.host | @json) + ", outcome = \"open\") TTL 90d" }'
+```
+
+## How agents use it
+
+On every turn, an agent built on `tmpl_a3t_agent`:
+
+1. **recalls** from its own space: the conversation's earlier turns, and facts and procedures that match the message; and from the semantic spaces attached to it;
+2. if **procedure answers** are turned on in its memory settings (they are off by default), answers from a matching **procedure** without calling the model;
+3. **stores** the turn in its episodic memory afterwards.
+
+Its space is a `NAMESPACE` of its own in its organisation's ADB, shown on its **Memory** tab, e.g. `agt-87c819a3`. On a memory **branch**, every statement it runs reads and writes that branch.
+
+<Aside type="note">
+The console's **Memory › AQL** tab runs `RECALL` only. To change what an agent remembers, use the agent's **Build › Memory**.
+</Aside>
+
+## Every verb
+
+Each AQL verb and its clauses, as a tree. Open one with **+** for what it does and an example; search finds a keyword anywhere.
+
+<SchemaTree of="aql" />

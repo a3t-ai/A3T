@@ -1,148 +1,144 @@
 ---
 title: Building a CRUD Flow
-description: Step-by-step guide to building CRUD operations with call:lancedb.
+description: Write a flow in Studio that adds, reads, changes and forgets entries in a semantic space in ADB with AQL, then attach the space to an agent.
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
-This guide walks through building list, create, get, and delete flows using `call:lancedb`.
+This guide builds one flow that keeps a small knowledge base: notes about refunds, stored as facts in a **semantic space** in ADB. The flow can list, get, add, change and forget notes with [AQL](../../concepts/aql/). At the end you attach the space to a help-desk agent, so it recalls the notes on every turn.
+
+**You need:** a project where you can author flows (the **developer** role or higher), for example `acme-support`. See [Get access and sign in](../../console/access/) and the [Quick start](../../getting-started/quickstart/).
+
+| Name | What it is |
+|---|---|
+| `flow_acme_support_refund_notes` | The flow, named `flow_<project>_<what it does>` |
+| `acme-support-refunds` | The semantic space it writes to |
+| `a3t/adb` | The platform ADB resource, where agents' memory lives |
 
 <Steps>
 
-1. **Create the database resource**
+1. **Start the flow in Studio**
 
-   ```bash
-   # Create a LanceDB resource
-   curl -X POST http://localhost:3002/message \
-     -H "Content-Type: application/json" \
-     -d '{
-       "jsonrpc": "2.0", "method": "tools/call", "id": 1,
-       "params": {
-         "name": "create_resource",
-         "arguments": {
-           "name": "my-db", "namespace": "default",
-           "type_ref": "lancedb",
-           "config": {"db_path": "/data/my-app.lance"}
-         }
-       }
-     }'
-   ```
+   Open [Studio](https://dash.a3t.io/studio), pick the project `acme-support`, and use **New in …** in the Explorer to start a flow. Switch the editor to **Code**. See [Studio](../../console/studio/) for the parts of the screen.
 
-2. **Create the table (schema install)**
+2. **Declare its input**
+
+   Every call says what to do with `action`; `key` and `content` are used by the actions that need them. Declaring the schema means bad input is refused before any step runs.
 
    ```yaml
-   namespace: default
-   name: products-schema
-   version: "1.0.0"
-   enabled: true
-   steps:
-     - name: create-table
-       type: call:lancedb
-       resource: my-db
-       config:
-         operation: create_table
-         mode: create_if_not_exists
-         table: products
-         schema:
-           id: string
-           name: string
-           price: string
-           created_at: string
-       then: end
+   document:
+     dsl: 1.0.3
+     namespace: acme-support
+     name: flow_acme_support_refund_notes
+     version: 1.0.0
+     title: List, get, add, change and forget refund notes
+   input:
+     schema:
+       format: json
+       document:
+         type: object
+         required: [action]
+         properties:
+           action: { type: string, enum: [list, get, add, change, forget] }
+           key: { type: string }
+           content: { type: string }
    ```
 
-3. **List flow**
+3. **Route each action to its step**
+
+   Below the input, a `switch` sends each action to its own step:
 
    ```yaml
-   namespace: default
-   name: products-list
-   version: "1.0.0"
-   enabled: true
-   steps:
-     - name: query
-       type: call:lancedb
-       resource: my-db
-       config:
-         operation: query
-         table: products
-         limit: 100
-       then: end
+   do:
+     - route:
+         switch:
+           - list:   { when: '${ .action == "list" }', then: list_notes }
+           - get:    { when: '${ .action == "get" }', then: get_note }
+           - add:    { when: '${ .action == "add" }', then: add_note }
+           - change: { when: '${ .action == "change" }', then: change_note }
+           - forget: { when: '${ .action == "forget" }', then: forget_note }
    ```
 
-4. **Create flow**
+4. **Read: list and get**
 
-   Input: `{ data: { id, name, price }, timestamp }`
+   Each step is one AQL statement on the ADB resource, with `call: adb`. Reads pass values as `variables`, bound to `$names` in `WHERE`:
 
    ```yaml
-   namespace: default
-   name: products-create
-   version: "1.0.0"
-   enabled: true
-   steps:
-     - name: insert
-       type: call:lancedb
-       resource: my-db
-       config:
-         operation: insert
-         table: products
-         records:
-           - id: "${ .data.id }"
-             name: "${ .data.name }"
-             price: "${ .data.price }"
-             created_at: "${ .timestamp }"
-       then: end
+     - list_notes:
+         call: adb
+         with:
+           query: RECALL FROM SEMANTIC NAMESPACE "acme-support-refunds" LIMIT 100
+           _resource: a3t/adb
+         then: end
+     - get_note:
+         call: adb
+         with:
+           query: RECALL FROM SEMANTIC WHERE key = $key NAMESPACE "acme-support-refunds" LIMIT 1
+           variables:
+             key: '${ .key }'
+           _resource: a3t/adb
+         then: end
    ```
 
-5. **Get flow**
+5. **Write: add, change and forget**
 
-   Input: `{ id }`
+   Writes build the statement with an expression, quoting each value with `@json`:
 
    ```yaml
-   namespace: default
-   name: products-get
-   version: "1.0.0"
-   enabled: true
-   steps:
-     - name: query
-       type: call:lancedb
-       resource: my-db
-       config:
-         operation: query
-         table: products
-         filter: "id = '${ .id }'"
-         limit: 1
-       then: end
+     - add_note:
+         call: adb
+         with:
+           query: '${ "STORE INTO SEMANTIC (key = " + (.key | @json) + ", content = " + (.content | @json) + ") NAMESPACE \"acme-support-refunds\"" }'
+           _resource: a3t/adb
+         then: end
+     - change_note:
+         call: adb
+         with:
+           query: '${ "UPDATE INTO SEMANTIC WHERE key = " + (.key | @json) + " (content = " + (.content | @json) + ") NAMESPACE \"acme-support-refunds\"" }'
+           _resource: a3t/adb
+         then: end
+     - forget_note:
+         call: adb
+         with:
+           query: '${ "FORGET FROM SEMANTIC WHERE key = " + (.key | @json) + " NAMESPACE \"acme-support-refunds\"" }'
+           _resource: a3t/adb
+         then: end
    ```
 
-6. **Delete flow**
+   **Save**. The flow is now version `1.0.0`; a later change is saved as the next version.
 
-   Input: `{ id }`
+6. **Run it**
 
-   ```yaml
-   namespace: default
-   name: products-delete
-   version: "1.0.0"
-   enabled: true
-   steps:
-     - name: del
-       type: call:lancedb
-       resource: my-db
-       config:
-         operation: delete
-         table: products
-         filter: "id = '${ .id }'"
-       then: end
+   Click **Run with inputs** and try each action in turn:
+
+   ```json
+   {"action": "add", "key": "refund-window", "content": "Refunds arrive within 7 days of approval."}
+   {"action": "get", "key": "refund-window"}
+   {"action": "change", "key": "refund-window", "content": "Refunds arrive within 5 working days of approval."}
+   {"action": "list"}
+   {"action": "forget", "key": "refund-window"}
    ```
+
+   Each run is listed under **Runs**; open one in [Executions](../../console/executions/) to see what each step got and gave. An `action` that is not one of the five is refused before any step runs.
+
+7. **Attach the space to an agent**
+
+   Add a note again, then open the help-desk agent, **Build › Memory**, **Semantic**. Type `acme-support-refunds` and click **Attach**. From the next message the agent recalls the notes that match each message, by meaning, besides its own memory. See [Memory](../../concepts/memory/#semantic-spaces).
 
 </Steps>
 
-## Calling from the UI
+<Aside type="note">
+`add` stores a new entry. Give each note its own key, and use `change` to replace a note's content: `UPDATE` sets the fields you give on the entry with that key. A forgotten note leaves every read at once; its history is kept.
+</Aside>
 
-The UI service calls these flows directly:
+## Calling it from elsewhere
 
-```typescript
-const result = await flows.execute('products-list', 'default');
-// Poll for completion
-const status = await flows.status(instanceId);
-// status.output = { count: N, rows: [...] }
-```
+The flow runs the same way wherever it is started:
+
+| From | How |
+|---|---|
+| A trigger | A **Flow** target, with an `input` mapping that builds `{action, key, content}` from the event. See [Triggers](../../concepts/triggers/) |
+| Another flow | A `run` step: `run: { workflow: { namespace: acme-support, name: flow_acme_support_refund_notes, input: { action: list } } }` |
+| An agent | As a hook, at a phase of its turn. See [Studio](../../console/studio/#hook-a-flow-into-an-agent) |
+
+Each step is checked against policy as the person the run is for; see [Security](../../console/security/).

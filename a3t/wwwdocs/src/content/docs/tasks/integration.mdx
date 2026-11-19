@@ -1,107 +1,187 @@
 ---
 title: Integration Tasks
-description: call:sql, call:lancedb, call:qdrant, call:clawdb, call:mcp
+description: call adb, call mcp, call lancedb, call rotate and call registry, and the call types that are not available in A3T.
+sidebar:
+  order: 4
 ---
 
-## call:lancedb
+import { Aside } from '@astrojs/starlight/components';
 
-Query, insert, and delete from LanceDB tables. Requires a `lancedb` resource.
+Tasks that reach A3T's data and other systems: memory on ADB, tools on MCP servers, A3T's own tables, the knowledge graph and the registry. A resource is named `<project>/<name>`; see [Resources](../../concepts/resources/).
 
-```yaml
-- name: list-users
-  type: call:lancedb
-  resource: a3t/a3t-platform-db
-  config:
-    operation: query
-    table: users
-    filter: "org_id = '${ .org_id }'"
-    select: [id, name, email, role]
-    limit: 100
-```
+## call: adb
 
-### Insert
+Runs one [AQL](../../concepts/aql/) statement on an ADB resource. `call: clawdb` is an older name for the same task.
 
-```yaml
-- name: create-user
-  type: call:lancedb
-  resource: a3t/a3t-platform-db
-  config:
-    operation: insert
-    table: users
-    records:
-      - id: "${ .data.id }"
-        name: "${ .data.name }"
-        email: "${ .data.email }"
-        created_at: "${ .timestamp }"
-```
+| `with` field | What it is for | What to put |
+|---|---|---|
+| `query` | The statement | AQL text, e.g. `RECALL FROM EPISODIC WHERE host = $host LIMIT 5` |
+| `variables` | Values for `$names` in the statement | `{ host: ${ .host } }` |
+| `_resource` | Which ADB | `<project>/<name>` of an `adb` resource, e.g. `a3t/adb` |
+| `url` | Instead of `_resource`: an ADB address | Rarely needed |
 
-### Delete
+One of `_resource` or `url` is required; there is no default. **Output:** the `data` part of ADB's answer. For a `RECALL` it holds the records, each with `id`, `memory_type` and `data`; A3T's own flows read them as `.data.records // .records`. An error from ADB is a `communication` error (status 502).
+
+On a memory branch, the statement is sent to that branch: `BRANCH` is added after its `NAMESPACE`, and a write with no `NAMESPACE` is refused, since it would reach the main memory.
 
 ```yaml
-- name: remove-user
-  type: call:lancedb
-  resource: a3t/a3t-platform-db
-  config:
-    operation: delete
-    table: users
-    filter: "id = '${ .id }'"
+- recall_history:
+    call: adb
+    with:
+      query: RECALL FROM EPISODIC WHERE order_id = $order LIMIT 5
+      variables:
+        order: ${ .order_id }
+      _resource: a3t/adb
+    export:
+      as: '${ $context + {history: (.data.records // .records // [])} }'
 ```
 
-## call:sql
+To build a `STORE` or `UPDATE` with values from the run, see [AQL › AQL in a flow](../../concepts/aql/#aql-in-a-flow).
 
-Execute SQL queries against PostgreSQL or MySQL. Requires a `postgres` or `mysql` resource.
+## call: mcp
+
+Calls a tool on an MCP server resource, or lists its tools.
+
+| `with` field | What it is for | What to put |
+|---|---|---|
+| `_resource` | Which server | `<project>/<name>` of an `mcp` resource. Its `url` (or `endpoint`, `server`) is used |
+| `method` | What to do | `tools/call` (the default) or `tools/list` |
+| `tool` | The tool to call | Required for `tools/call` |
+| `arguments` | The tool's input | An object |
+| `server` | Instead of `_resource`: a server URL | Rarely needed |
+
+**Output:** for `tools/call`, the text of the tool's first content item (a string; use `fromjson` if it holds JSON), or the whole answer if it has none. For `tools/list`, a list of `{ name, description, input_schema }`. An error from the server is a `communication` error (status 502).
+
+Policy sees the call as the tool by its name, so a flow's `exposedTools` and `enabledTools` apply.
 
 ```yaml
-- name: query-orders
-  type: call:sql
-  resource: my-postgres
-  config:
-    query: "SELECT * FROM orders WHERE status = $1 LIMIT $2"
-    params: ["${ .status }", "${ .limit }"]
+- open_ticket:
+    call: mcp
+    with:
+      _resource: acme-support/helpdesk
+      tool: create_ticket
+      arguments:
+        title: '${ "Late order " + .order_id }'
+        priority: high
+    output:
+      as: '${ {ticket: (. | fromjson? // .)} }'
 ```
 
-## call:qdrant
+<Aside type="note">
+Like `call: http`, `call: mcp` leaves A3T, so it is refused on a memory branch and outside a production environment.
+</Aside>
 
-Vector database operations. Requires a `qdrant` resource.
+## call: lancedb
+
+Reads and writes **A3T's platform tables** (users, projects, agent configs, …) on the `a3t/a3t-platform-db` resource. It is what A3T's own `a3t/flow_a3t_*` flows use. It is not meant for a project's own data: use ADB for that.
+
+| `with` field | What to put |
+|---|---|
+| `operation` | `query` (the default), `insert`, `update`, `delete`, `create_table`, `list_tables` |
+| `table` | The table name |
+| `filter` | For `query`, `update`, `delete`: a SQL condition, e.g. `"id = 'u-1'"`. Required for `update` and `delete` |
+| `limit` | For `query`. Default 100 |
+| `records` | For `insert`: a list of objects |
+| `values` | For `update`: an object of column → new value |
+| `schema` | For `create_table`: an object whose keys are the columns |
+| `mode` | For `create_table`: `create_if_not_exists` (the default) or `create_or_reset_empty` |
+| `_resource` | Default `a3t/a3t-platform-db` |
+
+| Operation | Output |
+|---|---|
+| `query` | A list of rows |
+| `insert` | `{ inserted: <n> }`. A missing table is created from the first record |
+| `update` | `{ updated, rows }` |
+| `delete` | `{ deleted, rows }`. Refused if other rows still refer to these |
+| `create_table` | `{ created, exists, … }` |
+| `list_tables` | A list of names |
+
+Every column is text: numbers, objects and lists are stored as their JSON text, so read them back with `tonumber` or `fromjson`. An unknown operation returns `{}`.
 
 ```yaml
-- name: search-similar
-  type: call:qdrant
-  resource: my-qdrant
-  config:
-    operation: search
-    collection: documents
-    vector: "${ .embedding }"
-    limit: 5
-    filter:
-      must:
-        - key: category
-          match:
-            value: "${ .category }"
+- list_projects:
+    call: lancedb
+    with:
+      operation: query
+      table: projects
+      filter: '${ "org_id = ''" + .org_id + "''" }'
+      limit: 50
 ```
 
-## call:clawdb
+To quote a value inside a filter, double the single quotes, as above, or see [Expressions](../../concepts/expressions/#quoting-in-yaml).
 
-Execute AQL (Agent Query Language) against ClawDB for memory operations.
+## call: rotate
+
+A knowledge graph of `(head, relation, tail)` facts, with RotatE embeddings for link prediction. It powers [Knowledge](../../console/knowledge/).
+
+| `with` field | What to put |
+|---|---|
+| `operation` | `ingest`, `train`, `score`, `predict_tail`, `predict_head`, `neighbors`, `lookup`, `entities`, `relations`, `stats` (the default) |
+| `_resource` | A resource whose `config.db_path` holds the graph, e.g. `a3t/a3t-kg-db` |
+
+| Operation | Fields | Output |
+|---|---|---|
+| `ingest` | `triples`: list of `{ head, relation, tail, weight?, head_type?, tail_type? }`; `dim` (default 256) | `{ ingested, entities, relations, triples, dim }` |
+| `train` | `epochs` (200), `lr` (0.001), `gamma` (12), `neg_samples` (8), `seed` | `{ trained, epochs, loss, mrr, hits_at_10, … }` |
+| `score` | `head`, `relation`, `tail`, `gamma` | `{ found, distance, score }` |
+| `predict_tail` / `predict_head` | `head` or `tail`, `relation`, `limit` (10) | `{ found, results: [{ id, name, type, score, known }] }` |
+| `neighbors` | `entity`, `limit` (10) | `{ found, entity, results }` |
+| `lookup` | any of `head`, `relation`, `tail`; `limit` (100) | `{ count, triples }` |
+| `entities` | `query`, `limit` (100), `offset` | `{ count, dim, entities }` |
+| `relations` | — | `{ count, relations }` |
+| `stats` | `sample` (2000), `max_edges` (8000) | counts, types, points and edges for a map |
+
+`ingest` and `train` are writes for policy; the rest are reads. An unknown operation fails the step.
 
 ```yaml
-- name: recall-context
-  type: call:clawdb
-  resource: agent-memory
-  config:
-    query: 'RECALL FROM EPISODIC WHERE content = "${ .query }" LIMIT 5'
+- likely_causes:
+    call: rotate
+    with:
+      operation: predict_tail
+      head: ${ .symptom }
+      relation: CausedBy
+      limit: 5
+      _resource: acme-support/kg
 ```
 
-## call:mcp
+## call: registry
 
-Call a tool on an MCP server. Requires an `mcp` resource.
+Operations on A3T's registry that no other task can do. A3T's project, agent and flow-management flows use it; each operation checks the caller's access where noted.
+
+| `operation` | Fields | What it does |
+|---|---|---|
+| `versions` | `namespace`, `name` | A flow's versions and the active one. Needs read access |
+| `activate` | `namespace`, `name`, `version` | Makes that version the active one. Needs write access |
+| `copy` | `kind` (`flow`, `resource`, `trigger`), `from`, `name` or `id`, `to` | Publishes or clones an item into another project |
+| `move_namespace` | `from`, `to`, `dry_run` (default `true`) | Moves every flow, resource and trigger to an empty project and rewrites references to it |
+| `move_resources` | `from`, `to`, `names`, `dry_run` (default `true`) | Moves some resources, secrets intact |
+| `visible` | `kind`, `items` | Keeps the items the caller may see |
+| `usage` | `namespace` | `{ flows, resources, triggers, empty }` |
+| `agent_key` | `agent_id`, `name` | A key for an agent's data plane, shown once. Needs write access |
+| `agent_version` | `agent_id`, `note` | Records an agent's next version |
 
 ```yaml
-- name: run-tool
-  type: call:mcp
-  resource: my-mcp-server
-  config:
-    tool: list_resources
-    arguments:
-      namespace: default
+- roll_back:
+    call: registry
+    with:
+      operation: activate
+      namespace: acme-support
+      name: flow_acme_support_refund
+      version: 1.2.0
 ```
+
+## Not available in A3T
+
+These parse, so a flow that uses them saves, but no handler runs them: the step fails with `no handler registered for task type …`.
+
+| Task | Instead |
+|---|---|
+| `call: grpc`, `call: openapi`, `call: asyncapi`, `call: a2a` | `call: http`, or an MCP server |
+| `call: <name>` from `use.functions` | Not resolved yet. Use `run: workflow` to reuse steps |
+| `run: container` | No containers from flows |
+| `call: sql`, `call: qdrant` | Gone. Put the data behind an MCP server, or in ADB |
+
+## Next
+
+- [Script tasks](../script/): sub-flows and inline scripts
+- [Task types](../../concepts/task-types/): every task on one page

@@ -1,0 +1,122 @@
+---
+title: YAML
+description: The YAML files A3T is written in (flows, templates, triggers and canvases), how they are laid out, and the rules that keep them valid.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Everything you build in A3T is a YAML document you can read, diff and keep in Git: a **flow**, a **template** (a flow that agents run), a **trigger** and a **canvas**. Studio shows each as a graph and as this code; both edit the same document.
+
+New to YAML? [How to read and write YAML](https://blog.a3t.io/how-to-read-and-write-yaml/) walks through maps, lists, strings and nesting, with the [gotchas](https://blog.a3t.io/how-to-read-and-write-yaml/#gotchas) that break files. This page is the reference for A3T's files.
+
+## The four kinds
+
+| Kind | Starts with | Where you edit it | Page |
+|---|---|---|---|
+| **Flow** | `document:` (`dsl`, `namespace`, `name`, `version`) then `do:` | [Studio](../../console/studio/) | [CNCF Serverless Workflow](../cncf-swf/) |
+| **Template** | A flow whose steps run an agent (`call: a3t:agent`, or `run` of the core agent) | [Templates](../../console/templates/) › Edit in Studio | [Templates](../../console/templates/) |
+| **Trigger** | `name:`, `project:`, then `on:` and `send:` | [Triggers](../../console/triggers/) › YAML | below |
+| **Canvas** | `flowRef:`, `placement:`, `lifecycle:`, `health:` | [Canvas](../../console/canvas/) › YAML | below |
+
+## A flow
+
+```yaml
+document:                                   # who it is
+  dsl: 1.0.3                                # the CNCF Serverless Workflow version
+  namespace: qa-operator-support            # its project
+  name: flow_qa_operator_support_refund_decide
+  version: 1.0.0                            # a released version never changes
+  title: Decide what to do about a late refund
+input:                                      # optional: what it must be started with
+  schema:
+    format: json
+    document:
+      type: object
+      required: [order_id, days_late]
+      properties:
+        order_id: { type: string }
+        days_late: { type: integer }
+metadata:                                   # optional: A3T's own settings
+  a3t:
+    extends: system/flow_system_base@1.0.0  # inherit the base's error handling
+do:                                         # the steps, top to bottom
+  - decide:
+      switch:
+        - late:    { when: '${ .days_late >= 7 }', then: escalate }
+        - default: { then: wait }
+  - escalate:
+      set: { action: escalate }
+      then: end
+  - wait:
+      set: { action: wait }
+      then: end
+```
+
+## A trigger
+
+```yaml
+name: refund-requests
+project: qa-operator-support
+description: Refund requests from the shop, sent to the help-desk agent
+enabled: true
+on:                                 # one source: webhook, schedule, topic or event
+  webhook:
+    path: /acme/refund
+    method: POST
+send:                               # one or more targets
+  - agent: agt-87c819a3
+    message: '${ "Refund request for order " + .body.order_id }'
+    conversation: '${ "order-" + .body.order_id }'
+  - flow: qa-operator-support/flow_qa_operator_support_refund_decide
+    input: '${ {order_id: .body.order_id, days_late: .body.days_late} }'
+```
+
+`on` takes exactly one source:
+
+| Source | Its fields | What `.body` is |
+|---|---|---|
+| `webhook` | `path`, `method` (default `POST`), `message` | The JSON body the caller posts |
+| `cron` | `expression` (e.g. `"0 6 * * *"`), `timezone`, `message` | `{ trigger: cron, trigger_id, fired_at, minute }` |
+| `adb_topic` | `resource` (an ADB resource), `topic`, `filter`, `message` | The message's fields, plus `_topic` and `_offset` |
+| `event` | `source` (e.g. `flow.completed`), `filter`, `message` | The platform event |
+
+`send` takes one or more targets: `flow: <project>/<flow>` with `input`; `agent: <agent id>` with `message` and `conversation`; or `url:` with `headers`, which posts the event on. Each mapping is a jq expression in a string over `{ body, message, source, trigger, time }`; left out, a flow gets the body as it came and an agent the trigger's message, in conversation `trigger-<name>`. Mappings run only once they are approved; see [Triggers](../../console/triggers/).
+
+## A canvas
+
+```yaml
+flowRef: qa-operator-support/flow_qa_operator_support_refund_decide
+description: The refund decision, on the shared CPU pool
+placement:
+  mode: shared                # shared | isolated
+  runtimeSelector:            # labels a runtime must carry
+    class: cpu
+lifecycle:
+  state: running              # running | paused
+  session: ephemeral          # ephemeral | persistent
+  scaling: { min: 1, max: 3, metric: queue_depth, target: 10 }
+  restart: { policy: on-failure, backoff: exponential, maxRetries: 5 }   # backoff: exponential | linear | fixed
+health:
+  dependsOn:
+    - resource: qa-operator-support/tickets
+  onDependencyDown: queue     # queue | cordon | circuit-break | fail
+```
+
+## Rules that keep YAML valid
+
+The short list; the [writing rules](https://blog.a3t.io/how-to-read-and-write-yaml/#writing-rules) in the YAML guide explain each.
+
+| Rule | Example |
+|---|---|
+| Quote a value that **starts with** `${`, or holds `: `, `#` or `{` | `when: '${ .days_late >= 7 }'` |
+| Inside a single-quoted value, write jq strings in double quotes | `'${ "Order " + .order_id }'` |
+| Long text: `>` folds lines into one, `\|` keeps them | `summary: >` then the indented text |
+| Indentation is spaces, never tabs, and it is the structure | Two spaces per level throughout A3T |
+| Lists start with `- `; each step in `do:` is a one-key map | `- decide:` then its body indented below |
+| Names are `<kind>_<project>_<what it does>` | `flow_acme_support_refund`, `tmpl_acme_support_helpdesk` |
+
+<Aside type="tip">
+Studio shows what is wrong with the YAML as you edit. A trigger with problems is not saved; the message names the field, e.g. `on.cron.expression: when it fires, e.g. "*/5 * * * *".`
+</Aside>

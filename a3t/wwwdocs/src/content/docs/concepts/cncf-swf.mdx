@@ -1,0 +1,113 @@
+---
+title: CNCF Serverless Workflow
+description: The workflow language A3T flows are written in. Tasks, data flow, expressions and errors, with the call types A3T adds.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SchemaTree from '../../../components/SchemaTree.astro';
+
+Flows in A3T are written in the **[CNCF Serverless Workflow](https://github.com/serverlessworkflow/specification)** language (DSL 1.0): an open specification, so a flow is portable and readable without A3T. A3T runs it on its own engine in Rust, checks every step against policy, journals every step so a run can resume, and adds call types for models, MCP, ADB and agents.
+
+For a guided tour, read [The CNCF Workflow DSL, explained](https://blog.a3t.io/cncf-workflow-dsl-explained/). Below, after A3T's specifics, is [the full schema](#the-full-schema) as a tree you can search and open key by key.
+
+## The document
+
+| Part | What it is |
+|---|---|
+| [`document`](https://blog.a3t.io/cncf-workflow-dsl-explained/#swf-document) | `dsl` (1.0.3), `namespace` (its project), `name`, `version`, optional `title` and `summary` |
+| [`input`](https://blog.a3t.io/cncf-workflow-dsl-explained/#swf-input) | Optional JSON Schema for the input, and `from` to reshape it. It documents the input; the engine does not check it yet |
+| [`do`](https://blog.a3t.io/cncf-workflow-dsl-explained/#swf-do) | The tasks, run top to bottom. Each is `- <name>: { <task> }` |
+| [`output`](https://blog.a3t.io/cncf-workflow-dsl-explained/#swf-output) | Optional `as` to reshape the result, and a `schema` documenting it |
+| `metadata.a3t` | A3T's settings for the flow (below) |
+
+## Data flow
+
+- Each task's **output is the next task's input**, `.`.
+- `export: { as: '${ $context + . }' }` saves a task's result into **`$context`**, which every later task can read.
+- `$context._principal` is who the run is for; a flow can't overwrite it.
+- `then:` says where to go next: a task's name in the same list, `continue` (the next task), or `end`, which ends the list the task is in (at the top level, the run).
+
+## Expressions
+
+Values in `${ … }` are **jq** expressions over the task's input (`.`), with `$context` and `$workflow` available.
+
+| Expression | Gives |
+|---|---|
+| `${ .order_id }` | A field of the input |
+| `${ .days_late >= 7 }` | A test, for `when` |
+| `${ "Order " + .order_id }` | Text built from fields; numbers need `\| tostring` |
+| `${ .items \| map(.price) \| add }` | A sum over a list |
+| `${ .note // "none" }` | A default when the field is missing |
+| `${ $context.history }` | Something an earlier task exported |
+
+## Tasks
+
+| Task | What it does | Example |
+|---|---|---|
+| `set` | Builds data | `set: { action: escalate }` |
+| `switch` | Branches on the first `when` that holds | `switch: [ { late: { when: '${ .days_late >= 7 }', then: escalate } }, { default: { then: wait } } ]` |
+| `for` | Runs its `do` for each item | `for: { each: item, in: '${ .orders }', do: [ … ] }`, with `do` inside `for` |
+| `fork` | Runs branches side by side | `fork: { branches: [ … ] }` |
+| `try` / `catch` | Runs steps, and handles their failure | below |
+| `raise` | Fails with an error of a given type, status, title and detail | `raise: { error: { type: https://a3t.io/errors/input, status: 404, title: Not found, detail: … } }` |
+| `wait` | Waits a duration | `wait: { seconds: 30 }` |
+| `run` | Runs another flow, by namespace and name | `run: { workflow: { namespace: system, name: flow_system_error_handler, input: { … } } }` |
+| `call` | Calls something (below) | `call: http` |
+| `emit`, `listen` | Sends and waits for events | — |
+
+### Calls
+
+| `call:` | What it calls | Key `with` fields |
+|---|---|---|
+| `http` | A web API | `method`, `endpoint.uri`, `headers`, `body` |
+| `llm` | A model resource | `prompt`, `messages`, `system_prompt`, `max_tokens`, `temperature`, `_resource` |
+| `mcp` | A tool on an MCP server resource | `tool`, `arguments`, `_resource`; or `method: tools/list` |
+| `adb` | One AQL statement on an ADB resource | `query`, `variables`, `_resource` |
+| `a3t:agent` | A turn of an agent | the agent's message and settings |
+| `lancedb` | A3T's own platform tables, used by A3T's system flows; not for project data (use `adb`) | `operation` (`query`, `insert`, `update`, `delete`, `create_table`, `list_tables`), `table`, `filter`, `values` |
+| `rotate` | A knowledge graph (RotatE) | `operation` (`ingest`, `train`, `lookup`, `neighbors`, `predict_head`, `predict_tail`, `score`, `entities`, `relations`, `stats`), `_resource` |
+| `registry` | A3T's registry of flows, resources, triggers and agent versions | `operation` |
+| `state:get`, `state:set` | A key–value store | `key`, `value` |
+
+`_resource` names a resource as `<project>/<name>`. A resource that doesn't exist is an error that names it.
+
+### Errors
+
+```yaml
+- lookup:
+    try:
+      - fetch:
+          call: http
+          with: { method: GET, endpoint: { uri: https://tickets.acme.com/status } }
+    catch:
+      errors: { with: { type: communication } }   # optional: catch only these
+      retry: { limit: { attempt: { count: 3 } } }
+      do:
+        - unavailable:
+            set: { available: false }
+```
+
+`catch` may sit beside `try` (the CNCF 1.0 form, shown) or inside it (`try: { do, catch }`). A web API answering 400 or more fails the step as a `communication` error (status 502), with the HTTP status in `detail`; see [Flow control](../../tasks/flow-control/) for every error type. In a catch, `$context.error` is the error: `type`, `status`, `title`, `detail`, `instance`. A policy denial is never retried.
+
+## A3T's settings: `metadata.a3t`
+
+| Setting | What it does |
+|---|---|
+| `extends: system/flow_system_base@1.0.0` | Inherits the base flow: its error handler answers any uncaught failure in plain words, and logs it |
+| `onError: <namespace>/<name>` | A flow of yours that handles any uncaught failure |
+| `durability: ephemeral` | Keeps only the run record, no step journal: after a crash the run is marked interrupted, not resumed. For quick request/response flows the caller retries. `transient` means the same |
+| `exposedTools`, `enabledTools` | The tools the flow declares it offers and uses. Policies read them as `principal.template.exposedTools`; a flow that `extends` a base can only narrow them |
+| `tags`, `policyRef` | Let Cedar policies attach to the flow by tag or by name |
+| A step's `metadata.a3t.policy` | How the step counts for policy: `op` (`read`, `write`, `delete`) and the `resource` it touches |
+
+<Aside type="note">
+Every step is a policy decision, as the person the run is for: calling a model is `llm:call`, a tool `tool:invoke` or `mcp:call`, starting a flow `flow:start`. See [Security](../../console/security/).
+</Aside>
+
+## The full schema
+
+Every key of a workflow document in DSL 1.0, as a tree. Open a key with **+** for what it is for and an example; search finds a key anywhere in the tree, and opening one puts its path in the address bar (e.g. `#swf-input`), so you can link to it. The `call` types A3T adds are in the [Calls](#calls) table above.
+
+<SchemaTree of="swf" />

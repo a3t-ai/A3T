@@ -1,76 +1,106 @@
 ---
 title: Script Tasks
-description: run:shell, run:script, run:workflow, inline:lua, inline:js
+description: run workflow for sub-flows, run script for inline Lua, JavaScript or Python, and run shell.
+sidebar:
+  order: 5
 ---
 
-## run:workflow
+import { Aside } from '@astrojs/starlight/components';
 
-Execute a child workflow by name. Input is passed through, output returned.
+The `run` task runs something as one step: another flow, a short script, or a shell command.
 
-```yaml
-- name: run-sub
-  type: run:workflow
-  config:
-    namespace: a3t
-    name: a3t-templates-list
-    input:
-      org_id: "${ .org_id }"
-  export.as: "."
-```
+## run: workflow
 
-## run:shell
+Runs another flow and waits for its result.
 
-Execute a shell command.
+| Field | What it is for | What to put |
+|---|---|---|
+| `run.workflow.namespace` | The flow's project | e.g. `acme-support`, or `system` for platform flows |
+| `run.workflow.name` | The flow | e.g. `flow_acme_support_refund` |
+| `run.workflow.version` | Optional: pin a version | e.g. `1.2.0`. Left out: the active version |
+| `run.workflow.input` | Its input | An object; values may be expressions. Left out: this step's input |
 
-```yaml
-- name: check-disk
-  type: run:shell
-  config:
-    command: "df -h / | tail -1"
-    timeout: 10
-```
+**Output:** the sub-flow's output.
 
-## run:script
-
-Execute a script file in Lua, JS, or Python.
+- The sub-flow runs **as the caller**, and the caller must be allowed to run flows in its project: its own projects, the platform, or a project exposed to it. Policy sees the step as `flow:start` on that flow.
+- A sub-flow's `metadata.a3t` tool sets can only narrow the caller's, never widen them.
+- In a durable run the sub-flow's steps are journaled under this step, so after a crash it continues where it was.
+- It starts with its own empty `$context`; pass what it needs in `input`. A raised error, a denial, a timeout or bad input keeps its type and status when it reaches the caller.
 
 ```yaml
-- name: process
-  type: run:script
-  config:
-    language: lua
-    source: /scripts/process.lua
-    arguments: ["${ .input_file }"]
+- refund:
+    run:
+      workflow:
+        namespace: acme-support
+        name: flow_acme_support_refund
+        input:
+          order_id: ${ .order_id }
+          amount: ${ $context.order.total }
+    export:
+      as: '${ $context + {refund: .} }'
 ```
 
-## inline:lua
+## run: script
 
-Embedded Lua script (~20us overhead). Access workflow state via `state` global.
+Runs a short script inside the runtime process, for a calculation jq makes awkward.
+
+| Field | What to put |
+|---|---|
+| `run.script.language` | `lua`, `js` (or `javascript`), `python` (or `py`) |
+| `run.script.code` | The script |
+
+The step's input is the global `state`. The script sets the global `result`, which becomes the step's output; `return` does nothing. In Python, the input's top-level keys are also plain variables, and there is no standard library. `source` and `arguments` are accepted but not used: write the code inline.
 
 ```yaml
-- name: compute
-  type: inline:lua
-  config:
-    code: |
-      local a = state.input.a or 0
-      local b = state.input.b or 0
-      return { sum = a + b, product = a * b }
-  export.as: "."
+- totals:
+    run:
+      script:
+        language: js
+        code: |
+          const items = state.items || [];
+          result = {
+            count: items.length,
+            total: items.reduce((s, i) => s + i.price, 0)
+          };
 ```
-
-## inline:js
-
-Embedded JavaScript (~100us overhead). Access input via `input` global.
 
 ```yaml
-- name: transform
-  type: inline:js
-  config:
-    code: |
-      const items = input.items || [];
-      return {
-        count: items.length,
-        total: items.reduce((s, i) => s + i.value, 0)
-      };
-  export.as: "."
+- totals_lua:
+    run:
+      script:
+        language: lua
+        code: |
+          local total = 0
+          for _, i in ipairs(state.items or {}) do total = total + i.price end
+          result = { total = total }
 ```
+
+<Aside type="caution">
+A Lua table always comes back as an object: a Lua list `{1, 2}` arrives as `{"1": 1, "2": 2}`. Return lists from JavaScript, or build them with jq afterwards.
+</Aside>
+
+## run: shell
+
+Runs a command with `sh -c` in the runtime's container.
+
+| Field | What to put |
+|---|---|
+| `run.shell.command` | The command. `${ … }` in it is evaluated first |
+
+**Output:** `{ stdout, stderr, exit_code }`. A non-zero exit fails the step. `arguments` and `environment` are accepted but not used.
+
+<Aside type="danger">
+Policy treats `run: shell` as destructive. Under A3T's baseline policy only a person with the Admin or SuperAdmin role may run it; an agent, a trigger or the runtime service is refused. Don't put values from input into the command.
+</Aside>
+
+## Not available
+
+| Task | Instead |
+|---|---|
+| `inline:lua`, `inline:js` | `run: script` with `language: lua` or `js` |
+| `run: container` | Not run in A3T; the step fails |
+
+## Next
+
+- [Flow control tasks](../flow-control/)
+- [Workflows](../../concepts/workflows/): versions and the run lifecycle

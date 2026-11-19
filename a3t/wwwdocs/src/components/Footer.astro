@@ -1,0 +1,131 @@
+---
+// Starlight's footer plus the cookie consent banner and the consent-gated PostHog loader.
+// Consent is the same a3t_consent cookie as a3t.io (domain .a3t.io), so a choice made on
+// either site applies to both. PostHog (analytics + session replay) loads only with consent.
+import Default from '@astrojs/starlight/components/Footer.astro';
+---
+
+<Default />
+<p class="a3t-cookie-link"><button type="button" id="a3tCookieSettings">Cookie settings</button></p>
+
+<div class="a3t-consent" id="a3tConsent" role="region" aria-label="Cookie consent" hidden>
+	<p>
+		<strong>Your privacy, your choice.</strong>
+		We use necessary cookies for site functionality and, with your consent, PostHog analytics and session
+		replay to improve A3T. Form inputs are masked. Read our <a href="https://a3t.io/#privacy-policy">Privacy Policy</a>.
+	</p>
+	<div class="a3t-consent-actions">
+		<button type="button" id="a3tReject">Reject all</button>
+		<button type="button" id="a3tAccept" class="primary">Accept all</button>
+	</div>
+</div>
+
+<script is:inline>
+	(function () {
+		function loadPostHog() {
+			if (window.__posthogLoaded) return;
+			window.__posthogLoaded = true;
+			// PostHog's official snippet: the stub queues calls until array.js has loaded.
+			!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+" (stub)"},o="init be ws ys capture js register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+			window.posthog.init('phc_sR3c338cr9qdeSYFZpqbFgZwRWukuVJAuFQiT9qoq3vk', {
+				api_host: 'https://eu.i.posthog.com',
+				defaults: '2026-08-30'
+			});
+		}
+		function getConsent() {
+			try {
+				var c = document.cookie.match(/(?:^|;\s*)a3t_consent=([^;]*)/);
+				return c ? JSON.parse(decodeURIComponent(c[1])) : null;
+			} catch (e) {
+				return null;
+			}
+		}
+		var banner = document.getElementById('a3tConsent');
+		// Lift the banner out of the content column's stacking context so it sits above the sidebars.
+		document.body.appendChild(banner);
+		function setConsent(analytics) {
+			var value = encodeURIComponent(JSON.stringify({ necessary: true, analytics: analytics }));
+			var expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+			var domain = /(^|\.)a3t\.io$/.test(location.hostname) ? '; domain=.a3t.io' : '';
+			document.cookie = 'a3t_consent=' + value + '; expires=' + expires + '; path=/; SameSite=Lax' + domain;
+			if (analytics) loadPostHog();
+			else if (window.posthog && window.posthog.opt_out_capturing) window.posthog.opt_out_capturing();
+			banner.hidden = true;
+		}
+		document.getElementById('a3tAccept').addEventListener('click', function () { setConsent(true); });
+		document.getElementById('a3tReject').addEventListener('click', function () { setConsent(false); });
+		document.getElementById('a3tCookieSettings').addEventListener('click', function () { banner.hidden = false; });
+		var consent = getConsent();
+		if (!consent) banner.hidden = false;
+		else if (consent.analytics) loadPostHog();
+	})();
+</script>
+
+<style>
+	.a3t-cookie-link {
+		margin-top: 1.5rem;
+		font-size: var(--sl-text-xs);
+	}
+	.a3t-cookie-link button {
+		background: none;
+		border: 0;
+		padding: 0;
+		color: var(--sl-color-gray-3);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		cursor: pointer;
+		font: inherit;
+	}
+	.a3t-consent {
+		position: fixed;
+		inset-inline: 1rem;
+		bottom: 1rem;
+		z-index: 1000;
+		max-width: 52rem;
+		margin-inline: auto;
+		display: flex;
+		align-items: center;
+		gap: 1rem 1.5rem;
+		flex-wrap: wrap;
+		padding: 1rem 1.25rem;
+		background: var(--sl-color-bg);
+		color: var(--sl-color-text);
+		border: 1px solid var(--sl-color-hairline-shade);
+		border-radius: 0.75rem;
+		box-shadow: 0 12px 32px rgba(15, 15, 15, 0.12);
+		font-size: var(--sl-text-sm);
+	}
+	.a3t-consent a {
+		color: var(--sl-color-text-accent);
+	}
+	.a3t-consent[hidden] {
+		display: none;
+	}
+	.a3t-consent p {
+		flex: 1 1 22rem;
+		margin: 0;
+	}
+	.a3t-consent strong {
+		display: block;
+		margin-bottom: 0.25rem;
+	}
+	.a3t-consent-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.a3t-consent-actions button {
+		padding: 0.45rem 0.9rem;
+		border-radius: 0.5rem;
+		border: 1px solid var(--sl-color-hairline-shade);
+		background: var(--sl-color-bg);
+		color: var(--sl-color-text);
+		font: inherit;
+		font-weight: 500;
+		cursor: pointer;
+	}
+	.a3t-consent-actions button.primary {
+		background: var(--sl-color-text);
+		color: var(--sl-color-bg);
+		border-color: var(--sl-color-text);
+	}
+</style>

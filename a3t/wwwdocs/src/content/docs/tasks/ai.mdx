@@ -1,73 +1,122 @@
 ---
 title: AI Tasks
-description: call:llm, call:agent, call:human
+description: call llm for one model call, and call a3t:agent for a whole agent turn.
+sidebar:
+  order: 3
 ---
 
-## call:llm
+import { Aside } from '@astrojs/starlight/components';
 
-Call an LLM provider for text generation. Requires an LLM resource (`openai`, `anthropic`, or `ollama`).
+Two ways to use a model in a flow: one call with `call: llm`, or a full agent turn (memory, model, tools) with `call: a3t:agent`.
 
-```yaml
-- name: summarize
-  type: call:llm
-  resource: my-claude
-  config:
-    prompt: "Summarize this text: ${ .input.text }"
-    model: claude-sonnet-4-20250514
-    temperature: 0.3
-    max_tokens: 1024
-```
+## call: llm
 
-### Structured output
+One call to a model resource ([LLM kind](../../concepts/resources/#kinds)).
 
-```yaml
-- name: classify
-  type: call:llm
-  resource: my-openai
-  config:
-    prompt: "Classify this support ticket"
-    output_schema:
-      type: object
-      properties:
-        category:
-          type: string
-          enum: [billing, technical, general]
-        priority:
-          type: number
-```
+| `with` field | What it is for | What to put |
+|---|---|---|
+| `_resource` | Which model | `<project>/<name>` of an LLM resource. A resource that does not exist is an error that names it |
+| `prompt` | The user's message | Text. It is added after `messages` (see below) |
+| `messages` | The conversation so far | A list of `{ role, content }`; `role` is `system`, `user`, `assistant` or `tool`. Assistant `tool_calls` and tool `tool_call_id` are kept |
+| `system_prompt` | Instructions | Text |
+| `model` | Override the resource's model | e.g. `claude-sonnet-4-5` |
+| `max_tokens` | Longest answer | Default 1024 |
+| `temperature` | Randomness | Default 0.7 |
+| `tools` | Tools the model may ask for | A list of `{ name, description, input_schema }`. The model only asks; the flow must run them |
 
-## call:agent
+**Output:**
 
-Run a ZeroClaw agent with LLM reasoning + tool use + memory. Requires an `agent` resource.
+| Field | What it holds |
+|---|---|
+| `content` | The model's text |
+| `model` | The model that answered |
+| `usage` | Token counts, as the provider reports them |
+| `tool_calls` | Only when the model asked for tools: a list of `{ id, name, input }` |
+| `stop_reason` | `tool_use` when there are `tool_calls` |
+
+The resource's `provider` decides the API: `anthropic` uses Anthropic's Messages API; anything else is sent to an OpenAI-style `/chat/completions` endpoint (its `api_url`). A failed call is a `communication` error (status 502).
 
 ```yaml
-- name: analyze
-  type: call:agent
-  resource: my-agent
-  config:
-    prompt: "Analyze the incident and recommend actions"
-    max_iterations: 5
+- summarize:
+    call: llm
+    with:
+      _resource: acme-support/claude
+      system_prompt: You summarize support tickets in two sentences.
+      prompt: '${ "Ticket: " + .ticket.text }'
+      max_tokens: 300
+      temperature: 0.2
+    output:
+      as: '${ {summary: .content} }'
 ```
 
-### Session mode
+<Aside type="caution">
+`prompt` defaults to `hello`. With an OpenAI-style provider it is always added as the last user message, even when `messages` already ends with one; with Anthropic it is added only when the last message is not from the user. When you pass `messages`, also pass the new message as `prompt`, and don't repeat it in `messages`.
+</Aside>
+
+There is no structured-output field: to get JSON, ask for it in the prompt and parse `content` with `fromjson`.
+
+## call: a3t:agent
+
+One turn of an agent: it loads the conversation, recalls memory from ADB, runs the model and tool loop, stores memory and saves the conversation. This is the engine behind every [agent](../../concepts/agents/); A3T's own turn flow, `system/flow_system_agent_turn`, is one step of it. You normally talk to an agent through the console, `send_message` or a [trigger](../../concepts/triggers/); call this task directly only to build your own agent flow.
+
+| `with` field | What it is for | What to put |
+|---|---|---|
+| `message` | What the agent is told | Text |
+| `session_id` | Which conversation | Text. Default `default`. Turns with the same id continue one conversation |
+| `ui_context` | What the person sees in the console | Optional |
+| `config` | The agent's settings | See below |
+
+| `config` field | What it is for | Default |
+|---|---|---|
+| `llm_resource` | The model, `<project>/<name>` | — |
+| `system_prompt` | Instructions | `You are a helpful assistant.` |
+| `max_iterations` | Most model calls in one turn | 10 |
+| `max_tokens`, `temperature` | Per model call | 4096, 0.7 |
+| `tools` | Tools offered to the model | none |
+| `enabled_tools` | Narrow the tools. Left out: no narrowing. An empty list: no tools | left out |
+| `tool_flows` | Tools that run a flow: `{ <tool>: { namespace, name, input?, wrap?, schema?, description? } }` | none |
+| `mcp_servers` | MCP server resources whose tools it may use | none |
+| `memory_resource` | The ADB resource for memory | — |
+| `memory_namespace` | Where in ADB its memory lives | `default` |
+| `memory_config` | Per tier (`working`, `episodic`, `semantic`, `procedural`): `{ read, write }`; `semantic.reflect` | working and episodic read and write, semantic read, procedural off, reflect off |
+| `ttl` | Seconds working memory is kept | 1800 |
+| `role_ceiling` | The most roles it may carry: the caller's roles, intersected with these | no ceiling |
+| `hooks` | Flows run at phases of the turn: `{ <phase>: ["<project>/<flow>"] }` | none |
+
+Hook phases: `on_turn_start`, `before_recall`, `before_llm`, `after_llm`, `on_tool_call`, `after_tool_call`, `on_tool_error`, `before_store`, `on_turn_end`. See [Agents › Hooks](../../concepts/agents/#hooks).
+
+**Output:** `{ content, session_id, tool_calls_made, iterations, procedural_hit, stopped_reason }`.
+
+The agent runs as an agent acting for whoever started the run, with that person's roles (narrowed by `role_ceiling`), so each model and tool call is checked against policy. In a durable run each model and tool call is journaled: a resumed turn replays them instead of repeating them.
 
 ```yaml
-- name: chat-turn
-  type: call:agent
-  resource: session-agent
-  config:
-    session_id: "${ .session_id }"
-    prompt: "${ .user_message }"
+- answer:
+    call: a3t:agent
+    with:
+      message: ${ .question }
+      session_id: '${ "order-" + .order_id }'
+      config:
+        llm_resource: acme-support/claude
+        system_prompt: You help with late orders. Be brief.
+        memory_resource: a3t/adb
+        memory_namespace: acme-support
+        max_iterations: 5
+    output:
+      as: '${ {reply: .content} }'
 ```
 
-## call:human
+<Aside type="caution">
+After this task, `$context` holds the agent's own state (`session_id`, `message`, `_messages`, `_config`, …) instead of what earlier steps exported. Export what you need from it right away, and keep anything you need later in the step's output, not in `$context`.
+</Aside>
 
-Human-in-the-loop approval. Pauses workflow until a human responds.
+## Not available
 
-```yaml
-- name: approve-deploy
-  type: call:human
-  config:
-    prompt: "Approve deployment of v2.1 to production?"
-    timeout: 3600
-```
+| Task | Instead |
+|---|---|
+| `call: agent` (the old agent resource) | `call: a3t:agent`, or an agent from a template |
+| `call: human` | No task. Approvals happen inside an agent turn: a tool call that needs one waits, durably, for the answer |
+
+## Next
+
+- [Integration tasks](../integration/): ADB, MCP, A3T's tables, the knowledge graph
+- [Agents](../../concepts/agents/) and [Memory](../../concepts/memory/)

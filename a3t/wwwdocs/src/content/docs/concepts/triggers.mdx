@@ -1,55 +1,67 @@
 ---
 title: Triggers
-description: Webhooks, cron schedules, and events that start workflows.
+description: What starts agents and flows on their own. One source (webhook, schedule, ADB topic or platform event), one or more targets, and approved jq mappings between them.
 ---
 
-Triggers start workflows or send messages to agents in response to external events.
+import { Aside } from '@astrojs/starlight/components';
 
-## Types
+A **trigger** starts something on its own. It listens on **one source** and, each time it fires, **sends** to one or more **targets**. What each target receives is shaped by a **mapping**, a jq expression that must be checked and approved before it runs.
 
-| Type | Description | Example |
-|------|-------------|---------|
-| **Webhook** | HTTP endpoint that triggers on POST | `/a3t/templates` |
-| **Cron** | Schedule-based trigger | `*/5 * * * *` (every 5 min) |
-| **Event** | Internal event bus trigger | `workflow.completed` |
+This page explains the model. To build and test a trigger in the app, see [Triggers](../../console/triggers/); for its YAML, see [YAML › A trigger](../yaml/#a-trigger).
 
-## Creating a trigger
+## Sources
 
-```bash
-curl -X POST http://localhost:3002/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0", "method": "tools/call", "id": 1,
-    "params": {
-      "name": "create_trigger",
-      "arguments": {
-        "name": "on-order",
-        "namespace": "default",
-        "config": {"type": "webhook", "path": "/orders/new"},
-        "targets": [{"type": "workflow", "namespace": "default", "name": "process-order"}]
-      }
-    }
-  }'
+| Source | In YAML | Fires |
+|---|---|---|
+| **Webhook** | `webhook` | When a caller sends JSON to `<your A3T address>/webhook<path>` with a token |
+| **Schedule** | `cron` | On every tick of a cron expression, in a time zone. Each tick runs each target once, however many copies of FlowR are running |
+| **ADB topic** | `adb_topic` | For each message published to a topic on an ADB resource |
+| **Platform event** | `event` | When A3T emits an event of that type, for example a flow completing |
+
+Every source produces the same **event**, so targets and mappings don't need to know where it came from:
+
+```json
+{ "body": {}, "message": "", "source": "webhook", "trigger": "refund-requests", "time": "2026-11-15T11:55:00Z" }
 ```
+
+`body` is what the caller posted, the tick, the topic message or the platform event.
 
 ## Targets
 
-A trigger can have multiple targets:
+| Target | In YAML | What it runs | Its mappings |
+|---|---|---|---|
+| **Flow** | `flow: <project>/<flow>` | A run of the flow | `input`: the flow's input. Left out: the event's body |
+| **Agent** | `agent: <agent id>` | A turn of the agent | `message`: what it is told. `conversation`: which conversation the turn is in. Left out: the trigger's message, in conversation `trigger-<name>` |
+| **URL** | `url: …` | Posts the event on to another service | None: the event is sent as it is |
 
-- **Workflow** — executes a workflow with the trigger payload as input
-- **Agent** — sends a message to a persistent/reactive agent
-- **Webhook** — forwards the payload to an external URL
+Firings that map to the same conversation continue it, so an agent can follow one order or one ticket across many events.
 
-## MCP tools
+## Approved mappings
 
-| Tool | Description |
-|------|-------------|
-| `create_trigger` | Create a new trigger |
-| `get_trigger` | Get trigger details |
-| `list_triggers` | List triggers, filter by namespace |
-| `update_trigger` | Update trigger config |
-| `delete_trigger` | Delete a trigger |
-| `attach_trigger` | Add a target to a trigger |
-| `detach_trigger` | Remove a target |
-| `enable_trigger` | Enable a paused trigger |
-| `pause_trigger` | Pause an active trigger |
+A mapping is jq over the event, written as `${ … }`. You write it yourself, or ask A3T's mapping agent, `agent_a3t_mapper`, to propose one from your sample events and the target. Either way it goes through the same steps:
+
+1. **Check** it on sample events, exactly as a firing would run it.
+2. **Approve** it. The approved version is recorded with who approved it and when; earlier versions stay in its history.
+3. When the trigger fires, **only the approved jq runs**. A mapping that has not been approved is never used.
+
+```yaml
+send:
+  - agent: agt-87c819a3
+    message: '${ "Refund request for order " + .body.order_id }'
+    conversation: '${ "order-" + .body.order_id }'
+  - flow: acme-support/flow_acme_support_refund
+    input: '${ {order_id: .body.order_id} }'
+```
+
+## Who it runs as
+
+A run started by a trigger runs as the trigger, and each of its steps is checked against policy like any other run. In [Executions](../../console/executions/) it shows **Started by Trigger** with a link back to it.
+
+<Aside type="note">
+A trigger can be paused and resumed. Removing one stops it at once: its schedule stops, and its web address answers 404.
+</Aside>
+
+## Next
+
+- [Triggers](../../console/triggers/) in the console: the five-step form, mappings, and testing.
+- [YAML](../yaml/#a-trigger): every field of a trigger.

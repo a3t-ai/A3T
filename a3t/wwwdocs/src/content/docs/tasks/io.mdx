@@ -1,72 +1,152 @@
 ---
 title: I/O Tasks
-description: call:http, input:file, output:file, state:get, state:set
+description: call http, emit and listen, and the key–value store (state:get, state:set, state:delete).
+sidebar:
+  order: 2
 ---
 
-## call:http
+import { Aside } from '@astrojs/starlight/components';
 
-Make HTTP requests. Requires no resource (or an `http` resource for base URL/auth).
+Tasks that move data in and out of a run: a web API, events between runs, and a small key–value store. Values in `with:` may be expressions; see [Expressions](../../concepts/expressions/).
 
-```yaml
-- name: fetch-user
-  type: call:http
-  config:
-    method: GET
-    endpoint:
-      uri: "https://api.example.com/users/${ .user_id }"
-    headers:
-      Authorization: "Bearer ${ .token }"
-    timeout: 10
-```
+## call: http
 
-### POST with body
+Sends one request to a web API.
 
-```yaml
-- name: create-order
-  type: call:http
-  config:
-    method: POST
-    endpoint:
-      uri: https://api.example.com/orders
-    headers:
-      Content-Type: application/json
-    body:
-      customer_id: "${ .customer.id }"
-      total: "${ .cart.total }"
-```
+| `with` field | What it is for | What to put |
+|---|---|---|
+| `method` | The HTTP method | `GET` (the default), `POST`, `PUT`, `PATCH`, `DELETE` |
+| `endpoint` | Where | A URL, or `{ uri: <url> }`. Must be a **fixed** URL (see below) |
+| `headers` | Request headers | A map of text values; other values are dropped |
+| `body` | The request body | Any JSON. Sent as `application/json` |
 
-## state:get / state:set
+**Output:** `{ status, body }`. `body` is the parsed JSON answer, or `null` if the answer was not JSON. A status of 400 or more fails the step with a `communication` error (status 502); the HTTP status and answer are in its `detail`.
 
-Read and write from the FlowR state store (global key-value).
+In a durable run, each request carries an `Idempotency-Key` header that is the same on every attempt of the step, unless you set one yourself.
 
 ```yaml
-- name: read-counter
-  type: state:get
-  config:
-    key: "request_count"
-  export.as: "."
-
-- name: increment
-  type: state:set
-  config:
-    key: "request_count"
-    value: "${ .value + 1 }"
-    ttl_secs: 3600
+- create_ticket:
+    call: http
+    with:
+      method: POST
+      endpoint: https://tickets.acme.com/api/tickets
+      headers:
+        Content-Type: application/json
+      body:
+        order_id: ${ .order_id }
+        summary: '${ "Late order " + .order_id }'
+    output:
+      as: ${ .body }
 ```
 
-## input:file / output:file
+<Aside type="caution">
+The URL and method are read when the flow is loaded, before expressions are evaluated, so `endpoint: '${ … }'` does not work today: put values that change in `headers` or `body`. There is no `http` resource and no query-string field.
+</Aside>
 
-Read from and write to files on disk.
+<Aside type="note">
+`call: http` and `call: mcp` leave A3T. They are refused on a memory branch and when the runtime is not a production environment, with a message saying so. Every call is also a policy decision; see [Security](../../console/security/).
+</Aside>
+
+## emit
+
+Sends a [CloudEvent](https://cloudevents.io/) into the flow's project. It wakes every run whose `listen` step matches it, and starts any event [trigger](../../concepts/triggers/) for its type. The task passes its input on unchanged.
+
+| Field | What to put |
+|---|---|
+| `emit.event.with.type` | Required: the event type, e.g. `acme.order.late` |
+| `emit.event.with.source` | Optional. Default `/flowr/<project>/<flow>` |
+| `emit.event.with.id` | Optional. Default: fixed per run and step, so a retry after a crash is not delivered twice. An event with an id already sent is dropped |
+| `emit.event.with.data` | The payload |
+| `emit.event.with.subject`, other keys | More CloudEvent attributes; listeners can match on them |
 
 ```yaml
-- name: read-config
-  type: input:file
-  config:
-    path: /data/config.json
-
-- name: write-report
-  type: output:file
-  config:
-    path: /data/report.json
-    content: "${ .results }"
+- tell_others:
+    emit:
+      event:
+        with:
+          type: acme.order.late
+          source: /acme-support/orders
+          data:
+            order_id: ${ .order_id }
+            days_late: ${ .days_late }
 ```
+
+## listen
+
+Waits for events. The run lets go of its worker while it waits (status `waiting`) and is woken on any worker when a matching event arrives, from `emit`, the console's **Send event** box, or `POST /events/<project>`.
+
+| Field | What to put |
+|---|---|
+| `listen.to.one` | One filter: wait for one matching event |
+| `listen.to.any` | A list of filters: wake on an event matching any of them |
+| `listen.to.all` | A list of filters: wake when each has matched |
+| filter `with` | `type` (required), and any attributes the event must carry: `source`, `subject`, `data`. An object value matches as a subset. A value written as `${ … }` is evaluated on the step's input |
+| `listen.read` | `data` (the default): output each event's `data`. `envelope`: the whole events |
+| `timeout.after` | On the task: stop waiting and fail the step (catchable) if nothing came |
+
+**Output:** a list, one entry per event received, so even `one` gives `[ … ]`. Events sent after the run started and before it reached the step count too.
+
+```yaml
+- wait_for_refund:
+    try:
+      - refunded:
+          listen:
+            to:
+              one:
+                with:
+                  type: acme.refund.done
+                  data:
+                    order_id: ${ .order_id }
+          timeout:
+            after: { hours: 24 }
+      - done:
+          set:
+            refunded: true
+            amount: ${ .[0].amount }
+    catch:
+      do:
+        - gave_up:
+            set: { refunded: false }
+```
+
+<Aside type="caution">
+`listen` needs a durable run. In a flow with `metadata.a3t.durability: ephemeral` (or `transient`) it fails at once.
+</Aside>
+
+## call: state:get, state:set, state:delete
+
+A small key–value store kept by FlowR, for counters, flags and values that outlive one run.
+
+| Task | `with` fields | Output |
+|---|---|---|
+| `call: state:get` | `key` | The stored value, or `null` |
+| `call: state:set` | `key`, `value` (any JSON), optional `ttl` in seconds | `{ key, stored: true }` |
+| `call: state:delete` | `key` | `{ key, deleted: true }` |
+
+Keys are not scoped to a project: begin them with your project's name.
+
+```yaml
+- read_count:
+    call: state:get
+    with:
+      key: acme-support:late-orders
+    export:
+      as: '${ $context + {late_count: (. // 0)} }'
+- bump_count:
+    call: state:set
+    with:
+      key: acme-support:late-orders
+      value: ${ $context.late_count + 1 }
+      ttl: 86400
+```
+
+## Not available
+
+| Task | Instead |
+|---|---|
+| `input:file`, `output:file` | No longer exist. Keep data in a database resource or ADB |
+
+## Next
+
+- [AI tasks](../ai/): models and agents
+- [Integration tasks](../integration/): ADB, MCP, A3T's tables, the knowledge graph

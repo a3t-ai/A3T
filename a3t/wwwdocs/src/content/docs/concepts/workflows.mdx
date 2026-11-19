@@ -1,57 +1,109 @@
 ---
 title: Workflows
-description: Workflow YAML structure, steps, and execution model.
+description: The life of a flow run. Versions, starting a run, the journal, crashes and resume, waits, cancelling, and run statuses.
 ---
 
-A workflow is a YAML file that defines a sequence of steps for FlowR to execute.
+import { Aside } from '@astrojs/starlight/components';
 
-## Structure
+A flow is a YAML document in the [CNCF Serverless Workflow](../cncf-swf/) language. This page is about what happens when it runs. For how to write one, see [CNCF Serverless Workflow](../cncf-swf/) and the [Task Reference](../../tasks/flow-control/).
 
-```yaml
-namespace: a3t
-name: my-workflow
-version: "1.0.0"
-title: "Human-readable title"
-description: "What this workflow does"
-enabled: true
-tags: [tag1, tag2]
+## Versions
 
-steps:
-  - name: step-1
-    type: set
-    config:
-      key: value
-    export.as: "."
+| Rule | What it means |
+|---|---|
+| A flow is `document.namespace` / `document.name` at `document.version` | e.g. `acme-support/flow_acme_support_refund` at `1.2.0` |
+| A released version never changes | Saving the same version with other content is refused (`version_exists`): give it a new version |
+| The newest save is the **active** version | Runs that don't pin a version use it. Older versions stay |
+| Pin a version | In `run: workflow`, with `version:`. A base flow is always pinned: `extends: system/flow_system_base@1.0.0` |
+| Roll back or forward | Make another version active: `update_flow` with `version`, or [`call: registry`](../../tasks/integration/#call-registry) `activate` |
 
-  - name: step-2
-    type: call:http
-    resource: my-api
-    config:
-      method: GET
-      endpoint:
-        uri: https://example.com
-    then: end
-```
+## Starting a run
 
-## Step fields
+| How | What happens |
+|---|---|
+| MCP `execute_flow` (`namespace`, `name`, `input`) | Starts a run and **waits** for it, up to 2 minutes, then returns its output or error. A longer run returns its id; follow it with `get_execution_status` or `get_run` |
+| MCP `start_run` | Starts a run and returns at once; `debug: true` and `breakpoints` start a debug run |
+| A [trigger](../triggers/) | Webhook, schedule, ADB topic or event |
+| `run: workflow` in another flow | A sub-flow, journaled under the calling step |
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | Unique step identifier |
-| `type` | Yes | Task type (e.g. `set`, `call:http`, `call:llm`) |
-| `config` | Yes | Task-specific configuration |
-| `resource` | No | Resource reference (`namespace/name`) |
-| `then` | No | Next step name, or `end` to stop |
-| `export.as` | No | jq expression to merge output into context (`.` = merge all) |
-| `input.from` | No | jq expression to transform input before step runs |
-| `output.as` | No | jq expression to transform step output |
-| `checkpoint` | No | If `true`, saves state for resumption |
-| `enabled` | No | If `false`, step is skipped |
+A run is for someone: the person, agent or trigger that started it. Starting it is a policy decision (`flow:start`), and so is each step. `$context._principal` tells the flow who that is.
 
-## Execution model
+Before the first step, the input is checked against `input.schema` (today only its top-level `required` list) and reshaped by `input.from`. After the last, `output.as` and `output.schema` apply to the result.
 
-Steps execute **sequentially** by default. Use `then` to jump to a named step or `end` to terminate.
+## The journal
 
-If no `then` is specified, execution continues to the next step in the list.
+A run is **durable** unless the flow says otherwise: every step is written to the run's journal.
 
-Workflows are **async** — `execute_flow` returns an instance ID immediately. Poll `get_execution_status` for the result.
+- Steps that change nothing outside the run (`set`, `switch`, short `wait`s, blocks, reads such as `state:get`, a `lancedb` `query`, an AQL `RECALL`) are recorded when they finish.
+- Other steps (most calls, `run`, `emit`) are recorded as **started** before they run, and again when they finish.
+- An agent turn records each model call and tool call on its own.
+
+`get_run` shows a run's steps (status, attempts, timing) and `get_run_journal` its journal records; see also [Executions](../../console/executions/).
+
+## Crashes and resume
+
+If the worker running a run dies, another worker takes the run over and **replays** the journal: finished steps are not run again, their recorded results are used, and the run continues from the first step that has no result.
+
+A step that was started but has no result is **in doubt**: it may or may not have taken effect.
+
+| Step | After a crash |
+|---|---|
+| A read or a pure step | Runs again |
+| An agent turn, a sub-flow, an `emit` | Runs again; recorded calls replay, an event is not sent twice |
+| Anything else | Fails with `in-doubt side effect`, which `try`/`catch` can handle |
+
+Two step settings change this:
+
+| `metadata.a3t` on a step | What it does |
+|---|---|
+| `stepClass: pure`, `read`, `idempotent` or `effect` | Says what kind of step it is, when the engine's guess is wrong |
+| `inDoubt: retry` | With `stepClass: idempotent`: run it again after a crash, under the same idempotency key, instead of failing |
+
+## Ephemeral runs
+
+`metadata.a3t.durability: ephemeral` keeps only the run record, with no journal. It is for quick request/response flows: after a crash the run is marked failed (`interrupted`) and the caller retries. `transient` means the same, and a transient flow started with `execute_flow` may also run straight away in the process that was asked, without a queue. An ephemeral run cannot `listen`, and its `wait`s simply sleep.
+
+## Waiting
+
+A durable run does not hold a worker while it waits. It lets go and is woken later, on any worker:
+
+| Waiting for | Woken by |
+|---|---|
+| A `wait` longer than 5 seconds | Its timer |
+| A `listen` | A matching event, or its `timeout` |
+| An approval an agent asked for | The answer, or its expiry |
+| A breakpoint in a debug run | A debug command |
+
+## Limits
+
+| Limit | Default | Set with |
+|---|---|---|
+| Steps in one run (sub-flows count) | 100,000 | `metadata.a3t.limits.max_steps` (can only lower it) |
+| Time for the whole run, from its first start, waits included | none | `timeout.after` on the document: `{ seconds, minutes, hours }` |
+| Time for one step | none | `timeout.after` on the task |
+
+## Cancel and re-run
+
+| Tool | What it does |
+|---|---|
+| `cancel_run` (`run_id`, `reason`) | A running run stops at its next step; a waiting one at once |
+| `rerun_run` (`run_id`, `from_seq`, `input`) | A new run like this one: from the start, or from a point in the journal (steps up to it replay, later ones run again) |
+| `debug_run` (`continue`, `step_over`, `step_into`, `step_out`, `run_to`, `stop`) | Steers a paused debug run; `edit_step_input` changes the next step's input |
+
+## Run statuses
+
+| Status | Meaning | Older name |
+|---|---|---|
+| `pending` | Queued, not yet picked up | `Queued` |
+| `running` | A worker is running it | `Running` |
+| `waiting` | Let go, waiting for a timer, an event or an approval | `Suspended` |
+| `suspended` | A debug run paused | `Suspended` |
+| `completed` | Finished; its output is kept | `Completed` |
+| `faulted` | Failed; its error is kept | `Failed` |
+| `cancelled` | Stopped by `cancel_run` | `Cancelled` |
+
+`list_runs` filters by the new names; `get_execution_status` reports the older ones.
+
+<Aside type="note">
+An uncaught failure in a flow that declares `metadata.a3t.onError` (or extends `system/flow_system_base`) first goes to that handler flow, which logs it and turns it into a plain-language error. That is the error the run ends with.
+</Aside>

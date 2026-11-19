@@ -1,55 +1,77 @@
 ---
 title: Expressions
-description: jq-style expressions for dynamic values in workflows.
+description: The jq dialect inside ${ … } in A3T flows. Variables, how values are evaluated, the functions that work and the ones that don't, and quoting in YAML.
 ---
 
-Expressions use `${ ... }` syntax with jq-style paths to access and transform data.
+import { Aside } from '@astrojs/starlight/components';
 
-## Basics
+Values written as `${ … }` are **jq** expressions. A3T runs them with [jaq](https://github.com/01mf02/jaq), a jq clone in Rust: almost all everyday jq works the same. The common patterns are in [CNCF Serverless Workflow › Expressions](../cncf-swf/#expressions); this page is the detail.
+
+## What an expression sees
+
+| Name | What it holds |
+|---|---|
+| `.` | The task's input: the previous task's output, after the task's `input.from`. In `output.as` and `export.as`: the task's result |
+| `$context` | What earlier tasks exported, plus `_principal` (`kind`, `id`, `roles`, `user`): who the run is for. In a `catch`: `$context.error` |
+| `$workflow` | `id` (the run id), `namespace`, `name`, `version`. Only in a flow that was started as a run; in a sub-flow it is `null`, so write `($workflow // {}).id` |
+| `$runtime` | `name` and `version` of the engine. Also `null` in a sub-flow |
+| `$<each>`, `$<at>` | Inside a `for`: the item and index. See [for](../../tasks/flow-control/#for) for where they work |
+| `$task`, `$secrets`, `$resource` | Defined but always `null` today |
+
+## How a value is evaluated
+
+| You write | You get |
+|---|---|
+| `${ .count }`: the whole value is one expression | The result with its type: a number stays a number, an object an object |
+| `'Order ${ .order_id } is late'`: text around expressions | Text. Each `${ … }` is turned into text (`null` becomes `null`) |
+| An expression that gives several results (`.items[]`) | A list of them |
+| An expression that gives none (`empty`, `select(false)`) | `null` |
+| Inside an object or list in `with:` or `set:` | Every string value is evaluated, at any depth. Keys are not |
+
+<Aside type="caution">
+In text with expressions inside it, each `${ … }` ends at its **first** `}`. So `'id ${ {a: 1}.a }'` breaks. Make the whole value one expression instead: `'${ "id " + ({a: 1}.a | tostring) }'`.
+</Aside>
+
+`if`, `when` and `for.while` hold only when the result is exactly `true`: `null`, `"true"` or `1` do not count.
+
+## Functions
+
+| Works | Examples |
+|---|---|
+| Paths and defaults | `.a.b`, `.items[0]`, `.x // "none"`, `.x?`, `has("k")`, `getpath(["a","b"])`, `paths`, `del(.k)` |
+| Lists | `map`, `select`, `add`, `length`, `first`, `last`, `limit`, `sort`, `sort_by`, `group_by`, `unique_by`, `min_by`, `max_by`, `flatten`, `reverse`, `index`, `indices`, `contains`, `inside`, `any`, `all`, `range`, `transpose` |
+| Objects | `keys`, `to_entries`, `from_entries`, `with_entries`, `map_values`, `+` and `*` to merge |
+| Text | `tostring`, `tonumber`, `ascii_downcase`, `ascii_upcase`, `split`, `join`, `ltrimstr`, `rtrimstr`, `trim`, `startswith`, `endswith`, `test`, `match`, `capture`, `scan`, `sub`, `gsub`, `splits` |
+| JSON and formats | `tojson`, `fromjson`, `@json`, `@base64`, `@base64d`, `@uri`, `@csv`, `@tsv`, `@html`, `@sh` |
+| Time | `now`, `todate`, `fromdate`, `todateiso8601`, `fromdateiso8601`, `strftime`, `strptime`, `mktime`, `gmtime` |
+| Control | `if … then … elif … else … end`, `reduce`, `foreach`, `try … catch`, `def`, `as $x`, `error` |
+
+| Does not work | Instead |
+|---|---|
+| `setpath`, `delpaths`, `tostream`, `fromstream` | `.a.b = v`, `del(...)` |
+| `$ENV`, `input_filename`; `input` and `inputs` give nothing | Pass values in the run's input |
+| `@base32`, `@base32d`, `combinations`, `IN`, `INDEX`, `dateadd`, `datesub`, `date` | Build them from the functions above |
+| `env`, `halt`, `halt_error` | Do not use: they reach the runtime process itself |
+
+`tonumber` on text that is not a number fails the step; write `(tonumber? // 0)`.
+
+## Quoting in YAML
+
+YAML reads the file before jq sees it, so quote with care. The full rules are in [How to read and write YAML](https://blog.a3t.io/how-to-read-and-write-yaml/) and in [YAML](../yaml/#rules-that-keep-yaml-valid).
+
+| Case | Write it like this |
+|---|---|
+| Any expression with `: `, `#`, `{`, `|` or quotes in it | Single-quote the whole value: `when: '${ .status == "open" }'` |
+| jq text inside it | Double quotes: `'${ "Order " + .order_id }'` |
+| A single quote inside it | Double it: `filter: '${ "id = ''" + .id + "''" }'` gives `id = 'u-1'` |
+| A long expression | A folded block, which joins the lines with spaces |
 
 ```yaml
-config:
-  name: "${ .input.name }"         # access input field
-  count: "${ .items | length }"    # pipe to jq function
-  upper: "${ .name | ascii_upcase }"
+- shape:
+    set:
+      summary: >-
+        ${ "Order " + .order_id + ": "
+           + (.items | map(.name) | join(", ")) }
 ```
 
-## Context paths
-
-| Path | Description |
-|------|-------------|
-| `.` | Current workflow context (root) |
-| `.field` | Access a field |
-| `.nested.field` | Nested access |
-| `.array[0]` | Array index |
-| `.items | length` | Pipe to function |
-
-## In filters
-
-```yaml
-config:
-  filter: "org_id = '${ .org_id }' AND status = 'active'"
-```
-
-## In step fields
-
-```yaml
-- name: dynamic
-  type: call:http
-  config:
-    method: POST
-    endpoint:
-      uri: "https://api.example.com/${ .entity }/${ .id }"
-    body:
-      updated_at: "${ now() }"
-```
-
-## export.as
-
-Controls how step output merges into the workflow context:
-
-```yaml
-export.as: "."              # merge all output fields into root
-export.as: ".result"        # store output under .result
-export.as: "{count: .total}" # transform and rename
-```
+A simple path such as `${ .order_id }` works unquoted, but quoting every expression is the safe habit.
