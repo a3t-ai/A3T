@@ -69,6 +69,15 @@ pub fn default_namespace(project: &str, agent_id: &str) -> String {
     format!("{}--{}", clean(project), clean(agent_id))
 }
 
+/// Is `ns` one of `project`'s own memory namespaces: the project's, or one
+/// under it (`<project>--…`, as `default_namespace` makes)? Branches (`ns@b`)
+/// are made through the branch routes, not named here.
+fn project_namespace(project: &str, ns: &str) -> bool {
+    let base = default_namespace(project, "");
+    let base = base.trim_end_matches("--");
+    !ns.contains('@') && (ns == base || ns.strip_prefix(base).is_some_and(|rest| rest.starts_with("--") && rest.len() > 2))
+}
+
 fn valid_namespace(ns: &str) -> bool {
     !ns.is_empty() && ns.len() <= 200 && !ns.contains('|') && !ns.contains('~')
 }
@@ -364,6 +373,11 @@ async fn put_memory(State(s): St, p: P, Path(id): Path<String>, body: Option<Jso
         crate::access::rest_write(&principal, &project).await.map_err(IntoResponse::into_response)?;
         let ns = body.as_ref().and_then(|b| b.get("namespace")).and_then(|v| v.as_str()).map(str::to_string)
             .unwrap_or_else(|| default_namespace(&project, &id));
+        // The org's database holds every project's memory: an agent may only be
+        // pointed at its own project's namespaces, or it would read another's.
+        if !project_namespace(&project, &ns) {
+            return Err(err(StatusCode::FORBIDDEN, format!("namespace {ns:?} is not project {project:?}'s; use {project:?} or {project:?}--<name>")));
+        }
         set_space(s.as_ref(), &id, &col(&row, "org_id"), &ns, principal.id()).await.map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
         ok(json!({ "agent_id": id, "resource": org_adb(&col(&row, "org_id")), "namespace": ns, "own": true }))
     }.await)
@@ -1008,6 +1022,17 @@ mod tests {
         assert_eq!(default_namespace("acme", "support-bot"), "acme--support-bot");
         assert_eq!(default_namespace("", "x"), "default--x");
         assert_eq!(default_namespace("a|b", "c~d"), "a-b--c-d");
+    }
+
+    #[test]
+    fn an_agent_takes_only_its_projects_namespaces() {
+        assert!(project_namespace("acme", "acme"));
+        assert!(project_namespace("acme", "acme--support-bot"));
+        assert!(!project_namespace("acme", "acme--"));
+        assert!(!project_namespace("acme", "acmex--bot"), "another project sharing a prefix");
+        assert!(!project_namespace("acme", "other--bot"));
+        assert!(!project_namespace("acme", "acme--bot@main"), "a branch");
+        assert!(project_namespace("", "default--x"));
     }
 
     #[test]

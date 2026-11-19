@@ -603,10 +603,29 @@ async fn durable_approvals(storage: &dyn StorageBackend) -> Vec<Value> {
         .collect()
 }
 
-/// List all pending input requests
-async fn list_inputs_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// May `principal` see this pending request? A request names who may answer
+/// it (`context.approver`); it also carries the tool's arguments, so it is
+/// shown to that person and to platform InfoSec only. With no policy enforced
+/// (CE `allow_all`) everyone may.
+fn may_see_input(principal: Option<&Principal>, req: &Value) -> bool {
+    if !flowr_policy::namespace::namespace_guard().enforcing() {
+        return true;
+    }
+    let Some(p) = principal else { return false };
+    let approver = req.pointer("/context/approver").and_then(|v| v.as_str());
+    approver == Some(p.id())
+        || p.roles().iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN)
+}
+
+/// List the pending input requests the caller may answer (InfoSec: all).
+async fn list_inputs_handler(
+    State(state): State<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+) -> impl IntoResponse {
+    let who = principal.as_ref().map(|Extension(p)| p);
     let mut pending: Vec<Value> = flowr_ce_agents::input_manager().list_pending().await.into_iter().map(|r| json!(r)).collect();
     pending.extend(durable_approvals(state.storage.as_ref()).await);
+    pending.retain(|r| may_see_input(who, r));
     let count = pending.len();
     Json(json!({ "inputs": pending, "count": count }))
 }
@@ -614,12 +633,16 @@ async fn list_inputs_handler(State(state): State<Arc<AppState>>) -> impl IntoRes
 /// Get a specific pending input request
 async fn get_input_handler(
     State(state): State<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     axum::extract::Path(request_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    if let Some(req) = flowr_ce_agents::input_manager().get_pending(&request_id).await {
-        return (StatusCode::OK, Json(json!(req)));
-    }
-    match durable_approvals(state.storage.as_ref()).await.into_iter().find(|r| r["id"] == request_id) {
+    let who = principal.as_ref().map(|Extension(p)| p);
+    let found = match flowr_ce_agents::input_manager().get_pending(&request_id).await {
+        Some(req) => Some(json!(req)),
+        None => durable_approvals(state.storage.as_ref()).await.into_iter().find(|r| r["id"] == request_id),
+    };
+    // Someone else's request is reported as missing, so ids cannot be probed.
+    match found.filter(|r| may_see_input(who, r)) {
         Some(req) => (StatusCode::OK, Json(req)),
         None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Input request '{}' not found or expired", request_id)}))),
     }
@@ -708,8 +731,17 @@ async fn webhook_handler(
     // Attached by the auth middleware when the webhook carried a valid token
     // (opportunistic auth on the public /webhook path). Absent for external webhooks.
     principal: Option<axum::Extension<flowr_policy::Principal>>,
-    Json(body): Json<Value>,
+    headers: axum::http::HeaderMap,
+    raw: axum::body::Bytes,
 ) -> impl IntoResponse {
+    let body: Value = if raw.iter().all(|b| b.is_ascii_whitespace()) {
+        json!({})
+    } else {
+        match serde_json::from_slice(&raw) {
+            Ok(v) => v,
+            Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("the body is not JSON: {e}")}))).into_response(),
+        }
+    };
     // Prefer the catch-all path segment (/webhook/agent/x/chat), then ?path=, then body._trigger_path.
     let trigger_path = path
         .map(|p| if p.0.starts_with('/') { p.0.clone() } else { format!("/{}", p.0) })
@@ -732,9 +764,23 @@ async fn webhook_handler(
         principal: principal.map(|axum::Extension(p)| p),
         blocked: Default::default(),
     };
-    let trigger_results = flowr_ce_agents::trigger_manager().deliver_webhook(
-        &trigger_path, body, &trigger_adapter, &trigger_wf_adapter
+    // Who may fire a trigger: a signed-in caller (a valid token reached here as
+    // a Principal), or a request signed with the trigger's secret. Anyone else
+    // is refused, whatever the trigger.
+    let signed_in = trigger_wf_adapter.principal.is_some();
+    let signature = webhook_signature(&headers);
+    let admit = move |t: &flowr_ce_agents::Trigger| {
+        signed_in || t.webhook_secret().zip(signature.as_deref()).is_some_and(|(secret, sig)| webhook_signature_ok(secret, &raw, sig))
+    };
+    let (trigger_results, refused) = flowr_ce_agents::trigger_manager().deliver_webhook(
+        &trigger_path, body, &admit, &trigger_adapter, &trigger_wf_adapter
     ).await;
+
+    if trigger_results.is_empty() && refused > 0 {
+        warn!(path = %trigger_path, "webhook refused: no token and no valid signature");
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthorized",
+            "message": "Sign the body with the trigger's secret (X-A3T-Signature: sha256=<hex HMAC-SHA256>) or send a token."}))).into_response();
+    }
 
     // No trigger listens on this path (none was made, or it was deleted): 404,
     // never a 200 that says nothing was delivered.
@@ -776,6 +822,23 @@ async fn webhook_handler(
     }
     Json(json!({"delivered": total.len(), "targets": total, "executions": executions, "failed": failed,
                 "path": trigger_path, "paused": paused})).into_response()
+}
+
+/// The request's body signature: `X-A3T-Signature`, or GitHub's
+/// `X-Hub-Signature-256` (same form: `sha256=<hex>`).
+fn webhook_signature(headers: &axum::http::HeaderMap) -> Option<String> {
+    ["x-a3t-signature", "x-hub-signature-256"].iter()
+        .find_map(|h| headers.get(*h).and_then(|v| v.to_str().ok()))
+        .map(|v| v.trim().to_string())
+}
+
+/// Does `sig` (`sha256=<hex>`) sign `body` with `secret`? Compared in constant time.
+fn webhook_signature_ok(secret: &str, body: &[u8], sig: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    let Some(want) = sig.strip_prefix("sha256=").and_then(|h| hex::decode(h).ok()) else { return false };
+    let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()) else { return false };
+    mac.update(body);
+    mac.verify_slice(&want).is_ok()
 }
 
 // --- Trigger handlers ---
@@ -865,7 +928,8 @@ type MaybePrincipal = Option<axum::extract::Extension<flowr_policy::Principal>>;
 
 async fn list_triggers_handler(principal: MaybePrincipal) -> axum::response::Response {
     if let Some(r) = platform_admin_only(&principal) { return r; }
-    let triggers = flowr_ce_agents::trigger_manager().list().await;
+    let triggers: Vec<Value> = flowr_ce_agents::trigger_manager().list().await.into_iter()
+        .map(|t| flowr_mcp_core::tools::redact_trigger(json!(t))).collect();
     Json(json!({ "triggers": triggers, "count": triggers.len() })).into_response()
 }
 
@@ -885,7 +949,7 @@ async fn create_trigger_handler(principal: MaybePrincipal, Json(body): Json<Valu
 async fn get_trigger_handler(principal: MaybePrincipal, axum::extract::Path(id): axum::extract::Path<String>) -> axum::response::Response {
     if let Some(r) = platform_admin_only(&principal) { return r; }
     match flowr_ce_agents::trigger_manager().get(&id).await {
-        Some(t) => (StatusCode::OK, Json(json!(t))).into_response(),
+        Some(t) => (StatusCode::OK, Json(flowr_mcp_core::tools::redact_trigger(json!(t)))).into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Trigger '{}' not found", id)}))).into_response(),
     }
 }
@@ -3292,5 +3356,28 @@ mod cron_dedupe_tests {
             .unwrap();
         assert_eq!(runs.items.len(), 2);
         assert!(runs.items.iter().all(|r| r.trigger == "cron:trg-1"));
+    }
+}
+
+#[cfg(test)]
+mod webhook_signature_tests {
+    use super::webhook_signature_ok;
+    use hmac::{Hmac, Mac};
+
+    fn sign(secret: &str, body: &[u8]) -> String {
+        let mut m = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        m.update(body);
+        format!("sha256={}", hex::encode(m.finalize().into_bytes()))
+    }
+
+    #[test]
+    fn only_the_right_secret_and_body_pass() {
+        let secret = "0123456789abcdef-secret";
+        let body = br#"{"a":1}"#;
+        assert!(webhook_signature_ok(secret, body, &sign(secret, body)));
+        assert!(!webhook_signature_ok(secret, br#"{"a":2}"#, &sign(secret, body)), "another body");
+        assert!(!webhook_signature_ok(secret, body, &sign("another-secret-0123456", body)), "another secret");
+        assert!(!webhook_signature_ok(secret, body, "sha256=zz"), "not hex");
+        assert!(!webhook_signature_ok(secret, body, &sign(secret, body).replace("sha256=", "")), "no scheme");
     }
 }

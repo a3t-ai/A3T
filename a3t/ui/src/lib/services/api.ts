@@ -764,7 +764,8 @@ export type AgentSecurity = {
   agent_id: string; project: string; version: string | null;
   reach: { hosts?: string[]; mcp?: string[]; llm?: string[]; memory?: string[]; subflows?: string[] } | null;
   bound_to: { model: any; mcp_servers: any; enabled_tools: any };
-  policy: { set: boolean; rules: string[]; source: string | null; updated_by: string | null };
+  policy: { set: boolean; rules: string[]; source: string | null; updated_by: string | null; can_edit: boolean;
+    history: { version: string; action: string; by: string; at: string }[] };
   note: string;
 };
 export type CatalogueEntry = { id: string; label: string; tools?: string[]; actions?: string[]; enforced_by?: string; note?: string };

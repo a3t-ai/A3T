@@ -10,6 +10,11 @@
 //! reply for a connection this process does not hold goes through the engine
 //! store (ADB) on topic `mcp:<id>`, which only the process holding that
 //! connection follows; that process checks the owner again before delivering.
+//!
+//! The id names its owner: `<uuid>.<tag>`, the tag a hash of the uuid and the
+//! owner. Any FlowR can so tell, before running the request, that a poster is
+//! not the owner (the poster is the authenticated caller, so the tag cannot be
+//! made to match someone else's connection) and answer 404 as the holder would.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,6 +36,18 @@ static CLUSTER: OnceLock<Arc<dyn flowr_storage::engine::EngineStore>> = OnceLock
 
 fn conns() -> &'static Mutex<HashMap<String, Conn>> {
     CONNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The owner tag of connection `uuid`: binds the id to who opened it.
+fn tag(uuid: &str, owner: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(format!("mcp-sse|{uuid}|{owner}").as_bytes());
+    h[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Was connection `id` opened by `owner`? (Its tag says so.)
+fn opened_by(id: &str, owner: &str) -> bool {
+    id.split_once('.').is_some_and(|(uuid, t)| t == tag(uuid, owner))
 }
 
 /// The engine topic carrying replies for connection `id`.
@@ -60,7 +77,8 @@ impl Drop for Connection {
 
 /// Register a new connection for `owner` (the caller's principal id).
 pub fn open(owner: &str) -> Connection {
-    let id = uuid::Uuid::new_v4().to_string();
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let id = format!("{uuid}.{}", tag(&uuid, owner));
     let (tx, rx) = mpsc::channel(CHANNEL_CAP);
     let follow = CLUSTER.get().map(|engine| {
         use futures::StreamExt;
@@ -96,9 +114,12 @@ pub enum Refused {
 }
 
 /// Is `id` a connection `owner` may post to? Checked before the request runs.
-/// A connection held by another process cannot be checked here; its holder
-/// checks the owner on arrival (cluster mode), so this passes it on.
+/// One held by another process (cluster mode) is checked by its tag here, and
+/// by its owner again where it is held.
 pub fn may_post(id: &str, owner: &str) -> Result<(), Refused> {
+    if !opened_by(id, owner) {
+        return Err(Refused::NotFound);
+    }
     let m = conns().lock().map_err(|_| Refused::NotFound)?;
     match m.get(id) {
         Some(c) if c.owner == owner => Ok(()),
@@ -110,6 +131,9 @@ pub fn may_post(id: &str, owner: &str) -> Result<(), Refused> {
 
 /// Deliver `msg` to connection `id` on behalf of `owner`.
 pub async fn deliver(id: &str, owner: &str, msg: String) -> Result<(), Refused> {
+    if !opened_by(id, owner) {
+        return Err(Refused::NotFound);
+    }
     let local = {
         let m = conns().lock().map_err(|_| Refused::NotFound)?;
         match m.get(id) {
@@ -158,5 +182,15 @@ mod tests {
         let id = a.id.clone();
         drop(a);
         assert_eq!(may_post(&id, "alice"), Err(Refused::NotFound));
+    }
+
+    #[test]
+    fn a_connection_id_names_its_owner() {
+        let a = open("alice");
+        assert!(opened_by(&a.id, "alice"));
+        assert!(!opened_by(&a.id, "mallory"), "another caller");
+        assert!(!opened_by("00000000-0000-4000-8000-000000000000", "alice"), "no tag");
+        let (uuid, _) = a.id.split_once('.').unwrap();
+        assert!(!opened_by(&format!("{uuid}.{}", "0".repeat(32)), "alice"), "a made-up tag");
     }
 }

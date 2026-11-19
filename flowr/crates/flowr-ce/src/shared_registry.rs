@@ -695,9 +695,7 @@ impl TriggerStore for SharedTriggers {
             serde_json::from_value(trigger).map_err(|e| trigger_err(format!("Invalid trigger: {e}")))?;
         next.id = id.to_string();
         self.reload().await?;
-        let manager = flowr_ce_agents::trigger_manager();
-        let _ = manager.delete(id).await;
-        manager.create(next).await.map_err(trigger_err)?;
+        flowr_ce_agents::trigger_manager().replace(id, next).await.map_err(trigger_err)?;
         self.persist().await
     }
 

@@ -94,10 +94,9 @@ impl TriggerStore for LanceTriggerStore {
             .map_err(|e| flowr_types::FlowError::task_failed("trigger", format!("Invalid trigger: {}", e)))?;
         new_trigger.id = id.to_string();
 
-        // Remove old, insert new
-        let _ = flowr_ce_agents::trigger_manager().delete(id).await;
+        // Replace in place (keeps a webhook secret the update leaves out)
         flowr_ce_agents::trigger_manager()
-            .create(new_trigger)
+            .replace(id, new_trigger)
             .await
             .map_err(|e| flowr_types::FlowError::task_failed("trigger", e.to_string()))?;
         self.persist().await;
