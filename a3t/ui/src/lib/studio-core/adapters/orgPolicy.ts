@@ -1,6 +1,7 @@
 /// An org's policy files, kept in A3T's database (`/security/orgs/{org}/…`).
-/// In the Studio an org's files sit under `org:<handle>`, beside the projects.
-import { orgPolicy, orgsApi, type OrgPolicyCheck, type OrgPolicyFileDetail, type OrgPolicyFiles } from '$lib/services/api';
+/// In the Studio they show inside each of the org's projects (a ref's project is
+/// still `org:<handle>`: the files belong to the org, not to one project).
+import { orgPolicy, orgsApi, projectsApi, type OrgPolicyCheck, type OrgPolicyFileDetail, type OrgPolicyFiles } from '$lib/services/api';
 import { fail, ok, type Result } from '../items';
 import { result, safely } from './util';
 
@@ -14,6 +15,17 @@ export const managedOrgs = (): Promise<Result<string[]>> =>
     const r = await orgsApi.list();
     if (!r.ok) return fail(r.error ?? 'orgs could not be read');
     return ok(((r.data?.orgs ?? []) as any[]).filter((o) => o.can_audit).map((o) => o.handle as string).sort());
+  });
+
+/// The org that owns each project you can see (`{ namespace: org }`); projects a
+/// user owns are left out: their files are an org's.
+export const orgOfProjects = (): Promise<Result<Record<string, string>>> =>
+  safely('list projects', async () => {
+    const r = await projectsApi.list();
+    if (!r.ok) return fail(r.error ?? 'projects could not be read');
+    const out: Record<string, string> = {};
+    for (const p of ((r.data as any)?.projects ?? []) as any[]) if (p.owner_kind === 'org' && p.owner) out[p.namespace] = p.owner;
+    return ok(out);
   });
 
 export const files = (org: string): Promise<Result<OrgPolicyFiles>> =>

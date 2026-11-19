@@ -84,7 +84,7 @@
     if (e.key === 'F2' && kind.rename) { e.preventDefault(); askName('rename', it); }
     else if (e.key === 'Delete' && kind.remove) { e.preventDefault(); delTarget = it; }
   }
-  const newIn = (project: string, c: NonNullable<TreeNode['create']>) => workspace.create(c.kind, project, c.type);
+  const newIn = (project: string, c: NonNullable<TreeNode['create']>) => workspace.create(c.kind, c.project ?? project, c.type);
   /// Click: the item's own view. Double-click / Edit: the item as code.
   const openIt = (it: Item) => workspace.open(it, { view: 'action' });
   const editIt = (it: Item) => workspace.open(it, { view: 'code' });

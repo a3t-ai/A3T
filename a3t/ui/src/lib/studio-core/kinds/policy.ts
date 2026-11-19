@@ -13,12 +13,13 @@ export type PolicyDir = 'policies' | 'roles' | 'access';
 const PATH = /^(policies|roles|access)\/[A-Za-z0-9_-]{1,80}\.ya?ml$/;
 
 /// What a new file starts as: a working example of its kind, to change.
-export const STARTERS: Record<PolicyDir, (name: string, org: string) => string> = {
-  policies: (name, org) => `kind: a3t/policy
+/// `project`: the project it is made in (from a project's Policies folder).
+export const STARTERS: Record<PolicyDir, (name: string, org: string, project?: string) => string> = {
+  policies: (name, org, project) => `kind: a3t/policy
 name: ${name}
 description: What this rule stops, in one sentence.
 # Where it applies: the whole org, or some of its projects.
-applies_to: { org: true }
+applies_to: ${project ? `{ projects: [${project}] }` : '{ org: true }'}
 rules:
   # Who it binds (leave "who" out for everyone), what they cannot do, and why.
   - who: { roles: [Operator, Viewer] }
@@ -32,8 +33,8 @@ description: What this role is for.
 extends: Operator
 remove: [memory.change]
 `,
-  access: (_name, org) => `kind: a3t/access
-project: ${org}-<project>
+  access: (_name, org, project) => `kind: a3t/access
+project: ${project ?? `${org}-<project>`}
 description: Who holds which role on this project.
 # Sign-in groups and named people: role (a baseline role or one of the org's roles/ files).
 groups:
@@ -57,10 +58,13 @@ export const policyKind: ItemKind = {
     bottom: [{ id: 'policy-versions', title: 'Versions' }],
   },
   console: { section: 'security', title: 'Security' },
+  /// `type`: the folder (`policies`, `roles`, `access`), and after a `:` the
+  /// project it is made in, which the starter names (`access:acme-p1`).
   create(project, n, type = 'policies') {
-    const dir = (['policies', 'roles', 'access'].includes(type) ? type : 'policies') as PolicyDir;
-    const base = `new-${SINGULAR[dir]}${n > 1 ? `-${n}` : ''}`;
-    return { ref: { project, kind: 'policy', name: `${dir}/${base}.yaml` }, text: STARTERS[dir](base, orgPolicy.orgOf(project)), type: dir };
+    const [folder, inProject] = type.split(':');
+    const dir = (['policies', 'roles', 'access'].includes(folder) ? folder : 'policies') as PolicyDir;
+    const base = inProject && dir === 'access' ? inProject : `new-${SINGULAR[dir]}${n > 1 ? `-${n}` : ''}`;
+    return { ref: { project, kind: 'policy', name: `${dir}/${base}.yaml` }, text: STARTERS[dir](base, orgPolicy.orgOf(project), inProject || undefined), type: dir };
   },
   checkName: (n) => (PATH.test(n) ? '' : 'A path: policies/<name>.yaml, roles/<name>.yaml or access/<name>.yaml (letters, digits, - and _).'),
   async load(doc) {
