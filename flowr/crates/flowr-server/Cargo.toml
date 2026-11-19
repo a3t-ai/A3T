@@ -3,7 +3,7 @@ name = "flowr-server"
 description = "FlowR EE Server — ClawdFlow CE + UI + optional infrastructure"
 version = "0.1.0"
 edition = "2021"
-license = "Proprietary"
+license = "Elastic-2.0"
 
 [[bin]]
 name = "flowr"
@@ -18,10 +18,9 @@ flowr-policy = { workspace = true }
 flowr-metrics = { workspace = true }
 flowr-mcp-core = { workspace = true }
 
-# EE glue (optional): the Cedar policy hook. `--features ee` produces the
-# enforcing EE binary; the default CE build excludes it — no Cedar in CE.
-flowr-aesop = { path = "../flowr-aesop", optional = true }
-aesop-tower = { path = "../../../../AESOP/crates/aesop-tower", optional = true }
+# Security (optional): Cedar policy hook, policy files, OIDC and IdP admin.
+# `--features ee` builds it in; the default build has no Cedar or OIDC.
+a3t-security = { path = "../a3t-security", optional = true }
 
 # Axum for additional routes
 axum = "0.7"
@@ -76,5 +75,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 # EE build: compile in the Cedar policy hook so security.policy_hook="cedar"
-# enforces. Default (CE) build has no aesop/cedar dependency.
-ee = ["dep:flowr-aesop", "dep:aesop-tower", "flowr-ce/adb-platform"]
+# enforces. Default (CE) build has no Cedar dependency.
+ee = ["dep:a3t-security", "flowr-ce/adb-platform"]

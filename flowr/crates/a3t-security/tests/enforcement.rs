@@ -2,7 +2,7 @@
 //! allows/denies real `ExecutionRequest`s through the Cedar baseline pack.
 //! This is the shape of the goal demo — flip the hook, and the runtime enforces.
 
-use flowr_aesop::CedarHook;
+use a3t_security::CedarHook;
 use flowr_policy::{
     actions, AgentId, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource,
 };

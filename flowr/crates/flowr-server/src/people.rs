@@ -90,7 +90,7 @@ async fn kc_pages(client: &reqwest::Client, token: &str, url: &str) -> Result<Ve
 async fn directory(idp: &crate::IdpAdminState, all_roles: bool) -> Directory {
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let mut d = Directory::default();
         let Some(cfg) = kc::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) else {
             d.error = Some("no sign-in realm is configured".into());

@@ -11,5 +11,5 @@ FlowR release:
 
 Orgs never edit these. An org's own roles and rules are YAML files in the
 org's policy repo (`kind: a3t/role`, `kind: a3t/policy`), compiled to Cedar
-`forbid` statements by `flowr-aesop/src/policy_files.rs`: they can only narrow
+`forbid` statements by `a3t-security/src/policy_files.rs`: they can only narrow
 what the baseline allows.

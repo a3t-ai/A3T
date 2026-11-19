@@ -80,7 +80,7 @@ pub async fn first_password_handler(
 /// policy. The caller has already proved the person may do this.
 #[cfg(feature = "ee")]
 pub(crate) async fn set_keycloak_password(idp: &crate::IdpAdminState, email: &str, new_password: &str) -> Result<(), Response> {
-    use aesop_tower::oidc_admin as kc;
+    use a3t_security::oidc_admin as kc;
     let Some(cfg) = kc::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) else {
         return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "Setting a password isn't available here. Ask your administrator."));
     };

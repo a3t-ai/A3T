@@ -11,9 +11,9 @@ exclude = [
     "crates/flowr-hub",
     "crates/flowr-worker",
     "crates/flowr-suspend",
-    # EE glue: pulls aesop/cedar. Built only via `flowr-server --features ee`,
-    # so it stays out of the default (CE) workspace build.
-    "crates/flowr-aesop",
+    # Security (Cedar, OIDC, policy files). Built only via
+    # `flowr-server --features ee`, so it stays out of the default build.
+    "crates/a3t-security",
 ]
 
 [workspace.package]
@@ -21,7 +21,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["FlowR Contributors"]
-license = "Apache-2.0"
+license = "Elastic-2.0"
 
 [workspace.dependencies]
 # ADB's engine, embedded (stage H: FlowR's engine store is ADB; CE runs it

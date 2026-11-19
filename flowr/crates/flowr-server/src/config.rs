@@ -71,7 +71,7 @@ pub struct SecurityConfig {
     pub audit_exporter: String,
 
     /// AuthN scheme (E2 #4): `"hs256"` (default — shared-secret JWT, the CE dev
-    /// layer) or `"oidc"` (EE — RS256/JWKS via `aesop-tower::AuthnLayer`).
+    /// layer) or `"oidc"` (EE — RS256/JWKS via `a3t-security::oidc`).
     /// Behavior-neutral until flipped; `"oidc"` in a non-`ee` build falls back to
     /// `hs256`, mirroring `policy_hook="cedar"`.
     #[serde(default = "default_authn")]

@@ -1,18 +1,17 @@
-//! `flowr-aesop` — the A3T EE glue crate.
+//! The Cedar policy hook (was the `flowr-aesop` glue crate).
 //!
 //! [`CedarHook`] implements CE's [`flowr_policy::PolicyHook`] by translating a
 //! CE [`ExecutionRequest`] into an aesop [`SecurityContext`]/[`Action`]/
-//! [`Resource`] and running it through [`aesop_core::AuthzEngine`] (Cedar).
+//! [`Resource`] and running it through [`crate::AuthzEngine`] (Cedar).
 //! This *is* the CE→EE enforcement upgrade: CE ships `AllowAll`; installing
 //! this hook via `security.policy_hook = "cedar"` turns policy into enforcement,
 //! with **no CE code change**.
 //!
-//! Dependency direction: `flowr-ee → { flowr-policy (CE), aesop-core }`. Neither
+//! Dependency direction: `flowr-server (ee) → a3t-security → flowr-policy`. Neither
 //! CE nor aesop depends on this crate.
 
-pub mod policy_files;
 
-use aesop_core::{
+use crate::authz::{
     AesopError, Action as AesopAction, AgentId as AesopAgentId, AuthzEngine, Engine,
     Principal as AesopPrincipal, Resource as AesopResource, SecurityContext,
 };

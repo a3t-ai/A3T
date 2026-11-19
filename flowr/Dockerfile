@@ -27,10 +27,6 @@ COPY proto /build/proto
 # Copy AQL/ClawDB crates (workspace dependency)
 COPY AQL /AQL
 
-# Copy the AESOP decision core (EE Cedar engine). flowr-aesop/aesop-tower resolve
-# it via `../../../../aesop/crates/*`, which lands at /aesop in the build image.
-COPY aesop /aesop
-
 # Copy clawdflow crates (flowr-mcp depends on flowr-ce-storage → flowr-ce-agents → flowr-ce-core)
 COPY flowr-ce/Cargo.toml flowr-ce/Cargo.lock /build/flowr-ce/
 COPY flowr-ce/crates/flowr-ce-storage /build/flowr-ce/crates/flowr-ce-storage
@@ -45,7 +41,7 @@ COPY flowr/crates /build/flowr/crates
 WORKDIR /build/flowr
 
 # Build release binary (EE server — CE + auth + RBAC + Cedar policy hook + OIDC).
-# `--features ee` pulls in flowr-aesop + aesop-tower (the Cedar enforcement path).
+# `--features ee` builds in a3t-security (Cedar policy hook, OIDC, IdP admin).
 RUN cargo build --release -p flowr-server --features ee
 
 # Runtime stage

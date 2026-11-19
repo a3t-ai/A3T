@@ -467,14 +467,14 @@ pub async fn authenticate_user(
 }
 
 
-// ── E2 #4: OIDC AuthN (EE) — RS256/JWKS via aesop-tower::AuthnLayer ──
+// ── E2 #4: OIDC AuthN (EE) — RS256/JWKS via a3t-security::oidc ──
 // Installed instead of the HS256 middleware when `security.authn = "oidc"`.
-// Verification (signature, iss/aud/exp) lives in aesop-tower; this middleware
+// Verification (signature, iss/aud/exp) lives in a3t-security; this middleware
 // is the thin consumer glue that maps validated claims onto the CE `Principal`.
 #[cfg(feature = "ee")]
 pub struct OidcState {
-    pub cache: aesop_tower::oidc::JwksCache,
-    pub config: aesop_tower::oidc::AuthnConfig,
+    pub cache: a3t_security::oidc::JwksCache,
+    pub config: a3t_security::oidc::AuthnConfig,
 }
 
 #[cfg(feature = "ee")]
@@ -491,7 +491,7 @@ pub async fn oidc_auth_middleware(
         // gets `on_behalf_of`); absent/invalid token → stays public.
         if let Some(state) = request.extensions().get::<Arc<OidcState>>().cloned() {
             if let Some(token) = extract_bearer_token(&headers) {
-                if let Ok(claims) = aesop_tower::oidc::verify(&token, &state.cache, &state.config).await {
+                if let Ok(claims) = a3t_security::oidc::verify(&token, &state.cache, &state.config).await {
                     let principal = principal_from_oidc_claims(&claims);
                     request.extensions_mut().insert(principal);
                 }
@@ -517,7 +517,7 @@ pub async fn oidc_auth_middleware(
         Some(t) => t,
         None => return unauthorized(&state.config.issuer, "Missing bearer token"),
     };
-    match aesop_tower::oidc::verify(&token, &state.cache, &state.config).await {
+    match a3t_security::oidc::verify(&token, &state.cache, &state.config).await {
         Ok(claims) => {
             let principal = principal_from_oidc_claims(&claims);
             debug!(sub = %principal.id(), "OIDC authenticated");
@@ -556,7 +556,7 @@ pub async fn dual_auth_middleware(headers: HeaderMap, mut request: Request, next
             }
         }
         if let Some(state) = request.extensions().get::<Arc<OidcState>>().cloned() {
-            if let Ok(claims) = aesop_tower::oidc::verify(&token, &state.cache, &state.config).await {
+            if let Ok(claims) = a3t_security::oidc::verify(&token, &state.cache, &state.config).await {
                 request.extensions_mut().insert(principal_from_oidc_claims(&claims));
                 return true;
             }

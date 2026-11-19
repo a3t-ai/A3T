@@ -3,12 +3,12 @@
 //! the policies use missing), every merged schema was rejected and registry schema
 //! fragments were silently dropped (vc-dev, 18 Nov: `flow:deploy` unrecognized).
 //!
-//! After changing `a3t.cedarschema`: `A3T_SCHEMA_JSON_WRITE=1 cargo test -p flowr-aesop
+//! After changing `a3t.cedarschema`: `A3T_SCHEMA_JSON_WRITE=1 cargo test -p a3t-security
 //! --test schema_json` writes the JSON form.
 
 #[test]
 fn the_json_schema_is_the_cedar_schema() {
-    let (fragment, _) = cedar_policy::SchemaFragment::from_cedarschema_str(flowr_aesop::A3T_SCHEMA).expect("a3t.cedarschema parses");
+    let (fragment, _) = cedar_policy::SchemaFragment::from_cedarschema_str(a3t_security::A3T_SCHEMA).expect("a3t.cedarschema parses");
     let want = fragment.to_json_value().expect("as JSON");
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../a3t/policies/a3t.schema.json");
     if std::env::var("A3T_SCHEMA_JSON_WRITE").is_ok() {

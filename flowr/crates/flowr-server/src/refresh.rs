@@ -74,7 +74,7 @@ pub async fn refresh_handler(
     // A Keycloak account, read again through the admin API.
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let Some(cfg) = kc::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) else {
             return expired();
         };

@@ -156,7 +156,7 @@ pub(crate) async fn keycloak_login(
         if config.oidc_issuer.is_empty() { return KcLogin::Failed; }
         let Some((base, realm)) = split_issuer(&config.oidc_issuer) else { return KcLogin::Failed };
         let client = reqwest::Client::new();
-        match aesop_tower::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password).await {
+        match a3t_security::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password).await {
             Ok(id) => {
                 let role = pick_role(&id.roles);
                 let user_id = if id.sub.is_empty() { format!("kc-{email}") } else { id.sub.clone() };
@@ -165,7 +165,7 @@ pub(crate) async fn keycloak_login(
                 info!(user = %user_id, email = %out_email, role = %role, "Login successful (oidc)");
                 KcLogin::Ok((user_id, "org-default".to_string(), role, out_email, name))
             }
-            Err(aesop_tower::oidc_admin::IdpAdminError::SetupRequired) => KcLogin::SetupRequired,
+            Err(a3t_security::oidc_admin::IdpAdminError::SetupRequired) => KcLogin::SetupRequired,
             Err(e) => { warn!(email = %email, error = %e, "OIDC login failed"); KcLogin::Failed }
         }
     }

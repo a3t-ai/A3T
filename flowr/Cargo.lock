@@ -3,6 +3,24 @@
 version = 4
 
 [[package]]
+name = "a3t-security"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cedar-policy",
+ "flowr-policy",
+ "jsonwebtoken",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "adb-cluster"
 version = "0.1.0"
 dependencies = [
@@ -227,36 +245,6 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures 0.2.17",
-]
-
-[[package]]
-name = "aesop-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "cedar-policy",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "aesop-tower"
-version = "0.1.0"
-dependencies = [
- "aesop-core",
- "async-trait",
- "base64 0.22.1",
- "http",
- "jsonwebtoken",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tower",
- "tracing",
 ]
 
 [[package]]
@@ -3662,20 +3650,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
 
 [[package]]
-name = "flowr-aesop"
-version = "0.1.0"
-dependencies = [
- "aesop-core",
- "async-trait",
- "cedar-policy",
- "flowr-policy",
- "serde",
- "serde_json",
- "serde_yaml",
- "tracing",
-]
-
-[[package]]
 name = "flowr-canvas"
 version = "0.1.0"
 dependencies = [
@@ -3886,7 +3860,7 @@ dependencies = [
 name = "flowr-server"
 version = "0.1.0"
 dependencies = [
- "aesop-tower",
+ "a3t-security",
  "anyhow",
  "argon2",
  "arrow-array",
@@ -3897,7 +3871,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs",
- "flowr-aesop",
  "flowr-ce",
  "flowr-mcp-core",
  "flowr-metrics",

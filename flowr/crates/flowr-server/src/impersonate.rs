@@ -133,8 +133,8 @@ async fn resolve_user(config: &AuthConfig, idp: &crate::IdpAdminState, user: &st
 
     let mut found: Option<(String, String, String)> = None; // email, name, role
     #[cfg(feature = "ee")]
-    if let Some(cfg) = aesop_tower::oidc_admin::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) {
-        use aesop_tower::oidc_admin as kc;
+    if let Some(cfg) = a3t_security::oidc_admin::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) {
+        use a3t_security::oidc_admin as kc;
         match kc::admin_token(&idp.client, &cfg).await {
             Ok(tok) => {
                 if let Ok(u) = kc::get_user(&idp.client, &cfg, &tok, user).await {

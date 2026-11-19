@@ -59,7 +59,7 @@ pub async fn forgot_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let Some(cfg) = kc::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) else {
             return unavailable("Password reset isn't available here. Ask your administrator.");
         };

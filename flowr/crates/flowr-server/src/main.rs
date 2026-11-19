@@ -246,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
                     .layer(Extension(auth_config.clone()));
 
                 // E2 #4: choose the AuthN layer by `security.authn`. "oidc" (EE)
-                // installs aesop-tower's RS256/JWKS layer; otherwise the HS256 dev
+                // installs a3t-security's RS256/JWKS check; otherwise the HS256 dev
                 // layer. Both bypass the public routes (merged after). The audit
                 // endpoint sits behind the layer.
                 // EE policy-admin surface: list / hot-reload / dry-run test. All
@@ -313,10 +313,10 @@ async fn main() -> anyhow::Result<()> {
                 {
                     if authn == "oidc" {
                         let audience = if oidc_audience.is_empty() { None } else { Some(oidc_audience.clone()) };
-                        let cfg = aesop_tower::oidc::AuthnConfig::from_issuer(&oidc_issuer, audience);
-                        info!(issuer = %oidc_issuer, jwks = %cfg.jwks_uri, "AuthN: OIDC (RS256/JWKS via aesop-tower)");
+                        let cfg = a3t_security::oidc::AuthnConfig::from_issuer(&oidc_issuer, audience);
+                        info!(issuer = %oidc_issuer, jwks = %cfg.jwks_uri, "AuthN: OIDC (RS256/JWKS via a3t-security)");
                         let state = Arc::new(auth::OidcState {
-                            cache: aesop_tower::oidc::JwksCache::new(cfg.jwks_uri.clone()),
+                            cache: a3t_security::oidc::JwksCache::new(cfg.jwks_uri.clone()),
                             config: cfg,
                         });
                         secured = base
@@ -326,10 +326,10 @@ async fn main() -> anyhow::Result<()> {
                         // Console keeps its HS256 token; external MCP clients (Claude
                         // Desktop) present Keycloak OIDC tokens. Both are accepted.
                         let audience = if oidc_audience.is_empty() { None } else { Some(oidc_audience.clone()) };
-                        let cfg = aesop_tower::oidc::AuthnConfig::from_issuer(&oidc_issuer, audience);
+                        let cfg = a3t_security::oidc::AuthnConfig::from_issuer(&oidc_issuer, audience);
                         info!(issuer = %oidc_issuer, jwks = %cfg.jwks_uri, "AuthN: dual (HS256 + OIDC RS256/JWKS)");
                         let state = Arc::new(auth::OidcState {
-                            cache: aesop_tower::oidc::JwksCache::new(cfg.jwks_uri.clone()),
+                            cache: a3t_security::oidc::JwksCache::new(cfg.jwks_uri.clone()),
                             config: cfg,
                         });
                         secured = base
@@ -419,7 +419,7 @@ static EDITION_INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLoc
 /// E2 #2c: every InfoSec-owned Cedar policy resource (`type_ref: cedar`) in the
 /// registry, in every namespace, as (namespace, name, `config.cedar`). Those in
 /// system / a3t / default are the platform's; any other is its project's
-/// (flowr_aesop::NamedPolicy). What is stored compiles: the policy gate checks
+/// (a3t_security::NamedPolicy). What is stored compiles: the policy gate checks
 /// each one before it is saved.
 async fn collect_registry_cedar_policies(
     storage: &Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
@@ -443,7 +443,7 @@ async fn collect_registry_cedar_policies(
     // reported and left out, and the rest of the set still loads.
     #[cfg(feature = "ee")]
     for (id, project, yaml) in flowr_ce::agent_space::security::all_policies(storage.as_ref()).await {
-        match flowr_aesop::policy_files::compile_agent_policy(&project, &id, &yaml) {
+        match a3t_security::policy_files::compile_agent_policy(&project, &id, &yaml) {
             Ok(c) => out.push(("a3t".to_string(), format!("agent-{id}"), c.cedar)),
             Err(e) => warn!(agent = %id, error = %e, "an agent's own policy no longer compiles; it is not enforced"),
         }
@@ -454,9 +454,9 @@ async fn collect_registry_cedar_policies(
     // changed) is reported loudly and left out.
     #[cfg(feature = "ee")]
     for (org, projects, files) in flowr_ce::org_policy::all_org_files(storage.as_ref()).await {
-        let files: Vec<flowr_aesop::policy_files::OrgFile> = files.into_iter()
-            .map(|(path, content)| flowr_aesop::policy_files::OrgFile { path, content }).collect();
-        match flowr_aesop::policy_files::compile_org_set(&org, &projects, &files) {
+        let files: Vec<a3t_security::policy_files::OrgFile> = files.into_iter()
+            .map(|(path, content)| a3t_security::policy_files::OrgFile { path, content }).collect();
+        match a3t_security::policy_files::compile_org_set(&org, &projects, &files) {
             Ok(set) => out.extend(set.policies),
             Err(errors) => tracing::error!(org = %org, errors = ?errors, "an org's kept policy files no longer compile; they are NOT enforced"),
         }
@@ -465,8 +465,8 @@ async fn collect_registry_cedar_policies(
 }
 
 #[cfg(feature = "ee")]
-fn named(policies: &[(String, String, String)]) -> Vec<flowr_aesop::NamedPolicy> {
-    policies.iter().map(|(ns, n, s)| flowr_aesop::NamedPolicy::new(ns.clone(), n.clone(), s.clone())).collect()
+fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy> {
+    policies.iter().map(|(ns, n, s)| a3t_security::NamedPolicy::new(ns.clone(), n.clone(), s.clone())).collect()
 }
 
 /// Collect the registry-supplied Cedar **schema**: an optional base override
@@ -527,9 +527,9 @@ fn install_policy_hook(
                 //   • otherwise                  → baked baseline + attached registry
                 //     `type_ref: cedar` policy resources owned by InfoSec.
                 let loaded = if !policies_dir.is_empty() {
-                    flowr_aesop::CedarHook::from_dir(policies_dir)
+                    a3t_security::CedarHook::from_dir(policies_dir)
                 } else {
-                    flowr_aesop::CedarHook::with_named_policies(
+                    a3t_security::CedarHook::with_named_policies(
                         &named(registry_policies),
                         schema_base,
                         schema_fragments,
@@ -690,9 +690,9 @@ async fn reload_policies(state: &PolicyAdminState) -> Result<(usize, usize), Str
     let (schema_base, schema_fragments) = collect_registry_schema(&state.storage).await;
     let frag_count = schema_fragments.len();
     let loaded = if !state.policies_dir.is_empty() {
-        flowr_aesop::CedarHook::from_dir(&state.policies_dir)
+        a3t_security::CedarHook::from_dir(&state.policies_dir)
     } else {
-        flowr_aesop::CedarHook::with_named_policies(&named(&policies), schema_base.as_deref(), &schema_fragments)
+        a3t_security::CedarHook::with_named_policies(&named(&policies), schema_base.as_deref(), &schema_fragments)
     };
     match loaded {
         Ok(hook) => {
@@ -729,33 +729,33 @@ impl flowr_ce::policy_gate::PolicyGate for ServerPolicyGate {
             policies.push((namespace.to_string(), name.to_string(), src.to_string()));
         }
         let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
-        flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
+        a3t_security::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
             .map_err(|e| format!("Policy {namespace}/{name} was not saved: it does not compile. {e}"))
     }
 
     async fn compile_agent_policy(&self, project: &str, agent_id: &str, yaml: &str) -> Result<serde_json::Value, String> {
-        let c = flowr_aesop::policy_files::compile_agent_policy(project, agent_id, yaml)?;
+        let c = a3t_security::policy_files::compile_agent_policy(project, agent_id, yaml)?;
         // It must also load with everything else that is saved.
         let mut policies: Vec<(String, String, String)> = collect_registry_cedar_policies(&self.0.storage)
             .await.into_iter().filter(|(_, n, _)| n != &format!("agent-{agent_id}")).collect();
         policies.push(("a3t".to_string(), format!("agent-{agent_id}"), c.cedar.clone()));
         let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
-        flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
+        a3t_security::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
             .map_err(|e| format!("The policy was not saved: it does not load with the others. {e}"))?;
         Ok(serde_json::json!({ "name": c.name, "placement": c.placement, "hidden_apps": c.hidden_apps }))
     }
 
     async fn compile_org_files(&self, org: &str, projects: &[String], files: &[(String, String)]) -> Result<serde_json::Value, Vec<String>> {
-        let files: Vec<flowr_aesop::policy_files::OrgFile> = files.iter()
-            .map(|(path, content)| flowr_aesop::policy_files::OrgFile { path: path.clone(), content: content.clone() }).collect();
-        let set = flowr_aesop::policy_files::compile_org_set(org, projects, &files)?;
+        let files: Vec<a3t_security::policy_files::OrgFile> = files.iter()
+            .map(|(path, content)| a3t_security::policy_files::OrgFile { path: path.clone(), content: content.clone() }).collect();
+        let set = a3t_security::policy_files::compile_org_set(org, projects, &files)?;
         // It must also load with everything else: the other orgs, the agents, the platform.
         let mine = format!("org.{org}.");
         let mut policies: Vec<(String, String, String)> = collect_registry_cedar_policies(&self.0.storage)
             .await.into_iter().filter(|(_, n, _)| !n.starts_with(&mine)).collect();
         policies.extend(set.policies.iter().cloned());
         let (schema_base, schema_fragments) = collect_registry_schema(&self.0.storage).await;
-        flowr_aesop::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
+        a3t_security::CedarHook::validate(&named(&policies), schema_base.as_deref(), &schema_fragments)
             .map_err(|e| vec![format!("the files do not load with the other policies: {e}")])?;
         Ok(serde_json::json!({ "files": set.files, "hidden_apps": set.hidden_apps, "access": set.access }))
     }
@@ -914,7 +914,7 @@ async fn policies_test_handler(
         }
         // Validate/evaluate the draft against the same merged schema (base + fragments).
         let (schema_base, schema_fragments) = collect_registry_schema(&state.storage).await;
-        let hook = match flowr_aesop::CedarHook::with_named_policies(&named(&policies), schema_base.as_deref(), &schema_fragments) {
+        let hook = match a3t_security::CedarHook::with_named_policies(&named(&policies), schema_base.as_deref(), &schema_fragments) {
             Ok(h) => h,
             Err(e) => return (axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                 axum::Json(serde_json::json!({ "error": format!("policy set failed to load: {e}") }))).into_response(),
@@ -985,11 +985,11 @@ async fn policies_test_handler(
 //   POST /security/idp/users   → create a user (+ assign realm roles)
 // Auth to Keycloak uses the master-realm admin (admin-cli password grant); the
 // password is env-only (FLOWR_SECURITY_OIDC_ADMIN_PASSWORD). Prod should swap in
-// a scoped service-account client — only aesop_tower::oidc_admin::admin_token changes.
+// a scoped service-account client — only a3t_security::oidc_admin::admin_token changes.
 // =============================================================================
 
 /// State for the IdP-admin endpoints. Plain strings so it compiles in CE too;
-/// the ee handlers build `aesop_tower::oidc_admin::IdpAdminConfig` from them.
+/// the ee handlers build `a3t_security::oidc_admin::IdpAdminConfig` from them.
 #[derive(Clone)]
 pub(crate) struct IdpAdminState {
     pub(crate) issuer: String,
@@ -1051,13 +1051,13 @@ fn idp_refuse(status: axum::http::StatusCode, msg: impl Into<String>) -> axum::r
 #[cfg(feature = "ee")]
 async fn guard_infosec_target(
     state: &IdpAdminState,
-    cfg: &aesop_tower::oidc_admin::IdpAdminConfig,
+    cfg: &a3t_security::oidc_admin::IdpAdminConfig,
     token: &str,
     principal: Option<&flowr_policy::Principal>,
     id: &str,
 ) -> Result<(), axum::response::Response> {
     if is_super_admin(principal) { return Ok(()); }
-    match aesop_tower::oidc_admin::user_realm_roles(&state.client, cfg, token, id).await {
+    match a3t_security::oidc_admin::user_realm_roles(&state.client, cfg, token, id).await {
         Ok(current) if grants_infosec(&current) => Err(idp_refuse(axum::http::StatusCode::FORBIDDEN,
             "Only a SuperAdmin can change a SuperAdmin or SecurityAdmin account.")),
         Ok(_) => Ok(()),
@@ -1077,14 +1077,14 @@ async fn idp_status_handler(
     }
     #[cfg(feature = "ee")]
     {
-        match aesop_tower::oidc_admin::IdpAdminConfig::from_issuer(
+        match a3t_security::oidc_admin::IdpAdminConfig::from_issuer(
             &state.issuer, state.admin_user.clone(), state.admin_password.clone())
         {
             None => axum::Json(serde_json::json!({
                 "configured": false,
                 "reason": "set security.oidc_issuer to a Keycloak realm URL and FLOWR_SECURITY_OIDC_ADMIN_PASSWORD",
             })).into_response(),
-            Some(cfg) => match aesop_tower::oidc_admin::admin_token(&state.client, &cfg).await {
+            Some(cfg) => match a3t_security::oidc_admin::admin_token(&state.client, &cfg).await {
                 Ok(_) => axum::Json(serde_json::json!({
                     "configured": true, "connected": true,
                     "base_url": cfg.base_url, "realm": cfg.realm,
@@ -1115,7 +1115,7 @@ async fn idp_list_users_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let cfg = match kc::IdpAdminConfig::from_issuer(&state.issuer, state.admin_user.clone(), state.admin_password.clone()) {
             Some(c) => c,
             None => return (axum::http::StatusCode::BAD_REQUEST,
@@ -1160,7 +1160,7 @@ async fn idp_create_user_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         if body.username.trim().is_empty() || body.password.is_empty() {
             return (axum::http::StatusCode::BAD_REQUEST,
                 axum::Json(serde_json::json!({ "error": "username and password are required" }))).into_response();
@@ -1239,7 +1239,7 @@ async fn idp_get_user_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let (cfg, token) = match idp_cfg_token(&state).await {
             Ok(v) => v,
             Err(resp) => return resp,
@@ -1280,7 +1280,7 @@ async fn idp_update_user_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let who = principal.as_ref().map(|e| &e.0);
         if let Some(roles) = &body.roles {
             // An empty list would strip every role; to stop someone signing in, disable them.
@@ -1325,7 +1325,7 @@ async fn idp_delete_user_handler(
     }
     #[cfg(feature = "ee")]
     {
-        use aesop_tower::oidc_admin as kc;
+        use a3t_security::oidc_admin as kc;
         let (cfg, token) = match idp_cfg_token(&state).await { Ok(v) => v, Err(resp) => return resp };
         if let Err(resp) = guard_infosec_target(&state, &cfg, &token, principal.as_ref().map(|e| &e.0), &id).await { return resp; }
         match kc::delete_user(&state.client, &cfg, &token, &id).await {
@@ -1342,9 +1342,9 @@ async fn idp_delete_user_handler(
 /// Shared: build the IdP config + fetch an admin token, or return an error response.
 #[cfg(feature = "ee")]
 async fn idp_cfg_token(state: &IdpAdminState)
-    -> Result<(aesop_tower::oidc_admin::IdpAdminConfig, String), axum::response::Response>
+    -> Result<(a3t_security::oidc_admin::IdpAdminConfig, String), axum::response::Response>
 {
-    use aesop_tower::oidc_admin as kc;
+    use a3t_security::oidc_admin as kc;
     let cfg = kc::IdpAdminConfig::from_issuer(&state.issuer, state.admin_user.clone(), state.admin_password.clone())
         .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": "IdP not configured" }))).into_response())?;

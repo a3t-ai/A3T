@@ -2,7 +2,7 @@
 //! that project only; decisions name policies by `namespace/name` (or a baseline
 //! rule's `@id`); a project policy that does not compile closes that project only.
 
-use flowr_aesop::{CedarHook, NamedPolicy};
+use a3t_security::{CedarHook, NamedPolicy};
 use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource};
 
 fn start_flow_in(ns: &str) -> ExecutionRequest {

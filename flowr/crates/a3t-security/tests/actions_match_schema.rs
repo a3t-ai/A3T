@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 #[test]
 fn every_checked_action_is_declared_and_listed() {
-    let declared: BTreeSet<String> = flowr_aesop::A3T_SCHEMA
+    let declared: BTreeSet<String> = a3t_security::A3T_SCHEMA
         .lines()
         .filter_map(|l| l.trim().strip_prefix("action \""))
         .filter_map(|rest| rest.split('"').next())

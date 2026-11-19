@@ -1,8 +1,8 @@
 //! Org policy and role files compile to Cedar that the engine enforces, and
 //! they can only narrow access.
 
-use flowr_aesop::policy_files::{compile_agent_policy, compile_org_set, compile_policy, compile_role, HiddenApp, OrgFile, Placement};
-use flowr_aesop::CedarHook;
+use a3t_security::policy_files::{compile_agent_policy, compile_org_set, compile_policy, compile_role, HiddenApp, OrgFile, Placement};
+use a3t_security::CedarHook;
 use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource};
 
 fn human(roles: &[&str]) -> Principal {
