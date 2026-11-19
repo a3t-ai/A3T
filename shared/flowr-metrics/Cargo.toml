@@ -2,6 +2,7 @@
 name = "flowr-metrics"
 version = "0.1.0"
 edition = "2021"
+license = "Elastic-2.0"
 description = "FlowR's process metrics (AO-1, .ai/A3T_OBSERVABILITY.md): one Prometheus registry"
 
 [dependencies]

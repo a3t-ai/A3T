@@ -4,7 +4,7 @@ description = "CNCF Serverless Workflow Runtime — pluggable execution engine t
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-license = "Apache-2.0"
+license = "Elastic-2.0"
 
 [dependencies]
 swf-parser = { path = "../swf-parser" }

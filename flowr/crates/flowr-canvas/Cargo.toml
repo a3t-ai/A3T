@@ -3,7 +3,7 @@ name = "flowr-canvas"
 description = "FlowR A3T Controller — watches Canvas + Runtime CRs, reconciles to k8s"
 version = "0.1.0"
 edition = "2021"
-license = "Proprietary"
+license = "Elastic-2.0"
 
 [[bin]]
 name = "flowr-controller"
