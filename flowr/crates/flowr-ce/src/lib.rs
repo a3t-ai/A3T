@@ -12,6 +12,7 @@ pub mod agent_keys;
 pub mod agent_space;
 pub mod approval;
 pub mod token_stream;
+pub mod mcp_stream;
 pub mod canvas;
 pub mod ops;
 /// Files: browse a storage resource (s3, minio, gcs, azure, ftp).
@@ -56,7 +57,6 @@ use flowr_storage::StorageBackend;
 use flowr_types::{ExecutionRequest, ExecutionState, ExecutionStatus};
 use futures::stream::{self, Stream};
 use serde_json::{json, Value};
-use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -93,9 +93,6 @@ impl Default for ServerConfig {
 /// Application state shared across all handlers
 pub struct AppState {
     pub storage: Arc<dyn StorageBackend>,
-    /// MCP-over-SSE replies, tagged with the SSE session they belong to: each
-    /// stream forwards only its own (never another client's answers).
-    pub tx: broadcast::Sender<(String, String)>,
 }
 
 /// Global storage reference for trigger/template persistence
@@ -133,6 +130,7 @@ pub async fn init_storage_with(data_dir: &str, engine: bool) -> anyhow::Result<A
         let adb: Arc<dyn flowr_storage::engine::EngineStore> = Arc::new(adb);
         if stream_through_adb() {
             token_stream::cluster(Arc::clone(&adb));
+            mcp_stream::cluster(Arc::clone(&adb));
             info!("chat and agent streams: through ADB (cluster)");
         } else if let Some(g) = &gateway {
             g.transport().forward_streams();
@@ -384,8 +382,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let agent_space_routes = agent_space::router(storage.clone());
     let org_policy_routes = org_policy::router(storage.clone());
 
-    let (tx, _) = broadcast::channel::<(String, String)>(100);
-    let state = Arc::new(AppState { storage, tx });
+    let state = Arc::new(AppState { storage });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1219,26 +1216,27 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
+/// `GET /sse` — an MCP client's reply stream. The connection gets its own
+/// channel, registered to the caller ([`mcp_stream`]); it carries only the
+/// replies that caller posts for it.
 async fn sse_handler(
-    State(state): State<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let session_id = Uuid::now_v7().to_string();
-    info!(session_id = %session_id, "SSE client connected");
+    let conn = mcp_stream::open(caller(principal).id());
+    info!(connection = %conn.id, "SSE client connected");
 
-    let rx = state.tx.subscribe();
-    let endpoint = format!("/message?session_id={}", session_id);
     let init_event = Event::default()
         .event("endpoint")
-        .data(endpoint);
+        .data(format!("/sse?session_id={}", conn.id));
+    // The stream owns the connection: when the client goes away it is dropped
+    // and unregistered.
+    let replies = stream::unfold(conn, |mut conn| async move {
+        let msg = conn.rx.recv().await?;
+        Some((Ok(Event::default().event("message").data(msg)), conn))
+    });
 
-    let mine = session_id.clone();
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|result| result.ok())
-        .filter(move |(sid, _)| *sid == mine)
-        .map(|(_, msg)| Ok(Event::default().event("message").data(msg)));
-
-    let init_stream = stream::once(async { Ok(init_event) });
-    Sse::new(init_stream.chain(stream))
+    Sse::new(stream::once(async { Ok(init_event) }).chain(replies))
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)))
 }
 
 /// May `principal` follow this conversation's live tokens? An existing session:
@@ -1937,14 +1935,25 @@ async fn sse_message_handler(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    let response = handle_request(&state.storage, caller(principal), request).await;
-    // Only to the SSE stream that asked (`?session_id=`, from its endpoint event);
-    // without one the reply goes back in this response alone.
-    if let Some(sid) = q.get("session_id").filter(|s| !s.is_empty()) {
-        let response_json = serde_json::to_string(&response).unwrap_or_default();
-        let _ = state.tx.send((sid.clone(), response_json));
+    let principal = caller(principal);
+    // Only to the caller's own SSE stream (`?session_id=`, from its endpoint
+    // event); without one the reply goes back in this response alone. Somebody
+    // else's stream is refused before the request runs, and looks like none.
+    let sid = q.get("session_id").filter(|s| !s.is_empty()).cloned();
+    if let Some(sid) = &sid {
+        if mcp_stream::may_post(sid, principal.id()).is_err() {
+            return (StatusCode::NOT_FOUND, Json(json!({"error": "session not found"}))).into_response();
+        }
     }
-    Json(response)
+    let owner = principal.id().to_string();
+    let response = handle_request(&state.storage, principal, request).await;
+    if let Some(sid) = sid {
+        let response_json = serde_json::to_string(&response).unwrap_or_default();
+        if mcp_stream::deliver(&sid, &owner, response_json).await.is_err() {
+            info!(connection = %sid, "MCP reply had no stream to go to");
+        }
+    }
+    Json(response).into_response()
 }
 
 async fn message_handler(
