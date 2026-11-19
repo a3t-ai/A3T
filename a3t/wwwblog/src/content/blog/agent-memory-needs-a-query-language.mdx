@@ -14,7 +14,7 @@ Most agents today have no memory, only a scratchpad and a search box. Each sessi
 
 The usual answer is a vector store. Embed everything, retrieve the nearest chunks, append them to the context. That gives an agent recall, but not memory. A vector store cannot tell a fact from an experience, or an experience from a habit. It does not know that this procedure worked 92% of the time, that this event expires tomorrow, or that this concept is implemented by that workflow.
 
-Brains solved this problem long ago, and they did not solve it with one store. They use several kinds of memory, each with its own job. This post walks from that biology to [AQL](https://github.com/srirammails/AQL), the Agent Query Language I have been building to give agents the same structure.
+Brains solved this problem long ago, and they did not solve it with one store. They use several kinds of memory, each with its own job. This post walks from that biology to [AQL](https://github.com/a3t-ai/AQL), the Agent Query Language I have been building to give agents the same structure.
 
 ## How brains remember
 
@@ -50,7 +50,7 @@ A few design rules shape the whole language:
 - **Pipelines are first-class**, with a hard time budget.
 - **Readable without a spec.** If a non-expert cannot read a query and understand it, the feature is cut.
 
-The [repo](https://github.com/srirammails/AQL) has a PEG grammar, a 150-test conformance suite, a reference implementation over LanceDB, and a [browser playground](https://srirammails.github.io/AQL/playground/) that runs it all in WASM.
+The [repo](https://github.com/a3t-ai/AQL) has a PEG grammar, a 150-test conformance suite, a reference implementation over LanceDB, and a [browser playground](https://a3t-ai.github.io/AQL/playground/) that runs it all in WASM.
 
 ## The simple verbs
 
@@ -244,6 +244,6 @@ What that gives an agent builder:
 
 Vector stores gave agents recall. AQL is my attempt to give them memory: typed, connected, time-aware, and able to learn from its own experience.
 
-Try it in the [playground](https://srirammails.github.io/AQL/playground/), or read the [spec on GitHub](https://github.com/srirammails/AQL). For every verb, clause by clause, see [AQL, Explained](../aql-explained/).
+Try it in the [playground](https://a3t-ai.github.io/AQL/playground/), or read the [spec on GitHub](https://github.com/a3t-ai/AQL). For every verb, clause by clause, see [AQL, Explained](../aql-explained/).
 
-<TryIt href="https://srirammails.github.io/AQL/playground/">Run AQL in your browser: the parser and engine in WASM</TryIt>
+<TryIt href="https://a3t-ai.github.io/AQL/playground/">Run AQL in your browser: the parser and engine in WASM</TryIt>

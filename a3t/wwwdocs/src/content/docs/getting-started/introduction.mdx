@@ -6,7 +6,7 @@ description: What A3T is, and how to build flows with the two grammars it runs o
 A3T is an **agent infrastructure platform** built on two open specifications:
 
 - **<a href="https://github.com/serverlessworkflow/specification" target="_blank" rel="noopener">CNCF Serverless Workflow</a>** (SWF) describes *what runs*: the steps, their order, branches, retries and calls.
-- **<a href="https://github.com/srirammails/AQL" target="_blank" rel="noopener">AQL, the Agent Query Language</a>** describes *what an agent remembers*: how it stores, recalls and links what it learns. You can try queries in the <a href="https://srirammails.github.io/AQL/playground/" target="_blank" rel="noopener">AQL playground</a>.
+- **<a href="https://github.com/a3t-ai/AQL" target="_blank" rel="noopener">AQL, the Agent Query Language</a>** describes *what an agent remembers*: how it stores, recalls and links what it learns. You can try queries in the <a href="https://a3t-ai.github.io/AQL/playground/" target="_blank" rel="noopener">AQL playground</a>.
 
 A3T's runtime, written in Rust, executes the workflows. **ADB**, the agent database, executes AQL. You describe a flow in YAML, and agents are steps in that flow, so the same definition covers plain automation, memory and LLM reasoning.
 
@@ -49,7 +49,7 @@ An AQL statement is a **verb**, a **memory type** and **clauses**. Reads say `FR
 | Modifiers | `NAMESPACE "…"` (isolation), `SCOPE private\|shared\|cluster`, `TTL 90d` |
 | Variables | `$name` in a `WHERE` clause, bound from the caller's `variables` |
 
-The full grammar is in the <a href="https://github.com/srirammails/AQL" target="_blank" rel="noopener">AQL repository</a>.
+The full grammar is in the <a href="https://github.com/a3t-ai/AQL" target="_blank" rel="noopener">AQL repository</a>.
 
 ## 1. A plain workflow
 
@@ -100,7 +100,7 @@ Run it with `{"ticket": {"priority": "P1", "summary": "Checkout is down"}}`.
 
 ## 2. Plain AQL
 
-The same statements work in the <a href="https://srirammails.github.io/AQL/playground/" target="_blank" rel="noopener">playground</a>, over ADB's API, or inside a workflow.
+The same statements work in the <a href="https://a3t-ai.github.io/AQL/playground/" target="_blank" rel="noopener">playground</a>, over ADB's API, or inside a workflow.
 
 Remember what happened, a fact, and a procedure:
 

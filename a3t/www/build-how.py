@@ -243,7 +243,7 @@ PARTS = [
   <span class="k">FOLLOW LINKS TYPE</span> <span class="s">"resolved_by"</span>
     <span class="k">INTO</span> PROCEDURAL
   <span class="k">RETURN</span> pattern, confidence'''),
-    "links": [("AQL on GitHub", "https://github.com/srirammails/AQL"), ("AQL playground", "https://srirammails.github.io/AQL/playground/")],
+    "links": [("AQL on GitHub", "https://github.com/a3t-ai/AQL"), ("AQL playground", "https://a3t-ai.github.io/AQL/playground/")],
     "who": [
         ("builder", "Agents remember across sessions and deployments, and recall by meaning.", "m1"),
         ("gov", "History, retention and forget you can show an auditor.", "m4"),

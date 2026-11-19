@@ -1,5 +1,5 @@
 // AQL (Agent Query Language) as a tree of verbs, for <SchemaTree of="aql" />.
-// Follows grammar/aql.pest and the v0.5 spec plus the v0.6–v0.10 additions in srirammails/AQL.
+// Follows grammar/aql.pest and the v0.5 spec plus the v0.6–v0.10 additions in a3t-ai/AQL.
 // Every example is a complete statement; check them against the real parser before publishing
 // (each one must parse with aql_parser::parse).
 import type { SchemaNode } from './schema-tree';

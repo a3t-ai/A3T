@@ -27,11 +27,11 @@ Each verb below opens into those parts in order: the memory it reads or writes, 
 2. **Every statement names its memory.** A write names exactly one type. `ALL` works with `RECALL`, `REFLECT` and `FORGET` only, and `FORGET` always needs `WHERE`.
 3. **Modifiers come after the predicate, in any order.** `LIMIT 5 ORDER BY time DESC` and `ORDER BY time DESC LIMIT 5` mean the same.
 
-Every example in the tree parses with the AQL reference parser. The [browser playground](https://srirammails.github.io/AQL/playground/) runs the core language; the stream verbs, `GROUP BY`, `WINDOW` on `RECALL` and the time modifiers already run in the parser and in ADB, A3T's memory engine, but not yet in the playground.
+Every example in the tree parses with the AQL reference parser. The [browser playground](https://a3t-ai.github.io/AQL/playground/) runs the core language; the stream verbs, `GROUP BY`, `WINDOW` on `RECALL` and the time modifiers already run in the parser and in ADB, A3T's memory engine, but not yet in the playground.
 
-<TryIt href="https://srirammails.github.io/AQL/playground/">Run AQL in your browser: the parser and engine in WASM</TryIt>
+<TryIt href="https://a3t-ai.github.io/AQL/playground/">Run AQL in your browser: the parser and engine in WASM</TryIt>
 
 ## Sources
 
-- [AQL on GitHub](https://github.com/srirammails/AQL): the grammar (`grammar/aql.pest`), the spec and the conformance suites
-- [AQL spec v0.5](https://github.com/srirammails/AQL/blob/main/spec/AQL_SPEC_v0.5.md), and the v0.6 to v0.10 additions next to it
+- [AQL on GitHub](https://github.com/a3t-ai/AQL): the grammar (`grammar/aql.pest`), the spec and the conformance suites
+- [AQL spec v0.5](https://github.com/a3t-ai/AQL/blob/main/spec/AQL_SPEC_v0.5.md), and the v0.6 to v0.10 additions next to it
