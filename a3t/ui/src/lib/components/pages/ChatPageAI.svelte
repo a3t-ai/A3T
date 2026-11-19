@@ -759,6 +759,30 @@
     onAgentChange();
   }
 
+  // ── Beside an app: your other conversations (the server's index, all apps) ──
+  let sessMenuOpen = $state(false);
+  const currentConv = $derived(conversations.find(c => c.id === sessionId));
+  /// Switch this chat to another conversation ('' starts a new one). The shell
+  /// remounts the chat on it; its transcript comes from the server if this
+  /// browser hasn't cached it. Its own agent answers in it.
+  function pickSession(id: string) {
+    sessMenuOpen = false;
+    if (id === sessionId) return;
+    const c = conversations.find(x => x.id === id);
+    if (c?.agent && agents.some(a => a.id === c.agent)) selectedAgent = c.agent;
+    persistNow();
+    setChatSession(id);
+  }
+  $effect(() => {
+    if (!sessMenuOpen) return;
+    void syncServerSessions();
+    const onDoc = (e: MouseEvent) => { if (!(e.target as HTMLElement)?.closest?.('.sess-pick')) sessMenuOpen = false; };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') sessMenuOpen = false; };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  });
+
   $effect(() => {
     if (!agentMenuOpen) return;
     const onDoc = (e: MouseEvent) => {
@@ -923,6 +947,38 @@
   <!-- Chat body. The conversation list is the shell's context pane now, so this
        owns only the agent selection and the transcript. -->
   <div class="chat-main" class:landing={landing}>
+          <!-- Beside an app: which conversation this is, and the others to go back to. -->
+          {#if docked}
+          <div class="sess-bar"><div class="sess-pick">
+            <button class="agent-chip" class:open={sessMenuOpen} onclick={() => (sessMenuOpen = !sessMenuOpen)}
+                    title="Your conversations" aria-haspopup="menu" aria-expanded={sessMenuOpen}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6" /><path d="M8 4.5V8l2.5 1.5" /></svg>
+              <span class="agent-chip-name">{sessionId ? (currentConv?.title && currentConv.title !== 'New conversation' ? currentConv.title : 'This conversation') : 'New conversation'}</span>
+              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4" /></svg>
+            </button>
+            {#if sessMenuOpen}
+              <div class="agent-menu sess-menu" role="menu">
+                <button class="agent-opt" onclick={() => pickSession('')} role="menuitem">
+                  <span class="agent-opt-tick">+</span><span class="agent-opt-text"><span class="agent-opt-name">New conversation</span></span>
+                </button>
+                {#each conversations.filter(c => c.serverId || c.id === sessionId) as c (c.id)}
+                  <button class="agent-opt" class:on={c.id === sessionId} onclick={() => pickSession(c.id)} role="menuitem" title={c.title}>
+                    <span class="agent-opt-tick">{c.id === sessionId ? '✓' : ''}</span>
+                    <span class="agent-opt-text">
+                      <span class="agent-opt-name">{c.title}</span>
+                      <span class="agent-opt-llm">{[c.time, c.agent && c.agent !== selectedAgent ? (agents.find(a => a.id === c.agent)?.name ?? c.agent) : ''].filter(Boolean).join(' · ')}</span>
+                    </span>
+                  </button>
+                {:else}
+                  <div class="sess-none">No conversations yet.</div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+          <button class="sess-new" onclick={() => pickSession('')} disabled={!sessionId} title="New conversation" aria-label="New conversation">+ New</button>
+          </div>
+          {/if}
+
     {#if landing}
       <!-- Chat's title bar: the section pages lead with a PageBanner, this leads
            with its own line of text. No session yet — the composer sits in the
@@ -1455,6 +1511,15 @@
   /* Sized to its own label — the previous native <select> stretched to a
      percentage width and read as a field rather than a chip. */
   .agent-pick { position: relative; flex: 0 1 auto; min-width: 0; }
+  /* Beside an app: the conversation, and the others, above the transcript. */
+  .sess-bar { position: relative; z-index: 30; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--divider, var(--border)); flex: none; }
+  .sess-pick { position: relative; flex: 1 1 auto; min-width: 0; }
+  .sess-pick .agent-chip { max-width: 100%; }
+  .sess-pick .sess-menu { top: calc(100% + 4px); bottom: auto; max-height: 340px; min-width: min(260px, calc(100cqw - 20px)); max-width: min(360px, calc(100cqw - 20px)); z-index: 20; }
+  .sess-new { flex: none; padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); color: var(--text-2); font-size: 11.5px; cursor: pointer; }
+  .sess-new:hover:not(:disabled) { border-color: var(--spec); color: var(--spec); }
+  .sess-new:disabled { opacity: 0.45; cursor: default; }
+  .sess-none { padding: 8px 12px; font-size: 12px; color: var(--text-4); }
   .agent-chip {
     max-width: 220px;
     display: inline-flex; align-items: center; gap: 5px;

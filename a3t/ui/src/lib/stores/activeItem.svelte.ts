@@ -122,19 +122,26 @@ const DRAFT_MAX = 12000;
 /// The `ui_context` for a turn from a chat beside an app (the Chat face).
 export function activeUiContext(): Record<string, unknown> | undefined {
   const v = item?.view;
+  // The app is sent with every turn: it is stored with the turn in the agent's
+  // memory (ADB), so later sessions can recall what was said where.
+  const where = app ? { app: app.title } : {};
   if (v) {
+    // The item's text goes with the turn whether saved or not, so the agent sees
+    // what is on screen without needing a tool to read it.
+    const t = v.text != null ? redactSecrets(v.text) : null;
     return {
+      ...where,
       kind: v.kind,
       name: v.namespace ? `${v.namespace}/${v.name}` : v.name,
       ...(v.section ? { section: v.section } : {}),
-      ...(v.dirty && v.text != null
-        ? (() => { const t = redactSecrets(v.text); return { dirty: true, draft_text: t.slice(0, DRAFT_MAX), draft_truncated: t.length > DRAFT_MAX }; })()
-        : {}),
+      ...(t == null ? {}
+        : v.dirty ? { dirty: true, draft_text: t.slice(0, DRAFT_MAX), draft_truncated: t.length > DRAFT_MAX }
+        : { text: t.slice(0, DRAFT_MAX), text_truncated: t.length > DRAFT_MAX }),
     };
   }
   if (!app) return undefined;
   // An item the address names but no view has described (yet): its app and id.
-  if (app.selectedId) return { kind: `${app.title} item`, name: app.selectedId };
+  if (app.selectedId) return { ...where, kind: `${app.title} item`, name: app.selectedId };
   // Nothing selected: the app itself.
-  return { kind: 'page', name: app.title };
+  return { ...where, kind: 'page', name: app.title };
 }
