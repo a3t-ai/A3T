@@ -7,7 +7,7 @@
 
 import { mcpCall, fetchChatSessions, opsApi, canvasApi } from '$lib/services/api';
 import { RESOURCE_CATEGORIES, categorize } from '$lib/core/resources/categories';
-import { namespacesFor, inContext, canvasKind, projectOf, itemProject, getProjects, getShowPlatform, loadProjects, canSee, roleIn, type ListKind } from '$lib/stores/context.svelte.ts';
+import { namespacesFor, inContext, getProject, canvasKind, projectOf, itemProject, getProjects, getShowPlatform, getProfile, loadProjects, canSee, roleIn, type ListKind } from '$lib/stores/context.svelte.ts';
 
 export type AppItem = {
   /// What navigation addresses. For chat this is the *client* conversation id,
@@ -20,6 +20,11 @@ export type AppItem = {
   /// Single-letter badge + its colours, for the fixed resource categories.
   badge?: string;
   badgeStyle?: string;
+  /// A heading row in a tree: picking it opens or closes its branch.
+  group?: boolean;
+  /// The Items group it sits in, where that isn't its namespace (Projects: the
+  /// namespace that owns it, since each project is its own namespace).
+  section?: string;
   /// A conversation that exists only in this browser so far.
   pending?: boolean;
   /// Registry namespace. The list GROUPS by this, so it is kept as data rather
@@ -94,18 +99,53 @@ function specNamespace(yaml: unknown): string | undefined {
 /// namespace collect under `''`, rendered last. Returns `null` when nothing in
 /// the list has a namespace — grouping a flat list would only add a heading.
 const PREFERRED = ['a3t', 'default', 'system'];
-export function groupByNamespace(items: AppItem[]): { ns: string; items: AppItem[] }[] | null {
-  if (!items.some((i) => i.namespace)) return null;
+/// `keepOrder`: groups in the order their items come (Settings' own order),
+/// not projects-first and alphabetical.
+/// Who owns a project namespace: its owner handle (a user's or an org's) —
+/// `ann-blog` is ann's, `a3t` the platform's.
+/// Org handles a list has named (Security lists orgs): an org's own items group
+/// under the org, even when its handle has a dash in it like a project's name.
+const ORG_HANDLES = new Set<string>();
+
+export function ownerOfNamespace(ns: string): string {
+  if (ORG_HANDLES.has(ns)) return ns;
+  const p = getProjects().find((x) => x.name === ns);
+  return p?.info?.owner || (ns.includes('-') ? ns.slice(0, ns.indexOf('-')) : ns);
+}
+
+/// Groups as above, each folded under its owner: owner → its projects → items.
+/// An owner with one project named after it (the platform's `a3t`) is one level.
+/// The group for what covers every org (the sign-in realm, the baseline).
+export const PLATFORM_GROUP = 'platform · all orgs';
+
+export function groupByOwner(groups: { ns: string; items: AppItem[] }[]): { owner: string; projects: { ns: string; items: AppItem[] }[]; count: number }[] {
+  const me = getProfile()?.handle ?? '';
+  const byOwner = new Map<string, { ns: string; items: AppItem[] }[]>();
+  for (const g of groups) {
+    const o = g.ns ? ownerOfNamespace(g.ns) : '';
+    (byOwner.get(o) ?? byOwner.set(o, []).get(o)!).push(g);
+  }
+  const platform = (o: string) => o === 'a3t' || o === 'system';
+  const rank = (o: string) => (o === PLATFORM_GROUP ? -1 : o === me ? 0 : !o ? 3 : platform(o) ? 2 : 1);
+  return [...byOwner.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([owner, projects]) => ({ owner, projects, count: projects.reduce((n, p) => n + p.items.length, 0) }));
+}
+
+export function groupByNamespace(items: AppItem[], keepOrder = false): { ns: string; items: AppItem[] }[] | null {
+  if (!items.some((i) => i.section ?? i.namespace)) return null;
   const map = new Map<string, AppItem[]>();
   for (const it of items) {
-    const k = it.namespace ?? '';
+    const k = it.section ?? it.namespace ?? '';
     (map.get(k) ?? map.set(k, []).get(k)!).push(it);
   }
   const rank = (ns: string) => {
     if (!ns) return [2, ''];
+    if (ns === PLATFORM_GROUP) return [-1, ''];
     const i = PREFERRED.indexOf(ns);
     return i >= 0 ? [0, String(i)] : [1, ns];
   };
+  if (keepOrder) return [...map.entries()].map(([ns, list]) => ({ ns, items: list }));
   return [...map.entries()]
     .sort(([a], [b]) => {
       const [ra, ka] = rank(a), [rb, kb] = rank(b);
@@ -118,7 +158,7 @@ export function groupByNamespace(items: AppItem[]): { ns: string; items: AppItem
 const FILTERED: Record<string, ListKind> = {
   // Agents were stored in `a3t` by default, so they aren't platform internals:
   // they stay visible with the platform hidden, split My/Shared by creator.
-  agents: 'shared', templates: 'shared', triggers: 'owned', executions: 'owned',
+  agents: 'shared', 'memory-agents': 'shared', storage: 'shared', 'kg-dbs': 'shared', templates: 'shared', triggers: 'owned', executions: 'owned',
 };
 
 export async function loadAppItems(source: string): Promise<AppItem[]> {
@@ -140,13 +180,23 @@ async function loadAll(source: string): Promise<AppItem[]> {
 
   if (source === 'projects') {
     await loadProjects();
+    // Grouped by the namespace that owns them — your handle, then your orgs,
+    // then the platform's — with each owner's projects folded under it.
+    const me = getProfile()?.handle ?? '';
+    const owner = (p: { name: string; info?: { owner?: string } }) =>
+      p.info?.owner || (p.name.includes('-') ? p.name.slice(0, p.name.indexOf('-')) : p.name);
+    const rank = (p: { name: string; platform?: boolean; info?: { owner?: string } }) =>
+      p.platform ? 2 : owner(p) === me ? 0 : 1;
     return getProjects()
       .filter((p) => (p.platform ? getShowPlatform() : canSee(p)))
+      .sort((a, b) => rank(a) - rank(b) || owner(a).localeCompare(owner(b)) || a.name.localeCompare(b.name))
       .map((p) => ({
         id: p.name,
         label: p.info?.display_name || p.name,
         namespace: p.name,
-        sub: [roleIn(p) ?? (p.platform ? 'platform' : 'open to everyone'),
+        section: owner(p),
+        // Its namespace too, when the display name hides it ("Crawler" is adgn-crawler).
+        sub: [(p.info?.display_name && p.info.display_name !== p.name) ? p.name : '', roleIn(p) ?? (p.platform ? 'platform' : 'open to everyone'),
               `${p.flows ?? 0} flows · ${p.resources ?? 0} resources`].filter(Boolean).join(' · '),
       }));
   }
@@ -175,6 +225,55 @@ async function loadAll(source: string): Promise<AppItem[]> {
     return out;
   }
 
+  if (source === 'resources') {
+    // A tree like Runtimes: each kind, then its resources. Every namespace is
+    // asked at once — one after another left the list blank for as long as the
+    // slowest project took — and a namespace that doesn't answer is skipped.
+    // Id `<category>:<namespace>/<name>`: the Resources page opens that one.
+    const nss = namespacesFor('picker');
+    const [resLists, flowLists] = await Promise.all([
+      Promise.all(nss.map((ns) => within(mcpCall('list_resources', { namespace: ns })).then((r) => [ns, r] as const))),
+      Promise.all(nss.map((ns) => within(mcpCall('list_flows', { namespace: ns })).then((r) => [ns, r] as const))),
+    ]);
+    const byCat: Record<string, AppItem[]> = {};
+    for (const [ns, res] of resLists) {
+      if (!res?.ok) continue;
+      for (const r of rows(res.data, 'resources')) {
+        if (r.type === 'project') continue; // the Projects app's records
+        const project = itemProject('resource', r.namespace ?? ns, r);
+        if (!inContext(project, 'shared')) continue;
+        const c = categorize(r.type ?? '');
+        (byCat[c] ??= []).push({ id: `${c}:${r.namespace ?? ns}/${r.name}`, label: r.name, depth: 1,
+          sub: [project, r.type].filter(Boolean).join(' · ') });
+      }
+    }
+    for (const [ns, fl] of flowLists) {
+      if (!fl?.ok) continue;
+      for (const f of rows(fl.data, 'workflows', 'flows')) {
+        const project = itemProject('flow', f.namespace ?? ns, f);
+        if (!inContext(project, 'owned')) continue;
+        (byCat.flows ??= []).push({ id: `flows:${f.namespace ?? ns}/${f.name}`, label: f.name, depth: 1,
+          sub: [project, f.version ? `v${f.version}` : ''].filter(Boolean).join(' · '), status: f.enabled === false ? 'disabled' : undefined });
+      }
+    }
+    const known = new Set<string>(RESOURCE_CATEGORIES.map((c) => c.key));
+    const kinds = [
+      ...RESOURCE_CATEGORIES.filter((c) => c.key !== 'all').map((c) => ({ key: c.key, label: c.label, icon: c.icon, style: c.iconStyle })),
+      // Kinds the categories don't name yet, so nothing goes missing.
+      ...Object.keys(byCat).filter((k) => !known.has(k)).map((k) => ({ key: k, label: k === 'other' ? 'Other' : k, icon: '?', style: 'background:var(--bg-subtle);color:var(--text-4)' })),
+    ];
+    const out: AppItem[] = [];
+    for (const k of kinds) {
+      const ids = new Set<string>();
+      const list = (byCat[k.key] ?? []).filter((i) => !ids.has(i.id) && !!ids.add(i.id))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      if (!list.length) continue;
+      out.push({ id: `kind:${k.key}`, label: k.label, badge: k.icon, badgeStyle: k.style, depth: 0, group: true,
+        sub: `${list.length} ${list.length === 1 ? 'item' : 'items'}` });
+      out.push(...list);
+    }
+    return out;
+  }
   if (source === 'resource-categories') {
     // Fixed categories, always all shown — a zero is information. Counts come from
     // the same two sources the Resources page merges.
@@ -204,10 +303,55 @@ async function loadAll(source: string): Promise<AppItem[]> {
     }));
   }
 
+  if (source === 'storage') {
+    // Where files live: storage resources, by driver.
+    const nss = namespacesFor('picker');
+    const lists = await Promise.all(nss.map((ns) => within(mcpCall('list_resources', { namespace: ns })).then((r) => [ns, r] as const)));
+    const out: AppItem[] = [];
+    for (const [ns, res] of lists) {
+      if (!res?.ok) continue;
+      for (const r of rows(res.data, 'resources')) {
+        const t = String(r.type ?? '').toLowerCase();
+        if (!['s3', 'minio', 'gcs', 'azure', 'ftp'].includes(t)) continue;
+        const project = itemProject('resource', r.namespace ?? ns, r);
+        if (!inContext(project, 'shared')) continue;
+        const c = r.config ?? {};
+        out.push({ id: `${r.namespace ?? ns}~${r.name}`, label: r.name, namespace: project,
+          sub: [t === 'ftp' ? 'FTP' : t === 'gcs' ? 'Google Cloud' : t === 'azure' ? 'Azure' : t === 'minio' ? 'MinIO' : 'S3',
+                `${c.bucket ?? c.container ?? c.host ?? ''}${c.prefix ? '/' + c.prefix : ''}`].filter(Boolean).join(' · ') });
+      }
+    }
+    return out;
+  }
+  if (source === 'kg-dbs') {
+    // The knowledge-graph databases: LanceDB resources that are KGs (kgApi.isKg).
+    const { isKg } = await import('$lib/components/knowledge/kgApi');
+    const nss = namespacesFor('picker');
+    const lists = await Promise.all(nss.map((ns) => within(mcpCall('list_resources', { namespace: ns })).then((r) => [ns, r] as const)));
+    const out: AppItem[] = [];
+    for (const [ns, res] of lists) {
+      if (!res?.ok) continue;
+      for (const r of rows(res.data, 'resources')) {
+        if (!isKg({ type: r.type, name: r.name, config: r.config })) continue;
+        const project = itemProject('resource', r.namespace ?? ns, r);
+        if (!inContext(project, 'shared')) continue;
+        out.push({ id: `${r.namespace ?? ns}~${r.name}`, label: r.name, namespace: project, sub: r.config?.source_space ? `from ${r.config.source_space}` : 'knowledge graph' });
+      }
+    }
+    return out;
+  }
+  if (source === 'memory-agents') {
+    // The agents, for their memory: each one's mode says how long it remembers.
+    const res = await mcpCall('list_agents', {});
+    if (!res.ok) throw new Error(res.error ?? 'list_agents failed');
+    return rows(res.data, 'agents').map((r: any) => ({ ...named(r), id: r.id ?? r.name, namespace: projectOf(r.namespace || undefined, r.created_by),
+      sub: (r.mode ?? r.agent_mode) === 'persistent' ? 'remembers across conversations' : 'remembers one conversation' }));
+  }
   if (source === 'agents') {
     const res = await mcpCall('list_agents', {});
     if (!res.ok) throw new Error(res.error ?? 'list_agents failed');
-    return rows(res.data, 'agents').map((r: any) => ({ ...named(r), namespace: projectOf(r.namespace || undefined, r.created_by) }));
+    // Keyed by the agent's id: two projects may each have an agent of the same name.
+    return rows(res.data, 'agents').map((r: any) => ({ ...named(r), id: r.id ?? r.name, namespace: projectOf(r.namespace || undefined, r.created_by) }));
   }
   if (source === 'templates') {
     const res = await mcpCall('list_agent_templates', {});
@@ -222,13 +366,55 @@ async function loadAll(source: string): Promise<AppItem[]> {
         .filter(Boolean).join(' · '),
     }));
   }
-  if (source === 'security-sections') {
-    // Fixed sections, like Resources' categories.
-    const badge = 'background:var(--spec-bg,#ede7ff);color:var(--spec,#5530a8)';
+  if (source === 'settings-sections') {
+    // Every Settings page, under its group's heading.
+    const { NAV } = await import('$lib/components/settings/nav');
+    return NAV.flatMap((g) => g.items.map((it) => ({
+      id: it.key, label: it.label, namespace: g.label, sub: it.ee ? 'Enterprise' : '',
+    })));
+  }
+  if (source === 'decision-views') {
+    // SuperAdmin and SecurityAdmin only (the server refuses anyone else): say so
+    // here, as Security does, rather than list views that can only fail.
+    const { isInfosec } = await import('$lib/stores/auth');
+    if (!isInfosec()) throw new Error('The decision log is for SuperAdmin and SecurityAdmin.');
     return [
-      { id: 'identity', label: 'Identity', sub: 'SSO connection & users', badge: 'I', badgeStyle: badge },
-      { id: 'policies', label: 'Policies', sub: 'Cedar authorization', badge: 'P', badgeStyle: badge },
+      { id: 'all', label: 'All decisions', sub: 'every allow, deny and approval asked' },
+      { id: 'deny', label: 'Denials', sub: 'what was refused, and why' },
+      { id: 'ask', label: 'Approvals asked', sub: 'what waited for a person' },
     ];
+  }
+  if (source === 'security-sections') {
+    // The platform first (Identity: the sign-in realm; the compiled baseline) for
+    // SuperAdmin and SecurityAdmin; then one group per org: its identity (members,
+    // sign-in, who reaches its projects), its policy files (kept in A3T, edited in Studio),
+    // and its projects' Cedar policies folded under it. An org's admins and
+    // security admins see only their own orgs (the server scopes what it answers).
+    const { isInfosec, opensSecurity } = await import('$lib/stores/auth');
+    await loadProjects();
+    if (!opensSecurity()) throw new Error("Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.");
+    const infosec = isInfosec();
+    const { securityPolicies, orgsApi } = await import('$lib/services/api');
+    const out: AppItem[] = [];
+    if (infosec) out.push({ id: 'identity', label: 'Identity', sub: 'sign-in realm, every user and their platform roles', namespace: PLATFORM_GROUP });
+    const [r, o] = await Promise.all([securityPolicies.list(), orgsApi.list()]);
+    if (r.status === 403) throw new Error("Security is for SuperAdmin, SecurityAdmin and an org's admins and security admins.");
+    const orgs = (o.ok ? o.data?.orgs ?? [] : []).filter((x: any) => x.can_audit);
+    const viewing = getProject() ? ownerOfNamespace(getProject()) : '';
+    for (const org of orgs as any[]) ORG_HANDLES.add(org.handle);
+    for (const org of orgs as any[]) {
+      if (viewing && viewing !== org.handle) continue;
+      const n = (org.members ?? []).length;
+      out.push({ id: `org:${org.handle}`, label: 'Identity', namespace: org.handle,
+        sub: `${n} member${n === 1 ? '' : 's'}${org.sso?.idp_alias ? ` · signs in through ${org.sso.idp_alias}` : ''} · who reaches its projects` });
+      out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: 'its roles, rules and access, as files' });
+    }
+    for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
+      if (!inContext(p.namespace, 'shared')) continue;
+      out.push({ id: `policy:${p.namespace}/${p.name}`, label: p.name, namespace: p.namespace, sub: p.description || 'Cedar policy' });
+    }
+    if (infosec) out.push({ id: 'baseline', label: 'baseline', namespace: PLATFORM_GROUP, sub: 'compiled deny-by-default guardrails · read only' });
+    return out;
   }
   if (source === 'canvases') {
     const res = await canvasApi.list();
@@ -256,13 +442,15 @@ async function loadAll(source: string): Promise<AppItem[]> {
     }));
   }
   if (source === 'executions') {
-    const res = await mcpCall('list_executions', { limit: 100 });
-    if (!res.ok) throw new Error(res.error ?? 'list_executions failed');
-    return rows(res.data, 'executions').map((r: any) => ({
-      id: r.instance_id, label: r.name ?? r.instance_id,
+    // The run store, newest first; the shell narrows it to the top bar's project.
+    const res = await mcpCall('list_runs', { limit: 200 });
+    if (!res.ok) throw new Error(res.error ?? 'list_runs failed');
+    const PH: Record<string, string> = { faulted: 'failed', pending: 'queued', suspended: 'paused' };
+    return rows(res.data, 'runs').map((r: any) => ({
+      id: r.run_id, label: r.flow ?? r.run_id,
       namespace: itemProject('execution', r.namespace || undefined, r),
-      sub: [r.status, r.started_at ? relTime(r.started_at) : ''].filter(Boolean).join(' · '),
-      status: r.status ? String(r.status).toLowerCase() : undefined,
+      sub: [r.trigger, r.started_at || r.created_at ? relTime(r.started_at ?? r.created_at) : '', r.duration_us ? dur(r.duration_us) : '', r.error ? String(r.error).slice(0, 80) : ''].filter(Boolean).join(' · '),
+      status: PH[r.phase] ?? r.phase,
     }));
   }
   return [];
@@ -283,15 +471,30 @@ const BADGE = {
   flow: 'background:var(--spec-bg,#ede7ff);color:var(--spec,#5530a8)',
   agent: 'background:var(--ephemeral-bg,#fff4e5);color:var(--ephemeral,#b45309)',
 };
+/// A list call that hasn't answered in time counts as failed, so one slow
+/// namespace can't hold the whole list back.
+function within<T>(p: Promise<T>, ms = 12000): Promise<T | null> {
+  return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+}
+
+function dur(us: number): string {
+  const ms = us / 1000;
+  return ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60000)} min`;
+}
+
 async function runtimeTree(): Promise<AppItem[]> {
   const res = await opsApi.overview();
   if (!res.ok) throw new Error(res.error || 'Could not load runtimes');
-  const d = res.data;
+  const d = res.data ?? {};
   const host = d.host?.host || 'flowr';
-  const out: AppItem[] = [{
-    id: `host:${host}`, label: host, badge: 'H', badgeStyle: BADGE.host, depth: 0,
-    sub: `shared host · ${(d.runtimes ?? []).length} runtimes`,
-  }];
+  // Every FlowR of the cluster (each reports itself), then the runtimes they share.
+  const hosts: any[] = (d.hosts ?? []).length ? d.hosts : [d.host ?? { host }];
+  const gib = (b?: number | null) => (b ? `${(b / 1073741824).toFixed(b > 10 * 1073741824 ? 0 : 1)} GiB` : '?');
+  const out: AppItem[] = hosts.map((h: any, i: number) => ({
+    id: `host:${h.host}`, label: h.host, badge: 'H', badgeStyle: BADGE.host, depth: 0,
+    sub: [h.node?.name ? `node ${h.node.name}` : 'FlowR', h.node?.memTotalBytes ? `${gib((h.node.memTotalBytes ?? 0) - (h.node.memAvailableBytes ?? 0))} of ${gib(h.node.memTotalBytes)} used` : '',
+      i === hosts.length - 1 ? `${(d.runtimes ?? []).length} runtimes` : ''].filter(Boolean).join(' · '),
+  }));
   const dep = (row: any, depth: number): AppItem => ({
     id: `dep:${row.deployment.id}`,
     label: row.deployment.target,

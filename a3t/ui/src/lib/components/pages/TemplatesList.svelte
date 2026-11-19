@@ -1,6 +1,13 @@
 <script lang="ts">
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
+  import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
+  /// Inside the shell the selected template fills the Details pane.
+  const pane = detailsPane();
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
+  import WizardSteps, { type WizardStep } from '$lib/components/shared/WizardSteps.svelte';
+  import WizardNav from '$lib/components/shared/WizardNav.svelte';
   import { openPublish } from '$lib/stores/publish.svelte.ts';
-  import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
+  import ExposedSections, { type ExposedItem } from '$lib/components/shared/ExposedSections.svelte';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
   import { execFlow, mcpCall } from '$lib/services/api';
@@ -11,10 +18,11 @@
   import McpResourceForm from '$lib/components/editor/McpResourceForm.svelte';
   import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import ProjectPill from '$lib/components/shared/ProjectPill.svelte';
-  import { inContext, projectOf, getProject, canAdminNamespace } from '$lib/stores/context.svelte.ts';
+  import { inContext, projectOf, getProject, getProjects, canAdminNamespace, canWriteIn, isReleaseProject } from '$lib/stores/context.svelte.ts';
 
   // Stacked sub-editors (unlimited depth)
   interface SubEditor { type: string; data?: any; closing?: boolean }
@@ -74,14 +82,31 @@
     } catch {}
     resSaving = false;
   }
-  import { can, canAny, currentUser } from '$lib/stores/auth';
+  import { can, canAny, currentUser, getSession } from '$lib/stores/auth';
   import { navigateTo, navigateToDetail, getActivePanel, openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import { trackActiveItem } from '$lib/stores/activeItem.svelte.ts';
+  import TemplateGuide from '$lib/components/templates/TemplateGuide.svelte';
+  import { specForCopy } from '$lib/components/templates/templateSpec';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
 
   const canCreate = can('create', 'template');
   // A viewer may open a template read-only but must not save it.
   const canEditTpl = canAny(['create', 'update'], 'template');
+
+  /// A template's name by the naming convention: tmpl_<project>_<function>
+  /// ("helper" in project qa-run → tmpl_qa_run_helper). A name already in that
+  /// form is kept; anything else is reduced to [a-z0-9_].
+  function templateName(typed: string, project: string): string {
+    const id = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const t = typed.trim();
+    if (/^tmpl_[a-z0-9_]+$/.test(t)) return t;
+    const ns = id(project || 'default');
+    const fn = id(t.replace(/^tmpl[_-]?/i, '')).replace(new RegExp(`^${ns}_`), '');
+    return `tmpl_${ns}_${fn || 'agent'}`;
+  }
+  /// The spec with its document named `name` (the flow it is, in its project).
+  const renameSpec = (yaml: string, name: string) => yaml.replace(/^(document:[\s\S]*?\n\s+name:\s*).*$/m, `$1${name}`);
 
   function defaultSpecYaml(name: string): string {
     const n = name || 'my-agent';
@@ -142,7 +167,7 @@ do:
     error = '';
     try {
       console.log('[TemplatesList] loadTemplates() called');
-      const res = await execFlow('a3t-templates-list', 'a3t', { org_id: 'org-default' });
+      const res = await execFlow('flow_a3t_templates-list', 'a3t', { org_id: 'org-default' });
       console.log('[TemplatesList] execFlow result:', res.ok, typeof res.data, Array.isArray(res.data) ? `array(${res.data.length})` : res.data);
       if (res.ok) {
         const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
@@ -160,7 +185,12 @@ do:
   }
 
   function applyRows(rows: any[]) {
-    allTemplates = releases(rows.map((r: any) => ({
+    allTemplates = releases(rows.map(toTemplate));
+  }
+
+  /// A template row from the registry, as the page shows it.
+  function toTemplate(r: any) {
+    return ({
       name: r.name,
       version: r.version ?? 'v1.0',
       activeVersion: r.version ?? 'v1.0',
@@ -182,7 +212,7 @@ do:
       namespace: projectOf((typeof r.spec_yaml === 'string'
         ? r.spec_yaml.split(/\n(?=\S)/).find((b: string) => b.startsWith('document:'))?.match(/^\s+namespace:\s*['"]?([\w.-]+)/m)?.[1]
         : undefined), r.created_by) as string | undefined,
-    })));
+    });
   }
 
   /// One card per template per project: its newest version, with every
@@ -214,7 +244,7 @@ do:
     deleteTarget = { id, name };
     deleteConfirmName = '';
     deleteUsers = null;
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     const all = res.ok ? (Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? [])) : [];
     deleteUsers = all.filter((a: any) => a.template_id === id);
   }
@@ -225,7 +255,7 @@ do:
 
   async function loadTemplateAgents() {
     agentsLoading = true;
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' });
     if (res.ok) {
       const allAgents = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
       templateAgents = allAgents.filter((a: any) => a.template_id === template?.id);
@@ -241,7 +271,7 @@ do:
   async function confirmDelete() {
     if (!deleteTarget || deleteConfirmName !== deleteTarget.name) return;
     deleting = true;
-    const res = await execFlow('a3t-templates-delete', 'a3t', { id: deleteTarget.id, org_id: 'org-default' });
+    const res = await execFlow('flow_a3t_templates-delete', 'a3t', { id: deleteTarget.id, org_id: 'org-default' });
     deleting = false;
     if (res.ok) {
       selected = '';
@@ -267,24 +297,59 @@ do:
     loadTemplates();
     // Restore selection from URL
     const panel = getActivePanel();
-    if (panel?.props?.selectedId) {
+    if (panel?.props?.create) newTemplate();  // the shell's "New template"
+    else if (panel?.props?.selectedId) {
       selected = panel.props.selectedId;
     }
   });
 
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) selected = id;
+    });
+  });
+
+  // Whichever way a template is opened (Items, a link, the page), start on
+  // About and load the agents built from it.
+  let guideFor = '';
+  $effect(() => {
+    const t = template;
+    const key = t && !draftTemplate?.isNew ? `${t.namespace ?? ''}/${t.id ?? t.name}` : '';
+    untrack(() => {
+      if (!key || key === guideFor) return;
+      guideFor = key;
+      propNode = 'about';
+      void loadTemplateAgents();
+    });
+  });
+
   // Collapsible sections
-  let sections = $state({ platform: true, my: true, training: true, community: false });
+  let sections = $state<Record<string, boolean>>({ platform: true, my: true, released: true, training: true, community: false });
 
   /// The selected project's templates only (all of them under "All projects").
   let inView = $derived(allTemplates.filter(t => inContext(t.namespace, 'shared')));
   /// Mine: templates I created. Shared: everyone else's in view, and the
   /// built-in ones. Templates other orgs expose are in the sections below.
-  let myTemplates = $derived(inView.filter(t => t.created_by === $currentUser?.id));
-  let platformTemplates = $derived(inView.filter(t => t.created_by !== $currentUser?.id));
+  /// A template in a project that releases to others is a release — never "mine",
+  /// even in that project. Working in one, its releases get their own section;
+  /// elsewhere they are in the shared sections below. Each release shows once:
+  /// the upstream copy it was passed on from (system → a3t) is not repeated.
+  let workTemplates = $derived(inView.filter(t => !isReleaseProject(t.namespace)));
+  let releasedHere = $derived(inView.filter(t => isReleaseProject(t.namespace)));
+  let shownReleases = $derived(new Set(releasedHere.map((t) => `${t.name}@v${String(t.version).replace(/^v/, '')}`)));
+  let myTemplates = $derived(workTemplates.filter(t => t.created_by === $currentUser?.id));
+  let platformTemplates = $derived(workTemplates.filter(t => t.created_by !== $currentUser?.id));
 
   let tplSections = $derived([
     { key: 'my', label: 'My Templates', hint: 'Created by you', items: myTemplates },
     { key: 'platform', label: 'Team Templates', hint: 'Created by others in view, and built into A3T', items: platformTemplates },
+    ...(releasedHere.length ? [{ key: 'released', label: `Released from ${getProject() || 'your orgs'}`, hint: 'Shared with other orgs — what you change here reaches everyone who uses them', items: releasedHere }] : []),
 
   ]);
 
@@ -296,23 +361,76 @@ do:
   // document name) as the user types the name. Flips true once they edit the spec/designer.
   let specEdited = $state(false);
   // Two projects can hold a template of the same name (a release): the one in view wins.
-  let template = $derived(draftTemplate ? draftTemplate : (selected ? (inView.find(t => t.name === selected) ?? allTemplates.find(t => t.name === selected)) : null));
+  /// An inherited template (Shared / Training / Community), opened read-only.
+  let viewTemplate = $state<any>(null);
+  let template = $derived(draftTemplate ? draftTemplate : viewTemplate ? viewTemplate : (selected ? (inView.find(t => t.name === selected) ?? allTemplates.find(t => t.name === selected)) : null));
+  /// Base templates are never edited in place: anything that is not yours
+  /// (platform, shared, training, community, inherited) is read-only — you
+  /// clone it and change your copy.
+  const readOnly = $derived(!!template?.readOnly || (!draftTemplate?.isNew && !!template && template.source !== 'my')
+    // …and wherever you can't write in its project (the server would refuse).
+    || (!draftTemplate?.isNew && !!template && !canWriteIn((template as any).namespace)));
 
-  let propNode = $state<'detail' | 'yaml' | 'policy' | 'ownership' | 'agents'>('detail');
+  /// The pop-in's steps. A new template needs a name before its spec; agents are
+  /// made from a saved one, so that step is not there while it is new.
+  /// A template as people meet it — About, Agents, Code (read-only on a base
+  /// template), Versions — and, for your own copies, Settings. A new one: its details, then its
+  /// design.
+  const GUIDE_ICON = {
+    about: '<circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 5h.01"/>',
+    versions: '<path d="M8 2v6l4 2"/><circle cx="8" cy="8" r="6.5"/>',
+    agents: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>',
+  };
+  const tplSteps = $derived.by((): WizardStep[] => draftTemplate?.isNew ? [
+    { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+      need: 'Name the template: lowercase letters, digits and dashes.' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Design', hint: 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+  ] : [
+    { id: 'about', icon: GUIDE_ICON.about, label: 'Overview', hint: 'What it is for, what an agent made from it sets, what it runs — and make an agent from it' },
+    { id: 'agents', icon: GUIDE_ICON.agents, label: 'Agents', hint: 'The agents built from it, and what each does' },
+    { id: 'yaml', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', label: 'Code', hint: readOnly ? 'How it is built: its graph and code, read-only' : 'How it is built: its graph, code and form', ok: !!template?.spec_yaml?.trim(), need: 'The template needs a spec.' },
+    { id: 'versions', icon: GUIDE_ICON.versions, label: 'Versions', hint: 'Which version is live, the earlier ones, and its copies' },
+    ...(readOnly ? [] : [
+      { id: 'detail', icon: '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>', label: draftTemplate?.isNew ? 'About it' : 'Settings', hint: draftTemplate?.isNew ? 'Its name, version and tags' : 'Its details, and who owns it', ok: !draftTemplate?.isNew || /^[a-z0-9][a-z0-9-]{0,62}$/.test(draftTemplate.name?.trim() ?? ''),
+        need: 'Name the template: lowercase letters, digits and dashes.' },
+    ]),
+  ]);
+
+  function openInherited(it: ExposedItem) {
+    const base = allTemplates.find((t) => t.id === it.templateId) ?? (it.raw ? toTemplate(it.raw) : null);
+    if (!base) return;
+    draftTemplate = null; selected = '';
+    viewTemplate = { ...base, namespace: it.namespace, readOnly: true };
+    propNode = 'about';
+  }
+
+  let propNode = $state<'about' | 'agents' | 'versions' | 'yaml' | 'detail'>('about');
+  /// Each template's live version, as FlowR reports it (its catalogue entry can lag).
+  let liveVersion = $state<Record<string, string>>({});
+
+  // The chat's context: this template, the tab on screen, and its spec as
+  // edited. Picking another template is a new key, so its spec is the saved one.
+  let specRev = $state(0);
+  trackActiveItem(() => template ? {
+    kind: 'template', namespace: template.namespace, name: template.name || 'new template',
+    id: draftTemplate?.isNew ? '(new)' : template.id, section: propNode,
+    text: template.spec_yaml ?? '', rev: specRev,
+    // The app's Chat edits the spec (propose_edit); the editor follows the text.
+    applyEdit: readOnly ? undefined : (t: string) => { if (template) template.spec_yaml = t; },
+  } : null);
   let panelClosing = $state(false);
 
   function selectTemplate(name: string) {
-    draftTemplate = null;
+    draftTemplate = null; viewTemplate = null;
     selected = name;
-    propNode = 'yaml';
+    propNode = 'about';
     navigateToDetail('templates', 'Templates', name);
-    loadTemplateAgents();
   }
 
   // Open the edit slide-in on a blank draft. Tags are kept as a comma string
   // for the input; saveTemplate passes them straight to the create flow.
   function newTemplate() {
-    selected = '';
+    selected = ''; viewTemplate = null;
     draftTemplate = {
       id: `tpl-${crypto.randomUUID().slice(0, 8)}`,
       name: '', version: '1.0.0', activeVersion: '1.0.0',
@@ -336,23 +454,24 @@ do:
     // Create mode: persist the draft, then reopen the panel on the saved row.
     if (draftTemplate?.isNew) {
       if (!draftTemplate.name?.trim()) { saving = false; saveMsg = 'Name required'; return; }
-      const res = await execFlow('a3t-templates-create', 'a3t', {
+      const tname = templateName(draftTemplate.name, getProject() || 'default');
+      const res = await execFlow('flow_a3t_templates-create', 'a3t', {
         org_id: 'org-default',
         user_id: $currentUser?.id ?? '',
         timestamp: new Date().toISOString(),
         data: {
           id: draftTemplate.id,
-          name: draftTemplate.name.trim(),
+          name: tname,
           version: draftTemplate.version || '1.0.0',
           source: draftTemplate.source || 'my',
-          spec_yaml: draftTemplate.spec_yaml,
+          spec_yaml: renameSpec(draftTemplate.spec_yaml, tname),
           tags: draftTemplate.tags ?? '',
           vertical: draftTemplate.vertical ?? '',
         },
       });
       saving = false;
       if (res.ok) {
-        const nm = draftTemplate.name.trim();
+        const nm = tname;
         draftTemplate = null;
         await loadTemplates();
         selectTemplate(nm);
@@ -371,7 +490,7 @@ do:
         return;
       }
     }
-    const res = await execFlow('a3t-templates-update', 'a3t', {
+    const res = await execFlow('flow_a3t_templates-update', 'a3t', {
       id: template.id,
       org_id: 'org-default',
       user_id: $currentUser?.id ?? '',
@@ -388,38 +507,67 @@ do:
     saving = false;
     if (res.ok) {
       saveMsg = 'Saved';
+      specRev++;   // what is in the editor is now the saved spec
       setTimeout(() => saveMsg = '', 2000);
     } else {
       saveMsg = res.error ?? 'Save failed';
     }
   }
 
-  async function duplicateTemplate() {
-    if (!template) return;
-    const newName = `${template.name}-copy`;
-    const id = `tpl-${crypto.randomUUID().slice(0, 8)}`;
-    const res = await execFlow('a3t-templates-create', 'a3t', {
+  // ── Clone and edit ──
+  // The copy is a template of your own: its spec rewritten to its own name and
+  // project (version 1.0.0) with where it came from — a verbatim copy kept the
+  // base's project, so it landed there, not in yours.
+  let copyRequest = $state(0);
+  function requestCopy() { propNode = 'about'; copyRequest++; }
+  /// Projects you may create a copy in, the one you are working in first.
+  const copyProjects = $derived.by(() => {
+    const cur = getProject();
+    return getProjects()
+      .filter((p) => !p.platform && (p.info?.can_admin || ['owner', 'developer'].includes(p.info?.role ?? '')))
+      .map((p) => ({ name: p.name, label: p.info?.display_name && p.info.display_name !== p.name ? `${p.info.display_name} (${p.name})` : p.name }))
+      .sort((a, b) => (a.name === cur ? -1 : b.name === cur ? 1 : a.name.localeCompare(b.name)));
+  });
+  async function copyTemplate(typed: string, namespace: string): Promise<string | null> {
+    if (!template) return 'Nothing to copy.';
+    const name = templateName(typed, namespace);
+    const from = `${template.namespace ?? ''}/${template.name}@${template.activeVersion ?? template.version ?? '1.0.0'}`;
+    const res = await execFlow('flow_a3t_templates-create', 'a3t', {
       org_id: 'org-default',
       user_id: $currentUser?.id ?? '',
       timestamp: new Date().toISOString(),
       data: {
-        id, name: newName, version: template.version,
-        source: 'my', spec_yaml: template.spec_yaml,
+        id: `tpl-${crypto.randomUUID().slice(0, 8)}`, name, version: '1.0.0',
+        source: 'my', spec_yaml: specForCopy(template.spec_yaml ?? '', { name, namespace, from }),
         tags: Array.isArray(template.tags) ? template.tags.join(',') : (template.tags ?? ''),
         vertical: template.vertical ?? '',
       },
     });
-    if (res.ok) {
-      await loadTemplates();
-      selectTemplate(newName);
-    }
+    if (!res.ok) return res.error ?? 'The copy was not made.';
+    await loadTemplates();
+    selectTemplate(name);
+    return null;
   }
+
+  // In the shell's Details pane the stack bar carries this panel's actions.
+  $effect(() => {
+    if (!pane || !template) return;
+    const t = template;
+    return setDetailActions({
+      onopenineditor: () => (t && !draftTemplate ? openInStudio('template', t.namespace ?? 'a3t', t.name, t.id) : navigateTo('flow-editor', 'Studio')),
+      onsave: $canEditTpl && !readOnly ? saveTemplate : undefined,
+      onclose: closePanel,
+      // A base template is cloned, never edited; your own can be duplicated.
+      extra: getSession()?.user?.role === 'viewer' ? [] : [{ label: readOnly ? 'Clone and edit' : 'Duplicate', run: requestCopy }],
+    });
+  });
 
   function closePanel() {
     panelClosing = true;
     setTimeout(() => {
       selected = '';
       draftTemplate = null;
+      viewTemplate = null;
       panelClosing = false;
       navigateTo('templates', 'Templates');
     }, 200);
@@ -445,44 +593,25 @@ do:
   <div class="screen-body">
     <!-- Slide panel -->
     {#if template}
-      <div class="slide-overlay" class:closing={panelClosing} onclick={closePanel}></div>
-      <div class="slide-panel" class:closing={panelClosing}>
+      {#if !pane}<div class="slide-overlay" class:closing={panelClosing} onclick={closePanel}></div>{/if}
+      <div class="slide-panel" class:closing={panelClosing} class:in-pane={!!pane} use:fitToPane={pane}>
         <div class="sp-layout">
           <!-- LEFT: Tree menu -->
           <div class="sp-tree-panel">
             <div class="sp-tree-head">
               <div class="sp-tree-icon" style="background: {template.color}">{template.icon}</div>
               <div class="sp-tree-info">
-                <div class="sp-tree-name">{template.name ? template.name.split('-').map(w => (w[0]?.toUpperCase() ?? '') + w.slice(1)).join(' ') : 'New Template'}</div>
-                <div class="sp-tree-meta">v{template.activeVersion}</div>
+                <div class="sp-tree-name mono">{template.name || 'New template'}</div>
+                <div class="sp-tree-meta">v{liveVersion[`${template.namespace}/${template.name}`] ?? template.activeVersion}{liveVersion[`${template.namespace}/${template.name}`] ? ' · live' : ''}</div>
               </div>
+              <DetailActionsBar />
             </div>
-            <nav class="sp-tree">
-              <button class="sp-tree-node" class:active={propNode === 'detail'} onclick={() => propNode = 'detail'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/></svg>
-                Template Detail
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'yaml'} onclick={() => propNode = 'yaml'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3L1 8l4 5M11 3l4 5-4 5"/></svg>
-                Template YAML
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'policy'} onclick={() => propNode = 'policy'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4z"/></svg>
-                Policy
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'ownership'} onclick={() => propNode = 'ownership'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14a6 6 0 0112 0"/></svg>
-                Ownership &amp; Access
-              </button>
-              <button class="sp-tree-node" class:active={propNode === 'agents'} onclick={() => propNode = 'agents'}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/></svg>
-                Agents
-              </button>
-            </nav>
+            <WizardSteps steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)} />
           </div>
 
           <!-- CENTER: Content + close -->
           <div class="sp-main">
+            {#if !pane}
             <div class="sp-close-bar">
               <div class="sp-btn-wrap">
                 <button class="sp-action-btn" onclick={() => template && !draftTemplate ? openInStudio('template', template.namespace ?? 'a3t', template.name, template.id) : navigateTo('flow-editor', 'Studio')}>
@@ -490,7 +619,7 @@ do:
                 </button>
                 <span class="sp-tooltip">Open in Studio</span>
               </div>
-              {#if $canEditTpl}
+              {#if $canEditTpl && !readOnly}
               <div class="sp-btn-wrap">
                 <button class="sp-action-btn save" onclick={saveTemplate} disabled={saving}>
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 15H3a1 1 0 01-1-1V2a1 1 0 011-1h8l3 3v10a1 1 0 01-1 1z"/><path d="M11 15V9H5v6M5 1v4h5"/></svg>
@@ -499,10 +628,10 @@ do:
               </div>
               {/if}
               <div class="sp-btn-wrap">
-                <button class="sp-action-btn" onclick={duplicateTemplate}>
+                <button class="sp-action-btn" onclick={requestCopy}>
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="10" height="10" rx="1"/><path d="M4 12H3a1 1 0 01-1-1V3a1 1 0 011-1h8a1 1 0 011 1v1"/></svg>
                 </button>
-                <span class="sp-tooltip">Duplicate template</span>
+                <span class="sp-tooltip">{readOnly ? 'Clone and edit' : 'Duplicate template'}</span>
               </div>
               <div class="sp-btn-wrap">
                 <button class="sp-close" onclick={closePanel}>
@@ -511,12 +640,14 @@ do:
                 <span class="sp-tooltip">Close</span>
               </div>
             </div>
+            {/if}
             <div class="sp-content">
               {#if propNode === 'detail'}
                 <div class="sp-form">
-                  <h3>{template.isNew ? 'New Template' : 'Template Details'}</h3>
+                  <h3>{template.isNew ? 'New template' : 'Settings'}</h3>
+                  {#if readOnly}<p class="ro-note">Read-only — inherited from <span class="mono">{template.namespace}</span>. Clone it to make your own copy, or create agents from it.</p>{/if}
                   {#if template.isNew}
-                    <p class="sf-hint">Set the name and details, edit the spec in Template YAML, then save.</p>
+                    <p class="sf-hint">Name it, then build it in Design, then save.</p>
                     <label class="cf-field"><span>Name</span>
                       <input type="text" bind:value={draftTemplate.name} placeholder="my-agent-template"
                         oninput={() => { if (!specEdited) draftTemplate.spec_yaml = defaultSpecYaml(draftTemplate.name); }} />
@@ -541,82 +672,45 @@ do:
                       <div class="sf-row"><span class="sf-k">Published</span><span class="sf-v">{template.published ?? 'false'}</span></div>
                       <div class="sf-row"><span class="sf-k">Tags</span><span class="sf-v">{Array.isArray(template.tags) ? template.tags.join(', ') : (template.tags || '-')}</span></div>
                     </div>
-                  {/if}
-                </div>
-
-              {:else if propNode === 'yaml'}
-                {#if template.spec_yaml}
-                  <FlowEditorPane aiKind="template" aiName={template.name} initialYaml={template.spec_yaml} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
-                {:else}
-                  <div class="sp-empty">No spec defined for this template.</div>
-                {/if}
-
-              {:else if propNode === 'agents'}
-                <div class="sp-form">
-                  <div class="pf-head">
-                    <h3>Agents</h3>
-                    {#if template?.id}<button class="btn spec sm" onclick={() => navigateTo('agents', 'Agents', { createFromTemplate: template.id })}>+ Create Agent</button>{/if}
-                  </div>
-                  <p class="sf-hint">Agents instantiated from this template — one template, many agents.</p>
-                  {#if agentsLoading}
-                    <div class="sf-placeholder">Loading agents...</div>
-                  {:else if templateAgents.length === 0}
-                    <div class="sf-placeholder">No agents created from this template yet.</div>
-                  {:else}
-                    <div class="sf-agents-list">
-                      {#each templateAgents as a}
-                        <div class="sf-agent-row">
-                          <div class="sf-agent-info">
-                            <strong>{a.name}</strong>
-                            <span class="mono dim" style="font-size: 11px;">{a.id}</span>
-                          </div>
-                          <span class="sf-agent-mode">{a.mode}</span>
-                          <span class="sf-agent-status" class:active={a.status === 'running'} class:draft={a.status === 'draft'}>{a.status}</span>
-                        </div>
-                      {/each}
+                    <!-- Who owns it: the record's own values (the old view showed
+                         fixed placeholders). -->
+                    <h3>Ownership</h3>
+                    <div class="sf-kv">
+                      <div class="sf-row"><span class="sf-k">Project</span><span class="sf-v mono">{template.namespace ?? '—'}</span></div>
+                      <div class="sf-row"><span class="sf-k">Created by</span><span class="sf-v">{template.created_by || '—'}</span></div>
+                      <div class="sf-row"><span class="sf-k">Created</span><span class="sf-v">{template.created_at ? new Date(template.created_at).toLocaleString() : '—'}</span></div>
                     </div>
                   {/if}
                 </div>
 
-              {:else if propNode === 'ownership'}
-                <div class="sp-form">
-                  <h3>Ownership &amp; Access</h3>
-                  <div class="sf-kv">
-                    <div class="sf-row"><span class="sf-k">Created by</span><span class="sf-v">usr-superadmin</span></div>
-                    <div class="sf-row"><span class="sf-k">Org</span><span class="sf-v">org-default</span></div>
-                    {#if template.created_at}<div class="sf-row"><span class="sf-k">Created</span><span class="sf-v">{new Date(template.created_at).toLocaleString()}</span></div>{/if}
-                    <div class="sf-row"><span class="sf-k">Namespace</span><span class="sf-v">a3t</span></div>
-                  </div>
-                </div>
+              {:else if propNode === 'yaml'}
+                <!-- One Design for every template: editable on your copy, read-only
+                     on a base template, which you clone to change. -->
+                {#if readOnly && template.spec_yaml}
+                  <div class="tpl-ro">Read-only — this is a base template.{#if getSession()?.user?.role !== 'viewer'} <button class="link" onclick={requestCopy}>Clone and edit</button> to change your own copy.{/if}</div>
+                {/if}
+                {#if template.spec_yaml}
+                  <FlowEditorPane initialYaml={template.spec_yaml} {readOnly} onchange={(yaml) => { if (template) template.spec_yaml = yaml; if (draftTemplate?.isNew && yaml.trim() !== defaultSpecYaml(draftTemplate.name).trim()) specEdited = true; }} onopensub={handleOpenSub} />
+                {:else}
+                  <div class="sp-empty">No spec defined for this template.</div>
+                {/if}
 
-              {:else if propNode === 'policy'}
-                <div class="sp-form">
-                  <h3>Policy</h3>
-                  <p class="sf-hint">Security and runtime policy for agents using this template.</p>
-                  <div class="sf-kv">
-                    <div class="sf-row"><span class="sf-k">Preset</span><select class="sf-select"><option value="standard" selected>standard</option><option value="restricted">restricted</option><option value="elevated">elevated</option></select></div>
-                    <div class="sf-row"><span class="sf-k">Runtime</span><select class="sf-select"><option value="sandboxed" selected>sandboxed</option><option value="co-located">co-located</option></select></div>
-                    <div class="sf-row"><span class="sf-k">Audit</span><select class="sf-select"><option value="all_decisions" selected>all_decisions</option><option value="failures_only">failures_only</option><option value="none">none</option></select></div>
-                    <div class="sf-row"><span class="sf-k">Max Flow Depth</span><span class="sf-v">3</span></div>
-                    <div class="sf-row"><span class="sf-k">Memory Scopes</span><span class="sf-v">private, shared</span></div>
-                  </div>
-                  <div class="sf-note">Policy intersected with ClusterPolicy and PolicyPreset.</div>
-                </div>
+              {:else if propNode === 'about' || propNode === 'agents' || propNode === 'versions'}
+                <TemplateGuide view={propNode} {template} {readOnly} agents={templateAgents} {agentsLoading} {allTemplates}
+                  projects={copyProjects} {copyRequest} oncopy={copyTemplate} onview={(id) => (propNode = id as any)}
+                  onopentemplate={(t) => navigateToDetail('templates', 'Templates', t.name)}
+                  onlive={(v) => { if (template) liveVersion[`${template.namespace}/${template.name}`] = v; }} />
               {/if}
             </div>
+            <WizardNav steps={tplSteps} active={propNode} wizard={!!draftTemplate?.isNew} onselect={(id) => (propNode = id as any)}
+              final={$canEditTpl && !readOnly ? saveTemplate : undefined} finalLabel={draftTemplate?.isNew ? 'Create template' : 'Save'}
+              finalBusy={saving} busyLabel={draftTemplate?.isNew ? 'Creating…' : 'Saving…'} />
           </div>
         </div>
       </div>
     {/if}
 
-    <PageBanner
-      headline="Start with a template."
-      highlightWord="template"
-      subtitle="Give it memory, knowledge, and tools. Wire it into the Canvas."
-      description="Every A3T agent begins as a typed template. Templates encode domain expertise — bid pipelines, incident triage, payment review — so you configure rather than engineer."
-      accent="spec"
-      docsPath="/templates"
-    />
+    <PageBanner {...bannerFor('templates')} />
     <!-- Pinned and latest, under the banner: the section page leads with what
          it is for, then the items you actually return to. -->
     <AppHome appType="templates" embedded />
@@ -656,7 +750,7 @@ do:
           </div>
       </FoldSection>
     {/each}
-    <ExposedSections kind="template" noun="Templates" />
+    <ExposedSections kind="template" noun="Templates" onopen={openInherited} hide={shownReleases} />
   </div>
 
 <!-- Delete confirmation dialog -->
@@ -756,6 +850,7 @@ do:
 {/each}
 
 <style>
+  .ro-note { font-size: 12px; color: var(--warn); background: var(--warn-bg); padding: 8px 10px; border-radius: var(--r-sm); margin: 0 0 12px; }
   /* Stacked sub-editor — slides in like SlidePanel but offset 10px right */
   .sub-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.08);
@@ -879,6 +974,15 @@ do:
       -4px 0 20px rgba(0,0,0,0.04);
     animation: panelIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
+  /* In the shell's Details pane: flush with the pane, below the shell's pop-ins. */
+  .slide-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: none; }
+  .slide-panel.in-pane.closing { animation: none; opacity: 0; }
+  /* In the pane: header and section tabs across the top, content below. */
+  .slide-panel.in-pane .sp-layout { display: flex; flex-direction: column; }
+  .slide-panel.in-pane .sp-tree-panel { flex: 0 0 auto; border-right: 0; overflow: visible; }
+  .slide-panel.in-pane .sp-tree-head { min-height: 0; padding: 12px 18px; border-bottom: 1px solid var(--border-light, #f0ece3); }
+  .slide-panel.in-pane .sp-tree-name { font-size: 18px; font-weight: 400; }
+  .slide-panel.in-pane .sp-main { flex: 1 1 auto; min-height: 0; padding-top: 0; }
   .slide-panel.closing {
     animation: panelOut 0.2s ease-in forwards;
   }
@@ -892,21 +996,20 @@ do:
   }
 
   /* Layout: left tree + main content */
-  .sp-layout { display: grid; grid-template-columns: 200px 1fr; height: 100%; }
+  .sp-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
 
   /* Left: Tree panel */
   .sp-tree-panel {
     display: flex; flex-direction: column; background: var(--bg-surface);
     border-right: 1px solid var(--border); overflow-y: auto;
   }
-  .sp-tree-head {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 14px; border-bottom: 1px solid var(--border);
-  }
-  .sp-tree-icon { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: white; flex-shrink: 0; }
-  .sp-tree-info { min-width: 0; }
-  .sp-tree-name { font-family: var(--font-serif); font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sp-tree-meta { font-size: 10px; color: var(--text-4); margin-top: 1px; }
+  .sp-tree-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+  .sp-tree-icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: white; flex-shrink: 0; }
+  /* The name keeps room to be read; the actions wrap under it when the pane is narrow. */
+  .sp-tree-head { flex-wrap: wrap; row-gap: 8px; }
+  .sp-tree-info { min-width: 0; flex: 1 1 160px; }
+  .sp-tree-name { font-family: var(--font-serif); font-size: 15px; font-weight: 500; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sp-tree-meta { font-size: 11px; color: var(--text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .sp-tree { display: flex; flex-direction: column; padding: 6px 0; flex: 1; }
   .sp-tree-node {
@@ -928,7 +1031,7 @@ do:
   .tpl-tag { font-family: var(--font-mono); font-size: 9px; padding: 2px 6px; border-radius: 3px; background: var(--bg-subtle); color: var(--text-3); }
 
   /* Main area */
-  .sp-main { overflow: hidden; position: relative; padding-top: 44px; }
+  .sp-main { overflow: hidden; position: relative; padding-top: 44px; display: flex; flex-direction: column; }
   .sp-close-bar {
     position: absolute; top: 0; left: 0; right: 0; height: 44px;
     display: flex; align-items: center; justify-content: flex-end; gap: 6px;
@@ -978,11 +1081,11 @@ do:
     border-color: var(--text-1);
   }
 
-  .sp-content { height: 100%; overflow: hidden; }
+  .sp-content { flex: 1; min-height: 0; overflow-y: auto; }
   .sp-empty { padding: 40px; text-align: center; color: var(--text-4); font-size: 13px; }
 
   /* Form views */
-  .sp-form { padding: 24px 32px; max-width: 600px; }
+  .sp-form { padding: 24px 32px; max-width: var(--detail-w); }
   .sp-form h3 { font-family: var(--font-serif); font-size: 18px; font-weight: 500; margin-bottom: 16px; }
   .sf-kv { display: flex; flex-direction: column; }
   .sf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--divider); font-size: 13px; gap: 12px; }
@@ -1037,4 +1140,6 @@ do:
   .btn.danger:hover { opacity: 0.9; }
   .btn.danger:disabled { opacity: 0.4; cursor: default; }
   .del-users { margin: 0 0 12px; padding-left: 18px; font-size: 13px; color: var(--text-2); max-height: 160px; overflow: auto; }
+  .tpl-ro { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
+  .tpl-ro .link { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font: inherit; font-weight: 500; }
 </style>

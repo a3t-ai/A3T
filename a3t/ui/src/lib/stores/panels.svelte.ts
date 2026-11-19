@@ -2,6 +2,7 @@
 // Each navigation updates both panel state and browser URL.
 // On load, URL is read to restore state.
 
+import { navigating } from '$lib/core/status/activity';
 import { contextPrefix, splitContextPath, contextFromUrl } from './context.svelte.ts';
 
 export interface PanelDef {
@@ -28,6 +29,7 @@ const TYPE_TO_PATH: Record<string, string> = {
   triggers: '/triggers',
   resources: '/resources',
   knowledge: '/knowledge',
+  datarooms: '/data-rooms',
   memory: '/memory',
   runtime: '/runtime',
   reconciliation: '/controller',
@@ -52,11 +54,12 @@ const PATH_TO_TYPE: Record<string, { type: string; title: string }> = {
   '/triggers': { type: 'triggers', title: 'Triggers' },
   '/resources': { type: 'resources', title: 'Resources' },
   '/knowledge': { type: 'knowledge', title: 'Knowledge' },
+  '/data-rooms': { type: 'datarooms', title: 'Files' },
   '/memory': { type: 'memory', title: 'Memory' },
   '/runtime': { type: 'runtime', title: 'Runtimes' },
   '/controller': { type: 'reconciliation', title: 'Controller' },
   '/executions': { type: 'executions', title: 'Executions' },
-  '/logs': { type: 'logs', title: 'Logs' },
+  '/logs': { type: 'logs', title: 'Decision log' },
   '/studio': { type: 'flow-editor', title: 'Studio' },
   // Old links.
   '/flow-editor': { type: 'flow-editor', title: 'Studio' },
@@ -82,12 +85,14 @@ function updateUrl(type: string, props: Record<string, any> = {}) {
 // ── Public API ──
 
 export function navigateTo(type: string, title: string, props: Record<string, any> = {}) {
+  navigating();
   counter++;
   panels = [{ id: `panel-${counter}`, type, title, icon: type[0]?.toUpperCase(), props }];
   updateUrl(type, props);
 }
 
 export function navigateToDetail(type: string, title: string, itemId: string, props: Record<string, any> = {}) {
+  navigating();
   counter++;
   const fullProps = { ...props, selectedId: itemId };
   panels = [{ id: `panel-${counter}`, type, title, icon: type[0]?.toUpperCase(), props: fullProps }];
@@ -97,7 +102,8 @@ export function navigateToDetail(type: string, title: string, itemId: string, pr
 /// Open an item in the Studio, from anywhere in the Console (the chat, a list's
 /// detail panel). The item travels in the address — /studio/<kind>:<project>~<name>
 /// (+ ~<id> for id-keyed items) — so the link can be shared and reloaded.
-export type StudioItemKind = 'flow' | 'resource' | 'trigger' | 'template' | 'canvas' | 'agent';
+/// `policy`: an org's policy file; its project is `org:<handle>`, its name the path.
+export type StudioItemKind = 'flow' | 'resource' | 'trigger' | 'template' | 'canvas' | 'agent' | 'policy';
 export function openInStudio(kind: StudioItemKind, project: string, name: string, id?: string) {
   const sel = `${kind}:${project}~${name}${id ? `~${id}` : ''}`;
   navigateToDetail('flow-editor', name || 'Studio', sel);
@@ -105,7 +111,7 @@ export function openInStudio(kind: StudioItemKind, project: string, name: string
 /// The item an address names (see openInStudio); `<project>~<name>` alone is a flow.
 export function parseStudioItem(sel: unknown): { project: string; kind: StudioItemKind; name: string; id?: string } | null {
   if (typeof sel !== 'string' || !sel.includes('~')) return null;
-  const m = sel.match(/^(?:(flow|resource|trigger|template|canvas|agent):)?([^~]+)~([^~]+)(?:~(.+))?$/);
+  const m = sel.match(/^(?:(flow|resource|trigger|template|canvas|agent|policy):)?([^~]+)~([^~]+)(?:~(.+))?$/);
   if (!m) return null;
   return { kind: (m[1] ?? 'flow') as StudioItemKind, project: m[2], name: m[3], ...(m[4] ? { id: m[4] } : {}) };
 }
@@ -198,8 +204,10 @@ export function initFromUrl(): { type: string; title: string; props: Record<stri
   return null;
 }
 
+let popStateSet = false;
 export function setupPopState() {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || popStateSet) return;
+  popStateSet = true;
 
   window.addEventListener('popstate', () => {
     contextFromUrl();

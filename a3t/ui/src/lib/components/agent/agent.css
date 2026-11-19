@@ -1,0 +1,94 @@
+/* The agent tabs (Overview, API, Config, Releases, Observe, Settings) share
+   one look; every rule is under .agt, the page's wrapper of a tab. */
+.agt { display: flex; flex-direction: column; gap: 14px; font-size: 13px; color: var(--text-2); }
+.agt h4 { margin: 6px 0 -4px; font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-4); display: flex; gap: 8px; align-items: center; }
+.agt .mono { font-family: var(--font-mono); font-size: 12.5px; }
+.agt .dim { margin: 0; font-size: 12.5px; color: var(--text-3); }
+.agt .err { color: var(--err, #b42318); font-size: 12.5px; }
+.agt .ok { color: var(--ok, #1a7158); font-size: 12.5px; }
+.agt .grow { flex: 1; }
+.agt .link { border: 0; background: none; padding: 0; color: var(--spec); cursor: pointer; font: inherit; font-size: 12.5px; }
+.agt .link:hover { text-decoration: underline; }
+.agt .count { font: 500 10.5px var(--font-mono); color: var(--text-4); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; letter-spacing: 0; }
+.agt .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.agt .row.between { justify-content: space-between; }
+.agt .acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.agt .card { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); }
+.agt .card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.agt .card-head h3 { margin: 0; font: 400 16px var(--font-serif); color: var(--text-1); }
+.agt .card-head span { font-size: 12.5px; color: var(--text-3); }
+.agt .card-head .grow + * { margin-left: auto; }
+
+.agt .btn2 { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12.5px var(--font-sans); color: var(--text-1); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.agt .btn2:hover:not(:disabled) { border-color: var(--spec); }
+.agt .btn2.primary { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
+.agt .btn2.danger { background: var(--err, #b42318); border-color: var(--err, #b42318); color: #fff; }
+.agt .btn2.quiet { border-color: transparent; background: none; color: var(--text-3); }
+.agt .btn2:disabled { opacity: 0.5; cursor: default; }
+
+.agt .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--text-4); flex: 0 0 8px; }
+.agt .dot.ok { background: var(--ok); } .agt .dot.warn { background: var(--warn); } .agt .dot.err { background: var(--err); }
+.agt .tag { display: inline-block; font: 600 10px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; background: var(--bg-subtle); color: var(--text-3); }
+.agt .tag.prod { background: color-mix(in srgb, var(--green, #1a7158) 14%, transparent); color: var(--green, #1a7158); }
+.agt .tag.dev { background: var(--spec-bg); color: var(--spec-ink, var(--spec)); }
+.agt .tag.sample { background: var(--warn-bg, #fbf0e0); color: var(--warn, #b45309); }
+
+.agt div.sample { display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; border: 1px dashed var(--warn, #b45309); border-radius: 8px; background: var(--warn-bg, #fbf0e0); font-size: 12.5px; color: var(--text-2); }
+.agt div.sample > b:first-child { color: var(--warn, #b45309); }
+.agt .note { padding: 10px 12px; border-radius: 8px; background: var(--bg-subtle); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+.agt .note.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: var(--warn-bg, #fbf0e0); }
+.agt .note.bad { border-color: color-mix(in srgb, var(--err) 35%, var(--border)); background: var(--err-bg, #fdecea); }
+.agt .notes { margin: 0; padding-left: 18px; font-size: 11.5px; color: var(--text-4); display: flex; flex-direction: column; gap: 3px; }
+
+.agt .kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px 14px; margin: 0; }
+.agt .kv dt { color: var(--text-3); }
+.agt .kv dd { margin: 0; color: var(--text-1); overflow-wrap: anywhere; }
+
+.agt .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.agt .tile { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); text-align: left; font: inherit; color: inherit; }
+.agt button.tile { cursor: pointer; }
+.agt button.tile:hover { border-color: var(--spec); }
+.agt .tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-1); }
+.agt .tile .k { font-size: 11.5px; color: var(--text-3); }
+.agt .tile.bad .v { color: var(--err); }
+
+.agt .chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.agt .chips > button:not(.link) { border: 1px solid var(--border); background: var(--bg-surface); border-radius: 999px; padding: 4px 11px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.agt .chips > button.on { background: var(--text-1); color: var(--bg-page); border-color: var(--text-1); }
+
+.agt .tl { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); }
+.agt .ev { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 9px 12px; border-top: 1px solid var(--border); }
+.agt .ev:first-child { border-top: 0; }
+.agt .ev .ic { font: 600 10px var(--font-mono); text-align: center; line-height: 20px; color: var(--text-4); }
+.agt .ev .t { font-size: 13px; color: var(--text-1); }
+.agt .ev .m { font-size: 12px; color: var(--text-3); margin-top: 2px; overflow-wrap: anywhere; }
+.agt .ev time { font-size: 11.5px; color: var(--text-4); white-space: nowrap; }
+.agt .ev.err .t, .agt .ev.err .ic { color: var(--err); }
+.agt .empty { padding: 14px 12px; font-size: 12.5px; color: var(--text-4); }
+
+/* Code: endpoints, snippets */
+.agt .code { position: relative; margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); font: 12px/1.55 var(--font-mono); color: var(--text-1); white-space: pre; overflow-x: auto; }
+.agt .code .copy { position: absolute; top: 6px; right: 6px; }
+.agt .ep { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); font: 12.5px var(--font-mono); color: var(--text-1); }
+.agt .ep .verb { font-weight: 700; color: var(--green, #1a7158); }
+.agt .ep .path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agt .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.agt .seg button { border: 0; background: var(--bg-surface); padding: 4px 10px; font: 500 12px var(--font-sans); color: var(--text-3); cursor: pointer; }
+.agt .seg button + button { border-left: 1px solid var(--border); }
+.agt .seg button.on { background: var(--text-1); color: var(--bg-page); }
+
+/* Tables (environments, schema, values) */
+.agt .tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.agt .tbl th { text-align: left; font: 600 10.5px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-4); padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); }
+.agt .tbl td { padding: 9px 12px; border-top: 1px solid var(--divider, var(--border)); color: var(--text-2); vertical-align: top; }
+.agt .tbl tr:first-child td { border-top: 0; }
+.agt .tbl td.k { color: var(--text-3); white-space: nowrap; }
+
+.agt .dirty { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 8px 6px 14px; border: 1px solid var(--spec); border-radius: 8px; background: var(--spec-bg); font-size: 12.5px; color: var(--text-2); position: sticky; top: 0; z-index: 2; box-shadow: 0 4px 14px rgba(0,0,0,0.06); }
+.agt .dirty.bad { border-color: var(--err, #b42318); background: var(--err-bg, #fdecea); }
+
+.agt .form { display: flex; flex-direction: column; gap: 10px; }
+.agt .form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); text-transform: none; letter-spacing: 0; font-weight: 500; }
+.agt .form small { font-weight: 400; color: var(--text-4); }
+.agt textarea { width: 100%; font: 13px/1.55 var(--font-sans); resize: vertical; }

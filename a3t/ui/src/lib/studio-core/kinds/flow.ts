@@ -12,7 +12,7 @@ export const flowKind: ItemKind = {
   nameInText: true,
   views: {
     center: 'flow',
-    right: [{ id: 'form', title: 'Form', component: 'flow-form' }, { id: 'ai', title: 'AI', component: 'ai' }],
+    right: [{ id: 'form', title: 'Form', component: 'flow-form' }],
     bottom: [{ id: 'runs', title: 'Runs' }, { id: 'versions', title: 'Versions' }, { id: 'problems', title: 'Problems', onlyWithBadge: true }],
   },
 

@@ -9,6 +9,7 @@
 
 import { mcpCall, projectsApi, type ProjectInfo, type ProfileInfo, type OrgRole } from '$lib/services/api';
 import { bumpContext } from './apps.svelte.ts';
+import { getSession, orgSecurity } from './auth';
 
 export type Project = {
   name: string;
@@ -17,7 +18,7 @@ export type Project = {
   flows?: number;
   resources?: number;
   triggers?: number;
-  /// The project as the a3t-projects flow shows it to you (owner, members,
+  /// The project as the flow_a3t_projects flow shows it to you (owner, members,
   /// your role, …). Absent for a namespace that predates projects, such as
   /// `default`, which stays open to everyone.
   info?: ProjectInfo;
@@ -88,6 +89,10 @@ function syncUrl() {
 // ── Reads ──
 
 export function getProjects(): Project[] { return projects; }
+/// Every namespace that is a project, seen or not (names only): what InfoSec may
+/// attach a policy to.
+let everyProject: string[] = [];
+export function allProjectNamespaces(): string[] { return everyProject; }
 export function getProject(): string { return project; }
 export function getShowPlatform(): boolean { return showPlatform; }
 /// Your profile handle (the owner part of your personal projects' namespaces).
@@ -100,6 +105,27 @@ export function getMyOrgs() { return myOrgs; }
 /// projects.
 export function roleIn(p: Project): string | null {
   return p.info?.role ?? null;
+}
+
+/// Whether you may change things in a namespace — create, save, deploy, delete.
+/// The same rule the server applies (flowr-ce access.rs `decide`), so the UI
+/// offers exactly what will be allowed:
+///  - a platform namespace (a3t, system): a SuperAdmin, or an admin of that org;
+///  - a project: its owner, a developer member, or an admin of the owning org
+///    (a SuperAdmin too, for an org's project — not inside someone's personal one);
+///  - a namespace from before projects: a SuperAdmin, or a member of org a3t.
+export function canWriteIn(ns: string | undefined | null): boolean {
+  if (!ns) return false;
+  // Viewer is read-only everywhere, whatever it owns or is a member of (the
+  // server refuses its writes the same way).
+  if (getSession()?.user?.role === 'viewer') return false;
+  const superadmin = getSession()?.user?.role === 'superadmin';
+  const orgRole = (h: string) => myOrgs.find((o) => o.handle === h)?.role ?? null;
+  if (ns === 'a3t' || ns === 'system') return superadmin || orgRole(ns) === 'admin';
+  const p = projects.find((x) => x.name === ns);
+  if (!p?.info) return superadmin || orgRole('a3t') === 'admin' || orgRole('a3t') === 'member';
+  const r = p.info.role ?? '';
+  return !!p.info.can_admin || r === 'owner' || r === 'developer' || r === 'org-admin' || (r === 'superadmin' && p.info.owner_kind === 'org');
 }
 
 /// A project is "mine" when I own it or am in it — not when I only see it as
@@ -131,12 +157,22 @@ function exposureFor(p: Project): ExposedKind | null {
   const ex = p.info?.policy?.exposure;
   if (!p.info || !ex?.audience || ex.audience === 'none' || p.name === project) return null;
   const orgs = viewingOrgs();
-  // With no project selected, your org's own projects are already in your
-  // lists. With one selected, a sibling project's release reaches it like
-  // any other org's: a3t-examples sees what a3t-shared exposes.
-  if (!project && p.info.owner_kind === 'org' && orgs.includes(p.info.owner)) return null;
-  const reaches = ex.audience === 'public' || (ex.orgs ?? []).some((o: string) => orgs.includes(o));
+  // Your own org's releases are releases too: with no project selected they are
+  // not in your lists (namespacesFor), so they show here, by their kind. With
+  // one selected, a sibling project's release reaches it like any other org's.
+  const own = p.info.owner_kind === 'org' && orgs.includes(p.info.owner);
+  const reaches = own || ex.audience === 'public' || (ex.orgs ?? []).some((o: string) => orgs.includes(o));
   return reaches ? ((ex.kind ?? 'community') as ExposedKind) : null;
+}
+
+/// A project that releases to others (its policy exposes it, or it reaches you
+/// as Shared / Training / Community): what is in it is a release, shown in the
+/// shared sections — never as "mine", even when you made it.
+export function isReleaseProject(ns: string | undefined): boolean {
+  const p = ns ? projects.find((x) => x.name === ns) : undefined;
+  if (!p?.info) return false;
+  const ex = p.info.policy?.exposure;
+  return (EXPOSED_ROLES as readonly string[]).includes(p.info.role ?? '') || (!!ex?.audience && ex.audience !== 'none');
 }
 
 /// Projects exposed to the orgs in view (not theirs), by kind.
@@ -144,13 +180,9 @@ export function exposedProjects(kind?: ExposedKind): Project[] {
   return projects.filter((p) => { const k = exposureFor(p); return !!k && (!kind || k === kind); });
 }
 
-/// Whether you may change what is in a namespace: a project you administer, or a
-/// platform namespace (a3t / system) whose org you are an admin of.
+/// Whether you may change what is in a namespace — the one rule, canWriteIn.
 export function canAdminNamespace(ns: string | undefined): boolean {
-  if (!ns) return false;
-  if (['a3t', 'system'].includes(ns)) return myOrgs.some((o) => o.handle === ns && o.role === 'admin');
-  const p = projects.find((x) => x.name === ns);
-  return !!p?.info && (p.info.can_admin || p.info.role === 'owner' || p.info.role === 'developer');
+  return canWriteIn(ns);
 }
 
 /// Your projects with an exposure — where you can publish to — and the `a3t`
@@ -194,7 +226,10 @@ export function isPlatform(ns: string | undefined): boolean {
 /// selected project (or every user project), then platform ones where they belong.
 export function namespacesFor(kind: ListKind): string[] {
   // Your projects — not ones only exposed to you (those have their own sections).
-  const user = projects.filter((p) => !p.platform && canSee(p) && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '')).map((p) => p.name);
+  // Your projects — not ones only exposed to you, and not ones that release to
+  // others (their items are releases, in the shared sections), unless selected.
+  // An archive project (`*-archive`) holds what was retired: listed only when picked.
+  const user = projects.filter((p) => !p.platform && canSee(p) && !(EXPOSED_ROLES as readonly string[]).includes(p.info?.role ?? '') && !isReleaseProject(p.name) && !p.name.endsWith('-archive')).map((p) => p.name);
   const platform = projects.filter((p) => p.platform).map((p) => p.name);
   const base = project ? [project] : user;
   const withPlatform = kind === 'picker' || (showPlatform && !project);
@@ -261,17 +296,27 @@ export function contextFromUrl() {
   if (p !== project) { project = p; remember(); bumpContext(); }
 }
 
+/// The load in flight: a second caller waits for it, rather than going on with
+/// nothing loaded yet (the flag below is set when the load starts).
+let loading: Promise<void> | null = null;
 export async function loadProjects(force = false) {
-  if (loaded && !force) return;
+  if (loaded && !force) return loading ?? undefined;
   loaded = true;
+  loading = loadProjectsNow();
+  return loading;
+}
+
+async function loadProjectsNow() {
   // Namespaces and their counts from the registry; projects (who owns them, your
-  // role) from the a3t-projects flow, which leaves out the ones you can't see.
+  // role) from the flow_a3t_projects flow, which leaves out the ones you can't see.
   const [res, mine] = await Promise.all([mcpCall('list_projects', {}), projectsApi.list()]);
   const list: Project[] = res.ok ? (res.data?.projects ?? []) : [];
   const infos: ProjectInfo[] = mine.ok ? (mine.data?.projects ?? []) : [];
   const hidden = new Set<string>(mine.ok ? (mine.data?.project_namespaces ?? []) : []);
+  everyProject = [...hidden].sort();
   profile = mine.ok ? (mine.data?.profile ?? null) : null;
   myOrgs = mine.ok ? (mine.data?.orgs ?? []) : [];
+  orgSecurity.set(myOrgs.filter((o) => o.role === 'admin' || o.role === 'securityadmin').map((o) => o.handle));
   if (!list.length && !infos.length) return; // keep the fallback
   const byName = new Map(list.map((p) => [p.name, p]));
   // A project that holds nothing yet isn't in the registry's namespace list.

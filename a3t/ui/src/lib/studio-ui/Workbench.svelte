@@ -14,7 +14,7 @@
   import type { RegionId, Studio } from './layout.svelte.ts';
   import { kindById, type PanelDef, type Workspace } from '$lib/studio-core';
 
-  let { studio, workspace, homeKind, home, lead, pin }: {
+  let { studio, workspace, homeKind, home, lead, pin, chat }: {
     studio: Studio;
     workspace: Workspace;
     /// The kind whose panels show while no document (or one without panels) is active.
@@ -25,6 +25,8 @@
     lead?: Snippet;
     /// A resource category the Explorer shows first, open (e.g. `database`).
     pin?: string;
+    /// The host's chat: a tab beside the Explorer, kept mounted once shown.
+    chat?: Snippet;
   } = $props();
 
   const active = $derived(workspace.active);
@@ -34,7 +36,9 @@
   // ── Panels: each has a home region; the user may have moved it ──
   type Placed = PanelDef & { home: RegionId };
   const panels = $derived<Placed[]>([
-    { id: 'explorer', title: 'Explorer', home: 'left' },
+    { id: 'explorer', title: 'Explorer', home: 'left' as const },
+    // The assistant: the host's chat about whatever is open (no per-item AI tab).
+    ...(chat ? [{ id: 'chat', title: 'Chat', home: 'left' as const, keepAlive: true }] : []),
     ...((kind ? kind.views.left : fallback.views.left) ?? []).map((p) => ({ ...p, home: 'left' as const })),
     // An open item's own panels; the home kind's only while nothing is open.
     ...((kind ? kind.views.right : fallback.views.right) ?? []).map((p) => ({ ...p, home: 'right' as const })),
@@ -194,6 +198,8 @@
 {#snippet panelBody(id: string)}
   {#if id === 'explorer'}
     <Explorer {workspace} {pin} />
+  {:else if id === 'chat' && chat}
+    {@render chat()}
   {:else}
     {@const def = panels.find((p) => p.id === id)}
     {@const P = PANELS[def?.component ?? id]}

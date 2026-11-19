@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { currentUser } from '$lib/stores/auth';
-  import { mcpCall, execFlow, login as apiLogin } from '$lib/services/api';
+  import { currentUser, userRole, actingAs, actAs } from '$lib/stores/auth';
+  import { changePassword as apiChangePassword, loadDirectory, type DirectoryUser } from '$lib/services/api';
 
   let { open = $bindable(false) } = $props();
 
-  type Node = 'personal' | 'preferences' | 'security' | 'account';
+  type Node = 'personal' | 'preferences' | 'security' | 'account' | 'actas';
   let propNode = $state<Node>('personal');
   let panelClosing = $state(false);
 
@@ -20,9 +20,6 @@
   let firstName = $state('');
   let lastName = $state('');
   let email = $state('');
-  let address = $state('');
-  let personalSaving = $state(false);
-  let personalMsg = $state('');
 
   $effect(() => {
     if (open) {
@@ -30,23 +27,10 @@
       firstName = p[0] ?? '';
       lastName = p.slice(1).join(' ');
       email = $currentUser?.email ?? '';
-      personalMsg = ''; pwMsg = '';
+      pwMsg = '';
     }
   });
 
-  async function savePersonal(e: Event) {
-    e.preventDefault();
-    personalSaving = true; personalMsg = '';
-    try {
-      const res = await mcpCall('execute_flow', {
-        name: 'a3t-users', namespace: 'a3t',
-        input: { input: { action: 'update', id: $currentUser?.id, name: `${firstName} ${lastName}`.trim(), email, address } }
-      });
-      personalMsg = res.ok ? 'Saved' : (res.error ?? 'Save failed');
-    } catch (err) {
-      personalMsg = err instanceof Error ? err.message : 'Save failed';
-    } finally { personalSaving = false; }
-  }
 
   // ── Preferences ──
   let theme = $state('system');
@@ -72,22 +56,9 @@
     if (newPw !== confirmPw) { pwMsg = 'Passwords do not match'; return; }
     pwSaving = true;
     try {
-      // 1. Verify the current password server-side (Argon2) without touching the
-      //    active session — this is the raw api login, not the auth-store one.
-      const verify = await apiLogin($currentUser?.email ?? '', currentPw);
-      if (!verify.ok) { pwMsg = 'Current password is incorrect'; return; }
-
-      // 2. Set the new password via the users CRUD flow (waits for completion).
-      const res = await execFlow('a3t-users', 'a3t', {
-        input: {
-          action: 'change-password',
-          id: $currentUser?.id,
-          org_id: $currentUser?.org_id,
-          new_password: newPw,
-          timestamp: new Date().toISOString()
-        }
-      }, { silent: true });
-
+      // The server proves the current password and sets the new one where the
+      // account lives (A3T or the sign-in provider).
+      const res = await apiChangePassword(currentPw, newPw);
       pwMsg = res.ok ? 'Password updated' : (res.error ?? 'Update failed');
       if (res.ok) { currentPw = newPw = confirmPw = ''; }
     } catch (err) {
@@ -108,6 +79,32 @@
     createdKey = token; newKeyName = '';
   }
   function revokeKey(id: string) { apiKeys = apiKeys.filter(k => k.id !== id); }
+
+  // ── Act as (SuperAdmin only): see what a user, or a role, sees ──
+  const canActAs = $derived($userRole === 'superadmin' && !$actingAs);
+  let people = $state<DirectoryUser[]>([]);
+  let peopleLoaded = $state(false);
+  let peopleFilter = $state('');
+  let actBusy = $state('');
+  let actMsg = $state('');
+  $effect(() => {
+    if (open && propNode === 'actas' && !peopleLoaded) {
+      peopleLoaded = true;
+      void loadDirectory().then((d) => (people = d.filter((u) => u.id !== $currentUser?.id)));
+    }
+  });
+  const shownPeople = $derived(people.filter((u) => !peopleFilter.trim() || `${u.name} ${u.email}`.toLowerCase().includes(peopleFilter.trim().toLowerCase())).slice(0, 50));
+  const ACT_ROLES: { role: string; what: string }[] = [
+    { role: 'securityadmin', what: 'Security and the decision log; no building' },
+    { role: 'admin', what: 'The platform org\'s admin tier' },
+    { role: 'operator', what: 'A developer with no projects of their own yet' },
+    { role: 'viewer', what: 'Read-only, no memberships' },
+  ];
+  async function go(target: { user_id: string } | { role: string }, key: string) {
+    actBusy = key; actMsg = '';
+    const r = await actAs(target);
+    if (!r.ok) { actMsg = r.error ?? 'Could not act as them'; actBusy = ''; }
+  }
 
   // ── Account ──
   let accountTab = $state<'payment' | 'bills'>('payment');
@@ -143,6 +140,12 @@
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="14" height="10" rx="2"/><path d="M1 6h14"/></svg>
             Account
           </button>
+          {#if canActAs}
+            <button class="sp-tree-node" class:active={propNode === 'actas'} onclick={() => propNode = 'actas'}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5" r="2.5"/><path d="M1 14a4.5 4.5 0 019 0"/><path d="M11 6h4M13 4l2 2-2 2"/></svg>
+              Act as
+            </button>
+          {/if}
         </nav>
       </div>
 
@@ -160,18 +163,14 @@
           {#if propNode === 'personal'}
             <div class="sp-form">
               <h3>Personal Details</h3>
-              <form onsubmit={savePersonal}>
-                <div class="pm-row">
-                  <div class="pm-field"><label for="pm-fn">First Name</label><input id="pm-fn" bind:value={firstName} placeholder="Jane" /></div>
-                  <div class="pm-field"><label for="pm-ln">Last Name</label><input id="pm-ln" bind:value={lastName} placeholder="Doe" /></div>
-                </div>
-                <div class="pm-field"><label for="pm-email">Email</label><input id="pm-email" type="email" bind:value={email} placeholder="jane@company.com" /></div>
-                <div class="pm-field"><label for="pm-addr">Address</label><textarea id="pm-addr" rows="3" bind:value={address} placeholder="Street, City, Country"></textarea></div>
-                <div class="pm-actions">
-                  <button type="submit" class="pm-save" disabled={personalSaving}>{personalSaving ? 'Saving…' : 'Save changes'}</button>
-                  {#if personalMsg}<span class="pm-msg" class:ok={personalMsg === 'Saved'}>{personalMsg}</span>{/if}
-                </div>
-              </form>
+              <!-- Name and email live in the sign-in account (Keycloak, or the org's SSO);
+                   A3T shows them and does not keep a second copy to drift. -->
+              <div class="pm-row">
+                <div class="pm-field"><label for="pm-fn">First Name</label><input id="pm-fn" value={firstName} readonly /></div>
+                <div class="pm-field"><label for="pm-ln">Last Name</label><input id="pm-ln" value={lastName} readonly /></div>
+              </div>
+              <div class="pm-field"><label for="pm-email">Email</label><input id="pm-email" type="email" value={email} readonly /></div>
+              <p class="pm-msg">These come from your sign-in account. To change them, ask a SecurityAdmin (Security › Identity) or your organisation's identity provider.</p>
             </div>
 
           {:else if propNode === 'preferences'}
@@ -226,6 +225,34 @@
                   </div>
                 {/if}
               {/if}
+            </div>
+
+          {:else if propNode === 'actas' && canActAs}
+            <div class="sp-form">
+              <h3>Act as</h3>
+              <p class="pm-note">See A3T exactly as someone else does, to check what they can reach and what they are refused. Everything you do is done as them, and the decision log records you as well. It lasts up to an hour; <b>Stop</b> in the top bar brings you back.</p>
+              {#if actMsg}<div class="pm-msg">{actMsg}</div>{/if}
+              <h4 class="pm-sub">A role</h4>
+              <div class="act-roles">
+                {#each ACT_ROLES as r}
+                  <button type="button" class="act-role" disabled={!!actBusy} onclick={() => go({ role: r.role }, r.role)}>
+                    <b>{r.role}</b><span>{actBusy === r.role ? 'Switching…' : r.what}</span>
+                  </button>
+                {/each}
+              </div>
+              <h4 class="pm-sub">A person</h4>
+              <input class="act-filter" bind:value={peopleFilter} placeholder="Filter by name or email" />
+              <div class="sf-agents-list">
+                {#each shownPeople as u (u.id)}
+                  <div class="sf-agent-row">
+                    <div class="sf-agent-info"><strong>{u.name || u.email || u.id}</strong><code class="sf-agent-mode">{u.email || u.id}</code></div>
+                    <span class="sf-agent-meta">{u.source === 'sso' ? 'SSO' : 'local'}</span>
+                    <button type="button" class="pm-save act-go" disabled={!!actBusy} onclick={() => go({ user_id: u.id }, u.id)}>{actBusy === u.id ? 'Switching…' : 'Act as'}</button>
+                  </div>
+                {:else}
+                  <p class="sf-placeholder">{peopleLoaded ? 'No one matches.' : 'Loading people…'}</p>
+                {/each}
+              </div>
             </div>
 
           {:else if propNode === 'account'}
@@ -334,4 +361,13 @@
   .pm-newkey { background: var(--spec-bg); border: 1px solid var(--spec); border-radius: var(--r-sm); padding: 12px 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
   .pm-newkey code { font-family: var(--font-mono); font-size: 12px; word-break: break-all; color: var(--text-1); }
   .pm-revoke { border: none; background: none; color: var(--err); font-size: 12px; cursor: pointer; }
+  .pm-note { font-size: 12.5px; color: var(--text-3); line-height: 1.5; margin: 0 0 12px; }
+  .pm-sub { margin: 16px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-2); }
+  .act-roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  .act-role { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); cursor: pointer; font: inherit; }
+  .act-role:hover:not(:disabled) { border-color: var(--text-2); }
+  .act-role b { font-size: 13px; }
+  .act-role span { font-size: 11.5px; color: var(--text-3); }
+  .act-filter { width: 100%; box-sizing: border-box; padding: 7px 9px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-page); color: var(--text-1); font: inherit; font-size: 13px; }
+  .act-go { padding: 5px 10px; font-size: 12px; }
 </style>

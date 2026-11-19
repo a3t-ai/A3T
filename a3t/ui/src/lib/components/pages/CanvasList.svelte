@@ -1,7 +1,7 @@
 <script lang="ts">
   import { openPublish } from '$lib/stores/publish.svelte.ts';
   import ExposedSections from '$lib/components/shared/ExposedSections.svelte';
-  import { inContext, canvasKind, itemProject } from '$lib/stores/context.svelte.ts';
+  import { inContext, canvasKind, itemProject, canWriteIn } from '$lib/stores/context.svelte.ts';
   import { contextRev_ } from '$lib/stores/apps.svelte.ts';
   import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
   import NewButton from '$lib/components/shared/NewButton.svelte';
@@ -10,12 +10,14 @@
   // Runtime pools (placement targets) are managed via the Runtimes popin.
   import { canvasApi, opsApi } from '$lib/services/api';
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import AppHome from '$lib/shell/AppHome.svelte';
   import EntityCard from '$lib/components/shared/EntityCard.svelte';
   import FoldSection from '$lib/components/shared/FoldSection.svelte';
   import CanvasDesigner from '$lib/components/editor/CanvasDesigner.svelte';
+  import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
   let loading = $state(true);
   let error = $state('');
@@ -44,7 +46,7 @@
     live = {}; controllerOn = false;
     if (ops.ok) {
       controllerOn = true;
-      const rows = [...(ops.data.runtimes ?? []).flatMap((r: any) => r.deployments), ...(ops.data.unplaced ?? [])];
+      const rows = [...(ops.data?.runtimes ?? []).flatMap((r: any) => r.deployments), ...(ops.data?.unplaced ?? [])];
       const LABEL: Record<string, string> = { serving: 'serving', paused: 'paused', 'runtime-paused': 'runtime paused', hibernated: 'hibernated', unplaced: 'unplaced' };
       for (const row of rows) {
         live[row.deployment.flowRef] = { phase: LABEL[row.serving] ?? row.serving, message: row.deployment.pauseReason ?? '', runtime: row.deployment.runtime };
@@ -85,15 +87,30 @@
     void load();
   });
   onMount(async () => {
+    // The shell's "New canvas": open the designer straight away.
+    if (getActivePanel()?.props?.create) newCanvas();
     await load();
     // Deep-link from an agent's "Edit canvas" → open the designer on that canvas.
     const p = getActivePanel();
     // Also from the submenu, which addresses a canvas by `selectedId`.
     const want = p?.props?.editCanvas ?? p?.props?.selectedId;
-    if (want) {
-      const c = canvases.find((x) => x.name === want);
-      if (c) editCanvas(c);
-    }
+    if (want) openById(want);
+  });
+  function openById(want: string) {
+    const c = canvases.find((x) => x.name === want);
+    if (c) editCanvas(c);
+  }
+
+  // Another item picked in Items: the page stays mounted and opens it in place,
+  // from the list it already has — no reload, no flash of this page.
+  let shownSel: string | undefined = untrack(() => getActivePanel()?.props?.selectedId);
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => {
+      if (id === shownSel) return;
+      shownSel = id;
+      if (id) openById(id);
+    });
   });
 
   // Client mirror of flowr-types::canvas::select_runtime — shows which runtime pool
@@ -111,7 +128,7 @@
   async function removeCanvas(c: any) {
     if (!confirm(`Delete canvas "${c.name}"?`)) return;
     const res = await canvasApi.remove(c.namespace, c.name);
-    if (res.ok) await load();
+    if (res.ok) { await load(); bumpItems(); }
     // Refused while deployed or bound to an agent — the reason names what to remove first.
     else deployMsg = `${c.name}: ${res.error ?? 'delete failed'}`;
   }
@@ -145,14 +162,7 @@
 </div>
 
 <div class="screen-body">
-  <PageBanner
-    headline="Deploy a flow as a Canvas."
-    highlightWord="Canvas"
-    subtitle="A canvas is one flow's deployment metadata: where it loads, how it scales, what it depends on."
-    description="Pick the flow, set placement (runtime selector labels + isolation), lifecycle (scale/restart), and health (dependent resources). The canvas resolves to a runtime pool; Deploy performs the placement."
-    accent="control"
-    docsPath="/canvas"
-  />
+  <PageBanner {...bannerFor('canvas')} />
   <!-- Pinned and latest, under the banner: the section page leads with what
        it is for, then the items you actually return to. -->
   <AppHome appType="canvas" embedded />
@@ -161,7 +171,7 @@
   {#if deployMsg}<div class="deploy-banner">{deployMsg}</div>{/if}
 
   {#if loading}
-    <div class="status-msg">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if error}
     <div class="status-msg err">{error}</div>
   {:else}
@@ -197,7 +207,9 @@
 </div>
 
 <!-- Drag-drop designer popin -->
-<CanvasDesigner open={designerOpen} canvas={editing} onclose={() => (designerOpen = false)} onsaved={load} />
+<!-- Read-only where you can't write in its project (the server would refuse). -->
+<CanvasDesigner open={designerOpen} canvas={editing} readonly={!!editing && !canWriteIn(editing.project ?? editing.namespace)}
+  readonlyNote={editing ? `You can see this canvas, but not change or deploy it: that needs write access to project ${editing.project ?? editing.namespace}.` : ''} onclose={() => (designerOpen = false)} onsaved={() => { void load(); bumpItems(); }} />
 
 
 <style>

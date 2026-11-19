@@ -1,6 +1,6 @@
 <script lang="ts">
-  import SubmenuToggle from '$lib/components/shared/SubmenuToggle.svelte';
-  import { setActiveSelection, getActivePanel, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { inBackground, openConnection } from '$lib/core/status/activity';
+  import { setActiveSelection, getActivePanel, navigateToDetail, navigateTo } from '$lib/stores/panels.svelte.ts';
   import { splitContextPath } from '$lib/stores/context.svelte.ts';
   // Same layout as the original chat (conversation sidebar + main pane); the
   // message engine underneath is @ai-sdk/svelte's `Chat` talking to POST /chat,
@@ -21,16 +21,26 @@
            fetchChatSessions, fetchChatSession, deleteChatSession } from '$lib/services/api';
   import { renderMarkdown } from '$lib/utils/markdown';
   import ArtifactWidget from '$lib/components/chat/ArtifactWidget.svelte';
-  import ArtifactPane from '$lib/components/chat/ArtifactPane.svelte';
   import ApprovalCard from '$lib/components/chat/ApprovalCard.svelte';
   import CanvasPresetCards from '$lib/components/chat/CanvasPresetCards.svelte';
   import CanvasPlacementCard from '$lib/components/chat/CanvasPlacementCard.svelte';
   import PermissionsPanel from '$lib/components/chat/PermissionsPanel.svelte';
-  import { listPendingApprovals, type PendingApproval } from '$lib/services/api';
+  import { listPendingApprovals, orgsApi, type PendingApproval } from '$lib/services/api';
+  import { userRole } from '$lib/stores/auth';
+  import { get } from 'svelte/store';
   import ListWidget from '$lib/components/chat/ListWidget.svelte';
-  import AppHome from '$lib/shell/AppHome.svelte';
   import { ARTIFACTS, LIST_KIND_TO_ITEM, toEditorText, type ArtifactKind } from '$lib/components/chat/artifacts';
-  import { bumpContext, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
+  import { bumpItems, setPendingMessage, takePendingMessage, trackOpen } from '$lib/stores/apps.svelte.ts';
+  import { getChatSession, setChatSession } from '$lib/stores/layout.svelte.ts';
+  import {
+    artifactFor, openChatArtifact, setArtifactRevision, paneMessageFor, takePaneMessage, type ChatArtifact,
+  } from '$lib/stores/chatArtifact.svelte.ts';
+  import { activeUiContext, redactSecrets, restoreSecrets, getActiveItem } from '$lib/stores/activeItem.svelte.ts';
+
+  /// Docked: the Chat face of the shell's middle stack, beside whatever Details
+  /// shows. Its conversation is the shell's (layout store), not the URL's, so
+  /// talking never moves the page you are looking at.
+  let { docked = false }: { docked?: boolean } = $props();
 
   /// `id` is the client-side conversation id; `serverId` is the full server
   /// session key ("<agent>:<id>") that owns the transcript, and `agent` the agent
@@ -51,6 +61,7 @@
 
   /// Session id from /chat/<session>, so a URL is shareable and survives reload.
   function sessionFromUrl(): string | null {
+    if (docked) return getChatSession() || null;
     if (typeof window === 'undefined') return null;
     const seg = splitContextPath(window.location.pathname).rest.split('/').filter(Boolean);
     return seg[0] === 'chat' && seg[1] ? decodeURIComponent(seg[1]) : null;
@@ -62,6 +73,7 @@
   /// `props.selectedId` stale: the shell no longer knew which session was open,
   /// so the context list could not highlight it and switching apps lost it.
   function setSessionUrl(id: string, _replace = false) {
+    if (docked) { setChatSession(id); return; }
     setActiveSelection(id);
   }
 
@@ -77,63 +89,33 @@
   let conversations = $state<Conv[]>(loadLS<Conv[]>(LS_CONV, []));
   let messagesById = $state<Record<string, UIMessage[]>>(loadLS<Record<string, UIMessage[]>>(LS_MSGS, {}));
   let inputValue = $state('');
+  let inputEl = $state<HTMLTextAreaElement>();
+
+  /// The ways in, by what people come to do — the same for everyone; each one
+  /// starts a question or opens the place that answers it.
+  const INTENTS: { title: string; sub: string; go: () => void }[] = [
+    { title: 'What is A3T?', sub: 'Ask the assistant to explain the platform', go: () => ask('What is A3T, and what can I do with it?', true) },
+    { title: 'Create an agent', sub: 'Describe what it should do — it is built in this project', go: () => ask('Create an agent that ') },
+    { title: 'Explore an agent', sub: 'What it does, remembers, and was blocked from', go: () => navigateTo('agents', 'Agents') },
+    { title: 'Review security', sub: 'Every allow and deny, who acted for whom', go: () => navigateToDetail('logs', 'Decision log', 'all') },
+    { title: 'Check health', sub: 'Runtimes, deployments, errors and latency', go: () => navigateTo('runtime', 'Runtimes') },
+  ];
+  function ask(text: string, send = false) {
+    inputValue = text;
+    if (send) { sendMessage(); return; }
+    requestAnimationFrame(() => { inputEl?.focus(); inputEl?.setSelectionRange(text.length, text.length); });
+  }
 
   // The conversation list, its resizing and its icon rail all moved to the
   // shell's context pane, so this page no longer owns a side column.
 
-  // ── Artifact pane width ──
-  // The pane had no handle after the conversation list moved to the shell, so it
-  // was stuck at a fixed share of the width. Persisted per browser.
-  const LS_PANE = 'a3t.chat.pane.w';
-  const PANE_MIN = 320;
-  let paneW = $state<number>(loadLS<number>(LS_PANE, 560));
-  let paneDragging = $state(false);
-  let chatLayoutEl = $state<HTMLDivElement>();
-  let layoutW = $state(0);
-
-  function paneMax() {
-    const w = layoutW || 1200;
-    return Math.max(PANE_MIN, w - 420);   // always leave the transcript readable
-  }
-  /// The width actually drawn. The stored width came from whatever window it was
-  /// dragged in; clamping only while dragging let a width saved on a wide screen
-  /// fill a narrower one, so the designer covered the chat and the user lost the
-  /// conversation they were co-authoring in. Clamped on every layout instead.
-  const paneShown = $derived(Math.min(paneW, paneMax()));
-  function setPaneW(w: number) {
-    paneW = Math.min(paneMax(), Math.max(PANE_MIN, Math.round(w)));
-    try { localStorage.setItem(LS_PANE, JSON.stringify(paneW)); } catch {}
-  }
-  function startPaneDrag(e: PointerEvent) {
-    paneDragging = true;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    e.preventDefault();
-  }
-  function onPaneDrag(e: PointerEvent) {
-    if (!paneDragging || !chatLayoutEl) return;
-    // Measured from the right edge: the pane is the right-hand column.
-    setPaneW(chatLayoutEl.getBoundingClientRect().right - e.clientX);
-  }
-  function endPaneDrag(e: PointerEvent) {
-    paneDragging = false;
-    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
-  }
-
   // ── Right-hand artifact pane (flow viewer/editor) ──
   /// Ceiling on the unsaved-buffer text sent in `ui_context`, in characters.
   const UI_DRAFT_MAX = 12000;
-  let openArtifact = $state<{ kind: ArtifactKind; namespace: string; name: string; text: string; id?: string } | null>(null);
-  /// Which section of the open artifact is on screen — sent with the next turn
-  /// so "tighten this" resolves to what the user is actually reading.
-  let openSection = $state('graph');
-  /// Newest streamed version of whatever the pane has open. A revised draft
-  /// should refresh the open pane rather than appear only as another card the
-  /// user has to click.
-  let openRevision = $state<{ text: string; seq: number } | null>(null);
-  /// The live editor buffer for the open artifact, including edits the user has
-  /// not saved. Sent with the next turn so the agent reasons about what is on
-  /// screen rather than the registry copy, which may now be stale.
-  let openEdit = $state<{ text: string; dirty: boolean } | null>(null);
+  // The open item lives in the shared store (stores/chatArtifact): the shell
+  // draws its editing pane in Details, so it survives this conversation moving
+  // between Details and the middle stack. `openArtifact` etc. are this
+  // conversation's view of it (declared below, after `sessionId`).
   let revisionSeq = 0;
   let lastRevisionKey = '';
 
@@ -155,11 +137,53 @@
         if (key === lastRevisionKey) return;   // already seen this part
         lastRevisionKey = key;
         const next = toEditorText(d.raw ?? '', ARTIFACTS[kind as ArtifactKind].format);
-        if (next && next !== open.text) openRevision = { text: next, seq: ++revisionSeq };
+        if (next && next !== open.text) setArtifactRevision({ text: next, seq: ++revisionSeq });
         return;
       }
     }
   });
+  /// Edits the agent proposed to the open document (`propose_edit` → a
+  /// `data-edit_draft` part). Each is applied to the pane once, and only if it
+  /// arrived while the pane was open: the parts already in a restored
+  /// transcript are marked seen on the first pass so reopening a document
+  /// never replays an old edit over it.
+  const seenEdits = new Set<string>();
+  /// The last edit the agent made to the item beside this chat, for Undo.
+  let agentEdit = $state<{ name: string; before: string; summary: string; apply: (t: string) => void } | null>(null);
+  function undoAgentEdit() {
+    if (!agentEdit) return;
+    agentEdit.apply(agentEdit.before);
+    agentEdit = null;
+  }
+  let editsPrimed = false;
+  $effect(() => {
+    const msgs = chat.messages as any[];
+    const open = openArtifact;
+    let latest: { key: string; raw: string; summary: string } | null = null;
+    for (const m of msgs) {
+      if (m?.role !== 'assistant') continue;
+      (m.parts ?? []).forEach((p: any, j: number) => {
+        if (p?.type !== 'data-edit_draft' || !p.data?.raw) return;
+        const key = `${m.id}:${j}`;
+        if (seenEdits.has(key)) return;
+        seenEdits.add(key);
+        latest = { key, raw: String(p.data.raw), summary: String(p.data.summary ?? '') };
+      });
+    }
+    if (!editsPrimed) { editsPrimed = true; return; }
+    const l = latest as { key: string; raw: string; summary: string } | null;
+    if (l && open) untrack(() => { setArtifactRevision({ text: l.raw, seq: ++revisionSeq, edit: l.summary }); });
+    // Beside an editor that takes edits (the Studio's open document): put it
+    // there, unsaved, and offer Undo here.
+    else if (l && docked) untrack(() => {
+      const it = getActiveItem();
+      if (!it?.applyEdit) return;
+      const apply = it.applyEdit;
+      agentEdit = { name: it.name, before: it.text ?? '', summary: l.summary, apply };
+      apply(restoreSecrets(l.raw, it.text ?? ''));
+    });
+  });
+
   let messagesEl = $state<HTMLDivElement>();
   let agents = $state<{ id: string; name: string; llm: string; target: string; ep_path: string; system_default: boolean; enabled_tools?: string[]; mcp_servers?: string[] }[]>([]);
   let selectedAgent = $state<string>(loadLS<string>(LS_AGENT, ''));
@@ -186,6 +210,42 @@
 
   /// No session in the URL — show the centred composer, create nothing yet.
   const landing = $derived(!sessionId);
+
+  // This conversation's open item (see stores/chatArtifact).
+  // Only in AI Chat (the Details conversation, or the docked one beside a
+  // pinned item there): elsewhere the pane is not on screen, so this chat talks
+  // about the app's active item instead.
+  const inChatApp = $derived(getActivePanel()?.type === 'chat');
+  const openState = $derived(inChatApp ? artifactFor(sessionId) : null);
+  const openArtifact = $derived(openState?.artifact ?? null);
+  const openSection = $derived(openState?.section ?? 'graph');
+  const openEdit = $derived(openState?.edit ?? null);
+  function openItem(a: ChatArtifact) {
+    if (!sessionId) return;
+    // Opening another item replaces the pane, and with it any unsaved edits —
+    // also the pane kept for this conversation while you are elsewhere.
+    const cur = artifactFor(sessionId);
+    const same = cur && cur.artifact.kind === a.kind && cur.artifact.namespace === a.namespace && cur.artifact.name === a.name;
+    if (cur?.edit?.dirty && !same && !confirm(`Open ${a.name}? Your unsaved changes to ${cur.artifact.name} will be lost.`)) return;
+    if (!same) openChatArtifact(sessionId, a);
+    // A widget's scope is AI Chat. From a chat beside another app, Open goes
+    // back to AI Chat — this conversation — where the item is open.
+    if (!inChatApp) {
+      trackOpen('chat', 'AI Chat');
+      navigateToDetail('chat', 'AI Chat', sessionId);
+    }
+  }
+  // What the pane hands back: a turn to send ("I saved…"), or text for the
+  // composer ("About this flow: …"). Taken once, by this conversation only.
+  $effect(() => {
+    const m = paneMessageFor(sessionId);
+    if (!m) return;
+    untrack(() => {
+      takePaneMessage(m.seq);
+      if (m.kind === 'applied') noteChange(m.text);
+      else { inputValue = m.text; requestAnimationFrame(() => inputEl?.focus()); }
+    });
+  });
 
   function llmLabel(llm: string) { return llm ? llm.split('/').pop() : ''; }
   /// Server-side session key — agent-scoped, matching the webhook path so both
@@ -225,16 +285,20 @@
               ...(openEdit?.dirty
                 ? {
                     dirty: true,
-                    draft_text: openEdit.text.slice(0, UI_DRAFT_MAX),
-                    draft_truncated: openEdit.text.length > UI_DRAFT_MAX,
+                    draft_text: redactSecrets(openEdit.text).slice(0, UI_DRAFT_MAX),
+                    draft_truncated: redactSecrets(openEdit.text).length > UI_DRAFT_MAX,
                   }
                 : {}),
             }
-          : undefined;
+          // Beside an app (the Chat face), the app's active item: its app,
+          // the item, and its config as edited, unsaved changes included.
+          : docked ? activeUiContext() : undefined;
         return {
           body: {
             message: text,
             session_id: serverSession(),
+            // The flow that serves chat: the A3T agent template.
+            namespace: 'a3t', name: 'tmpl_a3t_agent',
             ...(ui ? { ui_context: ui } : {}),
             ...(a?.llm ? { llm_resource: a.llm } : {}),
             // Send the tool restriction whenever the agent HAS one, including an
@@ -244,7 +308,12 @@
             // opposite of what removing a tool should do. Absent and empty are
             // different: absent is "never configured", empty is "configured down
             // to nothing".
-            ...(Array.isArray(a?.enabled_tools) ? { enabled_tools: a.enabled_tools } : {}),
+            // With a document open, the agent may also propose an edit to it —
+            // propose_edit stores nothing (the pane applies it, unsaved), so it
+            // widens nothing. Only added to an explicit list: absent stays absent.
+            ...(Array.isArray(a?.enabled_tools)
+              ? { enabled_tools: (openArtifact || (docked && getActiveItem()?.applyEdit)) && !a.enabled_tools.includes('propose_edit') ? [...a.enabled_tools, 'propose_edit'] : a.enabled_tools }
+              : {}),
             // The agent's MCP servers (Configuration tab), so the engine discovers and
             // can call their tools; without them the chat wrapper falls back to FlowR's.
             ...(a?.mcp_servers?.length ? { mcp_servers: a.mcp_servers } : {}),
@@ -256,6 +325,12 @@
   });
 
   const busy = $derived(chat.status === 'submitted' || chat.status === 'streaming');
+  // The reply stream is a connection too: the blue line runs while it is open.
+  $effect(() => {
+    if (!busy) return;
+    const close = openConnection();
+    return close;
+  });
 
   // A finished turn is when the server first has a transcript (and a title) for a
   // brand-new conversation, so re-read the index then rather than polling.
@@ -270,7 +345,7 @@
       syncServerSessions();
       // The turn just wrote the session row (and its title) — the shell's list
       // has to re-read or a brand-new conversation never shows up in it.
-      bumpContext();
+      bumpItems();
     });
   });
 
@@ -311,13 +386,58 @@
     persistNow();
   });
 
+  // ── Keeping the conversation in view ──
+  // Follow the bottom while the user is there: a reply streams into the last
+  // message and permission questions are added under it, neither of which adds
+  // a message, so following the message count left them below the fold. Read
+  // further up and it stays put. A new, unanswered permission question is
+  // always brought into view: the run waits on it.
+  let atBottom = true;
+  function onMessagesScroll() {
+    const el = messagesEl;
+    if (el) atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }
   $effect(() => {
     chat.messages.length; chat.status;
+    // A new message (sent or arriving) goes to the bottom, and follows it.
+    atBottom = true;
     if (messagesEl) requestAnimationFrame(() => { messagesEl!.scrollTop = messagesEl!.scrollHeight; });
   });
+  $effect(() => {
+    const el = messagesEl;
+    if (!el) return;
+    const shown = new WeakSet<Element>();
+    for (const c of el.querySelectorAll('.ac:not(.settled)')) shown.add(c);   // already on screen at load
+    let raf = 0;
+    const settle = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const fresh = [...el.querySelectorAll('.ac:not(.settled)')].filter((c) => !shown.has(c));
+        fresh.forEach((c) => shown.add(c));
+        if (fresh.length) { fresh[fresh.length - 1].scrollIntoView({ block: 'nearest' }); onMessagesScroll(); }
+        else if (atBottom) el.scrollTop = el.scrollHeight;
+      });
+    };
+    const mo = new MutationObserver(settle);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    const ro = new ResizeObserver(settle);
+    ro.observe(el);
+    return () => { mo.disconnect(); ro.disconnect(); cancelAnimationFrame(raf); };
+  });
+
+  /// Who may choose the chat's agent: a SuperAdmin, or an admin of the A3T
+  /// platform org. Everyone else always talks to the default A3T agent and never
+  /// sees the picker (an agent chosen earlier on this browser doesn't stick).
+  let canPickAgent = $state(false);
+  async function resolveAgentPicking() {
+    if (get(userRole) === 'superadmin') { canPickAgent = true; return; }
+    const res = await orgsApi.list();
+    canPickAgent = !!res.ok && (res.data?.orgs ?? []).some((o: any) => o.handle === 'a3t' && o.my_role === 'admin');
+  }
 
   async function loadAgents() {
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
+    await resolveAgentPicking();
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     if (!res.ok) return;
     const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
     agents = (rows as any[]).map(r => ({
@@ -339,8 +459,12 @@
       enabled_tools: Array.isArray(r.enabled_tools) ? r.enabled_tools : undefined,
       mcp_servers: mcpServerRefs(r.mcp_servers ?? variablesOf(r).mcp_servers, r.namespace),
     }));
-    if (!selectedAgent && agents.length > 0) {
-      selectedAgent = (agents.find(a => a.system_default) ?? agents[0]).id;
+    const fallback = (agents.find(a => a.system_default) ?? agents[0])?.id ?? '';
+    if (!canPickAgent) {
+      agents = agents.filter(a => a.id === fallback);
+      selectedAgent = fallback;
+    } else if (!selectedAgent && agents.length > 0) {
+      selectedAgent = fallback;
     }
   }
 
@@ -544,12 +668,13 @@
       if (!alive) return;
       try {
         pendingApprovals = await listPendingApprovals();
+        if (!pendingApprovals.length) approvalNudge = false;
       } catch { /* transient — the next tick retries */ }
     };
-    tick();
+    void inBackground(tick);
     // 3s: a suspended run is already waiting on a human, so this is never the
     // slow part, and it stops as soon as the question is answered.
-    const id = setInterval(tick, 3000);
+    const id = setInterval(() => void inBackground(tick), 3000);
     return () => { alive = false; clearInterval(id); };
   });
 
@@ -634,6 +759,30 @@
     onAgentChange();
   }
 
+  // ── Beside an app: your other conversations (the server's index, all apps) ──
+  let sessMenuOpen = $state(false);
+  const currentConv = $derived(conversations.find(c => c.id === sessionId));
+  /// Switch this chat to another conversation ('' starts a new one). The shell
+  /// remounts the chat on it; its transcript comes from the server if this
+  /// browser hasn't cached it. Its own agent answers in it.
+  function pickSession(id: string) {
+    sessMenuOpen = false;
+    if (id === sessionId) return;
+    const c = conversations.find(x => x.id === id);
+    if (c?.agent && agents.some(a => a.id === c.agent)) selectedAgent = c.agent;
+    persistNow();
+    setChatSession(id);
+  }
+  $effect(() => {
+    if (!sessMenuOpen) return;
+    void syncServerSessions();
+    const onDoc = (e: MouseEvent) => { if (!(e.target as HTMLElement)?.closest?.('.sess-pick')) sessMenuOpen = false; };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') sessMenuOpen = false; };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  });
+
   $effect(() => {
     if (!agentMenuOpen) return;
     const onDoc = (e: MouseEvent) => {
@@ -648,10 +797,18 @@
     };
   });
 
+  /// A run paused on a permission question is still this conversation's turn.
+  /// Sending now starts a second run beside it; when the first resumes, its tool
+  /// results land in the new reply, which never saw those calls ("No tool
+  /// invocation found for tool call ID"). So the composer waits for the answer.
+  const awaitingApproval = $derived(pendingApprovals.length > 0);
+  let approvalNudge = $state(false);
+
   function sendMessage() {
     const text = inputValue.trim();
     // An attachment on its own is a legitimate message.
     if ((!text && attachments.length === 0) || busy) return;
+    if (awaitingApproval) { approvalNudge = true; return; }
     inputValue = '';
     if (!sessionId) {
       // Landing state: mint the conversation now. Navigating remounts this page
@@ -660,6 +817,7 @@
       const id = newSessionId();
       setPendingMessage(withAttachments(text));
       attachments = []; attachError = '';
+      if (docked) { setChatSession(id); return; }  // the shell remounts the face on it
       trackOpen('chat', 'AI Chat');
       navigateToDetail('chat', 'AI Chat', id);
       return;
@@ -784,23 +942,53 @@
   }
 </script>
 
-<div class="chat-layout" bind:this={chatLayoutEl} bind:clientWidth={layoutW}
-     style="grid-template-columns: 1fr{openArtifact ? ` 6px ${paneShown}px` : ''};">
+<div class="chat-layout">
   <!-- Left: conversation history -->
   <!-- Chat body. The conversation list is the shell's context pane now, so this
        owns only the agent selection and the transcript. -->
   <div class="chat-main" class:landing={landing}>
-    <SubmenuToggle appType="chat" floating />
+          <!-- Beside an app: which conversation this is, and the others to go back to. -->
+          {#if docked}
+          <div class="sess-bar"><div class="sess-pick">
+            <button class="agent-chip" class:open={sessMenuOpen} onclick={() => (sessMenuOpen = !sessMenuOpen)}
+                    title="Your conversations" aria-haspopup="menu" aria-expanded={sessMenuOpen}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6" /><path d="M8 4.5V8l2.5 1.5" /></svg>
+              <span class="agent-chip-name">{sessionId ? (currentConv?.title && currentConv.title !== 'New conversation' ? currentConv.title : 'This conversation') : 'New conversation'}</span>
+              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4" /></svg>
+            </button>
+            {#if sessMenuOpen}
+              <div class="agent-menu sess-menu" role="menu">
+                <button class="agent-opt" onclick={() => pickSession('')} role="menuitem">
+                  <span class="agent-opt-tick">+</span><span class="agent-opt-text"><span class="agent-opt-name">New conversation</span></span>
+                </button>
+                {#each conversations.filter(c => c.serverId || c.id === sessionId) as c (c.id)}
+                  <button class="agent-opt" class:on={c.id === sessionId} onclick={() => pickSession(c.id)} role="menuitem" title={c.title}>
+                    <span class="agent-opt-tick">{c.id === sessionId ? '✓' : ''}</span>
+                    <span class="agent-opt-text">
+                      <span class="agent-opt-name">{c.title}</span>
+                      <span class="agent-opt-llm">{[c.time, c.agent && c.agent !== selectedAgent ? (agents.find(a => a.id === c.agent)?.name ?? c.agent) : ''].filter(Boolean).join(' · ')}</span>
+                    </span>
+                  </button>
+                {:else}
+                  <div class="sess-none">No conversations yet.</div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+          <button class="sess-new" onclick={() => pickSession('')} disabled={!sessionId} title="New conversation" aria-label="New conversation">+ New</button>
+          </div>
+          {/if}
+
     {#if landing}
       <!-- Chat's title bar: the section pages lead with a PageBanner, this leads
            with its own line of text. No session yet — the composer sits in the
            middle and sending is what creates the conversation. -->
       <div class="landing-head">
         <h1 class="landing-title">What would you like to do?</h1>
-        <p class="landing-sub">Ask about templates, agents, flows, resources — or start building one.</p>
+        <p class="landing-sub">Ask about templates, agents, flows, resources — or start building one. <a class="landing-docs" href="https://docs.a3t.io/console/chat/" target="_blank" rel="noopener noreferrer">Learn more ↗</a></p>
       </div>
     {/if}
-    <div class="chat-messages" class:hidden={landing} bind:this={messagesEl}>
+    <div class="chat-messages" class:hidden={landing} bind:this={messagesEl} onscroll={onMessagesScroll}>
       {#each chat.messages as msg (msg.id)}
         <div class="message" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'}>
           <div class="msg-avatar">
@@ -822,13 +1010,13 @@
               {#if w.kind === 'canvas-presets'}
                 <!-- A choice is sent back as a message, so it passes the same
                      tools and gates as anything the user types. -->
-                <CanvasPresetCards data={w.data} onchoose={noteChange} onview={(a) => (openArtifact = a)} />
+                <CanvasPresetCards data={w.data} onchoose={noteChange} onview={openItem} />
               {:else if w.kind === 'canvas-placement'}
                 <CanvasPlacementCard data={w.data} />
               {:else if w.kind in ARTIFACTS}
-                <ArtifactWidget kind={w.kind as ArtifactKind} data={w.data} onopen={(a) => (openArtifact = a)} />
+                <ArtifactWidget kind={w.kind as ArtifactKind} data={w.data} onopen={openItem} />
               {:else if w.kind in LIST_KIND_TO_ITEM}
-                <ListWidget kind={w.kind} data={w.data} onopen={(a) => (openArtifact = a)} />
+                <ListWidget kind={w.kind} data={w.data} onopen={openItem} />
               {/if}
             {/each}
             {#if toolsOf(msg).length > 0}
@@ -878,6 +1066,13 @@
     </div>
 
     <div class="chat-input-area">
+      {#if agentEdit}
+        <div class="agent-edit" role="status">
+          <span>Changed <b>{agentEdit.name}</b>{agentEdit.summary ? `: ${agentEdit.summary}` : ''}. Not saved.</span>
+          <button onclick={undoAgentEdit}>Undo</button>
+          <button onclick={() => (agentEdit = null)}>Keep</button>
+        </div>
+      {/if}
       <div class="chat-input-wrap">
         {#if attachments.length > 0 || attachError}
           <div class="attach-row">
@@ -894,6 +1089,7 @@
         {/if}
         <textarea
           class="chat-input"
+          bind:this={inputEl}
           placeholder="Ask anything about the platform..."
           bind:value={inputValue}
           onkeydown={handleKeydown}
@@ -940,7 +1136,10 @@
             </div>
           {/if}
 
-          <!-- Agent: a pill sized to its own label, opening an in-place picker. -->
+          <!-- Agent: a pill sized to its own label, opening an in-place picker.
+               Only for a SuperAdmin or an A3T admin; everyone else talks to the
+               default A3T agent. -->
+          {#if canPickAgent}
           <div class="agent-pick">
             <button
               class="agent-chip"
@@ -969,16 +1168,22 @@
               </div>
             {/if}
           </div>
+          {/if}
 
           <span class="bar-spacer"></span>
-          <span class="chat-input-hint">Enter to send · Shift+Enter for new line</span>
+          {#if awaitingApproval}
+            <span class="chat-input-hint" class:nudge={approvalNudge}>The agent is waiting on a permission question — answer it to continue</span>
+          {:else}
+            <span class="chat-input-hint">Enter to send · Shift+Enter for new line</span>
+          {/if}
 
           {#if busy}
             <button class="send-btn" onclick={() => chat.stop()} title="Stop generating" aria-label="Stop generating">
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1"/></svg>
             </button>
           {:else}
-            <button class="send-btn" onclick={sendMessage} disabled={!inputValue.trim()} aria-label="Send">
+            <button class="send-btn" onclick={sendMessage} disabled={!inputValue.trim() || awaitingApproval}
+                    title={awaitingApproval ? 'Answer the permission question first' : 'Send'} aria-label="Send">
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2L7 9M14 2l-5 12-2-5-5-2z"/></svg>
             </button>
           {/if}
@@ -986,41 +1191,19 @@
       </div>
     </div>
     {#if landing}
-      <!-- Same Pinned / Latest lists as every other app home, below the composer. -->
-      <div class="landing-lists">
-        <AppHome appType="chat" embedded />
+      <div class="intents">
+        {#each INTENTS as it (it.title)}
+          <button class="intent" onclick={it.go} title={it.sub}><b>{it.title}</b></button>
+        {/each}
       </div>
     {/if}
   </div>
 
-  {#if openArtifact}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="pane-resizer"
-      class:dragging={paneDragging}
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize the editor pane"
-      onpointerdown={startPaneDrag}
-      onpointermove={onPaneDrag}
-      onpointerup={endPaneDrag}
-      onpointercancel={endPaneDrag}
-      ondblclick={() => setPaneW(560)}
-    ></div>
-    <ArtifactPane
-      artifact={openArtifact}
-      revision={openRevision}
-      onclose={() => { openArtifact = null; openEdit = null; }}
-      onapplied={noteChange}
-      onsection={(sec) => (openSection = sec)}
-      onedit={(st) => (openEdit = st)}
-      onask={(prefix) => { inputValue = prefix; }}
-    />
-  {/if}
 </div>
 
 <style>
   .tool-note { opacity: 0.75; font-style: italic; }
+  .chat-input-hint.nudge { color: var(--warn, #b26b00); }
 
   /* Collapsed execution log — the streamed working notes, kept after the run. */
   .exec-log {
@@ -1053,18 +1236,9 @@
     max-height: 340px;
     overflow-y: auto;
   }
-  .pane-resizer {
-    cursor: col-resize;
-    background: var(--border);
-    opacity: 0.35;
-    transition: opacity 0.12s;
-    touch-action: none;
-  }
-  .pane-resizer:hover, .pane-resizer.dragging { opacity: 1; background: var(--border-strong); }
-
   .chat-layout {
     display: grid;
-    /* columns are set inline: sidebar | resizer | chat | optional artifact pane */
+    /* One column: the conversation. An open item is edited in Details (the shell). */
     height: 100%;
     /* The row must be capped at the container. Without this it is an implicit
        `auto` row: tall content in the artifact pane grew the row past the
@@ -1096,18 +1270,27 @@
     overflow: hidden;
   }
 
-  /* Landing: centre the composer instead of pinning it to the bottom. */
-  .chat-main.landing { justify-content: center; }
+  /* Always shown in a pane (Details, or an app's Chat face), whose width is not
+     the window's: the layout follows the pane, not the viewport. */
+  .chat-layout { container-type: inline-size; }
+  /* Landing: the message box sits at the bottom, as in a running thread — the
+     greeting at the top, suggestions as chips just above the box. */
+  .chat-main.landing { justify-content: flex-start; }
   .chat-messages.hidden { display: none; }
-  .chat-main.landing .chat-input-area { border-top: none; background: transparent; }
-  .landing-head { flex: none; padding: 0 32px 18px; text-align: center; }
+  .chat-main.landing .chat-input-area { border-top: none; background: transparent; order: 2; padding: 8px 16px 14px; }
+  .landing-head { flex: none; order: 0; padding: 28px 16px 8px; text-align: center; }
   .landing-title {
-    font-family: var(--font-serif); font-size: 26px; font-weight: 500;
+    font-family: var(--font-serif); font-size: 22px; font-weight: 500;
     color: var(--text-1); margin: 0 0 6px;
   }
   .landing-sub { font-size: 12.5px; color: var(--text-4); margin: 0; }
+  .landing-docs { color: var(--accent, #2563eb); text-decoration: none; white-space: nowrap; }
+  .landing-docs:hover { text-decoration: underline; }
 
-  .landing-lists { max-width: 860px; margin: 0 auto; width: 100%; padding: 0 32px 24px; box-sizing: border-box; }
+  .intents { order: 1; max-width: 860px; width: 100%; margin: auto auto 0; padding: 0 16px 8px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 6px; }
+  .intent { display: flex; flex-direction: row; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); text-align: left; cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
+  .intent:hover { border-color: var(--spec); background: var(--spec-bg); }
+  .intent b { font-size: 12px; font-weight: 500; color: var(--text-1); }
 
 
   .chat-messages {
@@ -1249,6 +1432,11 @@
   }
 
   /* Input */
+  .agent-edit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 auto 8px; max-width: 860px; width: 100%; box-sizing: border-box;
+                padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-subtle); font-size: 12.5px; color: var(--text-2); }
+  .agent-edit span { flex: 1 1 200px; min-width: 0; }
+  .agent-edit button { height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12px var(--font-sans); color: var(--text-1); cursor: pointer; }
+  .agent-edit button:hover { border-color: var(--spec); }
   .chat-input-area {
     /* Capped so the box does not stretch the full width of a wide monitor; the
        transcript above it still uses the full width. */
@@ -1323,6 +1511,15 @@
   /* Sized to its own label — the previous native <select> stretched to a
      percentage width and read as a field rather than a chip. */
   .agent-pick { position: relative; flex: 0 1 auto; min-width: 0; }
+  /* Beside an app: the conversation, and the others, above the transcript. */
+  .sess-bar { position: relative; z-index: 30; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--divider, var(--border)); flex: none; }
+  .sess-pick { position: relative; flex: 1 1 auto; min-width: 0; }
+  .sess-pick .agent-chip { max-width: 100%; }
+  .sess-pick .sess-menu { top: calc(100% + 4px); bottom: auto; max-height: 340px; min-width: min(260px, calc(100cqw - 20px)); max-width: min(360px, calc(100cqw - 20px)); z-index: 20; }
+  .sess-new { flex: none; padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-surface); color: var(--text-2); font-size: 11.5px; cursor: pointer; }
+  .sess-new:hover:not(:disabled) { border-color: var(--spec); color: var(--spec); }
+  .sess-new:disabled { opacity: 0.45; cursor: default; }
+  .sess-none { padding: 8px 12px; font-size: 12px; color: var(--text-4); }
   .agent-chip {
     max-width: 220px;
     display: inline-flex; align-items: center; gap: 5px;

@@ -6,12 +6,13 @@
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
   import SaveBar from '../parts/SaveBar.svelte';
   import EditButton from '../parts/EditButton.svelte';
-  import { fromText, startingConfig, toText, typesLike, type Doc, type Workspace } from '$lib/studio-core';
+  import { fromText, fromYamlText, startingConfig, toText, typesLike, type Doc, type Workspace } from '$lib/studio-core';
 
   let { doc, workspace }: { doc: Doc; workspace: Workspace } = $props();
 
   const kind = $derived(workspace.kindOf(doc));
-  const parsed = $derived(fromText(doc.text));
+  const yaml = $derived(kind.format === 'yaml');
+  const parsed = $derived(yaml ? fromYamlText(doc.text) : fromText(doc.text));
   /// A new resource or canvas is named here (kinds named in their text are not).
   const namedHere = $derived(!!doc.isNew && !kind.nameInText);
   const nameProblem = $derived(namedHere ? kind.checkName?.(doc.ref.name) ?? '' : '');
@@ -52,11 +53,11 @@
     <SaveBar {doc} {workspace} valid={!parsed.error && !nameProblem} />
   </div>
   {#if !doc.loaded}
-    <div class="note">Loading {doc.ref.name}…</div>
+    <!-- the header bar shows loading -->
   {:else if doc.error}
     <div class="err">Could not load {doc.ref.name}: {doc.error}</div>
   {:else}
-    {#if parsed.error}<div class="err">Not valid JSON: {parsed.error}</div>{/if}
+    {#if parsed.error}<div class="err">Not valid {yaml ? 'YAML' : 'JSON'}: {parsed.error}</div>{/if}
     <div class="code"><YamlEditor value={doc.text ?? ''} readOnly={!kind.push} onchange={(v: string) => (doc.text = v)} /></div>
   {/if}
 </div>

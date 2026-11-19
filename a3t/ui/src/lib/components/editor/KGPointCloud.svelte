@@ -89,6 +89,18 @@
     }
   });
 
+  // The page loads its points after this mounts (and again after a build or a
+  // reload): draw them whenever they change. Built once in init() only, the cloud
+  // stayed empty for good.
+  $effect(() => {
+    void points; void edges; void typeColors;
+    if (!scene) return;
+    if (pointCloud) { scene.remove(pointCloud); pointCloud.geometry.dispose(); (pointCloud.material as THREE.Material).dispose(); }
+    if (edgeLines) { scene.remove(edgeLines); edgeLines.geometry.dispose(); (edgeLines.material as THREE.Material).dispose(); edgeLines = null; }
+    buildPointCloud();
+    if (edges && edges.length > 0) buildEdges();
+  });
+
   function updateCameraFromOrbit() {
     // Spherical to cartesian
     const cp = Math.cos(pitch), sp = Math.sin(pitch);

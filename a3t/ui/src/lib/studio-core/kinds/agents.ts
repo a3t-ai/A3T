@@ -14,7 +14,6 @@ import { problems } from '../flow/model';
 import type { Doc } from '../workspace';
 import type { ItemKind } from './types';
 
-const AI = { id: 'ai', title: 'AI', component: 'ai' };
 const textDirty = (doc: Doc) => doc.loaded && (doc.text ?? '') !== (doc.saved ?? '');
 
 export const templateKind: ItemKind = {
@@ -23,10 +22,10 @@ export const templateKind: ItemKind = {
   capabilities: ['edit'],
   nameInText: true,
   /// The template's workflow (graph / code); its form, which fields agents may
-  /// set (Agent fields) and AI on the right.
+  /// set (Agent fields) on the right.
   views: {
     center: 'template',
-    right: [{ id: 'form', title: 'Form', component: 'flow-form' }, { id: 'fields', title: 'Agent fields', component: 'template-fields' }, AI],
+    right: [{ id: 'form', title: 'Form', component: 'flow-form' }, { id: 'fields', title: 'Agent fields', component: 'template-fields' }],
     /// The agents built from it; Problems only when its YAML has some.
     bottom: [{ id: 'agents', title: 'Agents', component: 'template-agents' }, { id: 'problems', title: 'Problems', onlyWithBadge: true }],
   },
@@ -75,7 +74,7 @@ export const agentKind: ItemKind = {
   /// checkpoints).
   views: {
     center: 'agent', code: 'code',
-    right: [{ id: 'form', title: 'Form', component: 'agent-form' }, AI],
+    right: [{ id: 'form', title: 'Form', component: 'agent-form' }],
     bottom: [{ id: 'test', title: 'Test', component: 'agent-test' }, { id: 'agent-runs', title: 'Runs', component: 'agent-runs' }],
   },
   initialUi: () => ({ messages: [], draft: '', sending: false, error: '', session: Date.now().toString(36) }),

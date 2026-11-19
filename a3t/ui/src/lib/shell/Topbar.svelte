@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { currentUser, signOut } from '$lib/stores/auth';
+  import { currentUser, signOut, actingAs, stopActingAs } from '$lib/stores/auth';
   import { goto } from '$app/navigation';
   import ProfileModal from './ProfileModal.svelte';
   import NotificationsModal from './NotificationsModal.svelte';
@@ -34,7 +34,8 @@
     goto('/login');
   }
   import AppPalette from './AppPalette.svelte';
-  import ActiveApps from './ActiveApps.svelte';
+  import { openPalette } from '$lib/stores/layout.svelte.ts';
+  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
 
@@ -52,16 +53,29 @@
        when their side surfaces are unpinned. -->
   <nav class="hdr-menus">
     <AppPalette {activeType} />
-    <ActiveApps {activeType} />
     <ProjectSwitcher />
   </nav>
 
   <span style="flex: 1;"></span>
+  <button class="search" onclick={openPalette} title="Search apps and commands, or ask in Chat" aria-label="Search and commands">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg>
+    <span class="search-text">Search &amp; commands</span>
+    <span class="kbd">{mac ? '⌘' : 'Ctrl'} K</span>
+  </button>
 
   <button class="bell" class:has={unread > 0} onclick={() => openNotifications()} aria-label={unread ? `${unread} unread notification${unread === 1 ? '' : 's'}` : 'Notifications'} title="Notifications — warnings and errors">
     <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 11V7a4 4 0 018 0v4l1.5 1.5h-11zM6.5 14a1.5 1.5 0 003 0" /></svg>
     {#if unread > 0}<span class="badge" class:err={unreadError}>{unread > 99 ? '99+' : unread}</span>{/if}
   </button>
+
+  <!-- A SuperAdmin acting as someone else: who, and the way back. -->
+  {#if $actingAs}
+    <div class="acting" title={`You are ${$actingAs.by.email || $actingAs.by.sub}. Everything is done as ${$actingAs.as.name || $actingAs.as.email}, and the decision log records you too.`}>
+      <span class="acting-dot"></span>
+      <span class="acting-text">Acting as <b>{$actingAs.as.name || $actingAs.as.email}</b> · {$actingAs.as.role}</span>
+      <button class="acting-stop" onclick={stopActingAs}>Stop</button>
+    </div>
+  {/if}
 
   <!-- User menu -->
   <div class="user-area">
@@ -86,6 +100,17 @@
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zM2.5 14a5.5 5.5 0 0111 0"/></svg>
           Profile
         </button>
+        {#if $actingAs}
+          <button class="ud-item" onclick={stopActingAs}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4L6 8l4 4"/></svg>
+            Back to {$actingAs.by.email || 'yourself'}
+          </button>
+        {/if}
+        <!-- The consent banner lives in app.html (shared a3t_consent cookie with a3t.io and the docs). -->
+        <button class="ud-item ud-nav" onclick={() => { (window as any).a3tCookieSettings?.(); }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="6" cy="6.5" r=".8" fill="currentColor"/><circle cx="9.5" cy="9.5" r=".8" fill="currentColor"/><circle cx="10" cy="5.5" r=".6" fill="currentColor"/></svg>
+          Cookie settings
+        </button>
         <button class="ud-item" onclick={handleSignOut}>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2H3a1 1 0 00-1 1v10a1 1 0 001 1h3M11 11l3-3-3-3M14 8H6"/></svg>
           Sign out
@@ -104,7 +129,8 @@
 
 <style>
   .header {
-    grid-area: header;
+    flex: 0 0 58px;
+    height: 58px;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
     border-radius: 16px 16px 0 0;
@@ -133,6 +159,15 @@
     white-space: nowrap;
   }
 
+  .search { display: flex; align-items: center; gap: 8px; width: 260px; height: 34px; padding: 0 8px 0 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-page); color: var(--text-4); font: 400 13px var(--font-sans); cursor: pointer; }
+  .search:hover { border-color: var(--spec); color: var(--text-2); }
+  .search-text { flex: 1 1 auto; text-align: left; white-space: nowrap; overflow: hidden; }
+  .search .kbd { font: 500 10.5px var(--font-mono); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: var(--bg-subtle); color: var(--text-3); }
+  @media (max-width: 900px) { .search { width: auto; } .search-text, .search .kbd { display: none; } }
+  @media (max-width: 720px) {
+    .header { padding: 0 10px; gap: 8px; }
+    .brand .tagline, .user-name, .chevron { display: none; }
+  }
   .hdr-menus { display: flex; align-items: center; gap: 8px; margin-left: 6px; }
 
   .bell { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer; transition: background 0.12s, color 0.12s; }
@@ -190,4 +225,10 @@
     position: fixed; inset: 0; background: transparent;
     border: none; z-index: 50; cursor: default;
   }
+  .acting { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 10px; margin-right: 8px; border-radius: 999px; background: #fdf0e1; border: 1px solid #f0c58f; color: #8a4b0f; font-size: 12px; white-space: nowrap; }
+  .acting-dot { width: 7px; height: 7px; border-radius: 50%; background: #d97706; }
+  .acting-text b { font-weight: 600; }
+  .acting-stop { height: 22px; padding: 0 10px; border-radius: 999px; border: 1px solid #d97706; background: #fff; color: #8a4b0f; font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+  .acting-stop:hover { background: #d97706; color: #fff; }
+  @media (max-width: 900px) { .acting-text { display: none; } }
 </style>

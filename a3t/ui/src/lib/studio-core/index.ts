@@ -4,15 +4,16 @@
 /// build on it. Design: flowr-system/.ai/A3T_STUDIO_ARCHITECTURE.md.
 export * from './items';
 export type { StudioHost } from './host';
-export { KINDS, kindFor, kindById, can, languagesOf, type ItemKind, type Capability, type PanelDef } from './kinds';
+export { KINDS, kindFor, kindById, can, languagesOf, POLICY_STARTERS, type PolicyDir, type ItemKind, type Capability, type PanelDef } from './kinds';
 export type { QueryResult } from './adapters/query';
 export type { ChatMessage, Tool, Fired } from './adapters/act';
 export * as ops from './adapters/ops';
 export type { Overview, RuntimeEntry, DeploymentRow, DeploymentAction, RuntimeAction } from './adapters/ops';
 export * as flows from './adapters/flows';
+export * as orgPolicy from './adapters/orgPolicy';
 export { history, remember, saved, saveQuery, forget, type HistoryEntry, type SavedQuery } from './queries';
 export { Workspace, emptyWorkspace, type Doc, type WorkspaceState } from './workspace';
-export { maskedPaths, getAt, setAt, removeAt, pathKey, fromText, toText, type Path } from './config';
+export { maskedPaths, getAt, setAt, removeAt, pathKey, fromText, fromYamlText, toText, type Path } from './config';
 export { TYPES_BY_CATEGORY, startingConfig, categoryOf, typesLike } from './resourceTypes';
 export * as agentModel from './agent/model';
 export { PALETTE, STEP_MIME, paletteStep, libraryOf, taskForItem, addTask, insertTask, setThen, addCase, type PaletteGroup, type PaletteStep } from './flow/compose';

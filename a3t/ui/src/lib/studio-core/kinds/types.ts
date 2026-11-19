@@ -12,6 +12,8 @@ export type PanelDef = {
   id: string; title: string; component?: string;
   /// Shown only while the kind's `badge` for it is above zero (e.g. Problems).
   onlyWithBadge?: boolean;
+  /// Stays mounted once shown (see the Studio's Panel).
+  keepAlive?: boolean;
 };
 
 /// Everything the Studio knows about one sort of item. Adding a sort of item
@@ -73,6 +75,8 @@ export interface ItemKind {
   remove?(item: Item): Promise<Result>;
   rename?(item: Item, to: string): Promise<Result>;
   duplicate?(item: Item, to: string): Promise<Result>;
+  /// What its text is, as the code view checks it (default JSON).
+  format?: 'json' | 'yaml';
   /// The item's name is a field of its text (flows' `document.name`, a
   /// trigger's `name`), not typed separately when it is new.
   nameInText?: boolean;

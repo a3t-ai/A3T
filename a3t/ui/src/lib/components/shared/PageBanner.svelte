@@ -12,6 +12,7 @@
     subtitle = '',
     description = '',
     accent = 'spec',
+    color = '',
     docsPath = '',
   }: {
     headline?: string;
@@ -20,10 +21,11 @@
     description?: string;
     /// One of the platform's four accent families.
     accent?: 'spec' | 'runtime' | 'control' | 'ephemeral';
+    /// The app's own colour (shell/appTheme.ts); it wins over `accent`.
+    color?: string;
+    /// A page on docs.a3t.io; without one there is no "Learn more".
     docsPath?: string;
   } = $props();
-
-  let dismissed = $state(false);
 
   const parts = $derived.by(() => {
     if (!highlightWord) return { before: headline, highlight: '', after: '' };
@@ -42,23 +44,20 @@
     control:   { color: 'var(--control, #c97c2e)',   bg: 'var(--control-bg, #fbf0e0)' },
     ephemeral: { color: 'var(--ephemeral, #3a7fff)', bg: 'var(--ephemeral-bg, #eaf1ff)' },
   };
-  const tone = $derived(ACCENTS[accent] ?? ACCENTS.spec);
+  /// The tint, border and highlighted word, all from one colour; mixed with the
+  /// theme's own surface and text so it reads on light and dark alike.
+  const tone = $derived(color
+    ? { color: `color-mix(in srgb, ${color} 78%, var(--text-1))`, bg: `color-mix(in srgb, ${color} 11%, var(--bg-surface))`, line: `color-mix(in srgb, ${color} 24%, var(--bg-surface))` }
+    : { ...(ACCENTS[accent] ?? ACCENTS.spec), line: (ACCENTS[accent] ?? ACCENTS.spec).bg });
 
-  const docsUrl = $derived(
-    docsPath ? `https://docs.a3t.io${docsPath.startsWith('/') ? '' : '/'}${docsPath}` : 'https://docs.a3t.io',
-  );
+  const docsUrl = $derived(docsPath ? `https://docs.a3t.io${docsPath.startsWith('/') ? '' : '/'}${docsPath}` : '');
 </script>
 
-{#if !dismissed}
+  <!-- Banners sit in panes, which have no close; only pop-ins do. -->
   <div
     class="page-banner"
-    style="background: linear-gradient(135deg, {tone.bg} 0%, var(--bg-subtle) 100%); border-color: {tone.bg};"
+    style="background: linear-gradient(135deg, {tone.bg} 0%, var(--bg-subtle) 100%); border-color: {tone.line};"
   >
-    <button class="banner-close" title="Dismiss" aria-label="Dismiss" onclick={() => (dismissed = true)}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-        <path d="M4 4l8 8M12 4l-8 8" />
-      </svg>
-    </button>
 
     <h2 class="banner-headline">
       {parts.before}<em class="banner-highlight" style="color: {tone.color};">{parts.highlight}</em>{parts.after}
@@ -67,14 +66,15 @@
     {#if subtitle}<p class="banner-subtitle">{subtitle}</p>{/if}
     {#if description}<p class="banner-desc">{description}</p>{/if}
 
+    {#if docsUrl}
     <a class="banner-docs" href={docsUrl} target="_blank" rel="noopener noreferrer" style="color: {tone.color};">
       Learn more
       <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
         <path d="M6 3h7v7M13 3L6 10" />
       </svg>
     </a>
+    {/if}
   </div>
-{/if}
 
 <style>
   .page-banner {
@@ -84,24 +84,12 @@
     padding: 28px 32px 24px;
     margin-bottom: 24px;
   }
-  .banner-close {
-    position: absolute; top: 12px; right: 12px;
-    width: 28px; height: 28px;
-    display: flex; align-items: center; justify-content: center;
-    border: 1px solid var(--border); border-radius: 50%;
-    background: var(--bg-surface); color: var(--text-4);
-    cursor: pointer; transition: all 0.12s;
-  }
-  .banner-close:hover {
-    background: var(--bg-subtle); color: var(--text-1); border-color: var(--border-strong);
-  }
   .banner-headline {
     font-family: var(--font-serif);
     font-size: 26px; font-weight: 500; line-height: 1.35;
     letter-spacing: -0.02em;
     color: var(--text-1);
     margin-bottom: 12px;
-    padding-right: 32px;   /* clear of the dismiss button */
   }
   .banner-highlight { font-style: italic; }
   .banner-subtitle {

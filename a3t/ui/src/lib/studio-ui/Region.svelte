@@ -30,6 +30,12 @@
   }
 
   const rs = $derived(studio.state[region]);
+  /// keepAlive panels shown at least once in this region, kept mounted.
+  let alive = $state<string[]>([]);
+  $effect(() => {
+    const a = active;
+    if (panels.find((p) => p.id === a)?.keepAlive && !alive.includes(a)) alive = [...alive, a];
+  });
   const active = $derived(panels.some((p) => p.id === rs.active) ? rs.active : panels[0]?.id ?? '');
   const maximized = $derived(studio.state.maximized !== null && panels.some((p) => p.id === studio.state.maximized));
 </script>
@@ -57,7 +63,10 @@
       <button class="ctl" onclick={() => studio.minimize(region)} title="Minimize to the edge">{region === 'left' ? '⇤' : region === 'right' ? '⇥' : '⤓'}</button>
     </header>
     <div class="body" data-panel={active}>
-      {@render panel(active)}
+      {#each panels.filter((p) => p.keepAlive && (p.id === active || alive.includes(p.id))) as p (p.id)}
+        <div class="keep" class:hidden={p.id !== active}>{@render panel(p.id)}</div>
+      {/each}
+      {#if !panels.find((p) => p.id === active)?.keepAlive}{@render panel(active)}{/if}
     </div>
   </section>
 {/if}
@@ -74,6 +83,9 @@
   .ctl:hover { background: var(--bg-subtle); color: var(--text-1); }
   .b { margin-left: 5px; font-size: 10px; padding: 0 5px; border-radius: 8px; background: var(--bg-subtle); color: var(--text-2); text-transform: none; }
   .body { flex: 1; min-height: 0; overflow: auto; }
+  .body:has(> .keep:not(.hidden)) { overflow: hidden; display: flex; flex-direction: column; }
+  .keep { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .keep.hidden { display: none; }
   .stack { display: flex; gap: 2px; background: var(--bg-page); flex-shrink: 0; }
   .stack.left, .stack.right { flex-direction: column; width: 28px; height: 100%; padding-top: 6px; }
   .stack.left { border-right: 1px solid var(--border); }

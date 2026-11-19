@@ -1,301 +1,278 @@
 <script lang="ts">
-  interface MemEntry { key: string; value: string; ts: string; }
-  interface AgentTool { name: string; desc: string; }
-  interface AgentMemory {
-    id: string; mode: string; status: string;
-    tools: AgentTool[];
-    memory: { working: MemEntry[]; episodic: MemEntry[]; semantic: MemEntry[]; procedural: MemEntry[]; };
-  }
+  /// Memory, by agent. Items lists the agents; the one picked opens here, in the
+  /// agents' frame: Overview (what it remembers, kind by kind), Memory (a bar of
+  /// the kinds across the page — pick one, filter it), AQL (read its memory with
+  /// RECALL). Read only: memory is changed through the agent's own Memory tab.
+  import { untrack } from 'svelte';
+  import SlidePanel from '$lib/components/shared/SlidePanel.svelte';
+  import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
+  import WizardHead from '$lib/components/shared/WizardHead.svelte';
+  import '$lib/components/agent/agent.css';
+  import '$lib/components/triggers/triggers.css';
+  import { mcpCall } from '$lib/services/api';
+  import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import { insight } from '$lib/components/agent/controlPlane';
+  import { KINDS, recall, runAql, isRead, MEMORY_RESOURCE, type Kind, type Rec } from '$lib/components/memory/aql';
 
-  const agents: AgentMemory[] = [
-    {
-      id: 'ops-agent', mode: 'persistent', status: 'running',
-      tools: [
-        { name: 'execute_flow', desc: 'Run a workflow' },
-        { name: 'get_execution_status', desc: 'Check workflow status' },
-        { name: 'create_resource', desc: 'Register a resource' },
-        { name: 'aql_query', desc: 'Query agent memory' },
-        { name: 'list_flows', desc: 'List all workflows' },
-        { name: 'shell_exec', desc: 'Execute shell command' },
-      ],
-      memory: {
-        working: [
-          { key: 'current_task', value: 'Monitoring deployment rollout', ts: '2026-04-28T10:32:00Z' },
-          { key: 'active_alerts', value: '0 critical, 2 warning', ts: '2026-04-28T10:30:00Z' },
-          { key: 'last_check', value: 'k8s pod health: all green', ts: '2026-04-28T10:31:45Z' },
-        ],
-        episodic: [
-          { key: 'deploy-v0.6.3', value: 'Successfully deployed flowr v0.6.3 to k3d. All 17 tests passed.', ts: '2026-04-27T15:20:00Z' },
-          { key: 'incident-db-slow', value: 'LanceDB query latency spiked to 200ms. Root cause: missing index. Resolved.', ts: '2026-04-26T09:15:00Z' },
-          { key: 'config-change', value: 'Updated CORS origins to include console.a3t.io', ts: '2026-04-25T14:00:00Z' },
-        ],
-        semantic: [
-          { key: 'k3d-architecture', value: 'k3d cluster "a3t" runs on 37.27.195.4. Services: flowr (3002), clawdb (3000).', ts: '2026-04-22T00:00:00Z' },
-          { key: 'flowr-extensions', value: 'CNCF SWF extensions are before/after interceptors in use.extensions. Fire-and-forget.', ts: '2026-04-27T00:00:00Z' },
-        ],
-        procedural: [
-          { key: 'deploy-to-k3d', value: 'rsync -> cargo build --release -> docker build -> k3d image import -> kubectl set image', ts: '2026-04-27T00:00:00Z' },
-          { key: 'run-tests', value: 'SERVER=http://host:port bash test_new_features.sh -> verify 17/17 pass', ts: '2026-04-27T00:00:00Z' },
-        ],
-      }
-    },
-    {
-      id: 'chat-agent', mode: 'session', status: 'idle',
-      tools: [
-        { name: 'aql_recall', desc: 'Recall from memory' },
-        { name: 'aql_store', desc: 'Store to memory' },
-        { name: 'execute_flow', desc: 'Run a workflow' },
-        { name: 'web_search', desc: 'Search the web' },
-      ],
-      memory: {
-        working: [
-          { key: 'session_id', value: 'sess-abc123', ts: '2026-04-28T09:00:00Z' },
-          { key: 'user_context', value: 'Enterprise customer, billing tier: pro', ts: '2026-04-28T09:00:00Z' },
-        ],
-        episodic: [
-          { key: 'turn-1', value: 'User asked about pricing. Provided tier comparison.', ts: '2026-04-28T09:01:00Z' },
-          { key: 'turn-2', value: 'User requested Q1 invoice. Triggered billing workflow.', ts: '2026-04-28T09:03:00Z' },
-          { key: 'turn-3', value: 'Workflow completed. Invoice sent to user@company.com.', ts: '2026-04-28T09:04:00Z' },
-        ],
-        semantic: [
-          { key: 'pricing-model', value: 'Free (5 agents), Pro ($49/mo, 50 agents), Enterprise (custom).', ts: '2026-04-01T00:00:00Z' },
-          { key: 'refund-policy', value: 'Refunds within 30 days. Pro-rated for annual plans.', ts: '2026-04-01T00:00:00Z' },
-        ],
-        procedural: [
-          { key: 'issue-refund', value: 'verify_purchase -> calculate_prorated -> stripe_refund -> notify_user', ts: '2026-04-01T00:00:00Z' },
-          { key: 'escalate', value: 'collect_context -> create_ticket(jira) -> notify_slack(#support)', ts: '2026-04-01T00:00:00Z' },
-        ],
-      }
-    },
-    {
-      id: 'bidder-agent', mode: 'reactive', status: 'waiting',
-      tools: [
-        { name: 'compute_bid', desc: 'Calculate bid price (Lua)' },
-        { name: 'get_campaign', desc: 'Fetch campaign data' },
-        { name: 'log_impression', desc: 'Log bid impression' },
-      ],
-      memory: {
-        working: [
-          { key: 'last_bid', value: '{"campaign":"camp-42","bid":0.85,"won":true}', ts: '2026-04-28T10:30:00Z' },
-        ],
-        episodic: [
-          { key: 'hour-10', value: '1,247 bids, 312 wins (25%), avg CPM $0.92', ts: '2026-04-28T10:00:00Z' },
-          { key: 'hour-09', value: '1,089 bids, 287 wins (26%), avg CPM $0.88', ts: '2026-04-28T09:00:00Z' },
-        ],
-        semantic: [
-          { key: 'bid-strategy', value: 'Second-price auction. Floor multiplier 1.2x for tier-1 inventory.', ts: '2026-04-15T00:00:00Z' },
-        ],
-        procedural: [
-          { key: 'bid-flow', value: 'parse_ortb -> match_campaign -> compute_bid(lua) -> format_response', ts: '2026-04-20T00:00:00Z' },
-        ],
-      }
-    },
-    {
-      id: 'analyst-agent', mode: 'ephemeral', status: 'idle',
-      tools: [
-        { name: 'sql_query', desc: 'Run SQL on ClickHouse' },
-        { name: 'create_chart', desc: 'Generate chart data' },
-        { name: 'aql_recall', desc: 'Recall analysis patterns' },
-      ],
-      memory: {
-        working: [],
-        episodic: [
-          { key: 'report-weekly', value: 'Weekly KPI: Revenue up 12%, CTR stable at 2.1%.', ts: '2026-04-27T08:00:00Z' },
-        ],
-        semantic: [
-          { key: 'kpi-definitions', value: 'CTR = clicks/impressions. CPC = spend/clicks. ROAS = revenue/spend.', ts: '2026-04-01T00:00:00Z' },
-        ],
-        procedural: [
-          { key: 'weekly-report', value: 'query_clickhouse(weekly_kpis) -> compute_deltas -> format_md -> post_slack', ts: '2026-04-01T00:00:00Z' },
-        ],
-      }
-    },
+  type Agent = { id: string; name: string; namespace: string; mode: string; status: string };
+  let agent = $state<Agent | null>(null);
+  let space = $state<{ namespace: string; counts: Record<string, number>; attached: { namespace: string; entries: any[] }[] } | null>(null);
+  let spaceErr = $state('');
+  let tab = $state('overview');
+
+  // ── The agent picked in Items ──
+  let shown = '';
+  $effect(() => {
+    const id = getActivePanel()?.props?.selectedId as string | undefined;
+    untrack(() => { if (id && id !== shown) { shown = id; void open(id); } else if (!id) { shown = ''; agent = null; } });
+  });
+  async function open(id: string) {
+    tab = 'overview'; space = null; spaceErr = ''; records = []; aqlRes = null; filters = [{ field: '', value: '' }]; contains = ''; since = '';
+    const l = await mcpCall('list_agents', {});
+    const rows: any[] = l.ok ? (Array.isArray(l.data) ? l.data : (l.data?.agents ?? [])) : [];
+    const r = rows.find((x) => (x.id ?? x.name) === id);
+    agent = r ? { id: r.id ?? r.name, name: r.name ?? r.id, namespace: r.namespace ?? '', mode: r.mode ?? r.agent_mode ?? 'session', status: r.status ?? '' } : { id, name: id, namespace: '', mode: '', status: '' };
+    const m = await insight.memory(id);
+    if (m.ok && m.data) space = { namespace: m.data.namespace, counts: m.data.counts ?? {}, attached: m.data.attached ?? [] };
+    else spaceErr = m.error ?? 'Its memory could not be read.';
+    if (space) { kind = 'EPISODIC'; aql = recall('EPISODIC', space.namespace, [], 50); }
+  }
+  const close = () => navigateTo('memory', 'Memory');
+
+  // ── Memory tab: the kind bar, filters, results ──
+  /// A kind of the agent's own space, or an attached semantic space ("space:<ns>").
+  let kind = $state<string>('EPISODIC');
+  let filters = $state<{ field: string; value: string }[]>([{ field: '', value: '' }]);
+  let contains = $state('');
+  let limit = $state(50);
+  let records = $state<Rec[]>([]);
+  let running = $state(false);
+  let err = $state('');
+  let lastAql = $state('');
+  const kindSpace = $derived(kind.startsWith('space:') ? kind.slice(6) : space?.namespace ?? '');
+  const kindType = $derived((kind.startsWith('space:') ? 'SEMANTIC' : kind) as Kind);
+  const count = (k: string) => k.startsWith('space:') ? (space?.attached.find((a) => a.namespace === k.slice(6))?.entries.length ?? 0) : (space?.counts?.[k.toLowerCase()] ?? 0);
+  /// The bar's parts: each kind, then each attached space, with its own light colour.
+  const TONE: Record<string, [string, string]> = {
+    WORKING: ['var(--ephemeral)', 'var(--ephemeral-bg)'], EPISODIC: ['var(--control)', 'var(--control-bg)'],
+    SEMANTIC: ['var(--runtime)', 'var(--runtime-bg)'], PROCEDURAL: ['var(--signal)', 'var(--signal-bg)'],
+  };
+  const parts = $derived.by(() => {
+    const all = [
+      ...KINDS.map((k) => ({ k: k.k as string, label: k.label, what: k.what, space: false, c: TONE[k.k][0], cb: TONE[k.k][1] })),
+      ...(space?.attached ?? []).map((a) => ({ k: `space:${a.namespace}`, label: a.namespace, what: 'an attached semantic space', space: true, c: 'var(--spec)', cb: 'var(--spec-bg)' })),
+    ].map((p) => ({ ...p, n: count(p.k) }));
+    const sum = all.reduce((t, p) => t + p.n, 0);
+    // A share of the bar by count, but never so thin a part can't be clicked.
+    return all.map((p) => ({ ...p, w: sum ? Math.max(p.n / sum, 0.08) : 1 }));
+  });
+  const total = $derived(parts.reduce((t, p) => t + p.n, 0));
+  /// When: entries from the last hour, day, week or month (by their own time).
+  const SINCE = [{ k: '', t: 'Any time' }, { k: '1h', t: 'Last hour' }, { k: '1d', t: 'Last 24 hours' }, { k: '7d', t: 'Last 7 days' }, { k: '30d', t: 'Last 30 days' }] as const;
+  const SINCE_MS: Record<string, number> = { '1h': 3_600_000, '1d': 86_400_000, '7d': 7 * 86_400_000, '30d': 30 * 86_400_000 };
+  let since = $state('');
+  const recTime = (r: Rec) => { const d: any = r.data ?? {}; const t = Date.parse(String(r.at ?? d.at ?? d.created_at ?? '')); return isNaN(t) ? null : t; };
+  const shownRecs = $derived.by(() => {
+    const text = contains.trim().toLowerCase();
+    const from = since ? Date.now() - SINCE_MS[since] : null;
+    return records.filter((r) => (!text || JSON.stringify(r.data).toLowerCase().includes(text)) && (from === null || ((recTime(r) ?? 0) >= from)));
+  });
+
+  async function apply() {
+    if (!kindSpace) return;
+    running = true; err = '';
+    lastAql = recall(kindType, kindSpace, filters, limit);
+    const r = await runAql(lastAql);
+    running = false;
+    if (r.ok) records = [...r.records].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    else { records = []; err = r.error; }
+  }
+  function pick(k: string) { kind = k; filters = [{ field: '', value: '' }]; contains = ''; since = ''; void apply(); }
+  $effect(() => { if (tab === 'memory' && agent && space && !lastAql) untrack(() => void apply()); });
+
+  // ── AQL tab ──
+  let aql = $state('');
+  let aqlRes = $state<{ records: Rec[]; ms: number | null } | null>(null);
+  let aqlErr = $state('');
+  let showRaw = $state(false);
+  async function runIt() {
+    running = true; aqlErr = '';
+    const r = await runAql(aql);
+    running = false;
+    if (r.ok) aqlRes = { records: r.records, ms: r.ms }; else { aqlRes = null; aqlErr = r.error; }
+  }
+  function toAql() { aql = lastAql || recall(kindType, kindSpace, filters, limit); tab = 'aql'; }
+
+  /// One line for a record: what it says, by kind.
+  function line(r: Rec): string {
+    const d: any = r.data;
+    if (d.subject || d.predicate) return `${d.subject ?? '?'} — ${d.predicate ?? '?'} — ${d.object ?? '?'}`;
+    if (d.role || d.content) return `${d.role ? d.role + ': ' : ''}${String(d.content ?? d.text ?? '').slice(0, 220)}`;
+    const rest = Object.entries(d).filter(([k]) => !['key', 'at', 'created_at', 'kind'].includes(k));
+    return rest.slice(0, 3).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' · ').slice(0, 220);
+  }
+  const when = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? '' : d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
+
+  const steps = [
+    { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: 'What it remembers, kind by kind, and where it is kept' },
+    { id: 'memory', label: 'Memory', icon: '<ellipse cx="8" cy="4" rx="6" ry="2"/><path d="M2 4v8c0 1.1 2.7 2 6 2s6-.9 6-2V4"/><path d="M2 8c0 1.1 2.7 2 6 2s6-.9 6-2"/>', hint: 'Pick a kind of memory, then filter what it holds' },
+    { id: 'aql', label: 'AQL', icon: '<path d="M5 3L1 8l4 5M11 3l4 5-4 5"/>', hint: 'Read its memory with RECALL — read only' },
   ];
-
-  let selectedId = $state('');
-  let selected = $derived(agents.find(a => a.id === selectedId));
-
-  const MODE_COLORS: Record<string, string> = {
-    persistent: 'var(--persistent, #0077cc)',
-    session: 'var(--session, #d4a017)',
-    reactive: 'var(--reactive, #cc3344)',
-    ephemeral: 'var(--ephemeral, #3a7fff)',
-  };
-
-  const TIER_META: Record<string, { label: string; color: string; icon: string }> = {
-    working:    { label: 'Working Memory',    color: '#4caf50', icon: 'W' },
-    episodic:   { label: 'Episodic Memory',   color: '#2196f3', icon: 'E' },
-    semantic:   { label: 'Semantic Memory',   color: '#e91e63', icon: 'S' },
-    procedural: { label: 'Procedural Memory', color: '#ff9800', icon: 'P' },
-  };
-
-  function fmtTime(ts: string) {
-    const d = new Date(ts);
-    const now = new Date();
-    const diff = now.getTime() - d.getTime();
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-    return d.toLocaleDateString();
-  }
 </script>
 
-<div class="screen-header">
-  <div class="breadcrumb">Augment <span class="sep">/</span> Memory</div>
-  <div class="screen-title-row">
-    <h1 class="screen-title">Agent Memory</h1>
-    <div class="screen-stats">
-      <span class="kstat"><strong>{agents.length}</strong> agents</span>
-      <span class="kstat"><strong>5</strong> memory tiers</span>
-    </div>
-  </div>
-</div>
+{#snippet recList(list: Rec[])}
+  {#if list.length}
+    <ul class="tl">
+      {#each list as r, i (r.id + i)}
+        <li class="ev">
+          <span class="ic">{i + 1}</span>
+          <details>
+            <summary class="t">{line(r) || r.key}</summary>
+            <div class="m mono">{r.key}</div>
+            <dl class="kv kvm">{#each Object.entries(r.data) as [k, v] (k)}<dt>{k}</dt><dd class="mono">{typeof v === 'string' ? v : JSON.stringify(v)}</dd>{/each}</dl>
+          </details>
+          <time>{when(r.at)}</time>
+        </li>
+      {/each}
+    </ul>
+  {:else}<p class="empty">Nothing matches.</p>{/if}
+{/snippet}
 
-<div class="memory-body">
-  <!-- Agent list panel -->
-  <div class="agent-panel">
-    <div class="panel-head">Agents</div>
-    {#each agents as a}
-      <button
-        class="agent-row"
-        class:selected={selectedId === a.id}
-        onclick={() => selectedId = a.id}
-      >
-        <div class="ar-top">
-          <span class="ar-name">{a.id}</span>
-          <span class="ar-status" class:running={a.status === 'running'}>{a.status}</span>
-        </div>
-        <div class="ar-bottom">
-          <span class="ar-mode" style="color: {MODE_COLORS[a.mode] ?? 'var(--text-4)'}">{a.mode}</span>
-          <span class="ar-tools">{a.tools.length} tools</span>
-        </div>
-      </button>
-    {/each}
-  </div>
+<SlidePanel open={!!agent} onclose={close}>
+  {#if agent}
+    <div class="panel-layout">
+      <PropertiesTree icon={agent.name.slice(0, 2).toUpperCase()} color="#1a7158" name={agent.name} meta={`memory · ${space?.namespace ?? agent.id}`}
+        nodes={[]} {steps} activeNode={tab} onselect={(id) => (tab = id)} />
+      <div class="panel-col"><div class="panel-content"><div class="pf">
+        <WizardHead step={steps.find((s) => s.id === tab)} />
+        <section class="agt">
+        {#if spaceErr}<div class="note bad">{spaceErr}</div>{/if}
 
-  <!-- Detail panel -->
-  <div class="detail-panel">
-    {#if selected}
-      <div class="detail-head">
-        <h2>{selected.id}</h2>
-        <span class="mode-badge" style="background: {MODE_COLORS[selected.mode] ?? '#888'}">{selected.mode}</span>
-        <span class="status-dot" class:running={selected.status === 'running'}></span>
-        <span class="detail-status">{selected.status}</span>
-      </div>
+        {#if tab === 'overview'}
+          <div class="card">
+            <div class="card-head"><h3>1 · Agent</h3><span>whose memory this is</span></div>
+            <ul class="rows">
+              <li><span class="lbl">Agent</span><span class="val">{agent.name} <span class="dim">· {agent.namespace}</span></span><button class="btn2" onclick={() => navigateToDetail('agents', 'Agents', agent!.id)}>Open</button></li>
+              <li><span class="lbl">Remembers</span><span class="val">{agent.mode === 'persistent' ? 'across conversations' : 'within one conversation'}</span><span></span></li>
+              <li><span class="lbl">Kept in</span><span class="val mono">{MEMORY_RESOURCE} · space {space?.namespace ?? '…'}</span><span></span></li>
+            </ul>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>2 · What it remembers</h3><span>entries of each kind, in its own space and the spaces it reads</span></div>
+            <ul class="rows">
+              {#each KINDS as k (k.k)}
+                <li><span class="lbl">{k.label}</span><span class="val">{space ? count(k.k) : '…'} <span class="dim">· {k.what}</span></span>
+                  <button class="btn2" onclick={() => { tab = 'memory'; pick(k.k); }}>Open</button></li>
+              {/each}
+              {#each space?.attached ?? [] as a (a.namespace)}
+                <li><span class="lbl mono">{a.namespace}</span><span class="val">{a.entries.length} <span class="dim">· an attached semantic space</span></span>
+                  <button class="btn2" onclick={() => { tab = 'memory'; pick(`space:${a.namespace}`); }}>Open</button></li>
+              {/each}
+            </ul>
+          </div>
 
-      <!-- 4 memory cards in 2x2 grid -->
-      <div class="memory-grid">
-        {#each Object.entries(TIER_META) as [tier, meta]}
-          {@const entries = selected.memory[tier as keyof typeof selected.memory] ?? []}
-          <div class="mem-card">
-            <div class="mc-header" style="border-color: {meta.color}">
-              <span class="mc-icon" style="background: {meta.color}">{meta.icon}</span>
-              <span class="mc-title">{meta.label}</span>
-              <span class="mc-count">{entries.length}</span>
-            </div>
-            <div class="mc-body">
-              {#if entries.length === 0}
-                <div class="mc-empty">No entries</div>
-              {:else}
-                {#each entries as entry}
-                  <div class="mc-entry">
-                    <div class="mc-key">{entry.key}</div>
-                    <div class="mc-val">{entry.value}</div>
-                    <div class="mc-ts">{fmtTime(entry.ts)}</div>
-                  </div>
-                {/each}
-              {/if}
+        {:else if tab === 'memory'}
+          <!-- Like a disk map: a box per kind with its colour along the top, sized by
+               its share of the entries (never too narrow to pick); click one to open it. -->
+          <div class="card">
+            <div class="card-head"><h3>1 · Kinds</h3><span>{space ? `${total} entries — pick a kind` : 'reading…'}</span></div>
+            <div class="mbar" role="tablist" aria-label="Memory kinds">
+              {#each parts as s (s.k)}
+                <button role="tab" class="seg" class:on={kind === s.k} aria-selected={kind === s.k} style="flex-grow:{s.w}; --c:{s.c}; --cb:{s.cb}" onclick={() => pick(s.k)}>
+                  <b class:mono={s.space}>{s.label}</b>
+                  <span class="n">{space ? `${s.n} ${s.n === 1 ? 'entry' : 'entries'}` : '…'}{space && total ? ` · ${Math.round((s.n / total) * 100)}%` : ''}</span>
+                  <span class="w">{s.what}</span>
+                </button>
+              {/each}
             </div>
           </div>
-        {/each}
-      </div>
-
-      <!-- Tools section -->
-      <div class="tools-section">
-        <h3>Tools <span class="tool-count">{selected.tools.length}</span></h3>
-        <div class="tool-grid">
-          {#each selected.tools as tool}
-            <div class="tool-chip">
-              <span class="tc-name">{tool.name}</span>
-              <span class="tc-desc">{tool.desc}</span>
+          <div class="card">
+            <div class="card-head"><h3>2 · Filter</h3><span>{kind.startsWith('space:') ? 'facts in this space' : KINDS.find((k) => k.k === kind)?.what}</span></div>
+            {#each filters as f, i (i)}
+              <div class="frow">
+                <input class="mono fin" type="text" bind:value={f.field} placeholder={kindType === 'SEMANTIC' ? 'subject' : kindType === 'EPISODIC' ? 'session_id' : 'key'} />
+                <span class="dim">=</span>
+                <input class="mono fin grow" type="text" bind:value={f.value} placeholder="value" onkeydown={(e) => { if (e.key === 'Enter') apply(); }} />
+                {#if filters.length > 1}<button class="btn2 quiet" onclick={() => (filters = filters.filter((_, j) => j !== i))}>Remove</button>{/if}
+              </div>
+            {/each}
+            <div class="acts">
+              <button class="btn2 quiet" onclick={() => (filters = [...filters, { field: '', value: '' }])}>+ Field</button>
+              <label class="lim">at most <input class="fin num" type="number" min="1" max="1000" bind:value={limit} /></label>
+              <span class="grow"></span>
+              <button class="btn2 primary" disabled={running} onclick={apply}>{running ? 'Reading…' : 'Apply'}</button>
             </div>
-          {/each}
-        </div>
-      </div>
-    {:else}
-      <div class="empty-detail">
-        <svg width="48" height="48" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><path d="M4 2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z"/><path d="M6 2v12M10 2v12M2 6h12M2 10h12"/></svg>
-        <p>Select an agent to view memory stores</p>
-      </div>
-    {/if}
-  </div>
-</div>
+            {#if lastAql}<p class="dim">As AQL: <span class="mono">{lastAql}</span> <button class="link" onclick={toAql}>Edit as AQL →</button></p>{/if}
+            {#if err}<div class="note bad">{err}</div>{/if}
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>3 · Entries</h3><span>{shownRecs.length}{contains || since ? ` of ${records.length}` : ''}, newest first</span><span class="grow"></span>
+              <select class="fin" bind:value={since} aria-label="When">{#each SINCE as o (o.k)}<option value={o.k}>{o.t}</option>{/each}</select>
+              <input class="fin rm" type="search" bind:value={contains} placeholder="Find in these" /></div>
+            {@render recList(shownRecs)}
+          </div>
+
+        {:else}
+          <div class="card">
+            <div class="card-head"><h3>1 · RECALL</h3><span>Ctrl+Enter runs it · only RECALL is sent</span></div>
+            <textarea class="aql" rows="4" spellcheck="false" bind:value={aql} onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runIt(); }}></textarea>
+            <div class="acts">
+              {#each KINDS as k (k.k)}<button class="btn2 quiet" onclick={() => (aql = recall(k.k, space?.namespace ?? '', [], 50))}>{k.label}</button>{/each}
+              <span class="grow"></span>
+              <button class="btn2 primary" disabled={running || !aql.trim() || !isRead(aql)} onclick={runIt}>{running ? 'Running…' : 'Run'}</button>
+            </div>
+            {#if aql.trim() && !isRead(aql)}<div class="note warn">Only RECALL runs here. To change what it remembers, use the agent's Memory tab.</div>{/if}
+            {#if aqlErr}<div class="note bad">{aqlErr}</div>{/if}
+          </div>
+          {#if aqlRes}
+            <div class="card">
+              <div class="card-head"><h3>2 · Result</h3><span>{aqlRes.records.length} record{aqlRes.records.length === 1 ? '' : 's'}{aqlRes.ms != null ? ` · ${aqlRes.ms} ms` : ''}</span><span class="grow"></span>
+                <button class="btn2 quiet rm" onclick={() => (showRaw = !showRaw)}>{showRaw ? 'List' : 'JSON'}</button></div>
+              {#if showRaw}<pre class="code out">{JSON.stringify(aqlRes.records.map((r) => r.data), null, 2)}</pre>{:else}{@render recList(aqlRes.records)}{/if}
+            </div>
+          {/if}
+        {/if}
+        </section>
+      </div></div></div>
+    </div>
+  {/if}
+</SlidePanel>
 
 <style>
-  .screen-header { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); background: var(--bg-page); }
-  .breadcrumb { font-size: 12px; color: var(--text-3); margin-bottom: 8px; font-family: var(--font-mono); }
-  .breadcrumb .sep { color: var(--text-5); }
-  .screen-title-row { display: flex; align-items: center; justify-content: space-between; }
-  .screen-title { font-family: var(--font-serif); font-size: 24px; font-weight: 500; letter-spacing: -0.02em; }
-  .screen-stats { display: flex; gap: 18px; }
-  .kstat { font-size: 13px; color: var(--text-3); }
-  .kstat strong { color: var(--ephemeral, #3a7fff); font-weight: 600; }
-
-  .memory-body { flex: 1; display: flex; overflow: hidden; }
-
-  /* Agent list */
-  .agent-panel { width: 250px; border-right: 1px solid var(--border); overflow-y: auto; background: var(--bg-page); }
-  .panel-head { padding: 14px 16px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-4); font-weight: 600; }
-  .agent-row {
-    display: block; width: 100%; padding: 10px 16px; border: none; background: none;
-    text-align: left; cursor: pointer; border-left: 3px solid transparent;
-    transition: all 0.12s;
+  .panel-layout { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+  .panel-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+  .panel-content { overflow-y: auto; flex: 1; min-height: 0; }
+  .pf { padding: 24px 32px; max-width: var(--detail-w); box-sizing: border-box; }
+  @container details (max-width: 560px) { .pf { padding: 16px 14px; } }
+  /* The kinds across the page: each a tab with its count. */
+  .mbar { display: flex; flex-wrap: wrap; gap: 2px; }
+  .mbar .seg { flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0 12px 10px; border: 1px solid var(--border); border-top: 0; border-radius: 0; overflow: hidden; background: var(--cb); cursor: pointer; font: inherit; text-align: left; }
+  .mbar .seg::before { content: ''; align-self: stretch; height: 8px; margin: 0 -12px 8px; background: var(--c); }
+  .mbar .seg > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mbar .seg b { font: 600 13.5px var(--font-sans); color: var(--text-1); }
+  .mbar .seg .n { font: 500 12.5px var(--font-sans); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .mbar .seg .w { font-size: 12px; color: var(--text-3); }
+  .mbar .seg:first-child { border-radius: 6px 0 0 6px; }
+  .mbar .seg:last-child { border-radius: 0 6px 6px 0; }
+  .mbar .seg.on { position: relative; z-index: 1; }
+  .mbar .seg:hover { border-color: var(--c); }
+  .mbar .seg.on { border-color: var(--c); box-shadow: 0 0 0 2px var(--c); }
+  /* A narrow pane: the same bar, stood on end — one row per kind, full width. */
+  @container details (max-width: 560px) {
+    .mbar { flex-direction: column; flex-wrap: nowrap; }
+    .mbar .seg { flex: none; }
+    .mbar .seg:first-child { border-radius: 6px 6px 0 0; }
+    .mbar .seg:last-child { border-radius: 0 0 6px 6px; }
   }
-  .agent-row:hover { background: var(--bg-hover); }
-  .agent-row.selected { background: var(--bg-surface); border-left-color: var(--ephemeral, #3a7fff); }
-  .ar-top { display: flex; justify-content: space-between; align-items: center; }
-  .ar-name { font-weight: 600; font-size: 13px; color: var(--text-1); }
-  .ar-status { font-size: 10px; color: var(--text-4); font-family: var(--font-mono); }
-  .ar-status.running { color: var(--ok, #22c55e); }
-  .ar-bottom { display: flex; justify-content: space-between; margin-top: 3px; font-size: 11px; }
-  .ar-mode { font-weight: 500; }
-  .ar-tools { color: var(--text-4); }
-
-  /* Detail */
-  .detail-panel { flex: 1; overflow-y: auto; padding: 24px 32px 40px; }
-  .detail-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
-  .detail-head h2 { font-family: var(--font-serif); font-size: 22px; font-weight: 500; }
-  .mode-badge { padding: 2px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; color: #fff; }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-5); margin-left: 8px; }
-  .status-dot.running { background: var(--ok, #22c55e); animation: pulse 2s infinite; }
-  .detail-status { font-size: 12px; color: var(--text-3); }
-
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-  /* Memory grid */
-  .memory-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .mem-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
-  .mc-header {
-    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
-    border-bottom: 2px solid; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2);
-  }
-  .mc-icon { width: 22px; height: 22px; border-radius: 4px; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; font-family: var(--font-mono); }
-  .mc-count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-4); background: var(--bg-subtle); padding: 1px 6px; border-radius: 3px; }
-  .mc-body { padding: 8px 14px; max-height: 260px; overflow-y: auto; }
-  .mc-empty { padding: 16px 0; color: var(--text-5); font-size: 12px; text-align: center; }
-  .mc-entry { padding: 8px 0; border-bottom: 1px solid var(--divider); }
-  .mc-entry:last-child { border-bottom: none; }
-  .mc-key { font-weight: 600; font-size: 12px; color: var(--text-2); font-family: var(--font-mono); }
-  .mc-val { font-size: 12px; color: var(--text-3); margin-top: 2px; line-height: 1.4; }
-  .mc-ts { font-size: 10px; color: var(--text-5); margin-top: 3px; }
-
-  /* Tools */
-  .tools-section { margin-top: 24px; }
-  .tools-section h3 { font-family: var(--font-serif); font-size: 16px; font-weight: 500; margin-bottom: 12px; color: var(--text-2); }
-  .tool-count { font-family: var(--font-mono); font-size: 11px; color: var(--text-4); background: var(--bg-subtle); padding: 1px 6px; border-radius: 3px; font-weight: 400; }
-  .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
-  .tool-chip { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 12px; }
-  .tc-name { display: block; font-weight: 600; font-size: 12px; color: var(--text-1); font-family: var(--font-mono); }
-  .tc-desc { display: block; font-size: 11px; color: var(--text-4); margin-top: 2px; }
-
-  .empty-detail { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 12px; color: var(--text-4); font-size: 14px; }
+  .frow { display: flex; align-items: center; gap: 8px; }
+  .fin { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 13px var(--font-sans); color: var(--text-1); min-width: 0; }
+  .fin.mono { font-family: var(--font-mono); font-size: 12.5px; }
+  .fin.num { width: 76px; margin-left: 6px; }
+  .frow > .fin:first-child { flex: 0 0 34%; }
+  .frow > .fin.grow { flex: 1 1 auto; }
+  .lim { font-size: 12.5px; color: var(--text-3); text-transform: none; letter-spacing: 0; font-weight: 400; display: inline-flex; align-items: center; }
+  .aql { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 12.5px/1.6 var(--font-mono); color: var(--text-1); resize: vertical; }
+  .kvm { margin-top: 6px; grid-template-columns: 120px 1fr; font-size: 12px; }
+  details summary { cursor: pointer; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
 </style>

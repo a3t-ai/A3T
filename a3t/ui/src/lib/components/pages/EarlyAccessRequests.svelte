@@ -1,5 +1,6 @@
 <script lang="ts">
   import PageBanner from '$lib/components/shared/PageBanner.svelte';
+  import { bannerFor } from '$lib/shell/appTheme';
   import { execFlow } from '$lib/services/api';
   import { onMount } from 'svelte';
 
@@ -20,9 +21,11 @@
   async function load() {
     loading = true;
     error = '';
-    // a3t-early-access reads (.input // {}).action — pass the wrapped list action.
-    const res = await execFlow('a3t-early-access', 'a3t', { input: { action: 'list' } }, { silent: true });
-    if (res.ok) {
+    // flow_a3t_early_access reads (.input // {}).action — pass the wrapped list action.
+    const res = await execFlow('flow_a3t_early_access', 'a3t', { input: { action: 'list' } }, { silent: true });
+    if (res.ok && res.data?.ok === false) {
+      error = res.data.error ?? 'Refused';
+    } else if (res.ok) {
       const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
       requests = (rows as EARequest[])
         .slice()
@@ -45,10 +48,7 @@
 </script>
 
 <div class="ea-page">
-  <PageBanner headline="Who wants in." highlightWord="wants"
-    subtitle="Early-access requests submitted from the sign-in page."
-    description="Every submission is persisted to the early_access_requests table. Reach out from here to onboard the right people."
-    accent="spec" />
+  <PageBanner {...bannerFor('early-access')} />
 
   <div class="ea-toolbar">
     <h3 class="ea-title">Early Access Requests</h3>
@@ -61,7 +61,7 @@
   </div>
 
   {#if loading}
-    <div class="ea-empty">Loading…</div>
+    <!-- the header bar shows loading -->
   {:else if error}
     <div class="ea-empty ea-err">{error}</div>
   {:else if requests.length === 0}

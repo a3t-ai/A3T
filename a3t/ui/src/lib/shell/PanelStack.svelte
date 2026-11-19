@@ -19,6 +19,7 @@
   import DbConsole from '$lib/components/pages/DbConsole.svelte';
   import KnowledgePage from '$lib/components/pages/KnowledgePage.svelte';
   import MemoryPage from '$lib/components/pages/MemoryPage.svelte';
+  import DataRoomsPage from '$lib/components/pages/DataRoomsPage.svelte';
   import TestBench from '$lib/components/pages/TestBench.svelte';
   import EarlyAccessRequests from '$lib/components/pages/EarlyAccessRequests.svelte';
   import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
@@ -28,6 +29,9 @@
   import LogsPage from '$lib/components/pages/LogsPage.svelte';
   import RuntimePage from '$lib/components/pages/RuntimePage.svelte';
   import Placeholder from '$lib/components/pages/Placeholder.svelte';
+
+  /// Pages that open a newly picked item in place (they watch `selectedId`).
+  const IN_PLACE = new Set(['resources', 'agents', 'templates', 'executions', 'canvas', 'projects', 'triggers']);
 
   let panels = $derived(getPanels());
   let activePanel = $derived(panels.length > 0 ? panels[panels.length - 1] : null);
@@ -40,13 +44,13 @@
       <p>Select a section from the sidebar to get started.</p>
     </div>
   {:else}
-    <!-- Remount the page when the selected item changes.
-         Selecting in the context list swaps `props.selectedId`, but the `{#if}`
-         branch below stays on the same component, so Svelte keeps the existing
-         instance and the page goes on showing the previous item. Keying on the
-         selection is the whole mechanism: every page already loads its item on
-         mount, which is the "remount and restore" model this shell chose. -->
-    {#key `${activePanel.type}:${activePanel.props?.selectedId ?? ''}`}
+    <!-- Remount the page when the app changes or New is pressed — not when
+         another item is picked. A pick used to remount (and reload) the whole
+         page, which drew it before the item's view covered it: the flicker.
+         These list pages open a newly picked item in place; the rest (Runtime,
+         Settings, Security, Chat, Studio…) read the selection on mount, so a pick
+         still remounts them. -->
+    {#key `${activePanel.type}:${IN_PLACE.has(activePanel.type) ? '' : (activePanel.props?.selectedId ?? '')}:${activePanel.props?.create ?? ''}`}
     {#if activePanel.type === 'dashboard'}
       <Placeholder type="dashboard" />
     {:else if activePanel.type === 'chat'}
@@ -69,6 +73,8 @@
       <ConsoleEditor />
     {:else if activePanel.type === 'db-console'}
       <DbConsole />
+    {:else if activePanel.type === 'datarooms'}
+      <DataRoomsPage />
     {:else if activePanel.type === 'knowledge'}
       <KnowledgePage />
     {:else if activePanel.type === 'memory'}

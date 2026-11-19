@@ -11,6 +11,7 @@ export const BASELINE_POLICY = `// A3T EE baseline policy pack (v1). Deny-by-def
 // tools, flow capability ceiling) still override these permits.
 
 // Humans may perform any step action.
+@id("baseline/humans-run-steps")
 permit(
   principal,
   action in [Action::"tool:invoke", Action::"mcp:call", Action::"llm:call", Action::"flow:start"],
@@ -19,6 +20,7 @@ permit(
 
 // Agents may — but only when acting on behalf of a user (never on ambient
 // trust). This is the \`on_behalf_of\` guardrail.
+@id("baseline/agents-run-for-a-user")
 permit(
   principal,
   action in [Action::"tool:invoke", Action::"mcp:call", Action::"llm:call", Action::"flow:start"],
@@ -28,20 +30,51 @@ permit(
 // The runtime service itself. Internal flow execution runs as
 // Principal::Service{"flow-runtime"} — trusted machinery, not the threat model.
 // The forbids below still override this.
+@id("baseline/runtime-service-steps")
 permit(
   principal,
   action in [Action::"tool:invoke", Action::"mcp:call", Action::"llm:call", Action::"flow:start"],
   resource
 ) when { principal is Service };
 
-// Destructive tools are forbidden for everyone in the baseline pack. A tighter
-// pack can scope this to trust tier; here it is a blanket guardrail that
-// overrides the permits above (forbid wins).
+// Destructive tools are forbidden by default — but Admin/SuperAdmin *humans* are
+// exempt (they hold the delete ACL). Agents/services (LLM-driven) and non-admin
+// users stay blocked, so a destructive action always needs a trusted human. The
+// SoD forbid below (Cedar \`type\` resources) still overrides this for InfoSec-only
+// resources. \`forbid\` overrides the permits above.
+@id("baseline/destructive-tools")
+@reason("It deletes or changes data, which needs the Admin role (or SuperAdmin) in this project, as a person, not an agent.")
 forbid(
   principal,
   action,
   resource
-) when { resource has destructive && resource.destructive };
+)
+when { resource has destructive && resource.destructive }
+unless {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+// ── Data-operation RBAC (op_policy framework) ──
+// Generalizes the destructive-tool forbid above to any handler that declares
+// an \`operation\` attribute via flowr_policy::op_policy (today: call:lancedb;
+// future DB-shaped handlers opt in the same way, no new action/schema needed).
+// Agent/Service principals carry no \`roles\` attribute in the Cedar schema, so
+// they have no exemption path here — same shape as the destructive forbid,
+// applied to the new attribute. This is what makes a Viewer's "list" and a
+// Viewer's "delete" through the same call:lancedb handler distinguishable.
+@id("baseline/data-writes")
+@reason("Writing or deleting data needs the Admin role (or SuperAdmin) in this project, as a person, not an agent.")
+forbid(
+  principal,
+  action,
+  resource
+)
+when { resource has operation && ["write", "delete"].contains(resource.operation) }
+unless {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
 
 // ── Flow capability ceiling (E2 #3 → workflow model, §6.5) ──
 // A flow declares its capability surface in \`metadata.a3t.{exposedTools,
@@ -51,6 +84,8 @@ forbid(
 // an "agent" — it applies to every principal running the flow, so an LLM-chosen
 // step is confined exactly like an author-declared one. A flow that declares no
 // sets is unconstrained by this rule (CE parity). \`forbid\` overrides the permits.
+@id("baseline/flow-exposed-tools")
+@reason("The flow does not expose this tool (metadata.a3t.exposedTools).")
 forbid(
   principal,
   action in [Action::"tool:invoke", Action::"mcp:call"],
@@ -60,6 +95,8 @@ forbid(
   resource has name &&
   !(principal.template.exposedTools.contains(resource.name))
 };
+@id("baseline/flow-enabled-tools")
+@reason("The flow does not enable this tool (metadata.a3t.enabledTools).")
 forbid(
   principal,
   action in [Action::"tool:invoke", Action::"mcp:call"],
@@ -70,12 +107,38 @@ forbid(
   !(principal.template.enabledTools.contains(resource.name))
 };
 
+// ── Chat transcript access (session persistence) ──
+// A conversation belongs to the principal that created it. Deny-by-default means
+// no permit here = nobody reads anybody's transcript, so both cases are explicit.
+// \`is_owner\` is computed at the endpoint, which is the only place that knows both
+// the row's \`owner\` and who is asking.
+@id("baseline/own-conversations")
+permit(
+  principal,
+  action in [Action::"session:read", Action::"session:delete"],
+  resource
+) when { resource has is_owner && resource.is_owner };
+
+// InfoSec exception, for incident review. This lets a SuperAdmin/SecurityAdmin
+// read ANY user's chat history — deliberate and audited, not a convenience.
+// Remove this permit to make transcripts owner-only.
+@id("baseline/infosec-reads-conversations")
+permit(
+  principal,
+  action == Action::"session:read",
+  resource
+) when {
+  principal is User && principal has roles &&
+  (principal.roles.contains("SuperAdmin") || principal.roles.contains("SecurityAdmin"))
+};
+
 // ── Registry governance (E2 #2b §6.4, tightened by E2 #5 Phase C RBAC) ──
 // Managing registry resources (LLM/MCP/agent config, …) requires the \`Admin\`
 // role — the first real role-based rule (Casbin never enforced any). The AuthN
 // layer expands the hierarchy, so a superadmin holds \`Admin\`; operators/viewers
 // do not. Writing a \`type == "cedar"\` resource additionally requires InfoSec
 // (SoD forbid below).
+@id("baseline/admins-manage-resources")
 permit(
   principal,
   action in [Action::"resource:create", Action::"resource:update", Action::"resource:delete"],
@@ -89,6 +152,8 @@ permit(
 // may create/update/delete a \`type == "cedar"\` resource unless they hold the
 // SecurityAdmin or SuperAdmin role — an app builder cannot rewrite the policy
 // that governs them. \`forbid\` overrides the \`permit\` above.
+@id("baseline/policies-are-infosecs")
+@reason("Cedar policies can only be written by a SecurityAdmin or SuperAdmin.")
 forbid(
   principal,
   action in [Action::"resource:create", Action::"resource:update", Action::"resource:delete"],
@@ -107,6 +172,8 @@ unless {
 // tools are gated at the agent-tool dispatch (the site-A bypass is now closed).
 // Agents/services are governed by their capability ceiling, not this human gate,
 // so the forbid is scoped to \`principal is User\`.
+@id("baseline/authoring-needs-admin")
+@reason("Creating flows, agents or templates this way needs the Admin role in this project.")
 forbid(
   principal,
   action in [Action::"mcp:call", Action::"tool:invoke"],
@@ -117,4 +184,160 @@ when {
   ["create_flow", "create_agent", "create_agent_template", "delete_agent"].contains(resource.name)
 }
 unless { principal has roles && principal.roles.contains("Admin") };
+
+// ── Deployment placement (canvas) ──
+//
+// Deploying is placing a flow into a runtime pool. It is deliberately NOT
+// covered by the blanket step-action permits above: those let a principal RUN
+// work, which is not the same authority as deciding WHERE work runs and how much
+// of it. So \`flow:deploy\` is permitted here explicitly and narrowly.
+
+// Any authenticated principal may deploy into a non-production pool. Test
+// placement is how people work; gating it would make the audit trail the only
+// benefit and the friction constant.
+@id("baseline/deploy-non-prod")
+permit(
+  principal,
+  action == Action::"flow:deploy",
+  resource
+) when { resource has label_tier && resource.label_tier != "prod" };
+
+// A pool with no tier at all is treated as non-production. Pools are authored
+// data and an unlabelled one must not become a backdoor into prod, so this is
+// paired with the forbid below rather than standing on its own.
+@id("baseline/deploy-untiered")
+permit(
+  principal,
+  action == Action::"flow:deploy",
+  resource
+) unless { resource has label_tier };
+
+// Admins may place work anywhere. Deny-by-default means the forbids below cannot
+// grant anything on their own — without this permit, prod and isolated placement
+// would be unreachable for everyone, which is a denial dressed up as a guardrail.
+// Scoped to \`principal is User\` deliberately: see the Ask note below.
+@id("baseline/admins-deploy-anywhere")
+permit(
+  principal,
+  action == Action::"flow:deploy",
+  resource
+) when {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+// Production placement requires Admin, and only a HUMAN may hold it.
+//
+// An agent acting for an Admin therefore does not get prod deployment outright —
+// it gets an \`Ask\`, because the human behind it would be allowed. That is the
+// delegation prompt, and it is the behaviour we want: a model may propose a
+// production deploy, a person confirms it.
+@id("baseline/prod-deploy-needs-admin")
+@reason("Deploying to production needs the Admin role, as a person.")
+forbid(
+  principal,
+  action == Action::"flow:deploy",
+  resource
+)
+when { resource has label_tier && resource.label_tier == "prod" }
+unless {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+// Dedicated (isolated) placement also requires Admin. An isolated flow takes a
+// whole runtime rather than sharing one, so it is a capacity decision as much as
+// an isolation one, and it should not be reachable by asking a model nicely.
+@id("baseline/isolated-deploy-needs-admin")
+@reason("A dedicated (isolated) runtime needs the Admin role, as a person.")
+forbid(
+  principal,
+  action == Action::"flow:deploy",
+  resource
+)
+when { resource has mode && resource.mode == "isolated" }
+unless {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+// ── Operating deployments ──
+//
+// Pausing, resuming and undeploying are gated exactly like placing: whoever may
+// put work into a pool may also stop it there. Stopping production is as
+// consequential as starting it — a paused prod agent is an outage — so prod is
+// Admin-only in both directions, and an agent acting for an Admin gets an Ask.
+@id("baseline/operate-non-prod")
+permit(
+  principal,
+  action in [Action::"flow:pause", Action::"flow:resume", Action::"flow:undeploy", Action::"flow:terminate"],
+  resource
+) when { resource has label_tier && resource.label_tier != "prod" };
+
+@id("baseline/operate-untiered")
+permit(
+  principal,
+  action in [Action::"flow:pause", Action::"flow:resume", Action::"flow:undeploy", Action::"flow:terminate"],
+  resource
+) unless { resource has label_tier };
+
+@id("baseline/admins-operate-anywhere")
+permit(
+  principal,
+  action in [Action::"flow:pause", Action::"flow:resume", Action::"flow:undeploy", Action::"flow:terminate"],
+  resource
+) when {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+@id("baseline/prod-operate-needs-admin")
+@reason("Pausing or stopping production needs the Admin role, as a person.")
+forbid(
+  principal,
+  action in [Action::"flow:pause", Action::"flow:resume", Action::"flow:undeploy", Action::"flow:terminate"],
+  resource
+)
+when { resource has label_tier && resource.label_tier == "prod" }
+unless {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+// ── Runtime state ──
+//
+// A runtime hosts many teams' deployments, so hibernating, pausing or resuming
+// it is an operator decision whatever its tier. Admins only, and only humans:
+// an agent acting for an Admin gets an Ask, so a model can propose it and a
+// person confirms.
+@id("baseline/admins-run-runtimes")
+permit(
+  principal,
+  action in [Action::"runtime:hibernate", Action::"runtime:pause", Action::"runtime:resume", Action::"runtime:terminate"],
+  resource
+) when {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
+
+// AC-14: an agent's memory lifecycle. The project gate has already checked write access;
+// InfoSec narrows these with \`forbid\`s. The runtime service covers CE-style calls with
+// no signed-in user.
+@id("baseline/memory-lifecycle")
+permit(
+  principal,
+  action in [Action::"memory:branch", Action::"memory:merge", Action::"memory:promote", Action::"memory:fork", Action::"memory:layers"],
+  resource
+) when { principal is User || principal is Service };
+
+// Going to production is for admins.
+@id("baseline/admins-go-to-prod")
+permit(
+  principal,
+  action == Action::"deploy:prod",
+  resource
+) when {
+  principal is User && principal has roles &&
+  (principal.roles.contains("Admin") || principal.roles.contains("SuperAdmin"))
+};
 `;

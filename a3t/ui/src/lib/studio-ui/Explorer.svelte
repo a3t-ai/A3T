@@ -84,7 +84,7 @@
     if (e.key === 'F2' && kind.rename) { e.preventDefault(); askName('rename', it); }
     else if (e.key === 'Delete' && kind.remove) { e.preventDefault(); delTarget = it; }
   }
-  const newIn = (project: string, c: NonNullable<TreeNode['create']>) => workspace.create(c.kind, project, c.type);
+  const newIn = (project: string, c: NonNullable<TreeNode['create']>) => workspace.create(c.kind, c.project ?? project, c.type);
   /// Click: the item's own view. Double-click / Edit: the item as code.
   const openIt = (it: Item) => workspace.open(it, { view: 'action' });
   const editIt = (it: Item) => workspace.open(it, { view: 'code' });
@@ -152,7 +152,7 @@
     <input placeholder="Filter" bind:value={filter} />
     <button title="Refresh" onclick={() => load()} disabled={loading}>↻</button>
   </div>
-  {#if loading && !inventory.tree.length}<div class="ex-empty">Loading…</div>{/if}
+
   {#if !loading && !shown.length}<div class="ex-empty">{filter ? 'Nothing matches.' : 'No project in view — pick one in the project switcher (or turn on Show platform for a3t / system).'}</div>{/if}
   {#if notice}
     <div class="ex-note" class:bad={!notice.ok}><span>{notice.text}</span><button title="Dismiss" onclick={() => (notice = null)}>×</button></div>

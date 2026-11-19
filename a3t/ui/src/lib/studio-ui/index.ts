@@ -8,6 +8,8 @@ import type { StudioConfig } from './studios';
 
 export { Studio };
 export { STUDIOS, type StudioConfig } from './studios';
+/// Starting text for an org's new policy file (Security creates them).
+export { POLICY_STARTERS, type PolicyDir } from '$lib/studio-core';
 
 export type MountedStudio = { open(item: Item): void; dispose(): void };
 

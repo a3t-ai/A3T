@@ -15,9 +15,14 @@ export const APP_ICONS: Record<string, string> = {
     cabinet:   '<rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M2 5.5h12M2 10.5h12"/><circle cx="8" cy="3.25" r="0.7" fill="currentColor"/><circle cx="8" cy="8" r="0.7" fill="currentColor"/><circle cx="8" cy="12.75" r="0.7" fill="currentColor"/>',
     kg:        '<circle cx="8" cy="2" r="1.8"/><circle cx="2.5" cy="13" r="1.8"/><circle cx="13.5" cy="13" r="1.8"/><path d="M8 3.8V8M6.5 9.5L3.5 11.5M9.5 9.5L12.5 11.5M4.3 13h7.4"/><circle cx="8" cy="8.5" r="1.2" fill="currentColor"/>',
     knowledge: '<path d="M2 13V4a1 1 0 011-1h4l2 2h4a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1z"/><path d="M6 9l2-2 2 2"/><path d="M8 7v4"/>',
+    // An open folder holding a document — files in a store (Projects is the closed folder).
+    room:      '<path d="M4.5 5.5V2.5a1 1 0 011-1h5a1 1 0 011 1v4.3"/><path d="M6.5 3.8h3"/><path d="M1.5 6.5a1 1 0 011-1h2.5l1.2 1.3h7.3a1 1 0 011 1v5.7a1 1 0 01-1 1h-11a1 1 0 01-1-1z"/>',
     memory:    '<path d="M4 2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z"/><path d="M6 2v12M10 2v12M2 6h12M2 10h12"/>',
     play:      '<polygon points="3,2 13,8 3,14"/>',
     recon:     '<circle cx="8" cy="8" r="6"/><path d="M5 8l2 2 4-4"/>',
+    // Rows marked allowed / denied — what the decision log records.
+    decision:  '<path d="M1.5 3.5l1.2 1.2 2-2.2"/><path d="M7 3.5h7.5"/><path d="M1.8 7l2.4 2.4M4.2 7L1.8 9.4"/><path d="M7 8.2h7.5"/><path d="M1.5 12.8l1.2 1.2 2-2.2"/><path d="M7 12.8h5"/>',
+    alert:     '<path d="M8 1.8l6.5 11.4a.8.8 0 01-.7 1.2H2.2a.8.8 0 01-.7-1.2z"/><path d="M8 6v3.6"/><circle cx="8" cy="12" r="0.6" fill="currentColor"/>',
     logs:      '<path d="M2 4h12M2 8h8M2 12h10"/>',
     flow:      '<rect x="1" y="2" width="5" height="4" rx="1"/><rect x="10" y="2" width="5" height="4" rx="1"/><rect x="5.5" y="10" width="5" height="4" rx="1"/><path d="M3.5 6v2a2 2 0 002 2h5a2 2 0 002-2V6"/><path d="M8 10V8"/>',
     test:      '<path d="M6 1v4M10 1v4M4 5h8a1 1 0 011 1v2l-2 2v4H5V10L3 8V6a1 1 0 011-1z"/><path d="M6 10h4"/>',

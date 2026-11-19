@@ -1,20 +1,23 @@
 <script lang="ts">
-  /// The status bar at the top of the console: one word in its colour —
-  /// Connecting…, Loading…, Saving…, Saved, Warning, Error, Offline — on a thin
-  /// line across the top. A message has ▾: the rest of it opens underneath, with
-  /// Copy and a way to all notifications (the bell). Quick reads (under DELAY)
-  /// show nothing, so polling pages do not flicker.
+  /// The status bar at the top of the console.
+  ///  - The line: blue and moving while any connection is open (background
+  ///    refreshes and chat streams included), green and moving while a save or
+  ///    delete is in flight; solid in the message's colour otherwise.
+  ///  - The pill: "Loading…" only when something YOU started waits past DELAY;
+  ///    "Saved" / "Deleted" once a write completes (nothing while it runs);
+  ///    Warning, Error, Offline with ▾ to read the rest, Copy, and the bell.
+  ///  - Background refreshes never put words in the pill — only their failures.
   import { onDestroy } from 'svelte';
   import { fly } from 'svelte/transition';
   import { activity, type Activity } from '$lib/core/status/activity';
   import { messages, notifications, openNotifications, type Message } from '$lib/core/status/messages';
 
-  const DELAY = 350;          // busy this long before the bar says so
+  const DELAY = 500;          // an action of yours waits this long before "Loading…" appears; the blue line shows from the first byte
   const DONE = 1600;          // "Saved" stays this long
   const LIFE: Record<Message['type'], number> = { success: 2500, info: 4000, warning: 7000, error: 9000 };
 
   let msg = $state<Message | null>(null);
-  let act = $state<Activity>({ kind: null, since: 0, connection: 'connecting', done: null });
+  let act = $state<Activity>({ kind: null, since: 0, connection: 'connecting', done: null, conns: 0 });
   let offline = $state<Message | null>(null);
   let now = $state(Date.now());
   let open = $state(false);
@@ -47,6 +50,8 @@
     return () => clearTimeout(t);
   });
 
+  /// A save, delete or other write is in flight: the line turns green.
+  const writing = $derived(act.kind === 'saving' || act.kind === 'deleting');
   type Tone = 'neutral' | 'load' | 'save' | 'ok' | 'warn' | 'err';
   type View = { tone: Tone; word: string; busy: boolean; m: Message | null };
   const BUSY: Record<NonNullable<Activity['kind']>, [Tone, string]> = {
@@ -59,7 +64,9 @@
     const busy = !!act.kind && now - act.since >= DELAY;
     if (msg) return { tone: TONE[msg.type], word: msg.key === 'offline' ? 'Offline' : WORD[msg.type], busy, m: msg };
     if (act.connection === 'offline') return { tone: 'err', word: 'Offline', busy, m: offline };
-    if (busy && act.kind) {
+    // A save or delete says nothing while it runs — the green line is its
+    // progress — and "Saved" / "Deleted" once it completes.
+    if (busy && act.kind && !writing) {
       if (act.connection === 'connecting') return { tone: 'neutral', word: 'Connecting…', busy, m: null };
       const [tone, word] = BUSY[act.kind];
       return { tone, word, busy, m: null };
@@ -85,7 +92,10 @@
 </script>
 
 <div class="status-bar">
-  <div class="line {view?.tone ?? ''}" class:on={!!view} class:busy={view?.busy || (!!act.kind && now - act.since >= DELAY)}></div>
+  <!-- Blue moving line: a connection is open (any — yours or a background
+       refresh), from the moment it starts to the moment the last one ends.
+       Otherwise a solid line in the colour of what the pill says. -->
+  <div class="line {act.conns > 0 ? (writing ? 'write' : 'conn') : (view?.tone ?? '')}" class:on={!!view && act.conns === 0} class:busy={act.conns > 0}></div>
 
   {#if view}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -134,7 +144,7 @@
 </div>
 
 <style>
-  .status-bar { grid-area: status; position: relative; height: 3px; z-index: 120; }
+  .status-bar { flex: 0 0 3px; position: relative; height: 3px; z-index: 120; }
 
   /* The thin line across the top: solid while there is something to say,
      a moving stripe while busy. */
@@ -145,6 +155,8 @@
   .line.busy::after { content: ''; position: absolute; top: 0; bottom: 0; width: 30%; background: var(--c); animation: slide 1.1s ease-in-out infinite; }
   @keyframes slide { from { left: -30%; } to { left: 100%; } }
 
+  .conn { --c: var(--ephemeral, #4a8eff); }
+  .write { --c: var(--ok); }
   .neutral { --c: var(--text-3); --bg: var(--bg-subtle); --ink: var(--text-2); }
   .load { --c: var(--ephemeral); --bg: var(--ephemeral-bg); --ink: var(--ephemeral-ink); }
   .save { --c: var(--spec); --bg: var(--spec-bg); --ink: var(--spec-ink); }

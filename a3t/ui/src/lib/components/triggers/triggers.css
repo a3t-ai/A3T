@@ -1,0 +1,63 @@
+/* The Triggers app on the agent tabs' system (agent.css, under .agt): cards with
+   numbered serif heads, label/value/action rows, btn2. What agent.css has no rule
+   for — form fields in a card, the guide's buttons outside .agt — is here. */
+
+/* Buttons outside .agt (the guide on the list page and in Details). */
+.trg-ui .btn2 { height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font: 500 12.5px var(--font-sans); color: var(--text-1); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.trg-ui .btn2:hover:not(:disabled) { border-color: var(--spec); }
+.trg-ui .btn2.primary { background: var(--green, #1a7158); border-color: var(--green, #1a7158); color: #fff; }
+.trg-ui .btn2:disabled { opacity: 0.5; cursor: default; }
+
+/* Fields in a card: a label over its input, two to a row, one in a narrow pane. */
+.agt .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.agt .fld { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12.5px; color: var(--text-2); font-weight: 500; text-transform: none; letter-spacing: 0; }
+.agt .fld.full { grid-column: 1 / -1; }
+.agt .fld small { font-weight: 400; font-size: 11.5px; color: var(--text-4); text-transform: none; letter-spacing: 0; }
+.agt .fld input, .agt .fld select, .agt .fld textarea {
+  width: 100%; box-sizing: border-box; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-surface); color: var(--text-1); font: 400 13px var(--font-sans); outline: none;
+}
+.agt .fld input, .agt .fld select { height: 36px; }
+.agt .fld textarea { font: 12.5px/1.55 var(--font-mono); resize: vertical; }
+.agt .fld .mono, .agt .fld input.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.agt .fld input:focus, .agt .fld select:focus, .agt .fld textarea:focus { border-color: var(--spec); }
+@container details (max-width: 560px) { .agt .fields { grid-template-columns: 1fr; } }
+
+/* Rows of a card: label, value, action — as the agent's Endpoints card. */
+.agt .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.agt .rows > li { display: grid; grid-template-columns: 110px 1fr auto; gap: 4px 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--divider, var(--border)); }
+.agt .rows > li:first-child { border-top: 0; }
+.agt .rows .lbl { font-weight: 600; font-size: 13px; color: var(--text-1); }
+.agt .rows .val { min-width: 0; overflow-wrap: anywhere; color: var(--text-1); }
+.agt .rows .sub { grid-column: 2 / 4; font-size: 12px; color: var(--text-3); }
+@container details (max-width: 560px) {
+  .agt .rows > li { grid-template-columns: 1fr auto; }
+  .agt .rows > li > :nth-child(1) { grid-column: 1; grid-row: 1; }
+  .agt .rows > li > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .agt .rows > li > :nth-child(3) { grid-column: 2; grid-row: 1; }
+  .agt .rows .sub { grid-column: 1 / -1; }
+}
+
+/* A source picker: the agent's segmented control, full labels. */
+.agt .seg.src { align-self: flex-start; max-width: 100%; overflow-x: auto; }
+.agt .seg.src button { padding: 6px 12px; font-size: 12.5px; white-space: nowrap; }
+
+/* Code in a card: the event's shape, a run's output. */
+.agt pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.agt pre.code.out { margin-top: 6px; max-height: 260px; overflow: auto; }
+.agt .ev .dot { margin-top: 6px; }
+
+/* A card whose head has an action (Remove): narrow, the action stays on the
+   title's line and the line under it wraps below. */
+@container details (max-width: 560px) {
+  .agt .card-head:has(.rm) > .grow { order: 1; }
+  .agt .card-head:has(.rm) > .rm { order: 2; }
+  .agt .card-head:has(.rm) > span:not(.grow) { order: 3; flex-basis: 100%; }
+}
+
+/* A list of problems in a red note: readable, not footnote-grey. */
+.agt .note.bad .notes { margin-top: 4px; font-size: 12.5px; color: var(--text-1); gap: 2px; }
+
+/* Rows whose label is a long name (agents, tools): a wider label column. */
+@container details (min-width: 561px) { .agt .rows.wide > li { grid-template-columns: minmax(150px, 34%) 1fr auto; } }
+.agt .rows.wide .lbl { overflow-wrap: anywhere; }

@@ -262,7 +262,7 @@
     // The webhook must target the engine's chat WRAPPER (which assembles config), NOT the
     // template's own name — a template isn't a registered workflow, so targeting it gives
     // "Workflow not found". agent-template → SWF wrapper; everything else → native engine.
-    const wrapperName = (name === 'agent-template') ? 'a3t-chat-agent' : 'a3t-chat-engine';
+    const wrapperName = 'tmpl_a3t_agent';
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const triggerName = `${slug}-http`;
     const path = `/${slug}`;
@@ -346,7 +346,7 @@
         // always run through the engine's chat WRAPPER, which assembles a valid `config`
         // from the flat body. agent-template → the SWF wrapper; everything else → native.
         const tns = 'a3t';
-        const tname = (name === 'agent-template') ? 'a3t-chat-agent' : 'a3t-chat-engine';
+        const tname = 'tmpl_a3t_agent';
         // Carry the template's own config into the flat body so the test reflects it.
         const body: any = { ...payload };
         const llm = cfgGet('llm_resource');
@@ -940,7 +940,7 @@
     {#if cfgGetArr('mcp_servers').length === 0}
       <p class="perm-hint">This template has no tools to govern yet. Add one or more <strong>MCP servers</strong> on the <button type="button" class="linkish" onclick={() => activeTab = 'tools'}>Tools</button> tab first — the ceiling controls which of <em>their</em> tools an agent may use.</p>
     {:else if toolsLoading}
-      <p class="perm-hint">Discovering tools from the selected MCP servers…</p>
+      <!-- the header bar shows loading -->
     {:else}
       {#if availableTools.length > 0}
         <p class="perm-hint">Uncheck a tool to block it for agents from this template. All checked = unrestricted; the policy engine denies anything unchecked even if the model tries it.</p>
@@ -1011,7 +1011,7 @@
               oninput={(e) => setTier(tier, 'limit', e.currentTarget.value === '' ? '' : Number(e.currentTarget.value))} /></label>
         {/if}
         {#if tier === 'semantic'}
-          <label class="mem-num" title="The least similarity (0–1) a fact needs to reach the prompt (AQL MIN_CONFIDENCE); empty = no threshold">min conf
+          <label class="mem-num" title="The least similarity (0–1) a fact needs to reach the prompt (AQL CONFIDENCE); empty = no threshold">min conf
             <input type="number" min="0" max="1" step="0.05" value={t.min_confidence ?? ''} placeholder="—"
               oninput={(e) => setTier(tier, 'min_confidence', e.currentTarget.value === '' ? '' : Number(e.currentTarget.value))} /></label>
         {/if}

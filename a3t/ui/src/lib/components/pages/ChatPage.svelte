@@ -73,7 +73,7 @@
 
   // The chat drives created Agents. Each agent is created from an Agent Canvas and
   // carries its own LLM binding (resource_bindings.llm); posting to the agent's
-  // endpoint (EP) runs the shared a3t-chat-agent flow on that agent's bound LLM.
+  // endpoint (EP) runs the shared tmpl_a3t_agent flow on that agent's bound LLM.
   // The EP is resolved from its trigger (agent-{id}-chat) → stored ep_path → /agent/{id}/chat.
   // Selection defaults to the system-default agent (variables.system_default, else agt-default).
   let agents = $state<{ id: string; name: string; llm: string; target: string; ep_path: string; system_default: boolean; enabled_tools?: string[]; mcp_servers: string[] }[]>([]);
@@ -88,7 +88,7 @@
   }
 
   async function loadAgents() {
-    const res = await execFlow('a3t-agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
+    const res = await execFlow('flow_a3t_agents-list', 'a3t', { org_id: 'org-default' }, { silent: true });
     if (res.ok) {
       const rows = Array.isArray(res.data) ? res.data : (res.data?.rows ?? res.data?.output ?? []);
       agents = (rows as any[]).map(r => {
@@ -260,10 +260,10 @@
     }
 
     // Post the message to the selected target's endpoint:
-    //  - claude-cli-max (platform): the built-in LLM via the wrapper (a3t-chat-agent flow)
+    //  - claude-cli-max (platform): the built-in LLM via a3t/tmpl_a3t_agent
     //  - an agent: POST to its endpoint (EP), resolved from its trigger → ep_path → default
     // Post to the selected agent's endpoint (EP). The agent's bound LLM (resource_bindings.llm)
-    // is forwarded as llm_resource, which a3t-chat-agent applies to the reasoning loop.
+    // is forwarded as llm_resource, which tmpl_a3t_agent applies to the reasoning loop.
     const a = agents.find(x => x.id === selectedAgent);
     const ep = epByAgent[selectedAgent] || a?.ep_path || `/agent/${selectedAgent}/chat`;
     const body: Record<string, any> = { message: text, session_id: `${selectedAgent}:${sessionId}` };

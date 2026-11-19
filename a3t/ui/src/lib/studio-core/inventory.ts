@@ -5,8 +5,25 @@
 import { catMeta } from '$lib/core/resources/categories';
 import * as flows from './adapters/flows';
 import * as registry from './adapters/registry';
+import * as orgPolicy from './adapters/orgPolicy';
 import { address, type Item } from './items';
 import { categoryOf, TYPES_BY_CATEGORY } from './resourceTypes';
+import type { OrgPolicyFile } from '$lib/services/api';
+import * as YAML from 'yaml';
+
+const parsed = (text: string): any => { try { return YAML.parse(text) ?? {}; } catch { return {}; } };
+/// Whether an org's rule can apply in project `ns`: org-wide, naming the project
+/// or one of its flows, or scoped by tags or by reference (anywhere).
+function appliesIn(text: string, ns: string): boolean {
+  const a = parsed(text).applies_to;
+  if (!a || a.org) return true;
+  const projects: string[] = a.projects ?? [];
+  const flows: string[] = a.flows ?? [];
+  if (!projects.length && !flows.length) return true;
+  return projects.includes(ns) || flows.some((f) => String(f).startsWith(`${ns}/`));
+}
+/// The project an access file is for.
+const accessFor = (text: string): string => String(parsed(text).project ?? '');
 
 export type TreeNode = {
   key: string;
@@ -15,7 +32,9 @@ export type TreeNode = {
   children?: TreeNode[];
   item?: Item;
   /// What "+" in this folder creates: a kind, and for resources a type.
-  create?: { kind: string; type?: string };
+  /// `project`: where it is made, when not the project the folder is in (an
+  /// org's policy files, from one of its projects).
+  create?: { kind: string; type?: string; project?: string };
   /// Open until the user folds it (folder state is remembered after that).
   open?: boolean;
 };
@@ -92,6 +111,40 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
       ],
     };
   });
+  // An org's policy files, inside each of its projects: the rules that can apply
+  // there, the org's roles, and the project's access file. Only for orgs whose
+  // files you manage.
+  const [orgs, owners] = await Promise.all([orgPolicy.managedOrgs(), orgPolicy.orgOfProjects()]);
+  if (orgs.ok && owners.ok) {
+    const filesOf = new Map<string, OrgPolicyFile[]>();
+    for (const org of new Set(projects.map((ns) => owners.data[ns]).filter((o) => o && orgs.data.includes(o)))) {
+      const r = await orgPolicy.files(org);
+      if (r.ok) filesOf.set(org, r.data.files); else errors.push(r.error);
+    }
+    for (const node of tree) {
+      const ns = node.key;
+      const org = owners.data[ns];
+      const all = org ? filesOf.get(org) : undefined;
+      if (!all) continue;
+      const project = `${orgPolicy.ORG_PREFIX}${org}`;
+      const dir = (d: string, label: string, keep: (f: OrgPolicyFile) => boolean, type: string): TreeNode => {
+        const list = all.filter((f) => f.path.startsWith(`${d}/`) && keep(f)).sort((a, b) => a.path.localeCompare(b.path));
+        return {
+          key: `${ns}/policies/${d}`, label, count: list.length, open: true, create: { kind: 'policy', type, project },
+          children: list.map((f) => {
+            const item: Item = { project, kind: 'policy', name: f.path, data: f };
+            return { key: address(item), label: `${f.path.slice(d.length + 1)}${f.enforced ? '' : ' (off)'}`, item };
+          }),
+        };
+      };
+      const kids = [
+        dir('policies', 'Rules', (f) => appliesIn(f.content, ns), `policies:${ns}`),
+        dir('roles', 'Roles', () => true, 'roles'),
+        dir('access', 'Access', (f) => accessFor(f.content) === ns, `access:${ns}`),
+      ];
+      node.children!.push({ key: `${ns}/policies`, label: 'Policies', count: kids.reduce((n, k) => n + (k.count ?? 0), 0), children: kids });
+    }
+  }
   return { tree, errors };
 }
 

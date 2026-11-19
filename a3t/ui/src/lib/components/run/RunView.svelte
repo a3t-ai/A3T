@@ -4,19 +4,61 @@
   /// debug run paused at a breakpoint, the controls to continue, step, or edit
   /// the next step's input. Reads the engine's run tools; polls while live.
   import { untrack } from 'svelte';
-  import { runsApi, answerApproval, type DebugCommand } from '$lib/services/api';
+  import { runsApi, answerApproval, mcpCall, type DebugCommand } from '$lib/services/api';
+  import { navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { nodeKey, type FlowDebug } from './debugState.svelte.ts';
 
   /// `shared`: the flow's state shared with the editor graph — this view
   /// publishes the run's position to it and shows the step picked there.
-  let { runId, flowSteps = [], onrerun, shared = null }:
-    { runId: string; flowSteps?: string[]; onrerun?: (id: string) => void; shared?: FlowDebug | null } = $props();
+  let { runId, flowSteps = [], onrerun, shared = null, crumb = '', title = '', onopen, view = '', failure = null, onrun, onparent, onview }:
+    { runId: string; flowSteps?: string[]; onrerun?: (id: string) => void; shared?: FlowDebug | null;
+      /// Framed (the Executions app's Details): the frame's tab picks the view
+      /// and this renders that one as cards — no header or tab bar of its own.
+      view?: '' | 'overview' | 'steps' | 'timeline' | 'journal' | 'checkpoints' | 'io';
+      /// The A3T error log's row for this run (admins), classifying its failure.
+      failure?: any;
+      /// The run as loaded, for the frame's header.
+      onrun?: (run: any) => void;
+      onparent?: (id: string) => void;
+      /// A link inside a view moved to another: tell the frame.
+      onview?: (v: string) => void;
+      /// Item mode (the shell's Details pane): the run gets the standard item
+      /// header (breadcrumb, name with its status, a meta line, the action bar)
+      /// with the tabs straight under it.
+      crumb?: string; title?: string; onopen?: () => void } = $props();
+  import DetailActionsBar from '$lib/shell/DetailActionsBar.svelte';
+  import { detailsPane } from '$lib/shell/detailsPane';
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
+  const item = !!title && !!detailsPane();
+  const framed = $derived(!!view);
 
   type Step = { step_key: string; status: string; class?: string; duration_us?: number; attempts?: number; edited?: boolean;
                 started_at?: string; completed_at?: string; seq?: number; error?: any; fire_at?: string; listening?: any; asking?: any };
   type Entry = { seq: number; at: string; epoch: number; record: any };
 
   let run = $state<any>(null);
+
+  /// What started it, to name and open: a trigger (or its cron tick), or the agent
+  /// whose turn it is (a turn of tmpl_a3t_agent carries `<agent>:<conversation>`).
+  const startedBy = $derived.by(() => {
+    const t = String(run?.trigger ?? '');
+    const m = t.match(/^(trigger|cron):(.+)$/);
+    if (m) return { kind: 'trigger' as const, id: m[2], cron: m[1] === 'cron' };
+    const sid = run?.input?.session_id;
+    if (run?.flow === 'tmpl_a3t_agent' && typeof sid === 'string' && sid.includes(':')) return { kind: 'agent' as const, id: sid.split(':')[0], cron: false };
+    return null;
+  });
+  let triggerNames = $state<Record<string, string>>({});
+  $effect(() => {
+    const sb = startedBy;
+    if (sb?.kind !== 'trigger' || sb.id in triggerNames) return;
+    untrack(async () => {
+      const r = await mcpCall('list_triggers', {});
+      let d: any = r.data; if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = []; } }
+      const list: any[] = Array.isArray(d) ? d : (d?.triggers ?? []);
+      triggerNames = { ...triggerNames, ...Object.fromEntries(list.map((x) => [x.id, x.name])), [sb.id]: list.find((x) => x.id === sb.id)?.name ?? '' };
+    });
+  });
   let entries = $state<Entry[]>([]);
   let error = $state('');
   let message = $state('');
@@ -38,6 +80,7 @@
     if (!r.ok) { error = r.error ?? 'Could not load the run'; return; }
     error = '';
     run = r.data;
+    onrun?.(r.data);
     shared?.show(r.data);
     if (j.ok && Array.isArray(j.data?.entries) && j.data.entries.length) entries = [...entries, ...j.data.entries];
   }
@@ -168,6 +211,20 @@
     onrerun?.(r.data.run_id);
   }
 
+  // Item mode: the run's actions go in the shared action bar.
+  $effect(() => {
+    if (!item || framed || !run) return;
+    const can = !live && run.can_steer;
+    return setDetailActions({
+      onopenineditor: onopen,
+      extra: [
+        ...(live && run.can_steer ? [{ label: 'Stop', run: cancel }] : []),
+        ...(can ? [{ label: 'Re-run in debug', run: () => rerun(true) }, { label: 'Re-run', run: () => rerun(false) }] : []),
+      ],
+    });
+  });
+  const initials = (t: string) => t.replace(/[^a-z0-9]+/gi, ' ').trim().split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'RN';
+
   // ── Timeline ──
   // From the moment the run was queued (`created_at`) to its end (or now):
   // the wait for a worker, the run's own life — loading, pauses, timers,
@@ -250,15 +307,44 @@
     return ms < 1 ? `${us} µs` : ms < 1000 ? `${ms.toFixed(ms < 10 ? 1 : 0)} ms` : `${(ms / 1000).toFixed(2)} s`;
   }
   const when = (t?: string) => (t ? new Date(t).toLocaleTimeString() : '');
+  const PHASE: Record<string, string> = { completed: 'Completed', faulted: 'Failed', cancelled: 'Cancelled', running: 'Running', pending: 'Queued', waiting: 'Waiting', suspended: 'Paused' };
+  /// The A3T base's failure classes (system/flow_system_error_handler).
+  const CLASS: Record<string, { label: string; hint: string }> = {
+    policy: { label: 'Not allowed', hint: 'a policy refused it' },
+    transient: { label: 'Unavailable', hint: 'something it called was down or timed out — a retry may work' },
+    limit: { label: 'Limit', hint: 'a quota, rate or size limit was hit' },
+    input: { label: 'Input', hint: 'it was given input it could not use' },
+    bug: { label: 'Bug', hint: 'the flow or the engine did something wrong' },
+  };
+  const stamp = (t?: string) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—');
   const phaseClass = (p: string) => (p === 'completed' ? 'ok' : p === 'faulted' ? 'err' : p === 'cancelled' ? 'mut' : p === 'suspended' ? 'warn' : 'live');
 </script>
 
 {#if error}
   <div class="rv-msg">{error}</div>
 {:else if !run}
-  <div class="rv-empty">Loading run…</div>
+  <!-- the header bar shows loading -->
+{:else if framed}
+  {@render framedView()}
 {:else}
-  <div class="rv">
+  <div class="rv" class:item>
+    {#if item}
+      <div class="rv-ihead">
+        <span class="rv-icon">{initials(title)}</span>
+        <div class="rv-it">
+          <div class="rv-crumb">{crumb}</div>
+          <div class="rv-name">{title} <span class="rv-st {phaseClass(run.phase)}">{run.phase}</span>{#if run.debug}<span class="rv-st">debug</span>{/if}</div>
+          <div class="rv-meta">
+            <span class="mono" title="Run id">{run.run_id}</span>
+            {#if run.duration_us}<span>· {dur(run.duration_us)}</span>{/if}
+            {#if run.principal_id}<span>· by {run.principal_id}</span>{/if}
+            {#if run.resume_count > 0}<span title="Resumed after an interruption, a timer or a pause">· resumed {run.resume_count}×</span>{/if}
+            {#if run.current_step}<span>· at <span class="mono">{run.current_step}</span></span>{/if}
+          </div>
+        </div>
+        <DetailActionsBar />
+      </div>
+    {:else}
     <div class="rv-head">
       <span class="pill {phaseClass(run.phase)}">{run.phase}</span>
       {#if run.debug}<span class="pill mut">debug</span>{/if}
@@ -284,7 +370,138 @@
         </span>
       {/if}
     </div>
+    {/if}
 
+    {@render banners()}
+
+    <div class="rv-tabs">
+      {#each [['steps', `Steps (${rows.length})`], ['timeline', 'Timeline'], ['journal', `Journal (${entries.length})`], ['checkpoints', 'Checkpoints'], ['io', 'Input / Output']] as [k, label] (k)}
+        <button class:on={tab === k} onclick={() => (tab = k as typeof tab)}>{label}</button>
+      {/each}
+    </div>
+
+    {#if tab === 'steps'}{@render stepsBody()}
+    {:else if tab === 'timeline'}{@render timelineBody()}
+    {:else if tab === 'journal'}{@render journalBody()}
+    {:else if tab === 'checkpoints'}{@render checkpointsBody()}
+    {:else}{@render ioBody()}{/if}
+  </div>
+{/if}
+
+{#snippet stepsBody()}
+      <div class="rv-steps">
+        <div class="rv-list">
+          {#if rows.length === 0}<div class="rv-empty">No steps recorded{run.durability === 'ephemeral' ? ' — an ephemeral flow keeps no journal' : ''}.</div>{/if}
+          {#each rows as s (s.step_key)}
+            <button class="rv-step" class:sel={selected === s.step_key} class:paused={paused?.step_key === s.step_key}
+              onclick={() => { selected = s.step_key; detailTab = s.status === 'failed' ? 'output' : detailTab; }}>
+              <span class="ic {s.status}">{icon(s)}</span>
+              <span class="mono key">{s.step_key}</span>
+              {#if s.edited}<span title="Input edited while paused">✎</span>{/if}
+              {#if (s.attempts ?? 0) > 1}<span class="badge" title="Attempts">×{s.attempts}</span>{/if}
+              <span class="dur">{dur(s.duration_us)}</span>
+            </button>
+          {/each}
+        </div>
+        <div class="rv-detail">
+          {#if selected}
+            {@const rec = last(selected)}
+            <div class="rv-dtabs">
+              {#each ['input', 'output', 'context', 'records'] as k (k)}
+                <button class:on={detailTab === k} onclick={() => (detailTab = k as typeof detailTab)}>{k}</button>
+              {/each}
+              {#if rec?.class}<span class="dim small">class: {rec.class}</span>{/if}
+            </div>
+            {#if detailTab === 'input'}
+              <pre>{pretty(rec?.input ?? (paused?.step_key === selected ? paused?.input : undefined))}</pre>
+            {:else if detailTab === 'output'}
+              {#if rec?.kind === 'step_failed'}<pre class="err">{pretty(rec.error)}</pre>{:else}<pre>{pretty(rec?.output)}</pre>{/if}
+            {:else if detailTab === 'context'}
+              <pre>{pretty(contextAfter(selected))}</pre>
+            {:else}
+              <table class="rv-table"><tbody>
+                {#each recordsOf(selected) as e (e.seq)}
+                  <tr><td class="mono">{e.seq}</td><td>{when(e.at)}</td><td>{e.record.kind}</td><td class="dim">{e.record.attempt !== undefined ? `attempt ${e.record.attempt}` : ''} {e.record.idem_key ? `· idem ${e.record.idem_key.slice(-12)}` : ''}</td></tr>
+                {/each}
+              </tbody></table>
+            {/if}
+          {:else}
+            <div class="rv-empty">Select a step to see its input, output and context.</div>
+          {/if}
+        </div>
+      </div>
+{/snippet}
+{#snippet timelineBody()}
+      <div class="rv-timeline">
+        {#if tl}
+          <div class="tl-sum">
+            <span>Queued <b>{new Date(tl.start).toLocaleTimeString()}</b></span>
+            <span title="Waiting for a worker, including after each resume">waited <b>{msDur(tl.queued)}</b></span>
+            <span>running <b>{msDur(tl.running)}</b></span>
+            {#if tl.paused}<span>paused <b>{msDur(tl.paused)}</b></span>{/if}
+            <span>total <b>{msDur(tl.total)}</b>{live ? ' so far' : ''}</span>
+          </div>
+          <div class="tl-row axis">
+            <span></span>
+            <span class="tl-axis">{#each ticks as f}<span style="left:{f * 100}%">{f === 0 ? '0' : `+${msDur(tl.total * f)}`}</span>{/each}</span>
+          </div>
+          <div class="tl-row lane">
+            <span class="tl-key">Queue</span>
+            <span class="tl-track">
+              {#each tl.queue as g}<span class="tl-bar seg-{g.kind}" style={pos(g.from, g.to)} title="{g.title} · {msDur(g.to - g.from)}"></span>{/each}
+            </span>
+          </div>
+          <div class="tl-row lane">
+            <span class="tl-key">Run</span>
+            <span class="tl-track">
+              {#if !isNaN(tl.started)}<span class="tl-bar seg-active" style={pos(tl.started, tl.end)} title="Owned by a worker from {new Date(tl.started).toLocaleTimeString()}"></span>{/if}
+              {#each tl.life as g}<span class="tl-bar seg-{g.kind}" style={pos(g.from, g.to)} title="{g.title} · {msDur(g.to - g.from)}"></span>{/each}
+              {#if !isNaN(tl.started)}<span class="tl-mark" style="left:{((tl.started - tl.start) / tl.total) * 100}%" title="Picked up by a worker at {new Date(tl.started).toLocaleTimeString()}"></span>{/if}
+              {#each tl.claims as c}<span class="tl-mark" style="left:{((c.at - tl.start) / tl.total) * 100}%" title="Claimed again by a worker (epoch {c.epoch}) at {new Date(c.at).toLocaleTimeString()}"></span>{/each}
+            </span>
+          </div>
+          {#each steps as s (s.step_key)}
+            <div class="tl-row">
+              <span class="mono tl-key" title={s.step_key}>{s.step_key}</span>
+              <span class="tl-track"><span class="tl-bar {s.status}" style={bar(s)} title="{s.step_key} · {dur(s.duration_us)}{s.started_at ? ` · started +${msDur(ms(s.started_at) - tl.start)}` : ''}"></span></span>
+            </div>
+          {/each}
+          <div class="tl-legend">
+            <span class="lg seg-queued">queued</span><span class="lg seg-active">running</span><span class="lg seg-loading">loading</span>
+            <span class="lg seg-paused">paused</span><span class="lg seg-timer">timer</span><span class="lg mark">worker claim</span>
+          </div>
+        {:else}
+          <div class="rv-empty">Nothing to show yet.</div>
+        {/if}
+      </div>
+{/snippet}
+{#snippet journalBody()}
+      <table class="rv-table" class:tbl={framed}><tbody>
+        <tr><th>seq</th><th>time</th><th>record</th><th>step</th><th>owner epoch</th></tr>
+        {#each entries as e (e.seq)}
+          <tr><td class="mono">{e.seq}</td><td>{when(e.at)}</td><td>{e.record.kind}</td><td class="mono">{e.record.step_key ?? e.record.wait_id ?? ''}</td><td>{e.epoch}</td></tr>
+        {/each}
+      </tbody></table>
+{/snippet}
+{#snippet checkpointsBody()}
+      <p class="dim small">Each completed step is a point the run can resume from. Re-run from one starts a new debug run: the steps up to it replay from this journal, the steps after it run again.</p>
+      <table class="rv-table" class:tbl={framed}><tbody>
+        {#each entries.filter((e) => e.record.kind === 'step_completed') as e (e.seq)}
+          <tr>
+            <td class="mono">{e.seq}</td><td class="mono">{e.record.step_key}</td><td>{when(e.at)}</td>
+            <td class="dim">{e.record.context === null ? 'context unchanged' : `context ${JSON.stringify(e.record.context).length} B`}</td>
+            <td>{#if run.can_steer && !live}<button class={framed ? 'btn2' : 'lnk'} disabled={busy} onclick={() => rerun(true, e.seq)}>Re-run from here</button>{/if}</td>
+          </tr>
+        {/each}
+      </tbody></table>
+{/snippet}
+{#snippet ioBody()}
+      <div class="rv-io">
+        <div><h4>Input</h4><pre>{pretty(run.input)}</pre></div>
+        <div><h4>Output</h4><pre>{pretty(run.output)}</pre></div>
+      </div>
+{/snippet}
+{#snippet banners()}
     {#if paused}
       <div class="rv-pause">
         <div>
@@ -336,7 +553,7 @@
     {/if}
     {#if message}<div class="rv-msg">{message}</div>{/if}
     {#if notice && !message}<div class="rv-msg ok">{notice}</div>{/if}
-    {#if run.error}<div class="rv-msg">{run.error}</div>{/if}
+    {#if run.error && !framed}<div class="rv-msg">{run.error}</div>{/if}
 
     {#if editing}
       <div class="rv-edit">
@@ -348,127 +565,102 @@
         </div>
       </div>
     {/if}
+{/snippet}
 
-    <div class="rv-tabs">
-      {#each [['steps', `Steps (${rows.length})`], ['timeline', 'Timeline'], ['journal', `Journal (${entries.length})`], ['checkpoints', 'Checkpoints'], ['io', 'Input / Output']] as [k, label] (k)}
-        <button class:on={tab === k} onclick={() => (tab = k as typeof tab)}>{label}</button>
-      {/each}
-    </div>
-
-    {#if tab === 'steps'}
-      <div class="rv-steps">
-        <div class="rv-list">
-          {#if rows.length === 0}<div class="rv-empty">No steps recorded{run.durability === 'ephemeral' ? ' — an ephemeral flow keeps no journal' : ''}.</div>{/if}
-          {#each rows as s (s.step_key)}
-            <button class="rv-step" class:sel={selected === s.step_key} class:paused={paused?.step_key === s.step_key}
-              onclick={() => { selected = s.step_key; detailTab = s.status === 'failed' ? 'output' : detailTab; }}>
-              <span class="ic {s.status}">{icon(s)}</span>
-              <span class="mono key">{s.step_key}</span>
-              {#if s.edited}<span title="Input edited while paused">✎</span>{/if}
-              {#if (s.attempts ?? 0) > 1}<span class="badge" title="Attempts">×{s.attempts}</span>{/if}
-              <span class="dur">{dur(s.duration_us)}</span>
-            </button>
-          {/each}
+{#snippet framedView()}
+  <div class="rv framed">
+    {@render banners()}
+    {#if view === 'overview'}
+      {@const cls = failure?.class ? CLASS[failure.class] : null}
+      <div class="card">
+        <div class="card-head"><h3>1 · {PHASE[run.phase] ?? run.phase}</h3><span>{run.debug ? 'a debug run · ' : ''}{run.durability === 'ephemeral' ? 'ephemeral — no journal kept' : 'durable — every step journaled'}</span></div>
+        <div class="tiles">
+          <div class="tile" class:bad={run.phase === 'faulted'}><span class="v">{PHASE[run.phase] ?? run.phase}</span><span class="k">{run.current_step ? `at ${run.current_step}` : 'status'}</span></div>
+          <div class="tile"><span class="v">{run.duration_us ? dur(run.duration_us) : live ? 'running' : '—'}</span><span class="k">duration</span></div>
+          <div class="tile"><span class="v">{rows.length}</span><span class="k">steps recorded</span></div>
+          <div class="tile"><span class="v">{run.resume_count ?? 0}</span><span class="k">times resumed</span></div>
         </div>
-        <div class="rv-detail">
-          {#if selected}
-            {@const rec = last(selected)}
-            <div class="rv-dtabs">
-              {#each ['input', 'output', 'context', 'records'] as k (k)}
-                <button class:on={detailTab === k} onclick={() => (detailTab = k as typeof detailTab)}>{k}</button>
-              {/each}
-              {#if rec?.class}<span class="dim small">class: {rec.class}</span>{/if}
-            </div>
-            {#if detailTab === 'input'}
-              <pre>{pretty(rec?.input ?? (paused?.step_key === selected ? paused?.input : undefined))}</pre>
-            {:else if detailTab === 'output'}
-              {#if rec?.kind === 'step_failed'}<pre class="err">{pretty(rec.error)}</pre>{:else}<pre>{pretty(rec?.output)}</pre>{/if}
-            {:else if detailTab === 'context'}
-              <pre>{pretty(contextAfter(selected))}</pre>
-            {:else}
-              <table class="rv-table"><tbody>
-                {#each recordsOf(selected) as e (e.seq)}
-                  <tr><td class="mono">{e.seq}</td><td>{when(e.at)}</td><td>{e.record.kind}</td><td class="dim">{e.record.attempt !== undefined ? `attempt ${e.record.attempt}` : ''} {e.record.idem_key ? `· idem ${e.record.idem_key.slice(-12)}` : ''}</td></tr>
-                {/each}
-              </tbody></table>
-            {/if}
-          {:else}
-            <div class="rv-empty">Select a step to see its input, output and context.</div>
+      </div>
+      {#if run.error || failure}
+        <div class="card">
+          <div class="card-head"><h3>2 · Why it failed</h3><span>{cls ? `${cls.label} — ${cls.hint}` : 'the engine’s error'}</span></div>
+          {#if failure}
+            <ul class="rows wide">
+              <li><span class="lbl">Class</span><span class="val">{cls?.label ?? failure.class} · <span class="mono">{failure.code}</span>{failure.status ? ` · HTTP ${failure.status}` : ''}</span><span></span></li>
+              {#if failure.step}<li><span class="lbl">Step</span><span class="val mono">{failure.step}</span><button class="btn2" onclick={() => { selected = failure.step; tab = 'steps'; onview?.('steps'); }}>See</button></li>{/if}
+              <li><span class="lbl">The caller saw</span><span class="val">{failure.user_message || '—'}</span><span></span></li>
+            </ul>
           {/if}
+          <pre class="code out">{failure?.detail || run.error}</pre>
         </div>
+      {/if}
+      <div class="card">
+        <div class="card-head"><h3>{run.error || failure ? 3 : 2} · What ran</h3><span>who started it, from where, and when</span></div>
+        <ul class="rows wide">
+          <li><span class="lbl">Flow</span><span class="val mono">{run.namespace}/{run.flow}{run.version ? ` · ${run.version}` : ''}</span>{#if onopen}<button class="btn2" onclick={onopen}>Open</button>{:else}<span></span>{/if}</li>
+          {#if startedBy?.kind === 'trigger'}
+            <li><span class="lbl">Started by</span><span class="val">{startedBy.cron ? 'Schedule of trigger' : 'Trigger'} <span class="mono">{triggerNames[startedBy.id] || startedBy.id}</span>{triggerNames[startedBy.id] === '' ? ' (deleted)' : ''}{run.principal_id ? ` · as ${run.principal_id}` : ''}</span>
+              {#if triggerNames[startedBy.id]}<button class="btn2" onclick={() => navigateToDetail('triggers', 'Triggers', startedBy.id)}>Open</button>{:else}<span></span>{/if}</li>
+          {:else if startedBy?.kind === 'agent'}
+            <li><span class="lbl">Started by</span><span class="val">A turn of agent <span class="mono">{startedBy.id}</span>{run.principal_id ? ` · for ${run.principal_id}` : ''}</span>
+              <button class="btn2" onclick={() => navigateToDetail('agents', 'Agents', startedBy.id)}>Open</button></li>
+          {:else}
+            <li><span class="lbl">Started by</span><span class="val">{run.trigger ?? '—'}{run.principal_id ? ` · ${run.principal_id}` : ''}</span><span></span></li>
+          {/if}
+          {#if run.parent_run_id}<li><span class="lbl">Part of</span><span class="val mono">{run.parent_run_id}</span>{#if onparent}<button class="btn2" onclick={() => onparent?.(run.parent_run_id)}>Open</button>{:else}<span></span>{/if}</li>{/if}
+          <li><span class="lbl">Queued</span><span class="val">{stamp(run.created_at)}</span><span></span></li>
+          <li><span class="lbl">Started</span><span class="val">{stamp(run.started_at)}</span><span></span></li>
+          <li><span class="lbl">Finished</span><span class="val">{run.completed_at ? stamp(run.completed_at) : live ? 'still running' : '—'}</span><span></span></li>
+          <li><span class="lbl">Run id</span><span class="val mono">{run.run_id}</span><span></span></li>
+        </ul>
       </div>
-    {:else if tab === 'timeline'}
-      <div class="rv-timeline">
-        {#if tl}
-          <div class="tl-sum">
-            <span>Queued <b>{new Date(tl.start).toLocaleTimeString()}</b></span>
-            <span title="Waiting for a worker, including after each resume">waited <b>{msDur(tl.queued)}</b></span>
-            <span>running <b>{msDur(tl.running)}</b></span>
-            {#if tl.paused}<span>paused <b>{msDur(tl.paused)}</b></span>{/if}
-            <span>total <b>{msDur(tl.total)}</b>{live ? ' so far' : ''}</span>
+      {#if run.can_steer}
+        <div class="card">
+          <div class="card-head"><h3>{run.error || failure ? 4 : 3} · Run it again</h3><span>a new run with the same input</span></div>
+          <div class="acts">
+            {#if live}<button class="btn2 danger" disabled={busy} onclick={cancel}>Stop</button>
+            {:else}
+              <button class="btn2 primary" disabled={busy} onclick={() => rerun(false)}>Re-run</button>
+              <button class="btn2" disabled={busy} onclick={() => rerun(true)}>Re-run in debug</button>
+              <button class="btn2 quiet" onclick={() => { tab = 'checkpoints'; onview?.('checkpoints'); }}>From a step…</button>
+            {/if}
           </div>
-          <div class="tl-row axis">
-            <span></span>
-            <span class="tl-axis">{#each ticks as f}<span style="left:{f * 100}%">{f === 0 ? '0' : `+${msDur(tl.total * f)}`}</span>{/each}</span>
-          </div>
-          <div class="tl-row lane">
-            <span class="tl-key">Queue</span>
-            <span class="tl-track">
-              {#each tl.queue as g}<span class="tl-bar seg-{g.kind}" style={pos(g.from, g.to)} title="{g.title} · {msDur(g.to - g.from)}"></span>{/each}
-            </span>
-          </div>
-          <div class="tl-row lane">
-            <span class="tl-key">Run</span>
-            <span class="tl-track">
-              {#if !isNaN(tl.started)}<span class="tl-bar seg-active" style={pos(tl.started, tl.end)} title="Owned by a worker from {new Date(tl.started).toLocaleTimeString()}"></span>{/if}
-              {#each tl.life as g}<span class="tl-bar seg-{g.kind}" style={pos(g.from, g.to)} title="{g.title} · {msDur(g.to - g.from)}"></span>{/each}
-              {#if !isNaN(tl.started)}<span class="tl-mark" style="left:{((tl.started - tl.start) / tl.total) * 100}%" title="Picked up by a worker at {new Date(tl.started).toLocaleTimeString()}"></span>{/if}
-              {#each tl.claims as c}<span class="tl-mark" style="left:{((c.at - tl.start) / tl.total) * 100}%" title="Claimed again by a worker (epoch {c.epoch}) at {new Date(c.at).toLocaleTimeString()}"></span>{/each}
-            </span>
-          </div>
-          {#each steps as s (s.step_key)}
-            <div class="tl-row">
-              <span class="mono tl-key" title={s.step_key}>{s.step_key}</span>
-              <span class="tl-track"><span class="tl-bar {s.status}" style={bar(s)} title="{s.step_key} · {dur(s.duration_us)}{s.started_at ? ` · started +${msDur(ms(s.started_at) - tl.start)}` : ''}"></span></span>
-            </div>
-          {/each}
-          <div class="tl-legend">
-            <span class="lg seg-queued">queued</span><span class="lg seg-active">running</span><span class="lg seg-loading">loading</span>
-            <span class="lg seg-paused">paused</span><span class="lg seg-timer">timer</span><span class="lg mark">worker claim</span>
-          </div>
-        {:else}
-          <div class="rv-empty">Nothing to show yet.</div>
-        {/if}
-      </div>
-    {:else if tab === 'journal'}
-      <table class="rv-table"><tbody>
-        <tr><th>seq</th><th>time</th><th>record</th><th>step</th><th>owner epoch</th></tr>
-        {#each entries as e (e.seq)}
-          <tr><td class="mono">{e.seq}</td><td>{when(e.at)}</td><td>{e.record.kind}</td><td class="mono">{e.record.step_key ?? e.record.wait_id ?? ''}</td><td>{e.epoch}</td></tr>
-        {/each}
-      </tbody></table>
-    {:else if tab === 'checkpoints'}
-      <p class="dim small">Each completed step is a point the run can resume from. Re-run from one starts a new debug run: the steps up to it replay from this journal, the steps after it run again.</p>
-      <table class="rv-table"><tbody>
-        {#each entries.filter((e) => e.record.kind === 'step_completed') as e (e.seq)}
-          <tr>
-            <td class="mono">{e.seq}</td><td class="mono">{e.record.step_key}</td><td>{when(e.at)}</td>
-            <td class="dim">{e.record.context === null ? 'context unchanged' : `context ${JSON.stringify(e.record.context).length} B`}</td>
-            <td>{#if run.can_steer && !live}<button class="lnk" disabled={busy} onclick={() => rerun(true, e.seq)}>Re-run from here</button>{/if}</td>
-          </tr>
-        {/each}
-      </tbody></table>
+        </div>
+      {/if}
+    {:else if view === 'steps'}
+      <div class="card"><div class="card-head"><h3>1 · Steps</h3><span>{rows.length} recorded · pick one for its input, output and context</span></div>{@render stepsBody()}</div>
+    {:else if view === 'timeline'}
+      <div class="card"><div class="card-head"><h3>1 · Timeline</h3><span>queued, running, paused and each step on one axis</span></div>{@render timelineBody()}</div>
+    {:else if view === 'journal'}
+      <div class="card"><div class="card-head"><h3>1 · Journal</h3><span>{entries.length} records — what the engine wrote, in order</span></div>{@render journalBody()}</div>
+    {:else if view === 'checkpoints'}
+      <div class="card"><div class="card-head"><h3>1 · Resume points</h3><span>each completed step</span></div>{@render checkpointsBody()}</div>
     {:else}
-      <div class="rv-io">
-        <div><h4>Input</h4><pre>{pretty(run.input)}</pre></div>
-        <div><h4>Output</h4><pre>{pretty(run.output)}</pre></div>
-      </div>
+      <div class="card"><div class="card-head"><h3>1 · Input</h3><span>what it was started with</span></div><pre class="code out">{pretty(run.input)}</pre></div>
+      <div class="card"><div class="card-head"><h3>2 · Output</h3><span>{run.phase === 'completed' ? 'what it returned' : 'nothing returned yet'}</span></div><pre class="code out">{pretty(run.output)}</pre></div>
     {/if}
   </div>
-{/if}
-
+{/snippet}
 <style>
   .rv { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+  /* Item mode: the standard item header, then the tabs and body padded below. */
+  .rv.framed { gap: 14px; font-size: 13px; }
+  .rv.framed .rv-steps { min-height: 220px; }
+  .rv.framed .rv-list { max-height: 520px; }
+  .rv.framed pre { max-height: 480px; }
+  .rv.item { gap: 0; height: 100%; min-height: 0; overflow-y: auto; }
+  .rv.item > :not(.rv-ihead) { margin-left: 20px; margin-right: 20px; }
+  .rv.item > :not(.rv-ihead) + * { margin-top: 8px; }
+  .rv-ihead { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border-light, #f0ece3); margin-bottom: 10px; }
+  .rv-icon { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; font: 600 12px var(--font-sans); color: #fff; background: #55514a; }
+  .rv-it { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .rv-crumb { font: 400 11.5px var(--font-mono); color: var(--text-3); }
+  .rv-name { font: 400 18px/1.25 var(--font-serif); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rv-st { font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); margin-left: 6px; vertical-align: middle; }
+  .rv-st.ok { color: var(--green, #1a7158); }
+  .rv-st.err { color: var(--err, #d15858); }
+  .rv-st.live { color: var(--spec); }
+  .rv-meta { display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; color: var(--text-3); }
   .rv-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--text-2); }
   .grow { flex: 1; }
   .dim { color: var(--text-3); }

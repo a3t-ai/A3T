@@ -6,7 +6,6 @@ import FlowView from './views/FlowView.svelte';
 import CodeView from './views/CodeView.svelte';
 import TemplateView from './views/TemplateView.svelte';
 import ConfigPanel from './panels/ConfigPanel.svelte';
-import AiPanel from './panels/AiPanel.svelte';
 import QueryView from './views/QueryView.svelte';
 import ChatView from './views/ChatView.svelte';
 import ToolsView from './views/ToolsView.svelte';
@@ -15,6 +14,8 @@ import CanvasView from './views/CanvasView.svelte';
 import AgentView from './views/AgentView.svelte';
 import AgentFormPanel from './panels/AgentFormPanel.svelte';
 import VersionsPanel from './panels/VersionsPanel.svelte';
+import PolicyCheckPanel from './panels/PolicyCheckPanel.svelte';
+import PolicyVersionsPanel from './panels/PolicyVersionsPanel.svelte';
 import TemplateFieldsPanel from './panels/TemplateFieldsPanel.svelte';
 import TemplateAgentsPanel from './panels/TemplateAgentsPanel.svelte';
 import AgentRunsPanel from './panels/AgentRunsPanel.svelte';
@@ -42,7 +43,6 @@ export const VIEWS: Record<string, Component<any>> = {
 
 export const PANELS: Record<string, Component<any>> = {
   'flow-form': FlowAssistPanel,
-  ai: AiPanel,
   config: ConfigPanel,
   'agent-form': AgentFormPanel,
   'template-fields': TemplateFieldsPanel,
@@ -51,6 +51,8 @@ export const PANELS: Record<string, Component<any>> = {
   'agent-runs': AgentRunsPanel,
   runs: RunsPanel,
   versions: VersionsPanel,
+  'policy-check': PolicyCheckPanel,
+  'policy-versions': PolicyVersionsPanel,
   problems: ProblemsPanel,
   results: ResultsPanel,
   history: HistoryPanel,

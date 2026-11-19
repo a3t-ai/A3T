@@ -53,6 +53,8 @@
   --font-mono:  'IBM Plex Mono', ui-monospace, monospace;
 
   --r-sm: 6px;
+  /* Every fixed-width page in Details (an item's details, a form) is this wide. */
+  --detail-w: 980px;
   --r:    10px;
   --r-lg: 14px;
   --shadow-sm: 0 1px 2px rgba(30, 25, 15, 0.04);
@@ -183,6 +185,14 @@ label {
 }
 .cf-field.full {
   grid-column: 1 / -1;
+}
+/* A checkbox or radio row is an option, not a field label: sentence case. */
+label.cf-check, label.pm-check, label.tf-check, .cf-checks label {
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-1);
 }
 .cf-grid {
   display: grid;

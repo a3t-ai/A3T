@@ -24,11 +24,11 @@
     <div class="head">
       <span class="title">{kind.label}{doc.type ? ` · ${doc.type}` : ''}</span>
       <span class="grow"></span>
-      <SaveBar {doc} {workspace} valid={!parsed.error} />
+      <SaveBar {doc} {workspace} valid={!parsed.error} panel />
     </div>
     <div class="body">
       {#if !doc.loaded}
-        <div class="note">Loading…</div>
+        <!-- the header bar shows loading -->
       {:else if doc.error}
         <div class="err">{doc.error}</div>
       {:else if parsed.error || !parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)}

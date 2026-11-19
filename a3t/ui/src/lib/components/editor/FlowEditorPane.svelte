@@ -23,7 +23,7 @@
   import GraphFollow from './GraphFollow.svelte';
   import SchemaForm from './SchemaForm.svelte';
   import AgentTemplateEditor from './AgentTemplateEditor.svelte';
-  import { parseWorkflowToGraph, isAgentTemplateYaml } from './workflowParser';
+  import { parseWorkflowToGraph, isAgentTemplateYaml, isTriggerYaml, isCanvasYaml } from './workflowParser';
   import { runsApi, type Breakpoint, type DebugCommand } from '$lib/services/api';
   import { lineOfStep, stepLines } from '$lib/studio-core/flow/model';
   import type { FlowDebug } from '$lib/components/run/debugState.svelte.ts';
@@ -36,10 +36,7 @@
     readOnly = false,
     configSeed = null,
     singleColumn = false,
-    showAi = true,
     onsection,
-    aiKind = 'flow',
-    aiName = '',
     part = null,
     debug = null,
     onrun,
@@ -62,18 +59,14 @@
     /// One unified tab bar (Graph | Code | Form), one view at a time, no split.
     /// For narrow hosts such as the in-chat artifact pane.
     singleColumn?: boolean;
-    /// The AI tab is redundant where the host *is* a chat.
-    showAi?: boolean;
     /// Reports the visible section (`graph` | `code` | form sub-tab) so a chat
     /// host can tell the agent what the user is looking at.
     onsection?: (section: string) => void;
-    /// What the AI tab tells the agent it is editing, e.g. "template" and its name.
-    aiKind?: string;
-    aiName?: string;
     /// Render one piece only, for hosts that lay the pieces out themselves (the
-    /// studio puts Form and AI in its own panels): `main` = Graph | Code,
-    /// `form`, or `ai`. Instances stay in step through `initialYaml`/`onchange`.
-    part?: 'main' | 'form' | 'ai' | null;
+    /// studio puts Form in its own panel): `main` = Graph | Code, or `form`.
+    /// Instances stay in step through `initialYaml`/`onchange`. The assistant is
+    /// the app's Chat (the UI Agent), not a tab here.
+    part?: 'main' | 'form' | null;
     /// The flow's breakpoints and shown run (studio): marked on the graph and
     /// driven from its context menu.
     debug?: FlowDebug | null;
@@ -110,18 +103,17 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   type Path = (string | number)[];
   export type InsertAt = { list: Path; index: number; label: string };
-  import DesignerChat from '$lib/components/editor/DesignerChat.svelte';
 
   // ── Internal state ──
   let leftMode = $state<'graph' | 'code'>(untrack(() => (showCode ? 'code' : 'graph')));
   $effect(() => { if (showCode) leftMode = 'code'; });
-  let rightMode = $state<'form' | 'ai'>('form');
   // Single-column hosts drive one selection across all three views.
   let soloMode = $state<'graph' | 'code' | 'form'>('graph');
   // Graph/Code report themselves; the form delegates to its own sub-tabs.
-  $effect(() => { if (soloMode !== 'form') onsection?.(soloMode); });
-  // With the AI tab hidden, never leave the right pane on a tab that is gone.
-  $effect(() => { if (!showAi && rightMode === 'ai') rightMode = 'form'; });
+  // Report what is on screen: the single-column layout switches soloMode; the
+  // main part (the Studio) and the two-column layout switch leftMode.
+  const shownMode = $derived(singleColumn && part !== 'main' ? soloMode : leftMode);
+  $effect(() => { if (shownMode !== 'form') onsection?.(shownMode); });
   let yamlSource = $state(untrack(() => initialYaml));
   // Follow the text when it changes outside (a step dropped on the flow, the
   // other pane of the same document); our own edits come back unchanged.
@@ -160,7 +152,6 @@
     agentScrollTarget = '';
     // Tick then set to trigger the effect
     requestAnimationFrame(() => { agentScrollTarget = section; });
-    rightMode = 'form';
   }
 
   // Listen for "+ Add" clicks from agent node panels
@@ -177,7 +168,6 @@
     };
     agentScrollTarget = '';
     requestAnimationFrame(() => { agentScrollTarget = sectionMap[section] ?? section; });
-    rightMode = 'form';
   }
 
   onMount(() => {
@@ -212,6 +202,12 @@
 
   // Detect agent template
   let isAgentTemplate = $derived(isAgentTemplateYaml(parsed));
+  /// A trigger (on / send): the same graph and code, without the flow's schema.
+  let isTrigger = $derived(isTriggerYaml(parsed));
+  /// A canvas (CanvasSpec): the same graph and code, without the flow's schema.
+  let isCanvas = $derived(isCanvasYaml(parsed));
+  /// Not a flow: no CNCF outline, completion, palette or connecting on it.
+  let notFlow = $derived(isTrigger || isCanvas);
 
   // For agent templates, pass parsed CNCF YAML directly to the form editor
   // No CRD conversion — the form editor reads CNCF YAML natively now
@@ -264,7 +260,7 @@
   // ── Graph: unified CNCF workflow parser (handles both agents + regular flows) ──
   let baseGraph = $derived.by(() => {
     if (!parsed) return null;
-    const hasWorkflow = parsed.steps || parsed.do || isAgentTemplate;
+    const hasWorkflow = parsed.steps || parsed.do || isAgentTemplate || notFlow;
     if (!hasWorkflow) return null;
     return parseWorkflowToGraph(parsed);
   });
@@ -429,7 +425,7 @@
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   }
   /// The schema's problems, marked on their lines in the text.
-  const schemaProblems = $derived(leftMode === 'code' || soloMode === 'code' ? outline(yamlSource).problems : []);
+  const schemaProblems = $derived(!notFlow && (leftMode === 'code' || soloMode === 'code') ? outline(yamlSource).problems : []);
   const codeIssues = $derived(schemaProblems.filter((p) => p.line).map((p) => ({ line: p.line!, level: p.level, message: p.message })));
   const issueCount = $derived(schemaProblems.length);
   // A problem picked elsewhere (the Problems panel): show its line.
@@ -486,7 +482,6 @@
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('agent-scroll', { detail: node.data._portSection }));
       }
-      rightMode = 'form';
       return;
     }
 
@@ -497,19 +492,18 @@
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('agent-scroll', { detail: 'configuration' }));
       }
-      rightMode = 'form';
     }
   }
 </script>
 
 {#snippet graphView(showMiniMap: boolean)}
-  {#if palette && !readOnly && !isAgentTemplate}<GraphPalette yaml={yamlSource} onadd={addFromPalette} />{/if}
+  {#if palette && !readOnly && !isAgentTemplate && !notFlow}<GraphPalette yaml={yamlSource} onadd={addFromPalette} />{/if}
   {#if nodes.length > 0}
     {#if baseGraph?.meta}
       <div class="wf-meta-bar">
-        <span class="wf-meta-format">{baseGraph.meta.format === 'cncf-dsl' ? 'CNCF DSL' : 'FlowR'}</span>
+        <span class="wf-meta-format">{isTrigger ? 'Trigger' : isCanvas ? 'Canvas' : baseGraph.meta.format === 'cncf-dsl' ? 'CNCF DSL' : 'FlowR'}</span>
         {#if baseGraph.meta.dsl}<span class="wf-meta-tag">v{baseGraph.meta.dsl}</span>{/if}
-        <span class="wf-meta-tag">{baseGraph.meta.taskCount} tasks</span>
+        <span class="wf-meta-tag">{baseGraph.meta.taskCount} {isTrigger ? (baseGraph.meta.taskCount === 1 ? 'target' : 'targets') : isCanvas ? (baseGraph.meta.taskCount === 1 ? 'dependency' : 'dependencies') : 'tasks'}</span>
         {#if baseGraph.meta.hasExtensions}<span class="wf-meta-tag ext">{baseGraph.meta.extensionCount} ext</span>{/if}
       </div>
     {/if}
@@ -517,7 +511,7 @@
     <SvelteFlow nodes={shownNodes} {edges} {nodeTypes} fitView onnodeclick={handleNodeClick}
       onnodecontextmenu={({ event, node }) => openMenu(event, node)} onpanecontextmenu={({ event }) => openMenu(event)}
       onconnect={(c) => onConnect(c)}
-      nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable={!readOnly}>
+      nodesDraggable={!readOnly} nodesConnectable={!readOnly && !notFlow} elementsSelectable={!readOnly}>
       <Background />
       <Controls />
       {#if showMiniMap}<MiniMap />{/if}
@@ -540,16 +534,16 @@
 {#snippet codeView()}
   <!-- The text, with the CNCF DSL outline beside it: the whole schema at each
        place, what the flow sets in full, its problems marked in both. -->
-  <div class="code-split" class:no-outline={!showOutline} class:dragging={outlineDrag} bind:this={codeSplit} style="grid-template-columns: {showOutline ? `${outlinePct}% 5px 1fr` : '1fr'}">
-    {#if showOutline}
+  <div class="code-split" class:no-outline={!showOutline || notFlow} class:dragging={outlineDrag} bind:this={codeSplit} style="grid-template-columns: {showOutline && !notFlow ? `${outlinePct}% 5px 1fr` : '1fr'}">
+    {#if showOutline && !notFlow}
       <div class="code-outline">
         <SchemaOutline text={yamlSource} onchange={onCodeChange} {readOnly} onreveal={(line) => (reveal = { line, n: ++revealN })} />
       </div>
       <div class="code-div" role="separator" onmousedown={onOutlineDrag}></div>
     {/if}
     <div class="code-text">
-      <button class="outline-tg" onclick={() => (showOutline = !showOutline)} title={showOutline ? 'Hide the CNCF DSL outline' : 'Show the CNCF DSL outline'}>{showOutline ? '◧' : '◨'} Schema{#if !showOutline && issueCount} <b>{issueCount}</b>{/if}</button>
-      <YamlEditor value={yamlSource} onchange={onCodeChange} {readOnly} {reveal} issues={codeIssues} complete={completeAt}
+      {#if !notFlow}<button class="outline-tg" onclick={() => (showOutline = !showOutline)} title={showOutline ? 'Hide the CNCF DSL outline' : 'Show the CNCF DSL outline'}>{showOutline ? '◧' : '◨'} Schema{#if !showOutline && issueCount} <b>{issueCount}</b>{/if}</button>{/if}
+      <YamlEditor value={yamlSource} onchange={onCodeChange} {readOnly} {reveal} issues={codeIssues} complete={notFlow ? undefined : completeAt}
         marks={codeMarks} ongutter={onGutter} oncontext={debug ? onCodeContext : undefined} />
     </div>
   </div>
@@ -635,12 +629,9 @@
     </div>
   {:else if part === 'form'}
     <div class="fep-part">{@render formView()}</div>
-  {:else if part === 'ai'}
-    <div class="fep-part">
-      <DesignerChat kind={aiKind} name={aiName} readonly={readOnly} gettext={() => yamlSource} onapply={(t) => onCodeChange(t)} />
-    </div>
-  {:else if singleColumn}
-    <!-- Narrow host: one tab bar, one view at a time, full width. -->
+  {:else if singleColumn || readOnly}
+    <!-- Narrow host, or read-only: one tab bar, one view at a time, full width.
+         Read-only has no form: there is nothing to fill in. -->
     <div class="fep-solo">
       <div class="fep-toolbar">
         <div class="fep-tabs">
@@ -652,16 +643,18 @@
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3L1 8l4 5M11 3l4 5-4 5"/></svg>
             Code
           </button>
+          {#if !readOnly}
           <button class="fep-tab" class:active={soloMode === 'form'} onclick={() => soloMode = 'form'}>
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>
             Form
           </button>
+          {/if}
         </div>
       </div>
       <div class="fep-pane-body">
         {#if soloMode === 'graph'}
           {@render graphView(false)}
-        {:else if soloMode === 'code'}
+        {:else if soloMode === 'code' || readOnly}
           {@render codeView()}
         {:else}
           {@render formView()}
@@ -697,32 +690,18 @@
     <!-- Drag handle -->
     <div class="fep-divider" onmousedown={onDragStart} role="separator"></div>
 
-    <!-- RIGHT: Form or AI -->
+    <!-- RIGHT: the form -->
     <div class="fep-right">
       <div class="fep-toolbar">
         <div class="fep-tabs">
-          <button class="fep-tab" class:active={rightMode === 'form'} onclick={() => rightMode = 'form'}>
+          <span class="fep-tab active">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>
             Form
-          </button>
-          {#if showAi}
-          <button class="fep-tab" class:active={rightMode === 'ai'} onclick={() => rightMode = 'ai'}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2v-2H2a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>
-            AI
-          </button>
-          {/if}
+          </span>
         </div>
       </div>
       <div class="fep-pane-body">
-        {#if rightMode === 'form'}
-          {@render formView()}
-        {:else}
-          <!-- The real AI tab: a chat agent working on this document, applying
-               changes to the editor (unsaved) for the user to Save. -->
-          <DesignerChat kind={aiKind} name={aiName} readonly={readOnly}
-            gettext={() => yamlSource}
-            onapply={(t) => onCodeChange(t)} />
-        {/if}
+        {@render formView()}
       </div>
     </div>
   </div>

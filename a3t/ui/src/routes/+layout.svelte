@@ -3,15 +3,8 @@
   import type { Snippet } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import Sidebar from '$lib/shell/Sidebar.svelte';
-  import Topbar from '$lib/shell/Topbar.svelte';
-  import StatusBar from '$lib/shell/StatusBar.svelte';
-  import PanelStack from '$lib/shell/PanelStack.svelte';
-  import ContextList from '$lib/shell/ContextList.svelte';
-  import { isContextDismissed,
-    isRailPinned, isContextPinned, isContextOpen, hasContext,
-    getContextW, setContextW, trackOpen, setPins, markPinsLoaded, RAIL_W,
-  } from '$lib/stores/apps.svelte.ts';
+  import Shell from '$lib/shell/Shell.svelte';
+  import { trackOpen, setPins, markPinsLoaded } from '$lib/stores/apps.svelte.ts';
   import { getActivePanel } from '$lib/stores/panels.svelte.ts';
   import { untrack } from 'svelte';
   import { navigateTo, initFromUrl, setupPopState } from '$lib/stores/panels.svelte.ts';
@@ -23,49 +16,6 @@
   import { onMount } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
-
-  // ── Shell geometry ──
-  // The app rail and the context list share the side region and are independently
-  // pinnable, so each column is sized to 0 when its surface is unpinned rather
-  // than the elements being conditionally reordered.
-  const activeType = $derived(getActivePanel()?.type ?? '');
-  const railW = $derived(isRailPinned() ? RAIL_W : 0);
-  const selectedId = $derived(getActivePanel()?.props?.selectedId ?? '');
-  // Follows the selection: no item open → the app shows its home and the bar is
-  // hidden. Pinning keeps it on the home page too.
-  // Docked when pinned, or beside a selected item unless the user closed it (×).
-  const ctxDocked = $derived(hasContext(activeType) && (isContextPinned() || (!!selectedId && !isContextDismissed())));
-  const ctxW = $derived(ctxDocked ? getContextW() : 0);
-  /// Unpinned but revealed from the Active Apps menu: drawn over the main view so
-  /// it does not resize the app behind it.
-  const ctxFloating = $derived(hasContext(activeType) && !ctxDocked && isContextOpen());
-
-  // ── Resizing the context list ──
-  let shellEl = $state<HTMLDivElement>();
-  let ctxDragging = $state(false);
-
-  function startCtxDrag(e: PointerEvent) {
-    ctxDragging = true;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    e.preventDefault();
-  }
-  function onCtxDrag(e: PointerEvent) {
-    if (!ctxDragging || !shellEl) return;
-    // Width measured from the context column's own left edge, which sits after
-    // the rail — so the handle tracks the pointer whether the rail is pinned.
-    const left = shellEl.getBoundingClientRect().left + railW;
-    setContextW(e.clientX - left);
-  }
-  function endCtxDrag(e: PointerEvent) {
-    ctxDragging = false;
-    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
-  }
-
-  // Pins are server-owned and per user; load once so every surface reads one copy.
-  onMount(() => {
-    if (!authed) return;
-    fetchPins().then((p) => { setPins(p); markPinsLoaded(); }).catch(() => {});
-  });
 
   // Register the current app in the taskbar. Done here rather than at each call
   // site so the rail, the palette, a deep link and a back/forward all count.
@@ -82,43 +32,44 @@
 
   const publicPaths = ['/login', '/signup'];
 
+  // Start the signed-in app once: the first time there is a session, whether it
+  // was there at load or came from signing in on /login. (The layout stays mounted
+  // across pages, so returning early on the way to /login used to leave it never
+  // hearing about the sign-in — "Redirecting..." until a refresh.)
+  let started = false;
+  function startApp() {
+    if (started) return;
+    started = true;
+    // Pins are server-owned and per user; load once so every surface reads one copy.
+    fetchPins().then((p) => { setPins(p); markPinsLoaded(); }).catch(() => {});
+    // Restore from URL, else land on Chat, first in the menu.
+    // The project comes first: the panels read the rest of the same URL.
+    initContext();
+    const restored = !publicPaths.includes(window.location.pathname) && initFromUrl();
+    if (!restored) navigateTo('chat', 'AI Chat');
+    setupPopState();
+    // Initialize editor context (registry + ajv) in background
+    initEditorContext().then(ctx => {
+      if (ctx.error) {
+        console.warn('[layout] Editor context init warning:', ctx.error);
+      } else {
+        console.log(`[layout] Editor context ready: ${ctx.functions.size} functions loaded`);
+      }
+    });
+  }
+
   onMount(() => {
     const hasSession = initAuth();
-    authChecked = true;
     authed = hasSession;
-
-    if (!hasSession && !publicPaths.includes(window.location.pathname)) {
-      goto('/login');
-      return;
-    }
-
-    if (hasSession) {
-      // Restore from URL, else land on Chat — Dashboard is hidden from the menu,
-      // so defaulting there would open a page the rail cannot get back to.
-      // The project comes first: the panels read the rest of the same URL.
-      initContext();
-      const restored = initFromUrl();
-      if (!restored) {
-        navigateTo('chat', 'AI Chat');
-      }
-      setupPopState();
-      // Initialize editor context (registry + ajv) in background
-      initEditorContext().then(ctx => {
-        if (ctx.error) {
-          console.warn('[layout] Editor context init warning:', ctx.error);
-        } else {
-          console.log(`[layout] Editor context ready: ${ctx.functions.size} functions loaded`);
-        }
-      });
-    }
+    authChecked = true;
+    if (hasSession) startApp();
+    else if (!publicPaths.includes(window.location.pathname)) goto('/login');
 
     const unsub = isAuthenticated.subscribe(v => {
       authed = v;
-      if (v && authChecked && publicPaths.includes(window.location.pathname)) {
-        navigateTo('chat', 'AI Chat');
-      } else if (!v && authChecked && !publicPaths.includes(window.location.pathname)) {
-        goto('/login');
-      }
+      if (!authChecked) return;
+      if (v) startApp();
+      else if (!publicPaths.includes(window.location.pathname)) { started = false; goto('/login'); }
     });
     return unsub;
   });
@@ -136,33 +87,8 @@
   {@render children()}
 {:else if authed}
   <!-- Authenticated shell -->
-  <div class="shell" bind:this={shellEl}
-       style="grid-template-columns: {railW}px {ctxW}px {ctxDocked ? 6 : 0}px 1fr;">
-    <StatusBar />
-    <Topbar />
-    {#if isRailPinned()}<Sidebar />{/if}
-    {#if ctxDocked}<ContextList appType={activeType} />{/if}
-    {#if ctxDocked}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div
-        class="ctx-resizer"
-        class:dragging={ctxDragging}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize the list pane"
-        onpointerdown={startCtxDrag}
-        onpointermove={onCtxDrag}
-        onpointerup={endCtxDrag}
-        onpointercancel={endCtxDrag}
-        ondblclick={() => setContextW(260)}
-      ></div>
-    {/if}
-    <main class="main">
-      {#if ctxFloating}<ContextList appType={activeType} />{/if}
-      <PanelStack />
-    </main>
-    <PublishDialog />
-  </div>
+  <Shell />
+  <PublishDialog />
   {@render children()}
 {:else if authChecked}
   <!-- Redirect in progress -->
@@ -179,47 +105,6 @@
 {/if}
 
 <style>
-  .shell {
-    display: grid;
-    /* columns are set inline from the pin state: rail | context | main */
-    /* minmax(0,1fr), not 1fr: a plain `1fr` is minmax(AUTO,1fr), so a tall page
-       can push the body row past the viewport and every scroll container inside
-       it stops working. Same defect as the chat grid. */
-    grid-template-rows: 3px 58px minmax(0, 1fr);
-    grid-template-areas:
-      "status  status  status   status"
-      "header  header  header   header"
-      "sidebar context resizer  main";
-    height: calc(100vh - 12px);
-    margin: 6px;
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 16px 16px 0 0;
-    overflow: hidden;
-  }
-  /* Drag handle between the context list and the main view. Its own grid column
-     so it never overlaps either side. */
-  .ctx-resizer {
-    grid-area: resizer;
-    cursor: col-resize;
-    background: var(--border);
-    opacity: 0.35;
-    transition: opacity 0.12s;
-    touch-action: none;   /* pointer events, not scrolling */
-  }
-  .ctx-resizer:hover, .ctx-resizer.dragging { opacity: 1; background: var(--border-strong); }
-
-  .main {
-    grid-area: main;
-    background: var(--bg-page);
-    /* Grid items default to min-height/min-width auto and will not shrink below
-       their content. */
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    position: relative;
-  }
-
   .loading-screen {
     height: 100vh;
     display: flex;

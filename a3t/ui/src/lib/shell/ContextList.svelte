@@ -1,15 +1,18 @@
 <script lang="ts">
-  /// The per-app context list: conversations in Chat, flows in the Studio,
-  /// resources in Resources. It occupies the side region next to the app rail and
-  /// is independently pinnable — unpinned it is revealed on demand from the Active
-  /// Apps menu, which is what frees the column for a wider main view.
+  /// The per-app list: conversations in Chat, flows in the Studio, resources in
+  /// Resources. It is the Items face of the shell's middle stack; the stack bar
+  /// above it owns pinning, and selecting an item opens it in Details.
+  import { appColor } from './appTheme';
   import { navigateTo, navigateToDetail, getActivePanel } from '$lib/stores/panels.svelte.ts';
   import {
-    APP_CONTEXT, contextLabel, isContextPinned, toggleContextPinned,
-    isContextOpen, closeContextPane, settleContextPane, trackOpen, contextRev_,
+    APP_CONTEXT, contextLabel, settleContextPane, trackOpen, contextRev_, itemsRev_, getPins, isPinned, setPins,
   } from '$lib/stores/apps.svelte.ts';
-  import { deleteChatSession } from '$lib/services/api';
-  import { loadAppItems, groupByNamespace, type AppItem } from './appItems';
+  import { deleteChatSession, setPin } from '$lib/services/api';
+  import { getProject, canWriteIn } from '$lib/stores/context.svelte.ts';
+  import { getSession, isInfosec } from '$lib/stores/auth';
+  import { setItemsRefresh } from '$lib/stores/detailActions.svelte.ts';
+  import { getActiveItem } from '$lib/stores/activeItem.svelte.ts';
+  import { loadAppItems, groupByNamespace, groupByOwner, type AppItem } from './appItems';
 
   let { appType }: { appType: string } = $props();
 
@@ -19,6 +22,34 @@
   let loading = $state(false);
   let error = $state('');
   let filter = $state('');
+
+  // Sort, remembered per app in this browser.
+  let sortBy = $state<'recent' | 'name'>('recent');
+  let viewLoadedFor = '';
+  $effect(() => {
+    const key = `a3t.items.view.${appType}`;
+    if (viewLoadedFor === key) return;
+    viewLoadedFor = key;
+    try {
+      const v = JSON.parse(localStorage.getItem(key) ?? '{}');
+      sortBy = v.sort === 'name' ? 'name' : 'recent';
+    } catch { sortBy = 'recent'; }
+  });
+  function saveView() {
+    try { localStorage.setItem(`a3t.items.view.${appType}`, JSON.stringify({ sort: sortBy })); } catch {}
+  }
+  const sorted = (list: AppItem[]) => sortBy === 'name' ? list.slice().sort((a, b) => a.label.localeCompare(b.label)) : list;
+
+  /// The app's own colour (shell/appTheme.ts).
+  const color = $derived(appColor(appType));
+  const initials = (label: string) => label.replace(/[^a-z0-9]+/gi, ' ').trim().split(' ')
+    .filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '·';
+  const crumb = $derived([getProject() || 'All projects', getActivePanel()?.title ?? contextLabel(appType)].join(' / '));
+
+  async function togglePin(e: MouseEvent, item: AppItem) {
+    e.stopPropagation();
+    try { setPins(await setPin(appType, item.id, !isPinned(appType, item.id))); } catch {}
+  }
   /// Plain `let`, not `$state`: the effect below both reads and writes it, and as
   /// reactive state that self-retriggers — the shape that trips Svelte's
   /// update-depth guard and froze reactivity elsewhere in this app.
@@ -74,7 +105,17 @@
 
   /// Rows grouped under their namespace, or null for lists that have none
   /// (conversations, resource categories) — those stay flat.
-  const groups = $derived(groupByNamespace(shown));
+  const groups = $derived(groupByNamespace(shown, spec?.source === 'settings-sections' || spec?.source === 'resources' || spec?.source === 'projects'));
+  /// All projects: each project's items folded under its owner, as Projects shows
+  /// them. (Resources keep their categories; Projects and Settings are already so.)
+  const ownerGroups = $derived(groups && !getProject() && !['settings-sections', 'resources', 'projects'].includes(spec?.source ?? '')
+    ? groupByOwner(groups) : null);
+
+  /// Pinned items first, as their own group; they stay in their namespace too.
+  const pinnedShown = $derived.by<Item[]>(() => {
+    const ids = getPins(appType);
+    return ids.map((id) => shown.find((i) => i.id === id)).filter(Boolean) as Item[];
+  });
 
   // ── Collapsed namespace groups, remembered per app in this browser ──
   const collapseKey = $derived(`a3t.ctx.collapsed.${appType}`);
@@ -110,29 +151,35 @@
     return null;
   }
 
-  /// Avatar letter: first alphanumeric of the label, so "a3t-users" reads as "A".
-  const initial = (label: string) => (label.match(/[a-z0-9]/i)?.[0] ?? '·').toUpperCase();
 
+  /// Only the latest load may write: when the project list arrives mid-load a
+  /// second load starts, and the first (made with the old project list) must
+  /// not land after it and overwrite it.
+  let loadSeq = 0;
   async function load(source: string) {
+    const seq = ++loadSeq;
     loading = true;
     error = '';
     try {
-      items = await loadAppItems(source);
+      const got = await loadAppItems(source);
+      // A server can list one record twice (seen: a3t/flowr-system-db); the rows
+      // are keyed by id, and a repeated key stops the whole list drawing.
+      const seen = new Set<string>();
+      if (seq === loadSeq) items = got.filter((i) => !seen.has(i.id) && !!seen.add(i.id));
     } catch (e: any) {
-      error = e?.message ?? 'Failed to load';
-      items = [];
+      if (seq === loadSeq) { error = e?.message ?? 'Failed to load'; items = []; }
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
   // Reload when the app changes, or when the app signals it changed the data —
   // a first chat turn creates the session row, and without the revision the new
   // conversation stayed missing from this list until a manual refresh.
-  let loadedRev = -1;
+  let loadedRev = '';
   $effect(() => {
     const t = appType;
-    const rev = contextRev_();
+    const rev = `${contextRev_()}:${itemsRev_()}`;
     const src = APP_CONTEXT[t]?.source;
     if (!src) { items = []; loadedFor = ''; return; }
     if (loadedFor === t && loadedRev === rev) return;
@@ -141,38 +188,67 @@
     load(src);
   });
 
+  // Refresh lives in the stack's control bar, not beside the main action.
+  $effect(() => {
+    const src = spec?.source;
+    if (!src) return;
+    return setItemsRefresh(() => load(src), loading);
+  });
+
+  /// Picking a row opens it in Details; picking the open row again closes it,
+  /// and Details goes back to the app's welcome. Either way the item on screen
+  /// is left, so unsaved edits to it are confirmed first, never dropped.
   function select(item: Item) {
+    if (item.group) { toggleGroup(item.id); return; }
     const panel = getActivePanel();
     const title = panel?.title ?? contextLabel(appType);
+    const closing = item.id === activeId;
+    const open = getActiveItem();
+    if (open?.dirty && !confirm(`${closing ? 'Close' : 'Leave'} ${open.name}? Your unsaved changes will be lost.`)) return;
     trackOpen(appType, title);
+    if (closing) { navigateTo(appType, title); return; }
     if (spec?.focuses) navigateToDetail(appType, title, item.id);
     else navigateTo(appType, title);
-    // A transient pane has done its job once something is chosen.
-    if (!isContextPinned()) settleContextPane();
+    // The item opens in Details; a popped-in Details or list follows from that.
+    settleContextPane();
   }
 
-  // An unpinned submenu is transient: a click anywhere on the page hides it.
-  // Pinning is how you keep it. The ≡ toggle is excluded so it can still toggle,
-  // and clicks inside the list (picking, filtering) leave it open.
   let asideEl: HTMLElement | undefined = $state();
-  $effect(() => {
-    if (isContextPinned() || !isContextOpen()) return;
-    const onDown = (e: PointerEvent) => {
-      const t = e.target as Element | null;
-      if (!t || asideEl?.contains(t) || t.closest('.smt')) return;
-      closeContextPane();
-    };
-    // Next tick: the click that opened the pane must not also close it.
-    const id = setTimeout(() => window.addEventListener('pointerdown', onDown, true));
-    return () => { clearTimeout(id); window.removeEventListener('pointerdown', onDown, true); };
+
+  /// Every app's Items header has one main action. Most open the app's create
+  /// form in Details (a fresh `create` value each time, so a second click opens
+  /// a fresh form); a few go where creating actually happens.
+  const NEW_LABEL: Record<string, string> = {
+    chat: 'New conversation', projects: 'New project', agents: 'New agent', templates: 'New template',
+    triggers: 'New trigger', resources: 'New resource', canvas: 'New canvas', runtime: 'New runtime',
+    security: 'New policy', executions: 'Run a flow', datarooms: 'New storage', knowledge: 'New knowledge graph',
+  };
+  // Only offered to whoever can make one: a Viewer starts conversations only;
+  // policies are InfoSec's; in a project, its writers.
+  const canCreate = $derived.by(() => {
+    if (appType === 'chat') return true;
+    if (appType === 'security') return isInfosec();
+    if (getSession()?.user?.role === 'viewer') return false;
+    const p = getProject();
+    return !p || canWriteIn(p);
   });
+  const newLabel = $derived(canCreate ? (NEW_LABEL[appType] ?? (spec?.source === 'flows' ? 'New flow' : '')) : '');
+  function newItem() {
+    if (spec?.source === 'sessions') return newChat();
+    if (spec?.source === 'flows') return newFlow();
+    if (appType === 'executions') { trackOpen('flow-editor', 'Studio'); navigateTo('flow-editor', 'Studio'); settleContextPane(); return; }
+    const title = getActivePanel()?.title ?? contextLabel(appType);
+    trackOpen(appType, title);
+    navigateTo(appType, title, appType === 'security' ? { selectedId: 'policies', create: Date.now() } : { create: Date.now() });
+    settleContextPane();
+  }
 
   function newChat() {
     trackOpen('chat', 'AI Chat');
     // A fresh client id; the transcript row appears once the first turn completes.
     const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     navigateToDetail('chat', 'AI Chat', id);
-    if (!isContextPinned()) settleContextPane();
+    settleContextPane();
   }
 
   /// A blank editor: navigating with no selection is what FlowEditor treats as a
@@ -180,7 +256,7 @@
   function newFlow() {
     trackOpen('flow-editor', 'Studio');
     navigateTo('flow-editor', 'Studio');
-    if (!isContextPinned()) settleContextPane();
+    settleContextPane();
   }
 
   async function removeItem(e: MouseEvent, item: Item) {
@@ -200,8 +276,9 @@
 
 {#snippet row(item: Item)}
   {@const idx = listed.indexOf(item)}
+  {@const tone = statusTone(item.status)}
   <div class="ctx-row" class:active={item.id === activeId} class:pending={item.pending}
-       style={item.depth != null ? `padding-left:${item.depth * 14}px` : ''}>
+       style={item.depth != null ? `margin-left:${item.depth * 14}px` : ''}>
     {#if isTree}
       {#if hasChildren(idx)}
         <button class="ctx-twist" onclick={() => toggleGroup(item.id)} aria-expanded={isOpen(item.id)} aria-label="Expand">
@@ -211,103 +288,129 @@
         <span class="ctx-twist"></span>
       {/if}
     {/if}
-    <button class="ctx-pick" onclick={() => select(item)} title={item.namespace ? `${item.namespace}/${item.label}` : item.label}>
+    <button class="ctx-pick" onclick={() => select(item)}
+      title={(item.namespace ? `${item.namespace}/${item.label}` : item.label) + (item.id === activeId && !item.group ? ' — click again to close' : '')}
+      aria-current={item.id === activeId}>
       {#if item.badge}
         <span class="ctx-badge" style={item.badgeStyle}>{item.badge}</span>
-      {:else if spec?.source !== 'sessions'}
-        <span class="ctx-avatar">{initial(item.label)}</span>
+      {:else}
+        <span class="ctx-icon-sq" style:background={color}>{initials(item.label)}</span>
       {/if}
       <span class="ctx-text">
-        <span class="ctx-label">{item.label}</span>
+        <span class="ctx-label"><span class="ctx-name">{item.label}</span>{#if item.namespace && !groups}<span class="ctx-ns">{item.namespace}</span>{/if}</span>
         {#if item.sub}<span class="ctx-sub">{item.sub}</span>{/if}
       </span>
-      {#if statusTone(item.status)}
-        <span class="ctx-dot {statusTone(item.status)}" title={item.status}></span>
+      {#if item.status}
+        <span class="ctx-st {tone ?? ''}">{item.status}</span>
       {/if}
     </button>
-    {#if spec?.source === 'sessions' && !item.pending}
-      <button class="ctx-del" onclick={(e) => removeItem(e, item)} title="Delete — this cannot be undone" aria-label="Delete">
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4L4 12M4 4l8 8" /></svg>
-      </button>
+    {#if !item.pending && !item.group && spec?.focuses}
+      <span class="ctx-acts">
+        {#if spec?.source === 'sessions'}
+          <button class="ctx-rb" onclick={(e) => removeItem(e, item)} title="Delete — this cannot be undone" aria-label="Delete">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4L4 12M4 4l8 8" /></svg>
+          </button>
+        {/if}
+        <button class="ctx-rb" class:on={isPinned(appType, item.id)} onclick={(e) => togglePin(e, item)}
+          title={isPinned(appType, item.id) ? 'Unpin' : 'Pin to top'} aria-label={isPinned(appType, item.id) ? 'Unpin' : 'Pin to top'} aria-pressed={isPinned(appType, item.id)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned(appType, item.id) ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 4l2.4 5 5.6.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.6-.8z" /></svg>
+        </button>
+      </span>
     {/if}
   </div>
 {/snippet}
 
-<aside class="ctx" bind:this={asideEl} class:floating={!isContextPinned() && isContextOpen()}>
+{#snippet list(rows: Item[])}
+  <div class="ctx-gitems">
+    {#each rows as item (item.id)}{@render row(item)}{/each}
+  </div>
+{/snippet}
+
+<aside class="ctx" style="--app: {color}" bind:this={asideEl}>
   <div class="ctx-head">
-    <span class="ctx-title">{contextLabel(appType)}</span>
+    <div class="ctx-ht">
+      <div class="ctx-crumb">{crumb}</div>
+      <h1 class="ctx-title">{getActivePanel()?.title ?? contextLabel(appType)}</h1>
+    </div>
     <div class="ctx-actions">
-      {#if spec?.source === 'sessions'}
-        <button class="ctx-icon" onclick={newChat} title="New conversation" aria-label="New conversation">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10" /></svg>
-        </button>
-      {:else if spec?.source === 'flows'}
-        <!-- The editor's own "New flow" lived in the panel this pane replaced. -->
-        <button class="ctx-icon" onclick={newFlow} title="New flow" aria-label="New flow">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10" /></svg>
-        </button>
-      {/if}
-      <button
-        class="ctx-icon"
-        onclick={() => load(spec!.source)}
-        title="Refresh"
-        aria-label="Refresh"
-        disabled={loading}
-      >
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M14 8A6 6 0 112.6 5.5" /><path d="M2 2v4h4" />
-        </svg>
-      </button>
-      <button
-        class="ctx-icon"
-        class:on={isContextPinned()}
-        onclick={() => toggleContextPinned()}
-        title={isContextPinned() ? 'Unpin this list (widens the main view)' : 'Pin this list'}
-      >
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M8 10v4M5 3h6l-1 6H6L5 3z" />
-        </svg>
-      </button>
-      {#if !isContextPinned()}
-        <button class="ctx-icon" onclick={() => closeContextPane()} title="Close" aria-label="Close">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4L4 12M4 4l8 8" /></svg>
+      {#if newLabel}
+        <button class="ctx-primary" onclick={newItem}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" /></svg> {newLabel}
         </button>
       {/if}
     </div>
   </div>
 
-  {#if items.length > 8 || (groups?.length ?? 0) > 1}
-    <div class="ctx-filter">
-      <input type="text" placeholder="Filter by name or namespace…" bind:value={filter} />
-    </div>
-  {/if}
+  <div class="ctx-tools">
+    <input class="ctx-search" type="text" placeholder={`Filter ${contextLabel(appType).toLowerCase()}`} bind:value={filter} aria-label="Filter" />
+    {#if !isTree}
+      <select class="ctx-sel" bind:value={sortBy} onchange={saveView} aria-label="Sort">
+        <option value="recent">Recent</option>
+        <option value="name">Name</option>
+      </select>
+    {/if}
+  </div>
 
   <div class="ctx-body">
+    {#if pinnedShown.length > 0 && !error}
+      <section class="ctx-group ctx-pinned">
+        <button class="ctx-ghead" onclick={() => toggleGroup('__pinned')} aria-expanded={isOpen('__pinned')}>
+          <svg class="ctx-chev" class:open={isOpen('__pinned')} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
+          <span class="ctx-gname">Pinned</span>
+          <span class="ctx-gcount">{pinnedShown.length}</span>
+        </button>
+        {#if isOpen('__pinned')}{@render list(sorted(pinnedShown))}{/if}
+      </section>
+    {/if}
     {#if loading && items.length === 0}
-      <div class="ctx-note">Loading…</div>
+      <!-- the header bar shows loading -->
     {:else if error}
       <div class="ctx-note err">{error}</div>
     {:else if shown.length === 0}
       <div class="ctx-note">{filter ? 'Nothing matches.' : 'Nothing here yet.'}</div>
     {:else if isTree}
       {#each shown as item (item.id)}{@render row(item)}{/each}
+    {:else if ownerGroups}
+      {#each ownerGroups as o (o.owner)}
+        <section class="ctx-group">
+          <button class="ctx-ghead" onclick={() => toggleGroup(`owner:${o.owner}`)} aria-expanded={isOpen(`owner:${o.owner}`)}>
+            <svg class="ctx-chev" class:open={isOpen(`owner:${o.owner}`)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
+            <span class="ctx-gname">{o.owner || 'No project'}</span>
+            <span class="ctx-gcount">{o.count}</span>
+          </button>
+          {#if isOpen(`owner:${o.owner}`)}
+            {#if o.projects.length === 1 && o.projects[0].ns === o.owner}
+              {@render list(sorted(o.projects[0].items))}
+            {:else}
+              <!-- The owner's own items (an org's Identity, say) sit right under it; its projects fold below. -->
+              {#each o.projects.filter((g) => g.ns === o.owner) as g (g.ns)}{@render list(sorted(g.items))}{/each}
+              {#each o.projects.filter((g) => g.ns !== o.owner) as g (g.ns)}
+                <section class="ctx-group ctx-sub">
+                  <button class="ctx-ghead" onclick={() => toggleGroup(g.ns)} aria-expanded={isOpen(g.ns)}>
+                    <svg class="ctx-chev" class:open={isOpen(g.ns)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
+                    <span class="ctx-gname">{g.ns || 'No project'}</span>
+                    <span class="ctx-gcount">{g.items.length}</span>
+                  </button>
+                  {#if isOpen(g.ns)}{@render list(sorted(g.items))}{/if}
+                </section>
+              {/each}
+            {/if}
+          {/if}
+        </section>
+      {/each}
     {:else if groups}
       {#each groups as g (g.ns)}
         <section class="ctx-group">
           <button class="ctx-ghead" onclick={() => toggleGroup(g.ns)} aria-expanded={isOpen(g.ns)}>
             <svg class="ctx-chev" class:open={isOpen(g.ns)} width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3l5 5-5 5" /></svg>
-            <span class="ctx-gname">{g.ns || 'no namespace'}</span>
+            <span class="ctx-gname">{g.ns || 'No project'}</span>
             <span class="ctx-gcount">{g.items.length}</span>
           </button>
-          {#if isOpen(g.ns)}
-            <div class="ctx-gitems">
-              {#each g.items as item}{@render row(item)}{/each}
-            </div>
-          {/if}
+          {#if isOpen(g.ns)}{@render list(sorted(g.items))}{/if}
         </section>
       {/each}
     {:else}
-      {#each shown as item}{@render row(item)}{/each}
+      {@render list(sorted(shown))}
     {/if}
   </div>
 
@@ -317,163 +420,73 @@
 </aside>
 
 <style>
-  .ctx {
-    grid-area: context;
-    display: flex;
-    flex-direction: column;
-    /* Grid/flex items default to min-height:auto, which lets a long list grow past
-       the row instead of scrolling — the bug that hid older conversations. */
-    min-height: 0;
-    overflow: hidden;
-    border-right: 1px solid var(--border);
-    background: var(--bg-surface);
-  }
-  /* Unpinned, the pane is revealed over the main view rather than resizing it. */
-  .ctx.floating {
-    position: absolute; top: 0; bottom: 0; left: 0; z-index: 60;
-    width: 280px;
-    box-shadow: 6px 0 24px rgb(0 0 0 / 0.12);
-  }
+  /* Items, as in the shell design: header strip, toolbar, groups of rows. */
+  .ctx { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--bg-page); }
 
-  .ctx-head {
-    flex: 0 0 auto;
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 6px; padding: 10px 8px 10px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-  .ctx-title {
-    font-family: var(--font-serif); font-size: 13px; font-weight: 500;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-actions { display: flex; align-items: center; gap: 2px; }
-  .ctx-icon {
-    width: 24px; height: 24px;
-    display: grid; place-items: center;
-    border: 1px solid transparent; border-radius: 5px;
-    background: transparent; color: var(--text-4); cursor: pointer;
-  }
-  .ctx-icon:hover:not(:disabled) { color: var(--text-1); border-color: var(--border); }
+  .ctx-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+  .ctx-ht { flex: 1 1 auto; min-width: 0; }
+  .ctx-crumb { font: 400 12px var(--font-mono); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctx-title { margin: 2px 0 0; font: 400 22px var(--font-serif); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctx-actions { display: flex; align-items: center; gap: 6px; }
+  .ctx-primary { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 0; background: var(--green, #1a7158); color: #fff; font: 500 13px var(--font-sans); cursor: pointer; white-space: nowrap; }
+  .ctx-sub { margin-left: 12px; }
+  .ctx-icon { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-3); display: grid; place-items: center; cursor: pointer; }
+  .ctx-icon:hover:not(:disabled) { color: var(--spec); border-color: var(--spec); }
   .ctx-icon:disabled { opacity: 0.4; cursor: default; }
-  .ctx-icon.on { color: var(--text-1); background: var(--bg-subtle); border-color: var(--border); }
 
-  .ctx-filter { flex: 0 0 auto; padding: 8px 10px; border-bottom: 1px solid var(--divider, var(--border)); }
-  .ctx-filter input {
-    width: 100%; box-sizing: border-box;
-    padding: 6px 9px; font-size: 11.5px;
-    border: 1px solid var(--border); border-radius: 7px;
-    background: var(--bg-page); color: var(--text-1);
-    outline: none; transition: border-color 0.1s ease, box-shadow 0.1s ease;
-  }
-  .ctx-filter input:focus {
-    border-color: var(--spec, #5530a8);
-    box-shadow: 0 0 0 3px var(--spec-bg, #ede7ff);
-  }
+  .ctx-tools { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+  .ctx-search { flex: 1 1 120px; width: auto; min-width: 100px; height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 10px; background: var(--bg-surface); font: 400 13px var(--font-sans); color: var(--text-1); outline: none; }
+  .ctx-search:focus { border-color: var(--spec); }
+  .ctx-sel { flex: 0 0 auto; width: auto; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); font: 400 12.5px var(--font-sans); padding: 0 6px; color: var(--text-2); }
 
-  .ctx-body {
-    flex: 1;
-    min-height: 0;      /* required for overflow scrolling inside a flex column */
-    overflow-y: auto;
-    padding: 6px 6px 10px;
-  }
-  .ctx-note { padding: 14px 10px; font-size: 11.5px; color: var(--text-4); }
-  .ctx-note.err { color: #dc2626; }
+  .ctx-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+  .ctx-note { padding: 22px; border: 1px dashed var(--border-strong, #d9d4c6); border-radius: 12px; text-align: center; font-size: 13px; color: var(--text-3); }
+  .ctx-note.err { color: var(--err, #d15858); }
 
-  /* ── Namespace groups ── */
+  /* Groups: each project a thin white bar — serif name, count at the right; an
+     open one carries the app's colour down its left edge. */
   .ctx-group + .ctx-group { margin-top: 6px; }
-  .ctx-ghead {
-    position: sticky; top: -6px; z-index: 1;
-    width: 100%; display: flex; align-items: center; gap: 6px;
-    padding: 7px 8px 5px;
-    border: none; background: var(--bg-surface); cursor: pointer;
-    color: var(--text-4); text-align: left;
-  }
-  .ctx-ghead:hover { color: var(--text-2); }
-  .ctx-chev { flex: 0 0 auto; transition: transform 0.12s ease; }
-  .ctx-chev.open { transform: rotate(90deg); }
-  .ctx-gname {
-    flex: 1; min-width: 0;
-    font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-gcount {
-    flex: 0 0 auto; min-width: 18px; padding: 0 5px;
-    font-size: 10px; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
-    border-radius: 8px; background: var(--bg-subtle); color: var(--text-4);
-  }
-  .ctx-gitems { display: flex; flex-direction: column; gap: 1px; }
+  .ctx-ghead { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 6px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; background: var(--bg-surface); cursor: pointer; text-align: left; transition: border-color 0.12s; }
+  .ctx-ghead:hover { border-color: var(--border-strong, #d9d4c6); }
+  .ctx-ghead[aria-expanded='true'] { border-left-color: var(--app, var(--spec)); margin-bottom: 6px; }
+  .ctx-chev { flex: 0 0 auto; color: var(--text-4); transition: transform 0.12s ease; }
+  .ctx-chev.open { transform: rotate(90deg); color: var(--app, var(--text-3)); }
+  .ctx-gname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 14.5px var(--font-serif); color: var(--text-1); }
+  .ctx-gcount { flex: 0 0 auto; font: 500 10.5px var(--font-mono); color: var(--text-3); background: var(--bg-subtle); border-radius: 4px; padding: 1px 6px; }
+  .ctx-group:has(> .ctx-gitems) + .ctx-group { margin-top: 12px; }
+  .ctx-gitems { display: flex; flex-direction: column; gap: 6px; }
+  .ctx-body > .ctx-gitems + .ctx-group, .ctx-pinned + * { margin-top: 10px; }
 
-  /* ── Rows ── */
-  .ctx-twist {
-    flex: none; width: 16px; height: 22px; display: grid; place-items: center;
-    background: none; border: 0; padding: 0; color: var(--text-4); cursor: pointer;
-  }
-  .ctx-row {
-    position: relative;
-    display: flex; align-items: center;
-    border-radius: 7px;
-    transition: background 0.1s ease;
-  }
-  .ctx-row:hover { background: var(--bg-subtle); }
-  .ctx-row.active { background: var(--bg-subtle); }
-  /* A bar, not just a tint, so the open item is findable in a long list. */
-  .ctx-row.active::before {
-    content: ''; position: absolute; left: 0; top: 7px; bottom: 7px;
-    width: 3px; border-radius: 0 3px 3px 0; background: var(--spec, #5530a8);
-  }
-  .ctx-pick {
-    flex: 1; min-width: 0;
-    display: flex; align-items: center; gap: 9px;
-    padding: 6px 8px 6px 10px;
-    border: none; background: transparent; cursor: pointer; text-align: left;
-  }
-  .ctx-avatar {
-    flex: 0 0 auto;
-    width: 24px; height: 24px; border-radius: 6px;
-    display: grid; place-items: center;
-    font-size: 11px; font-weight: 600;
-    color: var(--text-3); background: var(--bg-page);
-    border: 1px solid var(--border);
-  }
-  .ctx-row.active .ctx-avatar { color: var(--spec, #5530a8); border-color: var(--spec-bg, #ede7ff); background: var(--spec-bg, #ede7ff); }
-  .ctx-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-  /* Matches the category chips on the Resources page, so the same category reads
-     the same in the pane and in the app. */
-  .ctx-badge {
-    flex: 0 0 auto;
-    width: 24px; height: 24px; border-radius: 6px;
-    display: grid; place-items: center;
-    font-size: 10px; font-weight: 600;
-  }
-  .ctx-label {
-    font-size: 12.5px; line-height: 1.3; color: var(--text-1);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-row.active .ctx-label { font-weight: 600; }
-  .ctx-sub {
-    font-size: 10.5px; line-height: 1.3; color: var(--text-4);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .ctx-row.pending .ctx-label { font-style: italic; color: var(--text-3); }
+  /* A row: icon · name and project · subline · status. */
+  .ctx-row { position: relative; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); transition: border-color 0.12s; }
+  .ctx-row:hover { border-color: var(--border-strong, #d9d4c6); }
+  .ctx-row.active { border-color: var(--spec); box-shadow: 0 0 0 1px var(--spec); }
+  .ctx-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 0; background: transparent; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+  .ctx-icon-sq { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; font: 600 11.5px var(--font-sans); color: #fff; }
+  .ctx-badge { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; font-size: 10px; font-weight: 600; }
+  .ctx-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .ctx-label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .ctx-name { font-weight: 600; font-size: 13.5px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .ctx-ns { font: 400 11px var(--font-mono); color: var(--spec); border: 1px solid #b8a6ea; border-radius: 999px; padding: 0 7px; }
+  .ctx-sub { font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ctx-row.pending .ctx-name { font-style: italic; color: var(--text-3); font-weight: 500; }
+  .ctx-st { flex: 0 0 auto; font: 500 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+  .ctx-st.ok { color: var(--green, #1a7158); }
+  .ctx-st.run { color: #1f4fb8; }
+  .ctx-st.bad { color: var(--err, #d15858); }
+  .ctx-st.idle { color: #8a5112; }
 
-  .ctx-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; }
-  .ctx-dot.ok   { background: #16a34a; }
-  .ctx-dot.run  { background: #2563eb; }
-  .ctx-dot.bad  { background: #dc2626; }
-  .ctx-dot.idle { background: transparent; border: 1.5px solid var(--text-5, #b8b8b8); }
+  /* Hover actions, on the right over the status. */
+  .ctx-acts { display: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); gap: 2px; background: var(--bg-surface); padding-left: 8px; }
+  .ctx-row:hover .ctx-acts, .ctx-row:focus-within .ctx-acts { display: flex; }
+  .ctx-row:hover .ctx-st, .ctx-row:focus-within .ctx-st { visibility: hidden; }
+  .ctx-rb { width: 28px; height: 28px; border-radius: 7px; border: 1px solid transparent; background: transparent; display: inline-flex; align-items: center; justify-content: center; color: var(--text-3); padding: 0; cursor: pointer; }
+  .ctx-rb:hover { background: var(--bg-subtle); border-color: var(--border); }
+  .ctx-rb.on { color: #c97c2e; }
+  .ctx-row.active .ctx-acts { background: var(--bg-surface); }
 
-  .ctx-del {
-    width: 22px; height: 22px; margin-right: 4px;
-    display: grid; place-items: center;
-    border: none; border-radius: 5px;
-    background: transparent; color: var(--text-4); cursor: pointer;
-    opacity: 0;
-  }
-  .ctx-row:hover .ctx-del { opacity: 1; }
-  .ctx-del:hover { color: #dc2626; background: var(--bg-surface); }
+  /* Trees (Runtimes): compact rows with a twisty. */
+  .ctx-twist { flex: none; width: 16px; height: 22px; display: grid; place-items: center; background: none; border: 0; padding: 0 0 0 6px; color: var(--text-4); cursor: pointer; }
 
-  .ctx-foot {
-    flex: 0 0 auto;
-    padding: 8px 12px; border-top: 1px solid var(--border);
-    font-size: 10px; line-height: 1.35; color: var(--text-4);
-  }
+  .ctx-foot { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.35; color: var(--text-4); }
 </style>

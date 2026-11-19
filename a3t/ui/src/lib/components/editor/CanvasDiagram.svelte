@@ -71,7 +71,7 @@
     });
     opsApi.overview().then((res) => {
       if (!res.ok) { live = null; return; }
-      const rows = [...(res.data.runtimes ?? []).flatMap((r: any) => r.deployments), ...(res.data.unplaced ?? [])];
+      const rows = [...(res.data?.runtimes ?? []).flatMap((r: any) => r.deployments), ...(res.data?.unplaced ?? [])];
       live = rows.find((row: any) =>
         agent ? row.deployment.target === agent : row.deployment.flowRef === ref) ?? null;
     });

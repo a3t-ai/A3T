@@ -1,10 +1,8 @@
-// Shell state for the app shell's two navigational surfaces: the app rail and
-// the per-app context list.
-//
-// Both occupy the same side region and are independently pinnable, so the shell
-// has four layouts (rail+list, rail only, list only, neither). Unpinned surfaces
-// are still reachable from the header — the Squares palette for apps, the Active
-// Apps menu for the context list — so nothing becomes unreachable by unpinning.
+import * as L from './layout.svelte.ts';
+
+// Shell state: which apps have a list, open apps, server pins, and the rail and
+// context-list functions older callers use. The layout itself (Menu ·
+// Items|Chat · Details, pins, pop-ins) lives in layout.svelte.ts.
 //
 // "Active apps" is taskbar-shaped: an app opened stays in the list until it is
 // explicitly closed. It is deliberately NOT keep-alive — switching apps remounts
@@ -12,12 +10,6 @@
 // page in this console already works.
 
 const LS_OPEN = 'a3t.shell.openApps';
-const LS_RAIL = 'a3t.shell.railPinned';
-// v2: the meaning changed. It used to mean "show the bar" (default on); it now
-// means "keep the bar even with nothing selected" (default off), because the
-// bar otherwise follows the selection. A new key so existing browsers adopt
-// the new default instead of inheriting `true` and never seeing the home page.
-const LS_CTX = 'a3t.shell.contextPinned.v2';
 const LS_CTX_W = 'a3t.shell.contextW';
 
 export interface OpenApp {
@@ -61,13 +53,24 @@ export const APP_CONTEXT: Record<string, { label: string; source: string; focuse
   // Flow Studio has its own explorer (projects → flows, resources, triggers…).
   // Resources lists its FIXED subtype categories, not instances: the page is a
   // per-category browser, so the pane offers exactly the categories it filters to.
-  resources: { label: 'Resource Types', source: 'resource-categories', focuses: true },
+  // Every resource and flow, grouped by kind; the one picked opens in Details.
+  resources: { label: 'Resources', source: 'resources', focuses: true },
   triggers: { label: 'Triggers', source: 'triggers', focuses: true },
-  executions: { label: 'Executions', source: 'executions', focuses: false },
+  executions: { label: 'Executions', source: 'executions', focuses: true },
   runtime: { label: 'Hosts & Runtimes', source: 'runtimes', focuses: true },
   canvas: { label: 'Canvases', source: 'canvases', focuses: true },
+  // Memory by agent; the one picked opens its memory in Details.
+  memory: { label: 'Agents', source: 'memory-agents', focuses: true },
+  // Storage resources (S3, MinIO, GCS, Azure, FTP); the one picked opens in Details.
+  datarooms: { label: 'Storage', source: 'storage', focuses: true },
+  // Knowledge-graph databases; the one picked opens in Details.
+  knowledge: { label: 'Knowledge graphs', source: 'kg-dbs', focuses: true },
   // Fixed sections, like Resources' categories.
   security: { label: 'Security', source: 'security-sections', focuses: true },
+  // Views of the decision log; the selected project scopes them.
+  logs: { label: 'Decisions', source: 'decision-views', focuses: true },
+  // Every Settings page is an item; the form opens in Details.
+  settings: { label: 'Settings', source: 'settings-sections', focuses: true },
 };
 
 export function hasContext(type: string | undefined | null): boolean {
@@ -81,12 +84,6 @@ export function contextLabel(type: string | undefined | null): string {
 // ── State ──
 
 let openApps = $state<OpenApp[]>(load<OpenApp[]>(LS_OPEN, []));
-let railPinned = $state<boolean>(load<boolean>(LS_RAIL, true));
-let contextPinned = $state<boolean>(load<boolean>(LS_CTX, false));
-/// Transient reveal for an unpinned context list — the "open list pane" action
-/// on the Active Apps menu. Never persisted: an overlay should not survive a
-/// reload the user did not ask to keep it through.
-let contextOpen = $state<boolean>(false);
 let contextW = $state<number>(load<number>(LS_CTX_W, 260));
 
 export const RAIL_W = 104;
@@ -132,66 +129,54 @@ export function isOpen(type: string): boolean {
 }
 
 // ── Pinning ──
+//
+// The shell's layout store owns the pins now (Menu · Items|Chat · Details).
+// These keep their old names so callers written for the rail and the context
+// list go on working: the rail is the Menu stack, the context list is the Items
+// face of the middle stack.
 
 export function isRailPinned(): boolean {
-  return railPinned;
+  return L.isPinned('menu');
 }
 
 export function toggleRailPinned() {
-  railPinned = !railPinned;
-  save(LS_RAIL, railPinned);
+  L.togglePin('menu');
 }
 
 export function isContextPinned(): boolean {
-  return contextPinned;
+  return L.docked().mid;
 }
 
 export function toggleContextPinned() {
-  contextPinned = !contextPinned;
-  save(LS_CTX, contextPinned);
-  // Pinning absorbs any transient reveal, so the pane does not end up drawn twice.
-  if (contextPinned) { contextOpen = false; contextDismissed = false; }
+  L.togglePin('mid');
 }
 
-/// Closed with × (or by clicking the page). This overrides "show beside the
-/// selected item": without it, × on a page with an item open did nothing,
-/// because the selection alone kept the submenu docked. ≡ or pinning clears it.
-let contextDismissed = $state<boolean>(false);
 export function isContextDismissed(): boolean {
-  return contextDismissed;
+  return false;
 }
 
+/// The middle stack is popped in over the page.
 export function isContextOpen(): boolean {
-  return contextOpen;
+  return L.getOverlay() === 'mid';
 }
 
-/// Reveal the context list without pinning it — the Active Apps "list pane" path.
+/// Show the app's list: the Items face, popped in when it is not docked.
 export function openContextPane() {
-  contextOpen = true;
-  contextDismissed = false;
+  L.showMid('items');
 }
 
 export function closeContextPane() {
-  contextOpen = false;
-  contextDismissed = true;
+  if (L.getOverlay() === 'mid') L.closeOverlay();
 }
 
-/// End the floating reveal WITHOUT dismissing — picking an item from the
-/// submenu: it then stays docked beside the selection, as before.
+/// An item was picked from the list: a popped-in list steps aside for Details.
 export function settleContextPane() {
-  contextOpen = false;
+  L.revealDetails();
 }
 
-/// Whether the context list should be drawn for this app.
-///
-/// It follows the SELECTION: with nothing open the app shows its home page and
-/// the bar stays out of the way; opening an item reveals it with that item
-/// selected. Pinning is an override for keeping it on the home page too.
-///
-/// The layout derives the docked/floating split itself (it also needs the width),
-/// so this is the single definition of the rule for anything else that asks.
-export function contextVisible(type: string | undefined | null, hasSelection: boolean): boolean {
-  return hasContext(type) && (contextPinned || contextOpen || (hasSelection && !contextDismissed));
+/// Whether the app's list can be seen right now.
+export function contextVisible(type: string | undefined | null, _hasSelection: boolean): boolean {
+  return hasContext(type) && L.isVisible('mid') && L.getFace() === 'items';
 }
 
 // ── Pins ──
@@ -233,9 +218,22 @@ export function contextRev_(): number {
   return contextRev;
 }
 
-/// Tell the context list its data changed and it should reload.
+/// The context changed (project, platform, something published or exposed):
+/// every page and list reloads.
 export function bumpContext() {
   contextRev += 1;
+}
+
+// An Items list changed under it (a chat turn wrote a conversation, a runtime
+// changed state): only the Items list re-reads. Pages must not reload on this —
+// a reload replaced what they hold, unsaved edits included (a Template's spec
+// was lost after every chat turn).
+let itemsRev = $state(0);
+export function itemsRev_(): number {
+  return itemsRev;
+}
+export function bumpItems() {
+  itemsRev += 1;
 }
 
 // ── First message of a brand-new conversation ──

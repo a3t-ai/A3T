@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { detailsPane, fitToPane } from '$lib/shell/detailsPane';
+  import { setDetailActions } from '$lib/stores/detailActions.svelte.ts';
 
   let {
     open = false,
@@ -16,6 +18,14 @@
   } = $props();
 
   let closing = $state(false);
+  /// Inside the shell the item fills the Details pane instead of the window.
+  const pane = detailsPane();
+
+  // In the pane the Details stack bar carries these actions: one bar, not two.
+  $effect(() => {
+    if (!pane || !open) return;
+    return setDetailActions({ onsave, onopenineditor, onclose: handleClose });
+  });
 
   function handleClose() {
     closing = true;
@@ -27,8 +37,9 @@
 </script>
 
 {#if open}
-  <div class="sp-overlay" class:closing onclick={handleClose}></div>
-  <div class="sp-panel" class:closing>
+  {#if !pane}<div class="sp-overlay" class:closing onclick={handleClose}></div>{/if}
+  <div class="sp-panel" class:closing class:in-pane={!!pane} use:fitToPane={pane}>
+    {#if !pane}
     <div class="sp-close-bar">
       {#if onopenineditor}
         <div class="sp-btn-wrap">
@@ -53,6 +64,7 @@
         <span class="sp-tooltip">Close</span>
       </div>
     </div>
+    {/if}
     <div class="sp-body">
       {@render children()}
     </div>
@@ -75,8 +87,25 @@
     box-shadow: 0 8px 40px rgba(0,0,0,0.14), 0 2px 10px rgba(0,0,0,0.06), -4px 0 20px rgba(0,0,0,0.04);
     animation: panelIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     display: flex; flex-direction: column;
+    /* Pages inside lay out by the panel's width, not the window's: the Details
+       pane can be narrow in a wide window (@container details (…)). */
+    container: details / inline-size;
   }
   .sp-panel.closing { animation: panelOut 0.2s ease-in forwards; }
+  /* In the Details pane: flush with the pane, below the shell's pop-ins. */
+  /* In Details an item replaces what was there: no fade, which let the page under it show through. */
+  .sp-panel.in-pane { border: 0; border-radius: 0; box-shadow: none; z-index: 19; animation: none; }
+  .sp-panel.in-pane.closing { animation: none; opacity: 0; }
+  /* In the pane an item's sections run as tabs across the top, not a tree on
+     the left (PropertiesTree switches to tabs there too). */
+  /* Every page lays an item out as a rail (header and sections) beside its
+     content, in its own grid. In the pane that becomes header and tabs across
+     the top, content below. */
+  .sp-panel.in-pane .sp-body > :global(:first-child) { display: flex !important; flex-direction: column; height: 100%; min-height: 0; }
+  .sp-panel.in-pane .sp-body > :global(:first-child > :first-child:not(:last-child)) {
+    flex: 0 0 auto; width: auto; max-width: none; height: auto; min-height: 0; overflow: visible; border-right: 0;
+  }
+  .sp-panel.in-pane .sp-body > :global(:first-child > :last-child) { flex: 1 1 auto; min-height: 0; }
   @keyframes panelIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
   @keyframes panelOut { from { transform: translateX(0); } to { transform: translateX(100%); } }
 

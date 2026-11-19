@@ -1,7 +1,7 @@
 <script lang="ts">
   // A single artifact (flow, agent, template, resource, trigger) as a compact
   // handoff card. The body opens in the right-hand pane, which has the width.
-  import { openInStudio } from '$lib/stores/panels.svelte';
+  import { openInStudio, navigateToDetail } from '$lib/stores/panels.svelte';
   import { ARTIFACTS, toEditorText, type ArtifactKind } from './artifacts';
 
   let { kind, data, onopen }: {
@@ -17,6 +17,8 @@
 
   // Everything in the registry opens in the Studio; a draft is not there yet.
   const hasPanel = $derived(kind !== 'flow_draft' && !!name);
+  /// An agent opens on its own page (what it does, remembers, was blocked from).
+  const agentId = $derived.by(() => { if (kind !== 'agent') return ''; try { const j = JSON.parse(data?.raw ?? '{}'); return j.id ?? j.agent_id ?? ''; } catch { return ''; } });
 </script>
 
 <div class="widget">
@@ -30,8 +32,8 @@
         {spec.draft ? 'Review' : 'Open'}
       </button>
       {#if hasPanel}
-        <button class="wbtn" title="Open in Studio"
-          onclick={() => openInStudio(kind as Exclude<ArtifactKind, 'flow_draft'>, ns, name)}>↗</button>
+        <button class="wbtn" title={kind === 'agent' && agentId ? 'Open the agent' : 'Open in Studio'}
+          onclick={() => kind === 'agent' && agentId ? navigateToDetail('agents', 'Agents', agentId) : openInStudio(kind as Exclude<ArtifactKind, 'flow_draft'>, ns, name)}>↗</button>
       {/if}
     </div>
   </div>

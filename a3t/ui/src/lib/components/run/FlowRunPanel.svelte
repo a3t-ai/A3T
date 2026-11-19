@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { inBackground } from '$lib/core/status/activity';
   /// Run and debug a flow from the editor (console spec §4–§5): an input dialog
   /// (a form for a flat `input.schema`, JSON otherwise), a Debug mode with
   /// breakpoints, and the flow's runs — newest first — with the selected run
@@ -130,7 +131,7 @@
       selected = null;
       void loadRuns();
     });
-    poll = setInterval(() => void loadRuns(), 5000);
+    poll = setInterval(() => void inBackground(loadRuns), 5000);
     return () => { if (poll) clearInterval(poll); };
   });
 

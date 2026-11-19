@@ -1,3 +1,7 @@
+<script lang="ts" module>
+  export type ExposedItem = { key: string; name: string; namespace: string; sub: string; cloneKind?: 'flow' | 'resource' | 'trigger'; cloneRef?: string; templateId?: string; raw?: any };
+</script>
+
 <script lang="ts">
   /// What other orgs expose to you, at the end of an app's page: Shared and
   /// Training from the platform orgs, Community from any org. You can read and
@@ -11,9 +15,11 @@
   import { navigateTo } from '$lib/stores/panels.svelte.ts';
 
   type Kind = 'flow' | 'resource' | 'trigger' | 'canvas' | 'template' | 'agent';
-  let { kind, noun }: { kind: Kind; noun: string } = $props();
+  /// `onopen`: the page shows the item (read-only — it is not yours to change).
+  /// `hide`: releases (`name@sub`) the page already lists — not repeated here.
+  let { kind, noun, onopen, hide }: { kind: Kind; noun: string; onopen?: (it: ExposedItem) => void; hide?: Set<string> } = $props();
 
-  type Item = { key: string; name: string; namespace: string; sub: string; cloneKind?: 'flow' | 'resource' | 'trigger'; cloneRef?: string; templateId?: string };
+  type Item = ExposedItem;
   let items = $state<Item[]>([]);
   let message = $state('');
 
@@ -61,7 +67,7 @@
       const names = new Set(exposed.map((p) => p.name));
       for (const t of r.ok ? rows(r.data, 'templates') : []) {
         const ns = (t.spec_yaml ?? '').match(/^\s+namespace:\s*['"]?([\w.-]+)/m)?.[1];
-        if (ns && names.has(ns)) out.push({ key: t.id, name: t.name, namespace: ns, sub: `v${t.version ?? '1.0.0'}`, templateId: t.id });
+        if (ns && names.has(ns)) out.push({ key: t.id, name: t.name, namespace: ns, sub: `v${t.version ?? '1.0.0'}`, templateId: t.id, raw: t });
       }
     }
     items = out;
@@ -91,6 +97,7 @@
     const best = new Map<string, Item>();
     for (const it of items) {
       const k = `${it.name}@${it.sub}`;
+      if (hide?.has(k)) continue;
       const cur = best.get(k);
       if (!cur || (ownerOf(it.namespace) === mine && ownerOf(cur.namespace) !== mine)) best.set(k, it);
     }
@@ -120,7 +127,7 @@
           meta=""
           project={it.namespace}
           actionLabel={it.templateId ? '+ Create agent' : it.cloneKind ? (canClone ? `Clone into ${target}` : 'Select a project of yours to clone') : ''}
-          onclick={() => {}}
+          onclick={() => onopen?.(it)}
           onaction={it.templateId ? () => navigateTo('agents', 'Agents', { createFromTemplate: it.templateId }) : it.cloneKind && canClone ? () => clone(it) : undefined}
         />
       {/each}

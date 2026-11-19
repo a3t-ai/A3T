@@ -50,10 +50,25 @@ async function request<T = any>(
 ): Promise<ApiResponse<T>> {
   const span = begin(requestKind(path, options));
   const res = await send<T>(path, options, requireAuth);
-  if (res.status === 0) reached(false, res.error);
+  if (res.status === 0) reached(false, `${requestLabel(path, options)}: ${res.error ?? 'no answer'}. The console could not reach the A3T API; it retries with the next request.`);
   else reached(true);
+  // A server fault is shown, naming what failed — a page that only says nothing
+  // came back leaves people guessing. (4xx are the page's to explain.)
+  if (res.status >= 500) {
+    messages.error(`${requestLabel(path, options)} failed (${res.status})`, { key: `5xx:${requestLabel(path, options)}`, detail: res.error ?? `The server answered ${res.status}.`, source: 'api' });
+  }
   end(span, res.ok);
   return res;
+}
+
+/// What a request is, in a few words: its method and path, or the tool an MCP
+/// call (POST /message) runs.
+function requestLabel(path: string, options: RequestInit = {}): string {
+  const p = path.split('?')[0];
+  if (p === '/message' && typeof options.body === 'string') {
+    try { const b = JSON.parse(options.body); const n = b?.params?.name; if (n) return `${n}${b?.params?.arguments?.name ? ` ${b.params.arguments.name}` : ''}`; } catch { /* not JSON */ }
+  }
+  return `${(options.method ?? 'GET').toUpperCase()} ${p}`;
 }
 
 async function send<T = any>(
@@ -143,6 +158,22 @@ export async function login(email: string, password: string): Promise<ApiRespons
     method: 'POST',
     body: JSON.stringify({ email, password }),
   }, false);
+}
+
+/// First sign-in with a temporary password: prove it, set the new one, and sign in.
+export async function firstPassword(email: string, password: string, newPassword: string): Promise<ApiResponse<LoginResponse>> {
+  return request<LoginResponse>('/auth/first-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, new_password: newPassword }),
+  }, false);
+}
+
+/** Change your own password; the server checks the current one. */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse<{ ok: boolean }>> {
+  return request<{ ok: boolean }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
 }
 
 export async function signup(name: string, email: string, password: string): Promise<ApiResponse<LoginResponse>> {
@@ -275,8 +306,8 @@ export const resources = {
 };
 
 // ── Projects, orgs and profiles ──
-// All three are A3T flows (a3t/backend/flows/a3t): a3t-projects, a3t-orgs
-// and a3t-profile, over platform-DB tables. The flows decide who may see and
+// All three are A3T flows (a3t/backend/flows/a3t): flow_a3t_projects, flow_a3t_orgs
+// and flow_a3t_profile, over platform-DB tables. The flows decide who may see and
 // change what, from the caller's principal — the UI only asks.
 //
 // A personal project's namespace is <profile handle>-<name>; an org's is
@@ -307,10 +338,18 @@ export type OrgRole = 'member' | 'admin' | 'securityadmin';
 export type OrgInfo = {
   id: string; handle: string; display_name: string; created_at?: string;
   my_role: OrgRole | null; can_admin: boolean;
+  /// Sees its members and sign-in without changing them: SuperAdmin,
+  /// SecurityAdmin, the org's admins and security admins.
+  can_audit?: boolean;
   /// Where the org's flows run: its own runtimes only, or the shared ones.
   runtime: 'isolated' | 'shared';
-  members: { user_id: string; email?: string; name?: string; role: OrgRole }[];
+  /// Sign-in through the org's own identity provider (admins see it); null = off.
+  sso?: OrgSso | null;
+  /// `sso`: made at sign-in from the org's groups (rewritten each time);
+  /// `invite`: added here by an admin.
+  members: { user_id: string; email?: string; name?: string; role: OrgRole; source?: 'sso' | 'invite' }[];
 };
+export type OrgSso = { idp_alias: string; domains: string[]; role_map: Record<string, OrgRole>; default_role: 'member' | '' };
 export type ProfileInfo = { handle: string; user_id: string; email?: string; name?: string };
 
 /// Run one of the project flows; a flow's own refusal ({ ok: false, error })
@@ -325,16 +364,16 @@ async function projectFlow(name: string, input: Record<string, any>): Promise<{ 
 export const projectsApi = {
   /** Projects you can see (with your role), your profile, your orgs, and every
    *  namespace that is a project (to hide the ones you can't see). */
-  list: () => projectFlow('a3t-projects', { action: 'list' }),
+  list: () => projectFlow('flow_a3t_projects', { action: 'list' }),
   create: (p: { owner_kind: 'user' | 'org'; owner: string; name: string; display_name?: string; description?: string; private?: boolean }) =>
-    projectFlow('a3t-projects', { action: 'create', ...p }),
+    projectFlow('flow_a3t_projects', { action: 'create', ...p }),
   update: (namespace: string, changes: Partial<Pick<ProjectInfo, 'display_name' | 'description' | 'private' | 'members' | 'policy'>>) =>
-    projectFlow('a3t-projects', { action: 'update', namespace, ...changes }),
-  remove: (namespace: string) => projectFlow('a3t-projects', { action: 'delete', namespace }),
+    projectFlow('flow_a3t_projects', { action: 'update', namespace, ...changes }),
+  remove: (namespace: string) => projectFlow('flow_a3t_projects', { action: 'delete', namespace }),
   /** Move a personal project to an org. `dry_run` (the default) reports what
    *  would move and what outside the project refers to it. */
   move: (namespace: string, to_org: string, dry_run = true) =>
-    projectFlow('a3t-projects', { action: 'move', namespace, to_org, dry_run }),
+    projectFlow('flow_a3t_projects', { action: 'move', namespace, to_org, dry_run }),
 };
 
 /// Who else may use a project — read, clone, run, never change. `kind` labels
@@ -346,30 +385,32 @@ export type Exposure = { audience: 'none' | 'orgs' | 'public'; orgs?: string[]; 
 /// change the target.
 export const shareApi = {
   copy: (p: { kind: 'flow' | 'resource' | 'trigger'; from: string; name?: string; id?: string; to: string }) =>
-    projectFlow('a3t-share', p),
+    projectFlow('flow_a3t_share', p),
 };
 
 /// A flow's releases: list them, and roll the active one back or forward.
 export const releasesApi = {
-  versions: (namespace: string, name: string) => projectFlow('a3t-releases', { action: 'versions', namespace, name }),
-  activate: (namespace: string, name: string, version: string) => projectFlow('a3t-releases', { action: 'activate', namespace, name, version }),
+  versions: (namespace: string, name: string) => projectFlow('flow_a3t_releases', { action: 'versions', namespace, name }),
+  activate: (namespace: string, name: string, version: string) => projectFlow('flow_a3t_releases', { action: 'activate', namespace, name, version }),
 };
 
 export const profileApi = {
-  get: () => projectFlow('a3t-profile', { action: 'get' }),
-  claim: (handle: string, email?: string, name?: string) => projectFlow('a3t-profile', { action: 'claim', handle, email, name }),
+  get: () => projectFlow('flow_a3t_profile', { action: 'get' }),
+  claim: (handle: string, email?: string, name?: string) => projectFlow('flow_a3t_profile', { action: 'claim', handle, email, name }),
 };
 
 export const orgsApi = {
-  list: () => projectFlow('a3t-orgs', { action: 'list' }),
+  list: () => projectFlow('flow_a3t_orgs', { action: 'list' }),
   /** The creator becomes the org's first admin; email/name label that row. */
   create: (org: string, display_name: string, creator?: { email?: string; name?: string }) =>
-    projectFlow('a3t-orgs', { action: 'create', org, display_name, ...creator }),
-  remove: (org: string) => projectFlow('a3t-orgs', { action: 'delete', org }),
+    projectFlow('flow_a3t_orgs', { action: 'create', org, display_name, ...creator }),
+  remove: (org: string) => projectFlow('flow_a3t_orgs', { action: 'delete', org }),
   setMember: (org: string, user: { user_id: string; email?: string; name?: string }, role: OrgRole) =>
-    projectFlow('a3t-orgs', { action: 'set_member', org, role, ...user }),
-  removeMember: (org: string, user_id: string) => projectFlow('a3t-orgs', { action: 'remove_member', org, user_id }),
-  setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('a3t-orgs', { action: 'set_runtime', org, runtime }),
+    projectFlow('flow_a3t_orgs', { action: 'set_member', org, role, ...user }),
+  removeMember: (org: string, user_id: string) => projectFlow('flow_a3t_orgs', { action: 'remove_member', org, user_id }),
+  setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('flow_a3t_orgs', { action: 'set_runtime', org, runtime }),
+  /** Sign-in per org (.ai/A3T_ORG_SSO_SPEC.md); an empty idp_alias turns it off. */
+  setSso: (org: string, sso: OrgSso) => projectFlow('flow_a3t_orgs', { action: 'set_sso', org, ...sso }),
 };
 
 /// Everyone who can be added to an org or project: local users and, in EE, the
@@ -378,16 +419,20 @@ export type DirectoryUser = { id: string; email: string; name: string; source: '
 export async function loadDirectory(): Promise<DirectoryUser[]> {
   const out: DirectoryUser[] = [];
   try {
-    const local = await execFlow('a3t-users', 'a3t', { input: { action: 'list', org_id: 'org-default' } }, { silent: true });
+    const local = await execFlow('flow_a3t_users', 'a3t', { input: { action: 'list', org_id: 'org-default' } }, { silent: true });
     const rows = Array.isArray(local.data) ? local.data : (local.data?.rows ?? []);
-    for (const u of rows) if (u?.id) out.push({ id: u.id, email: u.email ?? '', name: u.name ?? '', source: 'local' });
+    // One entry per id: an install that seeded twice has duplicate rows.
+    for (const u of rows) if (u?.id && !out.some((x) => x.id === u.id)) out.push({ id: u.id, email: u.email ?? '', name: u.name ?? '', source: 'local' });
   } catch { /* not allowed, or no local users */ }
   try {
-    const sso = await idp.users();
+    // The full IdP list is InfoSec's; a project owner or org admin gets the
+    // narrower directory (id, name, email) to pick members from.
+    let sso = await idp.users();
+    if (!sso.ok && sso.status === 403) sso = await request('/directory/users', { method: 'GET' });
     for (const u of sso.ok ? (sso.data?.users ?? []) : []) {
       if (u?.id && !out.some((x) => x.email && x.email === u.email)) out.push({ id: u.id, email: u.email ?? u.username ?? '', name: u.name ?? u.username ?? '', source: 'sso' });
     }
-  } catch { /* CE, or not an admin */ }
+  } catch { /* CE, or no one to pick from */ }
   return out;
 }
 
@@ -428,8 +473,9 @@ export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' |
 // ── Audit / decision log (EE — the Cedar allow/deny record) ──
 export const audit = {
   /** Most-recent authorization decisions, newest-first. */
-  recent: (limit = 100, denialsOnly = false) =>
-    request(`/security/audit?limit=${limit}${denialsOnly ? '&denials_only=true' : ''}`, { method: 'GET' }),
+  /// `project`: that project's decisions; '-' the platform-wide ones; absent all.
+  recent: (limit = 100, denialsOnly = false, project?: string) =>
+    request(`/security/audit?limit=${limit}${denialsOnly ? '&denials_only=true' : ''}${project ? `&project=${encodeURIComponent(project)}` : ''}`, { method: 'GET' }),
 };
 
 export const state = {
@@ -441,6 +487,11 @@ export const state = {
 // ── EE security policies (Cedar) ──
 // Cedar policies are stored as `type: cedar` registry resources; the operate
 // surface (list/reload/test) is served by flowr-server's /security/policies*.
+/** The flows and resources that name a resource (`<ns>/<name>`), among those you can see. */
+export const resourceUsedBy = (ns: string, name: string) =>
+  request<{ flows: { namespace: string; name: string; version: string }[]; resources: { namespace: string; name: string; type: string }[] }>(
+    `/registry/resources/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/used-by`, { method: 'GET' });
+
 export interface PolicyTestBody {
   principal: { kind: string; user_id?: string; roles?: string[]; agent_id?: string; service_id?: string };
   action: string;
@@ -448,6 +499,8 @@ export interface PolicyTestBody {
   attributes?: Record<string, any>;
   draft_policies?: string[];
   include_registry?: boolean;
+  /** The project the draft would be saved in (none: a platform policy). */
+  draft_namespace?: string;
 }
 /** Public edition probe — {edition:'ce'|'ee', enforcing, policy_hook, features}. */
 export const getEdition = () => request('/edition', { method: 'GET' }, false);
@@ -533,6 +586,16 @@ export const canvasApi = {
     request(`/registry/resources/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   /** List flows + agents (palette for the designer). */
   flows: () => request('/registry/resources?type=workflow', { method: 'GET' }),
+  /** Every registry resource — what a canvas can depend on. */
+  resources: () => request('/registry/resources', { method: 'GET' }),
+};
+
+/** Files: browse a storage resource (s3, minio, gcs, azure, ftp) — read only. */
+export const storageApi = {
+  list: (ns: string, name: string, prefix = '') =>
+    request(`/storage/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/list?prefix=${encodeURIComponent(prefix)}`, { method: 'GET' }),
+  preview: (ns: string, name: string, path: string) =>
+    request(`/storage/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/preview?path=${encodeURIComponent(path)}`, { method: 'GET' }),
 };
 
 // ── EE IdP administration (Keycloak) ──
@@ -542,6 +605,73 @@ export interface IdpNewUser {
 export interface IdpUpdateUser {
   name?: string; email?: string; enabled?: boolean; password?: string; temporary?: boolean; roles?: string[];
 }
+/** A SuperAdmin acting as a user or a role: a short-lived token for them
+ *  (FlowR impersonate.rs; the decision log records the SuperAdmin too). */
+export const impersonateApi = (body: { user_id: string } | { role: string }) =>
+  request<{ access_token: string; expires_in: number; user: { id: string; email: string; name: string; role: string; org_id: string }; act: { sub: string; email: string } }>(
+    '/auth/impersonate', { method: 'POST', body: JSON.stringify(body) });
+
+/** One way someone reaches a project (see flowr-server people.rs). */
+export type PeopleCapacity = 'owner' | 'developer' | 'operator' | 'viewer' | 'org-admin' | 'org-securityadmin' | 'org-member' | 'superadmin' | 'security-admin' | 'exposed';
+export interface ProjectPerson { id: string; email: string; name: string; account: boolean; access: 'write' | 'run' | 'read' | 'audit'; capacities: PeopleCapacity[]; you: boolean }
+export interface ProjectPeople {
+  namespace: string; kind: 'personal' | 'org' | 'platform' | 'legacy'; owner: string; private: boolean;
+  you: { capacities: PeopleCapacity[]; access: string; sees_all: boolean };
+  total: number; offset: number; people: ProjectPerson[];
+  groups: { group: string; capacity: 'everyone' | 'exposed'; access: string }[];
+  idp_error?: string | null;
+}
+export interface AuditPerson {
+  id: string; email: string; name: string; enabled: boolean; account: boolean; roles: string[]; realm_roles: string[];
+  orgs: { org: string; role: string }[];
+  projects: { namespace: string; access: string; capacities: PeopleCapacity[] }[];
+}
+export interface AuditPeople {
+  count: number; users: AuditPerson[];
+  projects: { namespace: string; kind: string; owner: string; private: boolean; everyone: boolean; people: number }[];
+  orgs: string[]; org?: string | null; idp_error?: string | null;
+}
+export const people = {
+  /** Who can reach a project, and how — what you see depends on your place in it. */
+  ofProject: (ns: string, opts: { q?: string; capacity?: string; offset?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== '') qs.set(k, String(v));
+    const tail = qs.toString();
+    return request<ProjectPeople>(`/projects/${encodeURIComponent(ns)}/people${tail ? `?${tail}` : ''}`, { method: 'GET' });
+  },
+  /** Everyone, their platform roles, orgs and project access (SuperAdmin / SecurityAdmin);
+   *  with `org`, that org's members and who reaches its projects (also its own
+   *  admins and security admins; no platform roles then). */
+  audit: (org?: string) => request<AuditPeople>(`/security/people${org ? `?org=${encodeURIComponent(org)}` : ''}`, { method: 'GET' }),
+};
+
+/// An org's policy files (policies/, roles/, access/ YAML), kept as files in
+/// A3T's database: every save is a version; each file is switched on or off.
+export interface OrgPolicyFile { path: string; kind: string; content: string; version: string; updated_at: string; enforced: boolean }
+export interface OrgPolicyFiles { org: string; projects: string[]; files: OrgPolicyFile[] }
+export interface OrgPolicyFileDetail {
+  org: string; path: string;
+  file: { kind: string; content: string; version: string; updated_at: string; enforced: boolean } | null;
+  history: { version: string; action: 'create' | 'save' | 'delete' | 'on' | 'off' | string; content: string; by: string; at: string }[];
+}
+/// A check of the org's enforced files with drafts in place: nothing is saved.
+export interface OrgPolicyCheck { ok: boolean; checked: string[]; errors?: string[]; compiled?: any }
+const orgBase = (org: string) => `/security/orgs/${encodeURIComponent(org)}`;
+export const orgPolicy = {
+  files: (org: string) => request<OrgPolicyFiles>(`${orgBase(org)}/files`, { method: 'GET' }),
+  file: (org: string, path: string) => request<OrgPolicyFileDetail>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'GET' }),
+  /// Saved only if the org's enforced files still work with it (422 + `errors` otherwise).
+  save: (org: string, path: string, content: string) =>
+    request<{ path: string; version: string; changed: boolean; enforced: boolean }>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  remove: (org: string, path: string) => request(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  validate: (org: string, files: { path: string; content: string }[] = [], removed: string[] = []) =>
+    request<OrgPolicyCheck>(`${orgBase(org)}/validate`, { method: 'POST', body: JSON.stringify({ files, removed }) }),
+  /// Which files are enforced (the rest stay kept, switched off). Refused
+  /// (422, `errors`) if those files don't work on their own.
+  setEnforced: (org: string, enforced: string[]) =>
+    request<{ org: string; enforced: number; off: number; switched: number; errors?: string[] }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+};
+
 export const idp = {
   /** Is Keycloak admin configured + reachable? */
   status: () => request('/security/idp/status', { method: 'GET' }),
@@ -564,9 +694,113 @@ export const idp = {
 
 import { messages } from '$lib/core/status/messages';
 
-import { actionKind, begin, end, reached, requestKind } from '$lib/core/status/activity';
+import { actionKind, begin, end, openConnection, reached, requestKind } from '$lib/core/status/activity';
 
 // ── Shared exec helper: execute_flow + poll for result ──
+
+/// A failure the A3T base handled (UX ST-1) reaches the console as the engine's
+/// text, e.g. "Workflow execution failed. … - Error: raised error
+/// [https://a3t.io/errors/input]: Couldn't do that: name is required". Show the
+/// person only the plain message; anything else is returned unchanged.
+export function plainError(raw: string): string {
+  const m = /raised error \[https:\/\/a3t\.io\/errors\/[a-z]+\]: ([\s\S]*)$/.exec(raw ?? '');
+  return m ? m[1].trim() : raw;
+}
+
+// ── The A3T control plane: platform flows are tools of the A3T agents ──
+// Plan "A3T control plane as A3T agents": the dash reads and changes A3T through
+// the A3T agents' tools (FlowR AT-1, POST /agents/{agent}/tools/{tool}), not by
+// running platform flows itself. A call still names the flow and its action; this
+// table says which agent owns the flow and how the tool is named
+// (tool_a3t_<object>_<action>). `wrap`: the flow reads its arguments from `.input`.
+const A3T_TOOLS: Record<string, { agent: string; obj: string; wrap: boolean; dflt?: string }> = {
+  flow_a3t_agents: { agent: 'agent_a3t_agents', obj: 'agent', wrap: true },
+  flow_a3t_agent_control: { agent: 'agent_a3t_agents', obj: 'agent', wrap: false },
+  flow_a3t_templates: { agent: 'agent_a3t_templates', obj: 'template', wrap: true },
+  flow_a3t_projects: { agent: 'agent_a3t_projects', obj: 'project', wrap: false, dflt: 'list' },
+  flow_a3t_orgs: { agent: 'agent_a3t_projects', obj: 'org', wrap: false, dflt: 'list' },
+  flow_a3t_profile: { agent: 'agent_a3t_projects', obj: 'profile', wrap: false, dflt: 'get' },
+  flow_a3t_users: { agent: 'agent_a3t_projects', obj: 'user', wrap: true },
+  flow_a3t_resources: { agent: 'agent_a3t_resources', obj: 'resource', wrap: true },
+  flow_a3t_settings: { agent: 'agent_a3t_resources', obj: 'setting', wrap: true },
+  flow_a3t_canvas: { agent: 'agent_a3t_runtime', obj: 'canvas', wrap: true },
+  flow_a3t_releases: { agent: 'agent_a3t_runtime', obj: 'release', wrap: false, dflt: 'versions' },
+  flow_a3t_audit: { agent: 'agent_a3t_governance', obj: 'audit', wrap: true },
+  flow_a3t_early_access: { agent: 'agent_a3t_governance', obj: 'early_access', wrap: true, dflt: 'list' },
+  flow_a3t_knowledge: { agent: 'agent_a3t_knowledge', obj: 'knowledge', wrap: true },
+};
+/// Flows that are one tool, whatever their input.
+const A3T_ONE_TOOL: Record<string, { agent: string; tool: string }> = {
+  flow_a3t_error_log: { agent: 'agent_a3t_governance', tool: 'tool_a3t_error_list' },
+  flow_a3t_share: { agent: 'agent_a3t_runtime', tool: 'tool_a3t_share' },
+  flow_a3t_resource_test: { agent: 'agent_a3t_resources', tool: 'tool_a3t_resource_test' },
+};
+
+/// The agent, tool and arguments for a call to a platform flow, or null when the
+/// flow is not one of the A3T agents' tools.
+export function a3tToolFor(flow: string, input: any): { agent: string; tool: string; args: Record<string, any> } | null {
+  const one = A3T_ONE_TOOL[flow];
+  if (one) {
+    const { action: _a, ...args } = (input?.input ?? input ?? {}) as Record<string, any>;
+    return { agent: one.agent, tool: one.tool, args };
+  }
+  const m = A3T_TOOLS[flow];
+  if (!m) return null;
+  const src = ((m.wrap ? input?.input : input) ?? {}) as Record<string, any>;
+  const { action, ...args } = src;
+  const act = (action as string | undefined) ?? m.dflt;
+  if (!act) return null;
+  let tool = `tool_a3t_${m.obj}_${act}`;
+  if (flow === 'flow_a3t_agents' && act === 'create') tool = 'tool_a3t_agent_record_create';
+  if (flow === 'flow_a3t_agent_control' && act === 'get') tool = 'tool_a3t_agent_describe';
+  return { agent: m.agent, tool, args };
+}
+
+/// Call one of an agent's tools on its control plane (AT-1). Answers the tool's output.
+/// An agent's memory space, versions and memory branches (FlowR's /agents/{id}/…).
+/// The space is the namespace its memory lives in on the org's ADB — the agent's
+/// id, where the core agent keeps it; versions and branches need it registered.
+export type AgentSecurity = {
+  agent_id: string; project: string; version: string | null;
+  reach: { hosts?: string[]; mcp?: string[]; llm?: string[]; memory?: string[]; subflows?: string[] } | null;
+  bound_to: { model: any; mcp_servers: any; enabled_tools: any };
+  policy: { set: boolean; rules: string[]; source: string | null; updated_by: string | null };
+  note: string;
+};
+export type CatalogueEntry = { id: string; label: string; tools?: string[]; actions?: string[]; enforced_by?: string; note?: string };
+/** Every permission a rule can name (a3t/policies/catalogue.yaml). */
+export const securityCatalogue = () => request<{ verbs: Record<string, string>; permissions: CatalogueEntry[] }>('/security/catalogue');
+
+const ag = (id: string, rest = '') => `/agents/${encodeURIComponent(id)}${rest}`;
+export const agentSpaceApi = {
+  memory: (id: string) => request<{ namespace: string | null; own: boolean; resource: string }>(ag(id, '/memory')),
+  register: (id: string) => request(ag(id, '/memory'), { method: 'PUT', body: JSON.stringify({ namespace: id }) }),
+  versions: (id: string) => request<{ versions: AgentVersion[] }>(ag(id, '/versions')),
+  makeVersion: (id: string, note: string) => request<AgentVersion>(ag(id, '/versions'), { method: 'POST', body: JSON.stringify({ note }) }),
+  branches: (id: string) => request<{ branches: MemoryBranch[] }>(ag(id, '/branches')),
+  branch: (id: string, name: string) => request<MemoryBranch>(ag(id, '/branches'), { method: 'POST', body: JSON.stringify({ name }) }),
+  dropBranch: (id: string, name: string) => request(ag(id, `/branches/${encodeURIComponent(name)}`), { method: 'DELETE' }),
+  conflicts: (id: string, name: string) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/conflicts`)),
+  merge: (id: string, name: string, body: Record<string, unknown>) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/merge`), { method: 'POST', body: JSON.stringify(body) }),
+  /// Its keys: tokens for its data plane. A new key is returned once (`key`).
+  keys: (id: string) => request<{ keys: AgentKey[] }>(ag(id, '/keys')),
+  makeKey: (id: string, name: string) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name }) }),
+  revokeKey: (id: string, keyId: string) => request(ag(id, `/keys/${encodeURIComponent(keyId)}`), { method: 'DELETE' }),
+  /** The agent's security profile: what it reaches, what it is bound to, its own rules. */
+  security: (id: string) => request<AgentSecurity>(ag(id, '/security')),
+  /** Save the agent's own policy (a kind: a3t/policy file); checked before it is saved. */
+  savePolicy: (id: string, policy: string) => request<{ rules: string[] }>(ag(id, '/policy'), { method: 'PUT', body: JSON.stringify({ policy }) }),
+  dropPolicy: (id: string) => request(ag(id, '/policy'), { method: 'DELETE' }),
+  promote: (id: string, name: string, newAgent: { id: string; name: string }) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/promote`), { method: 'POST', body: JSON.stringify({ new_agent: newAgent }) }),
+};
+export interface AgentVersion { version: string; template: { id: string; version: string }; memory: { namespace: string; tag: string } | null; note: string; created_by: string; created_at: string }
+export interface AgentKey { id: string; name: string; prefix: string; created_by: string; created_at: string; last_used_at: string; revoked_at: string }
+export interface MemoryBranch { id: string; name: string; parent: string; created_by: string; point_ts: number }
+
+export async function agentTool(agent: string, tool: string, args: Record<string, any> = {}): Promise<ApiResponse> {
+  const r = await request<any>(`/agents/${encodeURIComponent(agent)}/tools/${encodeURIComponent(tool)}`, { method: 'POST', body: JSON.stringify(args) });
+  return r.ok ? { ...r, data: r.data?.output } : r;
+}
 
 export async function execFlow(
   flowName: string,
@@ -579,8 +813,8 @@ export async function execFlow(
   const silent = opts.silent ?? false;
 
   // Remap per-action flow names to consolidated CRUD flows
-  // e.g. "a3t-templates-list" → flow "a3t-templates" with input.action = "list"
-  const actionMatch = flowName.match(/^(a3t-(?:templates|agents|canvas|resources|users|audit))-(list|get|create|update|delete)$/);
+  // e.g. "flow_a3t_templates-list" → flow "flow_a3t_templates" with input.action = "list"
+  const actionMatch = flowName.match(/^(flow_a3t_(?:templates|agents|canvas|resources|users|audit))-(list|get|create|update|delete)$/);
   let actualFlowName = flowName;
   let actualInput = input;
   if (actionMatch) {
@@ -591,6 +825,18 @@ export async function execFlow(
     }
   }
 
+  // A platform flow is a tool of an A3T agent: call it there.
+  const routed = a3tToolFor(actualFlowName, actualInput);
+  if (routed) {
+    const r = await agentTool(routed.agent, routed.tool, routed.args);
+    if (!r.ok) {
+      const err = plainError(r.error ?? `${routed.tool} failed`);
+      if (!silent) messages.error(err, { source: flowName });
+      return { ok: false, error: err };
+    }
+    return { ok: true, data: r.data };
+  }
+
   // One span over the whole call: the polls in between keep it busy.
   const span = begin(actionKind(actualInput?.input?.action));
 
@@ -599,7 +845,7 @@ export async function execFlow(
     const execRes = await mcpCall('execute_flow', { name: actualFlowName, namespace, input: actualInput });
     if (!execRes.ok) {
       end(span, false);
-      const err = execRes.error ?? `Failed to execute ${flowName}`;
+      const err = plainError(execRes.error ?? `Failed to execute ${flowName}`);
       if (!silent) messages.error(err, { source: flowName });
       return { ok: false, error: err };
     }
@@ -652,7 +898,7 @@ export async function execFlow(
       }
       if (d?.status === 'Failed' || d?.status === 'failed') {
         end(span, false);
-        const err = d.error ?? `${flowName} failed`;
+        const err = plainError(d.error ?? `${flowName} failed`);
         if (!silent) messages.error(err, { source: flowName });
         return { ok: false, error: err };
       }
@@ -692,6 +938,8 @@ export function streamChat(
   afterSeq = 0,
 ): { close: () => void } {
   const ctrl = new AbortController();
+  const closeConn = openConnection();
+  ctrl.signal.addEventListener('abort', closeConn);
 
   (async () => {
     try {
@@ -739,6 +987,8 @@ export function streamChat(
       dispatch();
     } catch {
       // Aborted or network drop — the caller falls back to polling + rehydration.
+    } finally {
+      closeConn();
     }
   })();
 

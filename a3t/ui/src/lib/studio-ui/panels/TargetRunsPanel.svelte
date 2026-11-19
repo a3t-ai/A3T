@@ -12,7 +12,7 @@
 {#if !doc}
   <div class="note">Open a trigger to see the runs it starts.</div>
 {:else if !target}
-  <div class="note">{doc.data ? 'This trigger starts no flow.' : 'Loading…'}</div>
+  <div class="note">{doc.data ? 'This trigger starts no flow.' : ''}</div>
 {:else}
   <!-- Keyed on the last fire too, so the runs it started load. -->
   {#key `${ns}/${target.name}/${doc.ui.fired?.at ?? ''}`}

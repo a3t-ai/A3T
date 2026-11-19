@@ -53,12 +53,12 @@
 {#if !doc}
   <div class="note">Open an agent.</div>
 {:else if !doc.loaded}
-  <div class="note">Loading…</div>
+  <!-- the header bar shows loading -->
 {:else if doc.error}
   <div class="err">{doc.error}</div>
 {:else}
   <div class="af">
-    <div class="head"><span class="title">{doc.isNew ? 'New agent' : 'Agent'}</span><span class="grow"></span><SaveBar {doc} {workspace} valid={!need.length} /></div>
+    <div class="head"><span class="title">{doc.isNew ? 'New agent' : 'Agent'}</span><span class="grow"></span><SaveBar {doc} {workspace} valid={!need.length} panel /></div>
     <div class="body">
       {#key doc.address}
         {#if doc.isNew}
@@ -115,7 +115,7 @@
 
         <section>
           <h4>Serving</h4>
-          <label><span>Chat flow (target)</span><input value={value.serving?.target ?? ''} oninput={(e) => edit(['serving', 'target'], e.currentTarget.value)} placeholder="a3t/a3t-chat-engine" /></label>
+          <label><span>Chat flow (target)</span><input value={value.serving?.target ?? ''} oninput={(e) => edit(['serving', 'target'], e.currentTarget.value)} placeholder="a3t/tmpl_a3t_agent" /></label>
           <label><span>Endpoint path</span><input value={value.serving?.ep_path ?? ''} oninput={(e) => edit(['serving', 'ep_path'], e.currentTarget.value)} placeholder="/agent/<id>/chat" /></label>
         </section>
       {/key}

@@ -76,9 +76,11 @@
         <div class="ps-empty">No project matches “{query}”.</div>
       {/each}
       <div class="ps-sep"></div>
+      {#if $userRole !== 'viewer'}
       <button class="ps-item ps-new" onclick={() => { open = false; navigateTo('projects', 'Projects', { create: true }); }}>
         <span class="ps-name">+ New project</span>
       </button>
+      {/if}
       <button class="ps-item" onclick={() => { open = false; navigateTo('projects', 'Projects'); }}>
         <span class="ps-name">Manage projects…</span>
       </button>

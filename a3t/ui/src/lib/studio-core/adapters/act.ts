@@ -12,7 +12,7 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 export const chat = (project: string, name: string, messages: ChatMessage[]): Promise<Result<string>> =>
   safely('chat', async () => {
     const last = messages[messages.length - 1]?.content ?? '';
-    const r = result<any>(await execFlow('a3t-test-resource', 'a3t', {
+    const r = result<any>(await execFlow('flow_a3t_resource_test', 'a3t', {
       input: { test_type: 'llm', resource: `${project}/${name}`, message: last, messages: messages.slice(0, -1) },
     }), 'Chat');
     if (!r.ok) return r;
@@ -24,7 +24,7 @@ export type Tool = { name: string; description: string; inputSchema?: any };
 
 export const listTools = (project: string, name: string): Promise<Result<Tool[]>> =>
   safely('list tools', async () => {
-    const r = result<any>(await execFlow('a3t-test-resource', 'a3t', { input: { test_type: 'mcp', resource: `${project}/${name}` } }), 'List tools');
+    const r = result<any>(await execFlow('flow_a3t_resource_test', 'a3t', { input: { test_type: 'mcp', resource: `${project}/${name}` } }), 'List tools');
     if (!r.ok) return r;
     // `{ tools: [...] }`, or the list itself; anything else is the server's message.
     const list = rows(r.data, 'tools');
@@ -36,7 +36,7 @@ export const listTools = (project: string, name: string): Promise<Result<Tool[]>
 /// Calling a tool runs it for real: it may change things on the server it belongs to.
 export const callTool = (project: string, name: string, tool: string, args: unknown): Promise<Result<unknown>> =>
   safely('call tool', async () => {
-    const r = result<any>(await execFlow('a3t-test-resource', 'a3t', {
+    const r = result<any>(await execFlow('flow_a3t_resource_test', 'a3t', {
       input: { test_type: 'mcp_call', resource: `${project}/${name}`, tool, arguments: args ?? {} },
     }), `Call ${tool}`);
     return r;

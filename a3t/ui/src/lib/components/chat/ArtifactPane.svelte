@@ -13,15 +13,15 @@
   import FlowEditorPane from '$lib/components/editor/FlowEditorPane.svelte';
   import JsonForm from './JsonForm.svelte';
   import YamlEditor from '$lib/components/editor/YamlEditor.svelte';
-  import { ARTIFACTS, toEditorText, idArgsFor, type ArtifactKind } from './artifacts';
+  import { ARTIFACTS, toEditorText, idArgsFor, appLinkFor, initialSection, type ArtifactKind } from './artifacts';
 
-  let { artifact, revision, onclose, onapplied, onsection, onask, onedit }: {
+  let { artifact, revision, onclose, onapplied, onsection, onask, onedit, onopenapp }: {
     artifact: { kind: ArtifactKind; namespace: string; name: string; text: string; id?: string };
     /// A newer version of the *same* artifact produced by the agent. Applied in
     /// place so a revision refreshes this pane instead of requiring the user to
     /// open a second card — unless they have unsaved edits, which are never
     /// silently discarded.
-    revision?: { text: string; seq: number } | null;
+    revision?: { text: string; seq: number; edit?: string } | null;
     onclose?: () => void;
     onapplied?: (summary: string) => void;
     onsection?: (section: string) => void;
@@ -31,16 +31,25 @@
     /// saw the registry copy and would answer about a flow the user had already
     /// changed.
     onedit?: (state: { text: string; dirty: boolean }) => void;
+    /// Open the item in its own app (Agents, Templates…), where it is the app's
+    /// selected item. The host decides what happens to this pane.
+    onopenapp?: (link: { type: string; title: string; id: string }) => void;
   } = $props();
+  const appLink = $derived(appLinkFor(artifact));
 
   const spec = $derived(ARTIFACTS[artifact.kind]);
   let text = $state(artifact.text);
-  let section = $state('graph');
+  // What is on screen. The host mounts one pane per item, so this is set once.
+  let section = $state(initialSection(untrack(() => artifact.kind)));
   let saving = $state(false);
   let confirmedOverwrite = $state(false);
   let baseText = $state(artifact.text);
   let appliedSeq = $state(0);
   let offered = $state<{ text: string; seq: number } | null>(null);
+  /// An edit the agent made to the buffer (`propose_edit`): applied straight to
+  /// the editor, unsaved, with the user's previous text kept for Undo.
+  let agentEdit = $state<{ summary: string; before: string } | null>(null);
+  let mount = $state(0);
   const dirty = $derived(text !== baseText);
   let status = $state<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
@@ -98,7 +107,7 @@
     if (key === loadedKey) return;
     loadedKey = key;
     text = artifact.text; baseText = artifact.text;
-    offered = null; confirmedOverwrite = false; status = null;
+    offered = null; agentEdit = null; confirmedOverwrite = false; status = null;
     // JSON artifacts open on their form; flows on the graph.
     jsonView = 'form';
     if (artifact.kind === 'agent') { specFetched = true; loadAgentSpec(artifact.text); }
@@ -122,6 +131,13 @@
       if (rev.seq === appliedSeq) return;
       appliedSeq = rev.seq;
       if (rev.text === text) return;
+      if (rev.edit !== undefined) {
+        // The agent edited what is on screen, starting from this very buffer
+        // (it was sent with the turn), so apply it — but leave it unsaved.
+        agentEdit = { summary: rev.edit, before: text };
+        text = rev.text; offered = null; status = null;
+        return;
+      }
       if (dirty) {
         // Editing in the pane wins until the user chooses; losing typed work to a
         // background refresh would be worse than a stale view.
@@ -132,6 +148,11 @@
       }
     });
   });
+
+  function undoAgentEdit() {
+    if (!agentEdit) return;
+    text = agentEdit.before; agentEdit = null; mount += 1;
+  }
 
   function takeRevision() {
     if (!offered) return;
@@ -200,7 +221,7 @@
     saving = false;
     if (res.ok) {
       status = { kind: 'ok', text: 'Saved' };
-      baseText = text;
+      baseText = text; agentEdit = null;
       onapplied?.(spec.draft
         ? `I reviewed and saved the draft as ${artifact.namespace}/${artifact.name}. It is now in the registry.`
         : `I updated the ${spec.label} ${artifact.namespace}/${artifact.name} in the editor. Re-read it before making further changes.`);
@@ -211,26 +232,44 @@
 </script>
 
 <div class="pane">
+  <!-- The item's header row, like every item in Details: what it is, then its
+       actions — Save last. Closing belongs to the pop-in, not the item. -->
   <div class="pane-head">
-    <div class="pane-id-inline"><span class="pane-kind">{spec.label}</span>{artifact.namespace}/{artifact.name}</div>
+    <span class="pane-icon" aria-hidden="true">{spec.label.slice(0, 2).toUpperCase()}</span>
+    <div class="pane-id">
+      <div class="pane-crumb">{spec.draft ? 'draft · not saved' : spec.label} · {artifact.namespace}</div>
+      <div class="pane-name">{artifact.name}{#if dirty}<span class="pane-unsaved">unsaved</span>{/if}</div>
+    </div>
     <div class="pane-actions">
       <button class="pbtn" onclick={() => onask?.(`About ${spec.label} ${artifact.namespace}/${artifact.name} (${section}): `)} title="Ask the agent about this">Ask to change…</button>
+      {#if appLink && onopenapp}
+        <button class="pbtn" onclick={() => onopenapp?.(appLink)} title="Open it in {appLink.title}, as that app's selected item">Open in {appLink.title}</button>
+      {/if}
+      {#if artifact.kind !== 'flow_draft'}
+        <button class="pbtn" title="Open in Studio"
+          onclick={() => openInStudio(artifact.kind as Exclude<ArtifactKind, 'flow_draft'>, artifact.namespace, artifact.name, artifact.id)}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 3h4v4M13 3L7 9M11 9v4H3V5h4" /></svg>
+          Open in Studio
+        </button>
+      {/if}
       {#if spec.save && artifact.kind !== 'canvas'}
         <button class="pbtn primary" onclick={save} disabled={saving}>
           {saving ? 'Saving…' : (spec.draft ? 'Save to registry' : 'Save')}
         </button>
       {/if}
-      {#if artifact.kind !== 'flow_draft'}
-        <button class="pbtn" title="Open in Studio"
-          onclick={() => openInStudio(artifact.kind as Exclude<ArtifactKind, 'flow_draft'>, artifact.namespace, artifact.name, artifact.id)}>↗</button>
-      {/if}
-      <button class="pbtn" onclick={() => onclose?.()} title="Close">✕</button>
     </div>
   </div>
   {#if artifact.kind === 'canvas'}
     <!-- Runtime choice and deploy live with the canvas they apply to. Requests
          go to the agent, so the same gates and approvals apply. -->
     <CanvasDeployBar namespace={artifact.namespace} name={artifact.name} {text} onrequest={(m) => onapplied?.(m)} />
+  {/if}
+  {#if agentEdit}
+    <div class="pane-revision">
+      <span>The agent changed the editor{agentEdit.summary ? `: ${agentEdit.summary}` : ''}. Not saved — review it, then Save.</span>
+      <button class="pbtn" onclick={undoAgentEdit}>Undo</button>
+      <button class="pbtn" onclick={() => (agentEdit = null)}>Keep</button>
+    </div>
   {/if}
   {#if offered}
     <div class="pane-revision">
@@ -241,7 +280,7 @@
   {/if}
   {#if status}<div class="pane-status {status.kind}">{status.text}</div>{/if}
   <div class="pane-editor">
-    {#key `${artifact.kind}:${artifact.namespace}/${artifact.name}:${appliedSeq}`}
+    {#key `${artifact.kind}:${artifact.namespace}/${artifact.name}:${appliedSeq}:${mount}`}
       {#if artifact.kind === 'canvas'}
         <!-- A canvas gets the canvas designer: Script and Form views, with a live
              placement preview. Shared presets open READ-ONLY — they are reused by
@@ -267,7 +306,6 @@
           initialYaml={text}
           onchange={(v) => (text = v)}
           singleColumn
-          showAi={false}
           onsection={(sec) => { section = sec; onsection?.(sec); }}
         />
         </div>
@@ -277,12 +315,12 @@
         <div class="pane-tabs">
           {#if artifact.kind === 'agent'}
             <button class="pane-tab" class:active={jsonView === 'graph'}
-                    onclick={() => { jsonView = 'graph'; onsection?.('graph'); }}>Graph</button>
+                    onclick={() => { jsonView = 'graph'; section = 'graph'; onsection?.('graph'); }}>Graph</button>
           {/if}
           <button class="pane-tab" class:active={jsonView === 'form'}
-                  onclick={() => { jsonView = 'form'; onsection?.('form'); }}>Form</button>
+                  onclick={() => { jsonView = 'form'; section = 'form'; onsection?.('form'); }}>Form</button>
           <button class="pane-tab" class:active={jsonView === 'code'}
-                  onclick={() => { jsonView = 'code'; onsection?.('code'); }}>Code</button>
+                  onclick={() => { jsonView = 'code'; section = 'code'; onsection?.('code'); }}>Code</button>
         </div>
         <div class="pane-tabbed">
           {#if jsonView === 'graph'}
@@ -290,11 +328,11 @@
               <!-- The template's definition, read-only: editing the agent means
                    editing its bindings (Form), not the template it is built from. -->
               <div class="pane-fill">
-                <FlowEditorPane initialYaml={agentSpec} singleColumn showAi={false} readOnly />
+                <FlowEditorPane initialYaml={agentSpec} singleColumn readOnly />
               </div>
             {:else}
               <div class="pane-hint">
-                {agentSpecState === 'loading' ? 'Loading the agent’s template…'
+                {agentSpecState === 'loading' ? ''
                   : 'This agent has no template to draw — open its template directly.'}
               </div>
             {/if}
@@ -313,24 +351,24 @@
   /* `min-height: 0` matters as much as min-width: as a grid item this would
      otherwise be sized by its content, pushing the row past the viewport. */
   .pane { display: flex; flex-direction: column; height: 100%;
-          min-width: 0; min-height: 0; overflow: hidden;
-          border-left: 1px solid var(--border); background: var(--bg-surface); }
-  .pane-head { display: flex; align-items: center; justify-content: space-between;
-               gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  .pane-id-inline { display: flex; align-items: center; gap: 7px; min-width: 0;
-                    font-family: var(--font-mono); font-size: 12px; color: var(--text-2);
-                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pane-kind.draft { border-color: var(--ephemeral, #7c5cff); color: var(--ephemeral, #7c5cff); }
-  .pane-unsaved { font-family: var(--font-sans); font-size: 10px; color: var(--ephemeral, #7c5cff);
-                  border: 1px dashed var(--ephemeral, #7c5cff); border-radius: 4px; padding: 1px 5px; }
-  .pane-kind { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em;
-               color: var(--text-3); border: 1px solid var(--border); border-radius: 4px;
-               padding: 1px 5px; font-family: var(--font-sans); }
-  .pane-actions { display: flex; gap: 5px; flex-shrink: 0; }
-  .pbtn { font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 5px;
-          border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-2); }
-  .pbtn:hover { color: var(--text-1); border-color: var(--border-strong); }
-  .pbtn.primary { background: var(--text-1); color: var(--bg-page); border-color: var(--text-1); }
+          min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-surface); }
+  .pane-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+               padding: 12px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+  .pane-icon { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; display: inline-flex;
+               align-items: center; justify-content: center; font: 600 11px var(--font-sans);
+               color: #fff; background: var(--spec, #5530a8); }
+  .pane-id { flex: 1 1 180px; min-width: 0; }
+  .pane-crumb { font: 400 11.5px var(--font-mono); color: var(--text-3); }
+  .pane-name { font: 400 18px/1.25 var(--font-serif); color: var(--text-1); display: flex; align-items: center; gap: 8px;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pane-unsaved { font: 500 10px var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase;
+                  color: var(--ephemeral, #b45309); border: 1px dashed currentColor; border-radius: 4px; padding: 0 5px; }
+  .pane-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pbtn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; cursor: pointer;
+          border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface);
+          font: 500 13px var(--font-sans); color: var(--text-1); white-space: nowrap; }
+  .pbtn:hover { background: var(--bg-subtle); }
+  .pbtn.primary { background: var(--green, #1a7158); color: #fff; border-color: var(--green, #1a7158); }
   .pbtn:disabled { opacity: 0.5; cursor: not-allowed; }
   .pane-revision { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
                    padding: 6px 10px; font-size: 11.5px; color: var(--text-2);
