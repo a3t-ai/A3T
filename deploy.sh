@@ -156,6 +156,9 @@ step_image() {
         flowr-ce|flowr-ee)
             ctr=$(ba from "$FLOWR_BASE")
             ba copy "$ctr" "$(binary_for "$target")" /usr/local/bin/flowr
+            # The config the binary loads (--config default config/flowr.yaml, cwd /):
+            # from this tree, not whatever the base image was built with.
+            ba copy "$ctr" "$FLOWR_DIR/flowr/crates/flowr-server/config/flowr.yaml" /config/flowr.yaml
             ;;
         adb)
             # No apt in the image (buildah run is blocked), so the CA bundle comes
