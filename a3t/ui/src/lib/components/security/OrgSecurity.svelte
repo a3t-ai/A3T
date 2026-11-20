@@ -15,7 +15,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -214,6 +214,7 @@
       say(`Not changed: ${r.error ?? `HTTP ${r.status}`}.`);
       return;
     }
+    if (r.data?.pending) { say(r.data.message ?? 'Held for a second approver.', true); await loadChanges(); return; }
     say(`${want.length} of ${files?.files.length ?? 0} file${files?.files.length === 1 ? '' : 's'} enforced.`, true);
     await reloadFiles();
   }
@@ -227,11 +228,38 @@
     { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
     { id: 'roles', label: 'Roles & groups', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has, and which groups and people hold them' },
     { id: 'files', label: 'Policy files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
+    { id: 'changes', label: 'Changes', icon: '<circle cx="5" cy="8" r="2"/><circle cx="11" cy="8" r="2"/><path d="M7 8h2"/>', hint: 'A second approver for policy changes, and the changes waiting for one' },
   ];
   const IDENTITY_TABS = ['overview', 'people', 'members', 'signin', 'roles'];
-  const STEPS = $derived(section === 'policy' ? ALL_STEPS.filter((x) => x.id === 'files') : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
+  const STEPS = $derived(section === 'policy' ? ALL_STEPS.filter((x) => x.id === 'files' || x.id === 'changes') : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
+
+  // ── Changes: a second approver (GOV-3) ──
+  let fourEyes = $state(false);
+  let changes = $state<PolicyChange[]>([]);
+  let changeNote = $state<Record<string, string>>({});
+  let changeErr = $state<Record<string, string[]>>({});
+  async function loadChanges() {
+    const r = await orgPolicy.changes(handle);
+    if (r.ok) { fourEyes = !!r.data?.four_eyes; changes = r.data?.changes ?? []; }
+  }
+  $effect(() => { if (tab === 'changes' && org) untrack(() => void loadChanges()); });
+  const pendingChanges = $derived(changes.filter((c) => c.status === 'pending'));
+  async function toggleFourEyes() {
+    busy = 'four'; const r = await orgPolicy.setFourEyes(handle, !fourEyes); busy = '';
+    if (!r.ok) { say(`Not changed: ${r.error ?? `HTTP ${r.status}`}.`); return; }
+    say(r.data?.pending ? (r.data.message ?? 'Held for a second approver.') : `The second approver is ${!fourEyes ? 'on' : 'off'}.`, true);
+    await loadChanges();
+  }
+  async function decideChange(c: PolicyChange, yes: boolean) {
+    busy = c.id; changeErr = { ...changeErr, [c.id]: [] };
+    const r = yes ? await orgPolicy.approve(handle, c.id, changeNote[c.id] ?? '') : await orgPolicy.reject(handle, c.id, changeNote[c.id] ?? '');
+    busy = '';
+    if (!r.ok) { changeErr = { ...changeErr, [c.id]: ((r as any).detail?.errors ?? [r.error ?? `HTTP ${r.status}`]) as string[] }; return; }
+    say(yes ? `Approved and applied: ${c.summary}.` : `Rejected: ${c.summary}.`, true);
+    await Promise.all([loadChanges(), reloadFiles()]);
+  }
 
   // ── Roles & groups: read from the org's role and access files (and sign-in) ──
   const BASELINE = [
@@ -400,7 +428,7 @@
           {#if managesFiles}<p class="dim small">Group mappings are access files: create one under Policy files.</p>{/if}
         </div>
 
-      {:else}
+      {:else if tab === 'files'}
         {#if filesErr && !files}<div class="note bad">{filesErr}</div>{/if}
         <div class="card">
           <div class="card-head"><h3>1 · What they are</h3><span>files kept in A3T, every save a version</span></div>
@@ -443,6 +471,42 @@
             {/if}
           {:else}<p class="empty">No files yet. Its projects follow the platform's rules and their own policies.</p>{/if}
         </div>
+      {:else if tab === 'changes'}
+        <div class="card">
+          <div class="card-head"><h3>1 · Second approver</h3><span>{fourEyes ? 'on: every change waits for another admin' : 'off: a change applies at once'}</span><span class="grow"></span>
+            {#if managesFiles}<button class="btn2" disabled={busy === 'four'} onclick={toggleFourEyes}>{fourEyes ? 'Turn off…' : 'Turn on'}</button>{/if}</div>
+          <p class="dim">With it on, a save, removal or switch of {handle}'s policy files, and a change to one of its agents' own rules, is checked and then waits here until another of its admins or security admins approves it. Nobody approves their own change. Turning it off is a change too.</p>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>2 · Waiting</h3><span>{pendingChanges.length}</span></div>
+          {#if !pendingChanges.length}<p class="dim">Nothing waiting.</p>
+          {:else}
+            {#each pendingChanges as c (c.id)}
+              <div class="review">
+                <p><b>{c.summary}</b> · {c.by} · {when(c.at)}</p>
+                {#if c.target === 'file' && c.op === 'save'}<pre class="mono cedar">{c.payload?.content ?? ''}</pre>{/if}
+                {#if c.target === 'agent' && c.op === 'save'}<pre class="mono cedar">{c.payload?.policy ?? ''}</pre>{/if}
+                {#if c.target === 'file' && c.op === 'enforce'}<p class="dim">Enforced after it: {(c.payload?.enforced ?? []).join(', ') || 'none'}</p>{/if}
+                {#if (changeErr[c.id] ?? []).length}<ul class="note bad">{#each changeErr[c.id] as e (e)}<li>{e}</li>{/each}</ul>{/if}
+                {#if c.can_decide}
+                  <label class="fld full">Note <small>kept with the decision</small><input bind:value={changeNote[c.id]} maxlength="500" /></label>
+                  <div class="acts"><button class="btn2 primary" disabled={!!busy} onclick={() => decideChange(c, true)}>{busy === c.id ? 'Applying…' : 'Approve and apply'}</button>
+                    <button class="btn2 danger" disabled={!!busy} onclick={() => decideChange(c, false)}>Reject</button></div>
+                {:else}<div class="acts"><span class="dim">Yours: another admin approves it.</span><button class="btn2 quiet" disabled={!!busy} onclick={() => decideChange(c, false)}>Withdraw</button></div>{/if}
+              </div>
+            {/each}
+          {/if}
+        </div>
+        {#if changes.length > pendingChanges.length}
+          <div class="card">
+            <div class="card-head"><h3>3 · Decided</h3><span>latest first</span></div>
+            <ul class="rows wide">
+              {#each changes.filter((c) => c.status !== 'pending') as c (c.id)}
+                <li><span class="lbl">{c.status}</span><span class="val">{c.summary} · by {c.by} · {c.status} by {c.decided_by} {when(c.decided_at ?? '')}{c.note ? ` · ${c.note}` : ''}</span><span></span></li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
       {/if}
     {/if}
     </section>

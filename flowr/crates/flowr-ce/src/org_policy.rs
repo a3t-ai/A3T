@@ -80,6 +80,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/security/orgs/:org/files/enforced", put(set_enforced))
         .route("/security/orgs/:org/file", get(get_file).put(put_file).delete(delete_file))
         .route("/security/orgs/:org/validate", post(validate))
+        .merge(crate::policy_changes::routes())
         .with_state(storage)
 }
 
@@ -200,7 +201,7 @@ pub async fn manages_org_security(s: &dyn StorageBackend, principal: &Principal,
     role == "admin" || role == "securityadmin"
 }
 
-async fn may_manage(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
+pub(crate) async fn may_manage(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
     if platform_infosec(principal) {
         return Ok(());
     }
@@ -211,7 +212,7 @@ async fn may_manage(s: &dyn StorageBackend, principal: &Principal, org: &str) ->
 }
 
 /// Both: the org exists, and the caller manages its security.
-async fn allowed(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
+pub(crate) async fn allowed(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
     may_manage(s, principal, org).await?;
     if !org_exists(s, org).await {
         return Err(err(StatusCode::NOT_FOUND, format!("no org {org:?}")));
@@ -282,14 +283,21 @@ async fn get_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
 }
 
 async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<PathQ>, Json(b): Json<Value>) -> Response {
-    both(async {
-        let principal = who(p);
-        let s = s.as_ref();
+    let principal = who(p);
+    let Some(content) = b.get("content").and_then(|v| v.as_str()) else {
+        return err(StatusCode::BAD_REQUEST, "content: the file's YAML");
+    };
+    both(save_file(s.as_ref(), &principal, &org, &q.path, content, None).await)
+}
+
+/// Save a file. `approved`: the author of a change a second admin approved
+/// (GOV-3); without it, an org with a second approver holds the change.
+pub(crate) async fn save_file(s: &dyn StorageBackend, principal: &Principal, org: &str, path: &str, content: &str, approved: Option<&str>) -> Reply {
+    let (org, principal) = (org.to_string(), principal.clone());
+    let q = PathQ { path: path.to_string() };
+    async {
         allowed(s, &principal, &org).await?;
         let kind = valid_path(&q.path)?;
-        let Some(content) = b.get("content").and_then(|v| v.as_str()) else {
-            return Err(err(StatusCode::BAD_REQUEST, "content: the file's YAML"));
-        };
         if content.len() > MAX_FILE_BYTES {
             return Err(err(StatusCode::BAD_REQUEST, format!("the file is {} bytes; at most {MAX_FILE_BYTES}", content.len())));
         }
@@ -305,6 +313,10 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
         let off = off_of(s, &org).await;
         let set = enforced_with(&files, &off, &[(q.path.clone(), content.to_string())], &[]);
         let compiled = check(s, &org, &set).await.map_err(|e| refused(e, "the file doesn't work with the org's other files"))?;
+        if approved.is_none() && crate::policy_changes::four_eyes(s, &org).await {
+            let summary = format!("{} {}", if prev.is_some() { "save" } else { "create" }, q.path);
+            return crate::policy_changes::propose(s, &principal, &org, "file", "save", &q.path, json!({ "content": content }), &summary).await;
+        }
         // Numbering continues across a removal: a path's versions are never reused.
         let num = |v: &str| v.strip_prefix('v').and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
         let path_filter = format!("org = {} AND path = {}", sql_quote(&org), sql_quote(&q.path));
@@ -312,7 +324,7 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
             .iter().map(|h| num(&col(h, "version"))).chain(prev.map(|r| num(&col(r, "commit")))).max().unwrap_or(0);
         let n = last + 1;
         let version = format!("v{n}");
-        let by = principal.id();
+        let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
         let db = db(s).await.map_err(internal)?;
         db.upsert(FILES, &["org", "path"], &[json!({
             "org": org, "path": q.path, "kind": kind, "content": content, "commit": version, "updated_at": chrono::Utc::now().to_rfc3339(),
@@ -326,13 +338,19 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
         info!(org, path = %q.path, %version, %by, "org policy file saved");
         Ok(Json(json!({ "org": org, "path": q.path, "version": version, "changed": true, "enforced": !off.contains(&q.path),
             "compiled": compiled })).into_response())
-    }.await)
+    }.await
 }
 
 async fn delete_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<PathQ>) -> Response {
-    both(async {
-        let principal = who(p);
-        let s = s.as_ref();
+    let principal = who(p);
+    both(remove_file(s.as_ref(), &principal, &org, &q.path, None).await)
+}
+
+/// Remove a file (see [`save_file`] for `approved`).
+pub(crate) async fn remove_file(s: &dyn StorageBackend, principal: &Principal, org: &str, path: &str, approved: Option<&str>) -> Reply {
+    let (org, principal) = (org.to_string(), principal.clone());
+    let q = PathQ { path: path.to_string() };
+    async {
         allowed(s, &principal, &org).await?;
         let kind = valid_path(&q.path)?;
         let files = files_of(s, &org).await;
@@ -342,18 +360,22 @@ async fn delete_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Quer
         let off = off_of(s, &org).await;
         let set = enforced_with(&files, &off, &[], &[q.path.clone()]);
         check(s, &org, &set).await.map_err(|e| refused(e, "the other files need it"))?;
+        if approved.is_none() && crate::policy_changes::four_eyes(s, &org).await {
+            return crate::policy_changes::propose(s, &principal, &org, "file", "delete", &q.path, json!({}), &format!("remove {}", q.path)).await;
+        }
+        let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
         let db = db(s).await.map_err(internal)?;
         let filter = format!("org = {} AND path = {}", sql_quote(&org), sql_quote(&q.path));
         db.delete(FILES, &filter).await.map_err(internal)?;
         db.delete(OFF, &filter).await.map_err(internal)?;
-        note(db.as_ref(), &org, &q.path, &col(prev, "commit"), "delete", kind, &col(prev, "content"), &principal.id()).await.map_err(internal)?;
+        note(db.as_ref(), &org, &q.path, &col(prev, "commit"), "delete", kind, &col(prev, "content"), &by).await.map_err(internal)?;
         flowr_policy::audit::event(&principal, "policy:delete", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
             Some(&format!("deleted {}", col(prev, "commit"))));
         if !off.contains(&q.path) {
             changed().await;
         }
         Ok(Json(json!({ "org": org, "path": q.path, "deleted": true })).into_response())
-    }.await)
+    }.await
 }
 
 /// `POST /security/orgs/{org}/validate` — check drafts; nothing is saved.
@@ -380,9 +402,14 @@ async fn validate(State(s): St, p: P, Path(org): Path<String>, Json(b): Json<Val
 
 /// `PUT /security/orgs/{org}/files/enforced` — which files are enforced.
 async fn set_enforced(State(s): St, p: P, Path(org): Path<String>, Json(b): Json<Value>) -> Response {
-    both(async {
-        let principal = who(p);
-        let s = s.as_ref();
+    let principal = who(p);
+    both(enforce(s.as_ref(), &principal, &org, &b, None).await)
+}
+
+/// Which files are enforced (see [`save_file`] for `approved`).
+pub(crate) async fn enforce(s: &dyn StorageBackend, principal: &Principal, org: &str, b: &Value, approved: Option<&str>) -> Reply {
+    let (org, principal) = (org.to_string(), principal.clone());
+    async {
         allowed(s, &principal, &org).await?;
         let Some(want) = b.get("enforced").and_then(|v| v.as_array()) else {
             return Err(err(StatusCode::BAD_REQUEST, "enforced: the paths of the files to enforce"));
@@ -397,8 +424,16 @@ async fn set_enforced(State(s): St, p: P, Path(org): Path<String>, Json(b): Json
             .filter(|(p, _)| want.contains(p)).collect();
         check(s, &org, &on).await.map_err(|e| refused(e, "those files don't work on their own"))?;
         let before = off_of(s, &org).await;
+        let switching: Vec<String> = files.iter().map(|r| col(r, "path")).filter(|p| before.contains(p) == want.contains(p)).collect();
+        if switching.is_empty() {
+            return Ok(Json(json!({ "org": org, "enforced": on.len(), "off": files.len() - on.len(), "switched": 0 })).into_response());
+        }
+        if approved.is_none() && crate::policy_changes::four_eyes(s, &org).await {
+            return crate::policy_changes::propose(s, &principal, &org, "file", "enforce", "", json!({ "enforced": want }),
+                &format!("switch {}", switching.join(", "))).await;
+        }
         let now = chrono::Utc::now().to_rfc3339();
-        let by = principal.id();
+        let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
         let db = db(s).await.map_err(internal)?;
         let mut switched = 0;
         for r in &files {
@@ -424,5 +459,5 @@ async fn set_enforced(State(s): St, p: P, Path(org): Path<String>, Json(b): Json
         }
         info!(org, enforced = on.len(), switched, %by, "org policy files enforced");
         Ok(Json(json!({ "org": org, "enforced": on.len(), "off": files.len() - on.len(), "switched": switched })).into_response())
-    }.await)
+    }.await
 }

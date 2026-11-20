@@ -151,48 +151,77 @@ pub(super) async fn get_policy(State(s): St, p: P, Path(id): Path<String>) -> Re
 }
 
 pub(super) async fn put_policy(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
-    both(async {
-        let principal = who(p);
-        let row = agent_for(s.as_ref(), &principal, &id, false).await?;
-        may_change_policy(s.as_ref(), &principal, &row).await?;
-        let policy = b.get("policy").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        if policy.trim().is_empty() {
-            return Err(err(StatusCode::BAD_REQUEST, "policy: a kind: a3t/policy file (DELETE removes it)"));
-        }
-        let gate = crate::policy_gate::get()
-            .ok_or_else(|| err(StatusCode::NOT_IMPLEMENTED, "agent security policies need FlowR EE"))?;
-        // Checked before it is stored: a policy that doesn't compile is never saved.
-        let compiled = gate.compile_agent_policy(&project_of(&row), &id, &policy).await
-            .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-        let db = table(s.as_ref()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        db.upsert(TABLE, &["agent_id"], &[json!({
-            "agent_id": id, "policy": policy, "updated_by": principal.id(),
-            "updated_at": chrono::Utc::now().to_rfc3339(),
-        })]).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let version = note(s.as_ref(), &id, "save", &policy, principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        flowr_policy::audit::event(&principal, "agent_policy:write", "AgentPolicy", &id, Some(&project_of(&row)), None, None, Some(&format!("saved {version}")));
-        gate.changed().await;
-        ok(json!({ "agent_id": id, "policy": policy, "version": version, "rules": sentences(&policy), "hidden_apps": compiled.get("hidden_apps") }))
-    }.await)
+    let principal = who(p);
+    let policy = b.get("policy").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    both(save_policy(s.as_ref(), &principal, &id, &policy, None).await)
+}
+
+/// The org (its slug) an agent belongs to, for its org's settings (GOV-3).
+async fn org_slug(s: &dyn StorageBackend, row: &Value) -> String {
+    let id = col(row, "org_id");
+    if id.is_empty() {
+        return String::new();
+    }
+    query_platform_table(s, "orgs", Some(format!("id = {}", sql_quote(&id))), 1).await.ok()
+        .and_then(|r| r.into_iter().next()).map(|r| col(&r, "slug")).unwrap_or_default()
+}
+
+/// Save an agent's own policy. `approved`: the author of a change a second
+/// admin approved (GOV-3); without it, an org with a second approver holds it.
+pub(crate) async fn save_policy(s: &dyn StorageBackend, principal: &Principal, id: &str, policy: &str, approved: Option<&str>) -> Reply {
+    let row = agent_for(s, principal, id, false).await?;
+    may_change_policy(s, principal, &row).await?;
+    if policy.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "policy: a kind: a3t/policy file (DELETE removes it)"));
+    }
+    let gate = crate::policy_gate::get()
+        .ok_or_else(|| err(StatusCode::NOT_IMPLEMENTED, "agent security policies need FlowR EE"))?;
+    // Checked before it is stored: a policy that doesn't compile is never saved.
+    let compiled = gate.compile_agent_policy(&project_of(&row), id, policy).await
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let org = org_slug(s, &row).await;
+    if approved.is_none() && !org.is_empty() && crate::policy_changes::four_eyes(s, &org).await {
+        return crate::policy_changes::propose(s, principal, &org, "agent", "save", id, json!({ "policy": policy }),
+            &format!("save agent {}'s policy", col(&row, "name"))).await;
+    }
+    let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
+    let db = table(s).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    db.upsert(TABLE, &["agent_id"], &[json!({
+        "agent_id": id, "policy": policy, "updated_by": by,
+        "updated_at": chrono::Utc::now().to_rfc3339(),
+    })]).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let version = note(s, id, "save", policy, &by).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    flowr_policy::audit::event(principal, "agent_policy:write", "AgentPolicy", id, Some(&project_of(&row)), None, None, Some(&format!("saved {version}")));
+    gate.changed().await;
+    ok(json!({ "agent_id": id, "policy": policy, "version": version, "rules": sentences(policy), "hidden_apps": compiled.get("hidden_apps") }))
 }
 
 pub(super) async fn delete_policy(State(s): St, p: P, Path(id): Path<String>) -> Response {
-    both(async {
-        let principal = who(p);
-        let row = agent_for(s.as_ref(), &principal, &id, false).await?;
-        may_change_policy(s.as_ref(), &principal, &row).await?;
-        let Some(prev) = policy_of(s.as_ref(), &id).await else {
-            return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no policy")));
-        };
-        let db = table(s.as_ref()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        db.delete(TABLE, &format!("agent_id = {}", sql_quote(&id))).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let version = note(s.as_ref(), &id, "delete", &col(&prev, "policy"), principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        flowr_policy::audit::event(&principal, "agent_policy:delete", "AgentPolicy", &id, Some(&project_of(&row)), None, None, Some(&format!("deleted ({version})")));
-        if let Some(gate) = crate::policy_gate::get() {
-            gate.changed().await;
-        }
-        ok(json!({ "agent_id": id, "deleted": true }))
-    }.await)
+    let principal = who(p);
+    both(drop_policy(s.as_ref(), &principal, &id, None).await)
+}
+
+/// Remove an agent's own policy (see [`save_policy`] for `approved`).
+pub(crate) async fn drop_policy(s: &dyn StorageBackend, principal: &Principal, id: &str, approved: Option<&str>) -> Reply {
+    let row = agent_for(s, principal, id, false).await?;
+    may_change_policy(s, principal, &row).await?;
+    let Some(prev) = policy_of(s, id).await else {
+        return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no policy")));
+    };
+    let org = org_slug(s, &row).await;
+    if approved.is_none() && !org.is_empty() && crate::policy_changes::four_eyes(s, &org).await {
+        return crate::policy_changes::propose(s, principal, &org, "agent", "delete", id, json!({}),
+            &format!("remove agent {}'s policy", col(&row, "name"))).await;
+    }
+    let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
+    let db = table(s).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    db.delete(TABLE, &format!("agent_id = {}", sql_quote(id))).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let version = note(s, id, "delete", &col(&prev, "policy"), &by).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    flowr_policy::audit::event(principal, "agent_policy:delete", "AgentPolicy", id, Some(&project_of(&row)), None, None, Some(&format!("deleted ({version})")));
+    if let Some(gate) = crate::policy_gate::get() {
+        gate.changed().await;
+    }
+    ok(json!({ "agent_id": id, "deleted": true }))
 }
 
 /// The security profile: what the agent can reach (its latest version's

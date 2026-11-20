@@ -61,6 +61,8 @@
     const r = yaml.trim() ? await agentSpaceApi.savePolicy(agent.id, yaml) : await agentSpaceApi.dropPolicy(agent.id);
     busy = '';
     if (!r.ok) { err = r.error ?? 'Not saved.'; return false; }
+    // GOV-3: the org wants a second approver; nothing changed yet.
+    if ((r.data as any)?.pending) { err = (r.data as any).message ?? 'Held for a second approver.'; return true; }
     await load();
     return true;
   }

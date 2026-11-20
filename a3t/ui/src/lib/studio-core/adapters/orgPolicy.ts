@@ -38,6 +38,8 @@ export const file = (org: string, path: string): Promise<Result<OrgPolicyFileDet
 export const save = (org: string, path: string, content: string): Promise<Result<{ version: string; changed: boolean; enforced: boolean }>> =>
   safely(`save ${path}`, async () => {
     const r = await orgPolicy.save(org, path, content);
+    // GOV-3: held for a second approver — nothing is saved yet, so say so.
+    if (r.ok && (r.data as any)?.pending) return fail((r.data as any).message ?? 'Held for a second approver.');
     if (r.ok) return ok(r.data!);
     const errors = ((r as any).detail?.errors ?? []) as string[];
     return fail(errors.length ? `${r.error}: ${errors.join('; ')}` : (r.error ?? `save ${path} failed`));
@@ -46,6 +48,7 @@ export const save = (org: string, path: string, content: string): Promise<Result
 export const remove = (org: string, path: string): Promise<Result> =>
   safely(`remove ${path}`, async () => {
     const r = await orgPolicy.remove(org, path);
+    if (r.ok && (r.data as any)?.pending) return fail((r.data as any).message ?? 'Held for a second approver.');
     if (r.ok) return ok(undefined);
     const errors = ((r as any).detail?.errors ?? []) as string[];
     return fail(errors.length ? `${r.error}: ${errors.join('; ')}` : (r.error ?? `remove ${path} failed`));

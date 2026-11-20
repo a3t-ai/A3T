@@ -746,7 +746,23 @@ export const orgPolicy = {
   /// Which files are enforced (the rest stay kept, switched off). Refused
   /// (422, `errors`) if those files don't work on their own.
   setEnforced: (org: string, enforced: string[]) =>
-    request<{ org: string; enforced: number; off: number; switched: number; errors?: string[] }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+    request<{ org: string; enforced: number; off: number; switched: number; errors?: string[]; pending?: boolean; message?: string }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+  /// GOV-3: the org's second approver for policy changes.
+  settings: (org: string) => request<{ org: string; four_eyes: boolean; pending: number }>(`${orgBase(org)}/settings`, { method: 'GET' }),
+  setFourEyes: (org: string, four_eyes: boolean) =>
+    request<{ four_eyes?: boolean; changed?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/settings`, { method: 'PUT', body: JSON.stringify({ four_eyes }) }),
+  changes: (org: string) => request<{ org: string; four_eyes: boolean; changes: PolicyChange[] }>(`${orgBase(org)}/changes`, { method: 'GET' }),
+  approve: (org: string, id: string, note = '') =>
+    request<{ approved: boolean; errors?: string[] }>(`${orgBase(org)}/changes/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
+  reject: (org: string, id: string, note = '') =>
+    request(`${orgBase(org)}/changes/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
+};
+
+/// A policy change held for a second approver (GOV-3).
+export type PolicyChange = {
+  id: string; target: 'file' | 'agent' | 'settings'; op: string; subject: string; summary: string;
+  by: string; at: string; status: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+  decided_by?: string; decided_at?: string; note?: string; payload?: any; can_decide?: boolean;
 };
 
 export const idp = {
