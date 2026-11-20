@@ -57,8 +57,11 @@ export async function askAgentJson(agent: string, ask: Record<string, unknown>, 
       try { const e = JSON.parse(line.slice(5)); if (e.type === 'text-delta') text += e.delta; if (e.type === 'error') err = e.errorText ?? e.message ?? 'error'; } catch { /* keep-alive */ }
     }
     if (!text && err) return { ok: false, error: err };
-    // Its answer is a JSON object, sometimes in a code fence.
-    return { ok: true, json: JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)) };
+    // Its answer is JSON (an object, or a list), sometimes in a code fence.
+    const starts = [text.indexOf('{'), text.indexOf('[')].filter((i) => i >= 0);
+    const start = starts.length ? Math.min(...starts) : 0;
+    const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']')) + 1;
+    return { ok: true, json: JSON.parse(text.slice(start, end)) };
   } catch (e) {
     return { ok: false, error: (e as Error).name === 'AbortError' ? 'Stopped.' : `Could not read its answer: ${(e as Error).message}` };
   }

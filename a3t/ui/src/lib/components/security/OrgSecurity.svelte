@@ -11,7 +11,7 @@
   /// server checks every one of these; this page only offers what will work.
   import { untrack } from 'svelte';
   import { roles, roleLabel } from '$lib/core/auth/roles.svelte.ts';
-  import { draftPolicy, POLICY_AGENT, type PolicyDraft } from './policyAgent';
+  import { draftPolicy, checkDraft, POLICY_AGENT, type PolicyDraft } from './policyAgent';
   import * as YAML from 'yaml';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
@@ -278,22 +278,32 @@
     if (!r.ok) { pErr = r.error; return; }
     pDraft = r.draft;
   }
+  async function recheck() {
+    if (!pDraft) return;
+    busy = 'pchk';
+    const errors = await checkDraft(handle, pDraft.files);
+    busy = '';
+    pDraft = { ...pDraft, ok: errors.length === 0, errors };
+  }
   async function replayDraft() {
     if (!pDraft) return;
     busy = 'prp';
-    const r = await orgPolicy.replay(handle, { files: [{ path: pDraft.path, content: pDraft.yaml }] });
+    const r = await orgPolicy.replay(handle, { files: pDraft.files.map((f) => ({ path: f.path, content: f.yaml })) });
     busy = '';
     if (!r.ok) { pErr = ((r as any).detail?.errors ?? [r.error]).join('; '); return; }
     pReplay = r.data!;
   }
   async function saveDraft() {
     if (!pDraft) return;
-    busy = 'psave';
-    const r = await orgPolicy.save(handle, pDraft.path, pDraft.yaml);
+    busy = 'psave'; pErr = '';
+    const saved: string[] = [], held: string[] = [];
+    for (const f of pDraft.files) {
+      const r = await orgPolicy.save(handle, f.path, f.yaml);
+      if (!r.ok) { busy = ''; pErr = `${f.path}: ${((r as any).detail?.errors ?? [r.error]).join('; ')}`; await reloadFiles(); return; }
+      ((r.data as any)?.pending ? held : saved).push(f.path);
+    }
     busy = '';
-    if (!r.ok) { pErr = ((r as any).detail?.errors ?? [r.error]).join('; '); return; }
-    if ((r.data as any)?.pending) { say((r.data as any).message ?? 'Held for a second approver.', true); pDraft = null; return; }
-    say(`${pDraft.path} saved${(r.data as any)?.enforced === false ? ' (switched off)' : ' and enforced'}.`, true);
+    say([saved.length ? `Saved ${saved.join(', ')}.` : '', held.length ? `Held for a second approver: ${held.join(', ')}.` : ''].filter(Boolean).join(' '), true);
     pDraft = null; pDesc = ''; pReplay = null;
     await reloadFiles();
   }
@@ -522,16 +532,20 @@
             <div class="acts"><button class="btn2 primary" disabled={pBusy || pDesc.trim().length < 8} onclick={askPolicy}>{pBusy ? 'Writing and checking…' : 'Write it'}</button>{#if pBusy}<button class="btn2 quiet" onclick={() => pAbort?.abort()}>Stop</button>{/if}</div>
             {#if pErr}<div class="note bad">{pErr}</div>{/if}
             {#if pDraft}
-              <p class="dim">{pDraft.explanation}{pDraft.assumptions.length ? ` Assumed: ${pDraft.assumptions.join('; ')}.` : ''}</p>
-              <label class="fld">File<input class="mono" bind:value={pDraft.path} /></label>
-              <textarea class="cedar" rows="12" spellcheck="false" bind:value={pDraft.yaml}></textarea>
-              {#if pDraft.ok}<div class="note okn">✓ It works with {handle}'s other files{pDraft.tries > 1 ? ` (asked again ${pDraft.tries - 1}×: the first ${pDraft.tries === 2 ? 'draft' : 'drafts'} didn't check)` : ''}. Nothing is enforced until you save it.</div>
-              {:else}<div class="note bad">It still doesn't check after {pDraft.tries} tries: {pDraft.errors.join('; ')}. Fix it here or describe the rule differently.</div>{/if}
+              {#if pDraft.assumptions.length}<p class="dim">Assumed: {pDraft.assumptions.join('; ')}.</p>{/if}
+              {#each pDraft.files as f, i (i)}
+                <p class="dim">{f.explanation}</p>
+                <label class="fld">File<input class="mono" bind:value={f.path} /></label>
+                <textarea class="cedar" rows="10" spellcheck="false" bind:value={f.yaml}></textarea>
+              {/each}
+              {#if pDraft.ok}<div class="note okn">✓ {pDraft.files.length === 1 ? 'It works' : `The ${pDraft.files.length} files work`} with {handle}'s other files{pDraft.tries > 1 ? ` (asked again ${pDraft.tries - 1}×: the first ${pDraft.tries === 2 ? 'draft' : 'drafts'} didn't check)` : ''}. Nothing is enforced until you save.</div>
+              {:else}<div class="note bad">It still doesn't check after {pDraft.tries} tries: {pDraft.errors.join('; ')}. Fix it here (Check again) or describe the rule differently.</div>{/if}
               {#if pReplay}<div class="note">{pReplay.replayed} decisions of the last {pReplay.days} days replayed: <b>{pReplay.flipped} would change</b>.
                 {#if pReplay.flips.length}<ul>{#each pReplay.flips.slice(0, 15) as x (x.ts_ms + x.resource)}<li class="mono">{x.before} → {x.after} · {x.principal}{x.on_behalf_of ? ` for ${x.on_behalf_of}` : ''} · {x.action} {x.resource}</li>{/each}</ul>{/if}</div>{/if}
               <div class="acts">
+                <button class="btn2" disabled={!!busy || pBusy} onclick={recheck}>Check again</button>
                 <button class="btn2" disabled={!!busy || pBusy} onclick={replayDraft}>{busy === 'prp' ? 'Replaying…' : 'Replay the last 7 days'}</button>
-                <button class="btn2 primary" disabled={!!busy || pBusy} onclick={saveDraft}>{busy === 'psave' ? 'Saving…' : 'Save it'}</button>
+                <button class="btn2 primary" disabled={!!busy || pBusy || !pDraft.ok} onclick={saveDraft}>{busy === 'psave' ? 'Saving…' : pDraft.files.length === 1 ? 'Save it' : `Save the ${pDraft.files.length} files`}</button>
                 <button class="btn2 quiet" onclick={() => { pDraft = null; pReplay = null; }}>Discard</button>
               </div>
             {/if}
