@@ -3707,6 +3707,7 @@ dependencies = [
  "mlua",
  "object_store 0.14.2",
  "rand 0.8.6",
+ "regex",
  "reqwest 0.12.28",
  "ring",
  "rquickjs",
@@ -3790,6 +3791,7 @@ name = "flowr-mcp-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "flowr-expr",
  "flowr-policy",
@@ -3797,6 +3799,7 @@ dependencies = [
  "flowr-types",
  "futures",
  "reqwest 0.12.28",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",

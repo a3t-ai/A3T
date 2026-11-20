@@ -225,6 +225,14 @@ impl Writer {
         if r.org.is_none() {
             r.org = Some(crate::access::audit_org(r.project.as_deref()).await);
         }
+        // Events name an org by its handle or its id; the log is kept by id.
+        if let Some(o) = r.org.clone().filter(|o| o != "platform" && !o.starts_with("org-")) {
+            if let Some(storage) = STORAGE.get() {
+                if let Some(id) = crate::org_policy::org_id(storage.as_ref(), &o).await {
+                    r.org = Some(id);
+                }
+            }
+        }
         if r.agent_version.is_none() {
             if let Some(a) = r.agent.clone() {
                 r.agent_version = self.agent_version(&a).await;
@@ -280,6 +288,10 @@ async fn writer(storage: Arc<dyn StorageBackend>, mut rx: mpsc::Receiver<AuditRe
         let mut batch = std::mem::take(&mut pending);
         for r in batch.iter_mut() {
             w.complete(r).await;
+            // RT-10: the log keeps no personal data or secrets in its free text.
+            if let Some(reason) = r.reason.as_mut() {
+                *reason = crate::pii::clean(reason);
+            }
             w.chain(r);
         }
         // AUD-4: the heads of this process's chains, kept apart every hour.

@@ -376,7 +376,7 @@ has re-enabled it, so just call it. Never tell the user a tool is still blocked 
 on the strength of an older message.";
 
     fn prompt_with_ui_context(config: &AgentConfig) -> String {
-        let base = format!("{}{}", config.config.system_prompt, Self::PERMISSION_NOTE);
+        let base = format!("{}{}\n\n{}", config.config.system_prompt, Self::PERMISSION_NOTE, crate::prompt_guard::SYSTEM_NOTE);
         let Some(ui) = config.ui_context.as_ref().and_then(|v| v.as_object()) else {
             return base;
         };
@@ -519,11 +519,18 @@ impl TaskHandler for AgentHandler {
         // worker's own check under their own name.
         if let Some(agent) = crate::ops::agent_of_session(&config.session_id) {
             if let Err(b) = crate::ops::admit(storage.as_ref(), None, Some(agent)).await {
-                return Err(RuntimeError::task_failed(&task.name, format!("refused: {b}")));
+                return Err(RuntimeError::Denied { task: task.name.clone(), reason: b.to_string(), policy_ids: vec!["paused".into()] });
             }
             // RT-4: over its budget for today, it doesn't run (and the alert is sent).
+            // A limit, said as one: the person sees why, not "something failed".
             if let Err(b) = crate::budget::admit(storage.as_ref(), agent).await {
-                return Err(RuntimeError::task_failed(&task.name, format!("refused: {b}")));
+                return Err(RuntimeError::Raised {
+                    error_type: "https://a3t.io/errors/budget".into(),
+                    title: "Over budget".into(),
+                    status: 429,
+                    detail: b,
+                    instance: None,
+                });
             }
         }
 
@@ -661,6 +668,8 @@ impl TaskHandler for AgentHandler {
         };
         let turn_started = std::time::Instant::now();
         let mut turn_usage = (0u64, 0u64);
+        // RT-6: whether this turn has read output from outside A3T.
+        let mut untrusted_seen = false;
         // before_recall: what memory is searched with (`query`).
         let mut recall_query = config.message.clone();
         if memory.is_some() {
@@ -870,6 +879,14 @@ impl TaskHandler for AgentHandler {
                     turn_usage.0 += n("prompt_tokens");
                     turn_usage.1 += n("completion_tokens");
                 }
+                // RT-3: each model call is in the decision log, beside the
+                // agent's tool calls (allowed by authorize_model above).
+                {
+                    let n = |k: &str| llm_result.get("usage").and_then(|u| u.get(k)).and_then(|v| v.as_u64()).unwrap_or(0);
+                    flowr_policy::audit::event_decision(&agent_principal, "gateway:model", "Model", llm_resource,
+                        record.namespace.as_deref(), None, &flowr_policy::PolicyDecision::Allow,
+                        Some(&format!("model call {} · {} tokens in, {} out", state.iteration + 1, n("prompt_tokens"), n("completion_tokens"))));
+                }
 
                 state.iteration += 1;
 
@@ -947,6 +964,19 @@ impl TaskHandler for AgentHandler {
                                         json!({"toolCallId": tool_id, "toolName": tool_name, "input": tool_input}).to_string());
                                 }
 
+                                // RT-6: after reading outside content, a destructive call
+                                // waits for a person — an injected instruction can't act alone.
+                                if untrusted_seen && crate::prompt_guard::destructive(tool_name) {
+                                    let asked = crate::approval::request_approval_with(
+                                        &config.session_id, &agent_principal, tool_server.get(tool_name).map(|s| s.as_str()), tool_name, &tool_input,
+                                        "This turn read content from outside A3T; a call that deletes, sends or changes something needs your approval (prompt-injection guard).",
+                                        &[flowr_policy::GrantScope::Once],
+                                        &crate::approval::Ask { rule: Some("prompt-guard".into()), timeout_secs: None, project: record.namespace.clone() },
+                                    ).await;
+                                    if let flowr_policy::PolicyDecision::Deny { reason, policy_ids } = asked {
+                                        return Ok(json!({ "error": format!("denied: {tool_name} — {reason}"), "denied": true, "policies": policy_ids }));
+                                    }
+                                }
                                 // GOV-8: a tool flow is not an MCP call, so its
                                 // `needs_approval` rules are asked here — the
                                 // flow's own steps are checked as they run.
@@ -1015,7 +1045,7 @@ impl TaskHandler for AgentHandler {
                         // Structured results (list_flows) need the value, not its text.
                         let tool_value: Option<Value> = tool_result.as_ref().ok().cloned();
                         let result_str = match tool_result {
-                            Ok(v) => { info!(tool = %tool_name, result = %v.to_string().chars().take(200).collect::<String>(), "tool result"); v.to_string() },
+                            Ok(v) => { info!(tool = %tool_name, result = %crate::pii::clean(&v.to_string().chars().take(200).collect::<String>()), "tool result"); v.to_string() },
                             Err(e) => {
                                 warn!(tool = %tool_name, error = %e, "tool call failed");
                                 json!({"error": e.to_string()}).to_string()
@@ -1212,9 +1242,17 @@ impl TaskHandler for AgentHandler {
                         }
 
                         state.tool_calls_made += 1;
+                        // RT-6: output from outside A3T reaches the model as data.
+                        let from_outside = crate::prompt_guard::untrusted(tool_server.get(tool_name).map(|s| s.as_str()), tool_name);
+                        let content = if from_outside {
+                            untrusted_seen = true;
+                            crate::prompt_guard::wrap(tool_name, &result_str)
+                        } else {
+                            result_str
+                        };
                         state.messages.push(Message {
                             role: "tool".to_string(),
-                            content: result_str,
+                            content,
                             tool_call_id: Some(tool_id.to_string()),
                             tool_calls: None,
                         });
@@ -1606,19 +1644,12 @@ fn get_storage(ctx: &ExecutionContext) -> Result<Arc<dyn StorageBackend>> {
 }
 
 /// Resolve a secret resource reference (namespace/name) to its value
-async fn resolve_secret_ref(storage: &Arc<dyn StorageBackend>, secret_ref: &str) -> Option<String> {
-    let (ns, name) = if secret_ref.contains('/') {
-        let parts: Vec<&str> = secret_ref.splitn(2, '/').collect();
-        (parts[0], parts[1])
-    } else {
-        ("default", secret_ref)
-    };
-    let secret = storage.resources().get(ns, name).await.ok()?;
-    secret.config.get("value")
-        .or_else(|| secret.config.get("token"))
-        .or_else(|| secret.config.get("api_key"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+/// A secret for a resource of namespace `from` (RT-7: in scope, opened).
+async fn resolve_secret_ref(storage: &Arc<dyn StorageBackend>, secret_ref: &str, from: &str) -> Option<String> {
+    match flowr_mcp_core::vault::resolve(storage.as_ref(), secret_ref, from).await {
+        Ok(v) => Some(v),
+        Err(e) => { warn!(secret = %secret_ref, error = %e, "secret not given"); None }
+    }
 }
 
 /// Call LLM via OpenAI-compatible API
@@ -1691,7 +1722,7 @@ async fn call_llm(
 
     // Resolve API key: prefer api_key_ref (secret resource reference) over embedded api_key
     let resolved_key = if let Some(secret_ref) = resource.config.get("api_key_ref").and_then(|v| v.as_str()) {
-        resolve_secret_ref(storage, secret_ref).await.unwrap_or_default()
+        resolve_secret_ref(storage, secret_ref, &resource.namespace).await.unwrap_or_default()
     } else {
         resource.config.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string()
     };

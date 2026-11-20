@@ -778,6 +778,10 @@ pub fn effective_namespace(_kind: ItemKind, namespace: &str, _name: &str, _type_
 /// platform's own namespaces, always are. A failed count admits: the quota protects
 /// neighbours, and it must not stop an org because the count couldn't be read.
 pub async fn admit(storage: &dyn StorageBackend, namespace: &str) -> Result<(), String> {
+    // RT-12: a fresh snapshot before the run is queued (the router reads it as is).
+    if let Some(g) = PROJECT_GUARD.get() {
+        let _ = g.snapshot_for(Some(namespace)).await;
+    }
     if PLATFORM.contains(&namespace) || namespace == crate::router::GATEWAY_NAMESPACE {
         return Ok(());
     }
@@ -809,7 +813,14 @@ pub fn install(storage: Arc<dyn StorageBackend>) {
     }));
     let guard = Arc::new(ProjectGuard::new(storage));
     let _ = PROJECT_GUARD.set(Arc::clone(&guard));
-    flowr_policy::namespace::set_namespace_guard(guard);
+    flowr_policy::namespace::set_namespace_guard(guard.clone());
+    // RT-12: the router reads the snapshot without waiting, so keep it fresh.
+    tokio::spawn(async move {
+        loop {
+            let _ = guard.snapshot().await;
+            tokio::time::sleep(REFRESH).await;
+        }
+    });
 }
 
 #[cfg(test)]

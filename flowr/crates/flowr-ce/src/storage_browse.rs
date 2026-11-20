@@ -48,10 +48,16 @@ struct Q { prefix: Option<String>, path: Option<String> }
 fn err(code: StatusCode, msg: impl Into<String>) -> Response { (code, Json(json!({ "error": msg.into() }))).into_response() }
 
 /// A Secret resource's value (`ns/name`, or `name` in default).
-async fn secret(storage: &dyn StorageBackend, r: &str) -> Option<String> {
-    let (ns, name) = r.split_once('/').unwrap_or(("default", r));
-    let s = storage.resources().get(ns, name).await.ok()?;
-    ["value", "token", "api_key", "password"].iter().find_map(|k| s.config.get(*k).and_then(|v| v.as_str()).map(str::to_string))
+/// A secret for a storage resource of namespace `from` (RT-7: in scope, opened).
+async fn secret(storage: &dyn StorageBackend, r: &str, from: &str) -> Option<String> {
+    let (ns, name) = flowr_mcp_core::vault::split_ref(r);
+    if !flowr_mcp_core::vault::in_scope(from, &ns) {
+        tracing::warn!(secret = %r, from, "secret refused: out of scope");
+        return None;
+    }
+    let s = storage.resources().get(&ns, &name).await.ok()?;
+    ["value", "token", "api_key", "password"].iter().find_map(|k| s.config.get(*k).and_then(|v| v.as_str()))
+        .and_then(|v| flowr_mcp_core::vault::open(v).ok())
 }
 
 /// What a resource is to browse: an object store and its base prefix, or an FTP server.
@@ -67,7 +73,7 @@ async fn driver(storage: &dyn StorageBackend, ns: &str, name: &str) -> Result<(S
     let base = s("prefix").map(|p| p.trim_matches('/').to_string()).unwrap_or_default();
     let typ = r.type_ref.to_lowercase();
     let need = |k: &str| s(k).ok_or_else(|| err(StatusCode::UNPROCESSABLE_ENTITY, format!("{ns}/{name}: its config has no {k}")));
-    let sec = |k: &str| { let k = k.to_string(); async move { match s(&k) { Some(r) => secret(storage, &r).await, None => None } } };
+    let sec = |k: &str| { let k = k.to_string(); async move { match s(&k) { Some(r) => secret(storage, &r, ns).await, None => None } } };
     let bad = |e: object_store::Error| err(StatusCode::UNPROCESSABLE_ENTITY, format!("{ns}/{name}: {e}"));
     match typ.as_str() {
         "s3" | "minio" => {

@@ -664,7 +664,8 @@ async fn create_resource(
         return resp.into_response();
     }
 
-    let mut resource = StorageResource::new(body.name, body.type_ref, body.config)
+    let sealed = flowr_mcp_core::vault::seal_for(&body.type_ref, body.config);
+    let mut resource = StorageResource::new(body.name, body.type_ref, sealed)
         .with_namespace(body.namespace);
     resource.tags = body.tags;
 
@@ -717,8 +718,8 @@ async fn update_resource(
 
     // The console edits what it was shown — masked values. Those stay as stored.
     let config = match state.storage.resources().get(&ns, &name).await {
-        Ok(old) => flowr_mcp_core::tools::keep_masked(&old.type_ref, &old.config, &config),
-        Err(_) => config,
+        Ok(old) => flowr_mcp_core::vault::seal_for(&old.type_ref, flowr_mcp_core::tools::keep_masked(&old.type_ref, &old.config, &config)),
+        Err(_) => flowr_mcp_core::vault::seal_for(&type_ref, config),
     };
     match state.storage.resources().update(&ns, &name, config).await {
         Ok(r) => Json(resource_json(&r)).into_response(),

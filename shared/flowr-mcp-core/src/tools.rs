@@ -2624,7 +2624,7 @@ async fn create_resource(storage: &dyn StorageBackend, args: &Value) -> CallTool
     };
     let description = args.get("description").and_then(|v| v.as_str());
 
-    let mut resource = Resource::new(name, type_ref, config)
+    let mut resource = Resource::new(name, type_ref, crate::vault::seal_for(type_ref, config))
         .with_namespace(namespace);
 
     if let Some(desc) = description {

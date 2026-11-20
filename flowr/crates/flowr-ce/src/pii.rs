@@ -4,9 +4,8 @@
 //! IBANs (mod-97-checked), US social security numbers, and common API key
 //! shapes. Each is replaced by `[redacted:<kind>]`.
 //!
-//! Where it applies: always to the decision log's free text and to FlowR's own
-//! log lines that quote content; to an agent's transcripts and memory when its
-//! own policy says `data: {pii: redact}`.
+//! Where it applies: the decision log's free text (reasons and notes) and
+//! FlowR's own log lines that quote tool output.
 
 use std::sync::OnceLock;
 

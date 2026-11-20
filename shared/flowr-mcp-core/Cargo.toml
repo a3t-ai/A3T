@@ -32,5 +32,9 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+# RT-7: secrets sealed at rest (AES-256-GCM).
+ring = "0.17"
+base64 = "0.22"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -59,6 +59,8 @@ hex = "0.4"
 base64 = "0.22"
 ring = "0.17"
 jsonwebtoken = "9"
+# RT-10: personal data found in text.
+regex = "1"
 
 # Inline script runtimes
 mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }

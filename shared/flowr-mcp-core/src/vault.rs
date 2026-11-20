@@ -80,6 +80,41 @@ pub fn seal_config(v: &Value) -> Value {
     }
 }
 
+/// A resource's config as stored: a `secret`'s values sealed, others as given.
+pub fn seal_for(type_ref: &str, config: Value) -> Value {
+    if type_ref == "secret" { seal_config(&config) } else { config }
+}
+
+fn has_plain(v: &Value) -> bool {
+    match v {
+        Value::String(s) => !s.starts_with(PREFIX),
+        Value::Array(a) => a.iter().any(has_plain),
+        Value::Object(o) => o.values().any(has_plain),
+        _ => false,
+    }
+}
+
+/// At start: seal the secrets saved before the key was set. Returns how many.
+pub async fn seal_existing(storage: &dyn flowr_storage::StorageBackend) -> usize {
+    if !sealing() {
+        tracing::warn!("secrets: FLOWR_SECRETS_KEY is not set, secret values are stored as given");
+        return 0;
+    }
+    let mut n = 0;
+    for ns in storage.resources().namespaces().await.unwrap_or_default() {
+        for r in storage.resources().list(&ns).await.unwrap_or_default() {
+            if r.type_ref == "secret" && has_plain(&r.config) {
+                match storage.resources().update(&ns, &r.name, seal_config(&r.config)).await {
+                    Ok(_) => n += 1,
+                    Err(e) => tracing::warn!(secret = %format!("{ns}/{}", r.name), error = %e, "secret not sealed"),
+                }
+            }
+        }
+    }
+    tracing::info!(sealed = n, "secrets: sealed at rest");
+    n
+}
+
 /// `<namespace>/<name>`, or `default/<name>`.
 pub fn split_ref(secret_ref: &str) -> (String, String) {
     match secret_ref.split_once('/') {

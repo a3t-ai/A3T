@@ -211,6 +211,11 @@ async fn main() -> anyhow::Result<()> {
         let s = storage.clone();
         async move { flowr_ce::org_policy::move_sso_maps(s.as_ref()).await }
     });
+    // RT-7: secrets saved before the key was set are sealed now.
+    tokio::spawn({
+        let s = storage.clone();
+        async move { flowr_mcp_core::vault::seal_existing(s.as_ref()).await }
+    });
     // RT-01: every FlowR reports itself, so the console sees all of them.
     flowr_ce::ops::start_host_heartbeat(storage.clone());
     if enforcing {

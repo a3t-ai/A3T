@@ -101,7 +101,8 @@ impl TaskHandler for LlmHandler {
         // Resolve API key: prefer api_key_ref (secret resource reference) over embedded api_key
         let resolved_key: String;
         if let Some(secret_ref) = resource.get("api_key_ref").and_then(|v| v.as_str()) {
-            resolved_key = Self::resolve_secret(ctx, secret_ref).await.unwrap_or_default();
+            let from = resource_name.split_once('/').map(|(ns, _)| ns).unwrap_or("default");
+            resolved_key = Self::resolve_secret(ctx, secret_ref, from).await.unwrap_or_default();
         } else {
             resolved_key = resource.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
         }
@@ -130,23 +131,13 @@ impl TaskHandler for LlmHandler {
 }
 
 impl LlmHandler {
-    /// Resolve a secret resource reference (namespace/name) to its value
-    async fn resolve_secret(ctx: &ExecutionContext, secret_ref: &str) -> Option<String> {
-        let storage_any = ctx.storage.as_ref()?;
-        let storage = storage_any.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()?;
-        let (ns, name) = if secret_ref.contains('/') {
-            let parts: Vec<&str> = secret_ref.splitn(2, '/').collect();
-            (parts[0], parts[1])
-        } else {
-            ("default", secret_ref)
-        };
-        let secret = storage.resources().get(ns, name).await.ok()?;
-        // Secret resources store the value in config.value; credential resources in config.token
-        secret.config.get("value")
-            .or_else(|| secret.config.get("token"))
-            .or_else(|| secret.config.get("api_key"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+    /// A secret for the model resource of namespace `from` (RT-7: in scope, opened).
+    async fn resolve_secret(ctx: &ExecutionContext, secret_ref: &str, from: &str) -> Option<String> {
+        let storage = ctx.storage.as_ref()?.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()?;
+        match flowr_mcp_core::vault::resolve(storage.as_ref(), secret_ref, from).await {
+            Ok(v) => Some(v),
+            Err(e) => { tracing::warn!(secret = %secret_ref, error = %e, "secret not given"); None }
+        }
     }
 
     /// Anthropic Messages API — /v1/messages
