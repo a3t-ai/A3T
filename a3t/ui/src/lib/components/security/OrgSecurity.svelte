@@ -15,7 +15,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, type ReplayResult, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -235,6 +235,22 @@
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
 
+  // ── Shadow mode and replay (GOV-2) ──
+  let replays = $state<Record<string, ReplayResult>>({});
+  async function toggleShadow(path: string, on: boolean) {
+    busy = `sh:${path}`; const r = await orgPolicy.setShadow(handle, path, on); busy = '';
+    if (!r.ok) { say(`Not changed: ${((r as any).detail?.errors ?? [r.error]).join('; ')}`); return; }
+    say(on ? `${path} runs in shadow mode: what it would refuse goes to the decision log (Shadow), nothing is refused.` : `${path} is off.`, true);
+    await reloadFiles();
+  }
+  async function replayFile(path: string, switchOn: boolean) {
+    busy = `rp:${path}`;
+    const r = await orgPolicy.replay(handle, switchOn ? { switch_on: [path] } : { removed: [path] });
+    busy = '';
+    if (!r.ok) { say(`Replay failed: ${((r as any).detail?.errors ?? [r.error]).join('; ')}`); return; }
+    replays = { ...replays, [path]: r.data! };
+  }
+
   // ── Changes: a second approver (GOV-3) ──
   let fourEyes = $state(false);
   let changes = $state<PolicyChange[]>([]);
@@ -453,8 +469,15 @@
                   <label class="fpick"><input type="checkbox" bind:checked={picked[f.path]} disabled={!managesFiles || !!busy} aria-label="Enforce {f.path}" /></label>
                   <button class="link mono" onclick={() => openFileInStudio(f.path)} title="Edit in Studio">{f.path}</button>
                   <span class="fkind"><button class="lnk2" onclick={() => (openFile = openFile === f.path ? '' : f.path)} aria-expanded={openFile === f.path}>{openFile === f.path ? 'hide' : 'show'}</button> · {KIND_LABEL[f.kind] ?? f.kind} · <span class="mono">{savedVersion(f.version)}</span></span>
-                  <span class="fstate" class:on={f.enforced !== false}>{f.enforced !== false ? 'enforced' : 'off'}</span>
-                  {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}</li>
+                  <span class="fstate" class:on={f.enforced !== false}>{f.enforced !== false ? 'enforced' : (f as any).shadow ? 'shadow' : 'off'}</span>
+                  {#if openFile === f.path}<pre class="fsrc">{f.content}</pre>{/if}
+                  {#if managesFiles}<span class="facts">
+                    {#if f.enforced === false && f.kind === 'policy'}<button class="lnk2" disabled={!!busy} onclick={() => toggleShadow(f.path, !(f as any).shadow)}>{(f as any).shadow ? 'stop shadow' : 'run in shadow'}</button> · {/if}
+                    <button class="lnk2" disabled={!!busy} onclick={() => replayFile(f.path, f.enforced === false)}>{busy === `rp:${f.path}` ? 'replaying…' : f.enforced === false ? 'replay switching it on' : 'replay without it'}</button></span>{/if}
+                  {#if replays[f.path]}{@const rp = replays[f.path]}
+                    <div class="note">{rp.replayed} decisions of the last {rp.days} days replayed: <b>{rp.flipped} would change</b>{rp.skipped ? ` (${rp.skipped} events skipped)` : ''}.
+                      {#if rp.flips.length}<ul>{#each rp.flips.slice(0, 20) as x (x.ts_ms + x.resource)}<li class="mono">{x.before} → {x.after} · {x.principal}{x.on_behalf_of ? ` for ${x.on_behalf_of}` : ''} · {x.action} {x.resource}{x.project ? ` · ${x.project}` : ''}</li>{/each}</ul>{/if}</div>
+                  {/if}</li>
               {/each}
             </ul>
             {#if enforceErrors.length}<div class="note bad">Those files don't work on their own: {enforceErrors.join('; ')}</div>{/if}
@@ -549,6 +572,8 @@
   .olist > li:first-child { border-top: 0; }
   .frow { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 64px; align-items: center; gap: 10px; }
   .frow .link { overflow-wrap: anywhere; }
+  .frow .facts { grid-column: 2 / -1; font-size: 12px; color: var(--text-3); }
+  .frow > .note { grid-column: 1 / -1; }
   .lnk2 { border: 0; background: none; padding: 0; color: var(--accent, #5530a8); cursor: pointer; font: inherit; }
   .fkind { font-size: 12.5px; color: var(--text-3); white-space: nowrap; }
   .frow.off .link, .frow.off .fkind { opacity: 0.55; }

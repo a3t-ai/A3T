@@ -32,6 +32,7 @@
     all: { label: 'All decisions', hint: 'every allow, deny and approval asked' },
     deny: { label: 'Denials', hint: 'what was refused, and why' },
     ask: { label: 'Approvals asked', hint: 'what waited for a person to approve' },
+    shadow: { label: 'Shadow', hint: 'what rules in shadow mode would have refused (not enforced)' },
   };
 
   let v = $state<string | null>(null);
@@ -67,7 +68,8 @@
     loading = true; err = '';
     if (!edition) { const e = await getEdition(); edition = e.ok && e.data?.edition === 'ee' ? 'ee' : 'ce'; }
     const decision = dec || (v === 'deny' ? 'deny' : v === 'ask' ? 'ask' : undefined);
-    const r = await audit.query({ limit: 200, project: project || undefined, decision, principal: who || undefined,
+    const r = await audit.query({ limit: 200, project: project || undefined, decision: v === 'shadow' ? undefined : decision, principal: who || undefined,
+      action: v === 'shadow' ? 'policy:shadow' : undefined,
       q: meaning && q.trim() ? q.trim() : undefined, before_ms: more && next ? next : undefined });
     loading = false;
     if (!r.ok) { if (!more) recs = []; err = r.status === 403 ? 'The Decision log is for SuperAdmin, SecurityAdmin, an org\'s admins, and the owners of agents (their own).' : (r.error ?? 'It could not be read.'); return; }

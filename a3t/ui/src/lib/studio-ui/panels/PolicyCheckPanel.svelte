@@ -4,6 +4,7 @@
   /// passes), again a moment after each edit, and on demand. Nothing is saved.
   import { untrack } from 'svelte';
   import { orgPolicy, type Doc, type Workspace } from '$lib/studio-core';
+  import { orgPolicy as orgPolicyApi, type ReplayResult } from '$lib/services/api';
 
   let { doc }: { doc: Doc | null; workspace: Workspace } = $props();
 
@@ -23,6 +24,17 @@
     busy = false;
     if (!r.ok) { err = r.error; res = null; return; }
     res = r.data; checkedText = text;
+  }
+  // GOV-2: replay this draft against the org's recent decisions.
+  let rp = $state<ReplayResult | null>(null);
+  let replaying = $state(false);
+  async function replay() {
+    if (!doc || !org) return;
+    replaying = true;
+    const r = await orgPolicyApi.replay(org, { files: [{ path: doc.ref.name, content: doc.text ?? '' }], switch_on: [doc.ref.name] });
+    replaying = false;
+    if (!r.ok) { err = ((r as any).detail?.errors ?? [r.error]).join('; '); return; }
+    rp = r.data!;
   }
   // On opening, and shortly after each edit.
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -51,6 +63,15 @@
     {/if}
     {#if res}
       <p class="dim">Checked together: {res.checked.join(', ')}.</p>
+    {/if}
+    {#if res?.ok}
+      <div class="head"><span class="dim">What would change, against the last 7 days of {org}'s decisions?</span>
+        <button class="btn" disabled={replaying} onclick={replay}>{replaying ? 'Replaying…' : 'Replay'}</button></div>
+      {#if rp}
+        <p>{rp.replayed} decisions replayed: <b>{rp.flipped} would change</b>.</p>
+        {#if rp.flips.length}<ul class="errs">{#each rp.flips.slice(0, 30) as x (x.ts_ms + x.resource)}<li>{x.before} → {x.after} · {x.principal}{x.on_behalf_of ? ` for ${x.on_behalf_of}` : ''} · {x.action} {x.resource}</li>{/each}</ul>{/if}
+        <p class="dim">{rp.note}</p>
+      {/if}
     {/if}
     <p class="dim">{enforced ? 'This file is enforced: a save applies at once, for every project it names.' : 'This file is switched off: a save keeps it, checked as if on, but it applies only once switched on (Security › the org › Policy files).'}</p>
   {/if}

@@ -393,6 +393,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
       { id: 'all', label: 'All decisions', sub: 'every allow, deny and approval asked' },
       { id: 'deny', label: 'Denials', sub: 'what was refused, and why' },
       { id: 'ask', label: 'Approvals asked', sub: 'what waited for a person' },
+      { id: 'shadow', label: 'Shadow', sub: 'what rules in shadow mode would have refused' },
     ];
   }
   if (source === 'security-sections') {

@@ -317,3 +317,14 @@ async fn an_org_approval_rule_binds_agents_carrying_a_role() {
     assert_eq!(h.check(&agent(&["Admin"])).await, PolicyDecision::Allow);
     assert_eq!(h.check(&tool_call(human(&["Operator"]), "merge_pr", serde_json::json!({}))).await, PolicyDecision::Allow);
 }
+
+/// GOV-2: a file in shadow mode is evaluated but never decides.
+#[tokio::test]
+async fn a_shadow_file_never_decides() {
+    let c = compile_policy("acme", "kind: a3t/policy\nname: no-deletes\napplies_to: { org: true }\nrules:\n  - cannot: [flows.delete]\n    reason: Never.\n").unwrap();
+    let enforced = CedarHook::with_named_policies(&[a3t_security::NamedPolicy::new("default", "no-deletes", c.cedar.clone())], None, &[]).unwrap();
+    let shadow = CedarHook::with_named_policies(&[a3t_security::NamedPolicy::new("default", format!("{}no-deletes", a3t_security::SHADOW_PREFIX), c.cedar)], None, &[]).unwrap();
+    let call = || tool_call(human(&["Admin"]), "delete_flow", serde_json::json!({}));
+    assert!(denied(&enforced.check(&call()).await).is_some(), "enforced, it refuses");
+    assert_eq!(shadow.check(&call()).await, PolicyDecision::Allow, "in shadow mode, the call goes ahead");
+}

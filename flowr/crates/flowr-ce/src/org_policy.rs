@@ -46,6 +46,10 @@ const FILE_COLUMNS: [&str; 6] = ["org", "path", "kind", "content", "commit", "up
 /// Files switched off: `(org, path)`; every other file is enforced.
 pub const OFF: &str = "org_policy_off";
 const OFF_COLUMNS: [&str; 4] = ["org", "path", "updated_by", "updated_at"];
+/// Files in shadow mode (GOV-2): `(org, path)`, also in `OFF` — evaluated and
+/// logged (`policy:shadow`), never enforced.
+pub const SHADOW: &str = "org_policy_shadow";
+const SHADOW_COLUMNS: [&str; 4] = ["org", "path", "updated_by", "updated_at"];
 /// Every version of every file, and every removal and switch, with who and when.
 pub const HISTORY: &str = "org_policy_history";
 const HISTORY_COLUMNS: [&str; 8] = ["org", "path", "version", "action", "kind", "content", "by", "at"];
@@ -78,6 +82,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
     Router::new()
         .route("/security/orgs/:org/files", get(list_files))
         .route("/security/orgs/:org/files/enforced", put(set_enforced))
+        .route("/security/orgs/:org/files/shadow", put(set_shadow))
         .route("/security/orgs/:org/file", get(get_file).put(put_file).delete(delete_file))
         .route("/security/orgs/:org/validate", post(validate))
         .merge(crate::policy_changes::routes())
@@ -88,7 +93,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
 
 async fn db(s: &dyn StorageBackend) -> Result<Arc<dyn PlatformDb>, String> {
     let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
-    for (t, cols) in [(FILES, &FILE_COLUMNS[..]), (OFF, &OFF_COLUMNS[..]), (HISTORY, &HISTORY_COLUMNS[..])] {
+    for (t, cols) in [(FILES, &FILE_COLUMNS[..]), (OFF, &OFF_COLUMNS[..]), (SHADOW, &SHADOW_COLUMNS[..]), (HISTORY, &HISTORY_COLUMNS[..])] {
         let schema: Map<String, Value> = cols.iter().map(|c| (c.to_string(), json!("string"))).collect();
         db.create_table(t, Some(&schema), "create_if_not_exists").await?;
     }
@@ -103,6 +108,49 @@ async fn files_of(s: &dyn StorageBackend, org: &str) -> Vec<Value> {
 async fn off_of(s: &dyn StorageBackend, org: &str) -> BTreeSet<String> {
     query_platform_table(s, OFF, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
         .iter().map(|r| col(r, "path")).collect()
+}
+
+/// The org's files in shadow mode.
+async fn shadow_of(s: &dyn StorageBackend, org: &str) -> BTreeSet<String> {
+    query_platform_table(s, SHADOW, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
+        .iter().map(|r| col(r, "path")).collect()
+}
+
+/// An org's id, from its slug (the decision log is kept per org id).
+pub async fn org_id(s: &dyn StorageBackend, org: &str) -> Option<String> {
+    query_platform_table(s, "orgs", Some(format!("slug = {}", sql_quote(org))), 1).await
+        .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "id")).filter(|i| !i.is_empty())
+}
+
+/// What the org's enforced files would be after a change (GOV-2 replay): the
+/// enforced files with `drafts` in place, `removed` taken out and `switch_on`
+/// switched on (a shadow file being promoted). `(projects, [(path, text)])`.
+pub async fn candidate(s: &dyn StorageBackend, org: &str, drafts: &[(String, String)], removed: &[String], switch_on: &[String]) -> (Vec<String>, Vec<(String, String)>) {
+    let files = files_of(s, org).await;
+    let mut off = off_of(s, org).await;
+    for p in switch_on {
+        off.remove(p);
+    }
+    (org_projects(s, org).await, enforced_with(&files, &off, drafts, removed))
+}
+
+/// Every org's shadow files: `(org, [(path, text)])` (GOV-2).
+pub async fn all_shadow_files(s: &dyn StorageBackend) -> std::collections::BTreeMap<String, Vec<(String, String)>> {
+    let shadow: BTreeSet<(String, String)> = query_platform_table(s, SHADOW, None, 100_000).await.unwrap_or_default()
+        .iter().map(|r| (col(r, "org"), col(r, "path"))).collect();
+    let mut out: std::collections::BTreeMap<String, Vec<(String, String)>> = Default::default();
+    if shadow.is_empty() {
+        return out;
+    }
+    for r in query_platform_table(s, FILES, None, 100_000).await.unwrap_or_default() {
+        if shadow.contains(&(col(&r, "org"), col(&r, "path"))) {
+            out.entry(col(&r, "org")).or_default().push((col(&r, "path"), col(&r, "content")));
+        }
+    }
+    for v in out.values_mut() {
+        v.sort();
+    }
+    out
 }
 
 /// The org's projects (their namespaces): where its files may apply.
@@ -212,7 +260,7 @@ pub(crate) async fn may_manage(s: &dyn StorageBackend, principal: &Principal, or
 }
 
 /// Both: the org exists, and the caller manages its security.
-pub(crate) async fn allowed(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
+pub async fn allowed(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
     may_manage(s, principal, org).await?;
     if !org_exists(s, org).await {
         return Err(err(StatusCode::NOT_FOUND, format!("no org {org:?}")));
@@ -247,10 +295,12 @@ async fn list_files(State(s): St, p: P, Path(org): Path<String>) -> Response {
         let s = s.as_ref();
         allowed(s, &who(p), &org).await?;
         let off = off_of(s, &org).await;
+        let shadow = shadow_of(s, &org).await;
         let mut files: Vec<Value> = files_of(s, &org).await.iter().map(|r| json!({
             "path": col(r, "path"), "kind": col(r, "kind"), "content": col(r, "content"),
             "version": col(r, "commit"), "updated_at": col(r, "updated_at"),
             "enforced": !off.contains(&col(r, "path")),
+            "shadow": shadow.contains(&col(r, "path")),
         })).collect();
         files.sort_by_key(|f| col(f, "path"));
         Ok(Json(json!({ "org": org, "projects": org_projects(s, &org).await, "files": files })).into_response())
@@ -368,6 +418,7 @@ pub(crate) async fn remove_file(s: &dyn StorageBackend, principal: &Principal, o
         let filter = format!("org = {} AND path = {}", sql_quote(&org), sql_quote(&q.path));
         db.delete(FILES, &filter).await.map_err(internal)?;
         db.delete(OFF, &filter).await.map_err(internal)?;
+        db.delete(SHADOW, &filter).await.map_err(internal)?;
         note(db.as_ref(), &org, &q.path, &col(prev, "commit"), "delete", kind, &col(prev, "content"), &by).await.map_err(internal)?;
         flowr_policy::audit::event(&principal, "policy:delete", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
             Some(&format!("deleted {}", col(prev, "commit"))));
@@ -446,6 +497,7 @@ pub(crate) async fn enforce(s: &dyn StorageBackend, principal: &Principal, org: 
             let filter = format!("org = {} AND path = {}", sql_quote(&org), sql_quote(&path));
             if is_on {
                 db.delete(OFF, &filter).await.map_err(internal)?;
+                db.delete(SHADOW, &filter).await.map_err(internal)?;
             } else {
                 db.upsert(OFF, &["org", "path"], &[json!({ "org": org, "path": path, "updated_by": by, "updated_at": now })]).await.map_err(internal)?;
             }
@@ -460,4 +512,48 @@ pub(crate) async fn enforce(s: &dyn StorageBackend, principal: &Principal, org: 
         info!(org, enforced = on.len(), switched, %by, "org policy files enforced");
         Ok(Json(json!({ "org": org, "enforced": on.len(), "off": files.len() - on.len(), "switched": switched })).into_response())
     }.await
+}
+
+/// `PUT /security/orgs/{org}/files/shadow` `{path, shadow}` — run a switched-off
+/// rule file in shadow mode (GOV-2): evaluated on every call and its would-be
+/// refusals logged as `policy:shadow`, never enforced. Switching it on is
+/// `files/enforced` (and needs the second approver where the org has one).
+async fn set_shadow(State(s): St, p: P, Path(org): Path<String>, Json(b): Json<Value>) -> Response {
+    both(async {
+        let principal = who(p);
+        let s = s.as_ref();
+        allowed(s, &principal, &org).await?;
+        let path = col(&b, "path");
+        let kind = valid_path(&path)?;
+        let Some(on) = b.get("shadow").and_then(|v| v.as_bool()) else {
+            return Err(err(StatusCode::BAD_REQUEST, "shadow: true or false"));
+        };
+        if kind != "policy" {
+            return Err(err(StatusCode::BAD_REQUEST, "only rule files (policies/) run in shadow mode"));
+        }
+        let files = files_of(s, &org).await;
+        let Some(row) = files.iter().find(|r| col(r, "path") == path) else {
+            return Err(err(StatusCode::NOT_FOUND, format!("{org} has no file {path}")));
+        };
+        if on && !off_of(s, &org).await.contains(&path) {
+            return Err(err(StatusCode::CONFLICT, format!("{path} is enforced: switch it off first to run it in shadow mode")));
+        }
+        if on {
+            // It must compile with the enforced files, as it will be evaluated with them.
+            let set = enforced_with(&files, &off_of(s, &org).await, &[(path.clone(), col(row, "content"))], &[]);
+            check(s, &org, &set).await.map_err(|e| refused(e, "it doesn't work with the org's enforced files"))?;
+        }
+        let db = db(s).await.map_err(internal)?;
+        let filter = format!("org = {} AND path = {}", sql_quote(&org), sql_quote(&path));
+        if on {
+            db.upsert(SHADOW, &["org", "path"], &[json!({ "org": org, "path": path, "updated_by": principal.id(), "updated_at": chrono::Utc::now().to_rfc3339() })]).await.map_err(internal)?;
+        } else {
+            db.delete(SHADOW, &filter).await.map_err(internal)?;
+        }
+        note(db.as_ref(), &org, &path, &col(row, "commit"), if on { "shadow" } else { "unshadow" }, kind, &col(row, "content"), principal.id()).await.map_err(internal)?;
+        flowr_policy::audit::event(&principal, "policy:switch", "PolicyFile", &format!("{org}/{path}"), None, Some(&org), None,
+            Some(if on { "shadow mode on" } else { "shadow mode off" }));
+        changed().await;
+        Ok(Json(json!({ "org": org, "path": path, "shadow": on })).into_response())
+    }.await)
 }

@@ -747,6 +747,12 @@ export const orgPolicy = {
   /// (422, `errors`) if those files don't work on their own.
   setEnforced: (org: string, enforced: string[]) =>
     request<{ org: string; enforced: number; off: number; switched: number; errors?: string[]; pending?: boolean; message?: string }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+  /// GOV-2: run a switched-off rule file in shadow mode (evaluated and logged, not enforced).
+  setShadow: (org: string, path: string, shadow: boolean) =>
+    request<{ shadow: boolean }>(`${orgBase(org)}/files/shadow`, { method: 'PUT', body: JSON.stringify({ path, shadow }) }),
+  /// GOV-2: replay a change against the org's last `days` of decisions.
+  replay: (org: string, change: { files?: { path: string; content: string }[]; removed?: string[]; switch_on?: string[]; days?: number }) =>
+    request<ReplayResult>(`${orgBase(org)}/replay`, { method: 'POST', body: JSON.stringify(change) }),
   /// GOV-3: the org's second approver for policy changes.
   settings: (org: string) => request<{ org: string; four_eyes: boolean; pending: number }>(`${orgBase(org)}/settings`, { method: 'GET' }),
   setFourEyes: (org: string, four_eyes: boolean) =>
@@ -756,6 +762,13 @@ export const orgPolicy = {
     request<{ approved: boolean; errors?: string[] }>(`${orgBase(org)}/changes/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
   reject: (org: string, id: string, note = '') =>
     request(`${orgBase(org)}/changes/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
+};
+
+/// What a replay found (GOV-2): the decisions that would flip.
+export type ReplayResult = {
+  days: number; read: number; replayed: number; skipped: number; flipped: number; unchanged: number; note: string;
+  flips: { ts_ms: number; principal: string; on_behalf_of?: string; agent?: string; action: string; resource: string; project?: string;
+    before: string; after: string; policy_ids: string[]; reason?: string }[];
 };
 
 /// A policy change held for a second approver (GOV-3).

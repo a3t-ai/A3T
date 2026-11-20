@@ -142,6 +142,11 @@ impl Labels {
     }
 }
 
+/// A policy whose name starts with this runs in shadow mode (GOV-2): it is
+/// evaluated after the deciding set, and what it would refuse is logged as
+/// `policy:shadow`, never enforced.
+pub const SHADOW_PREFIX: &str = "shadow:";
+
 /// One compiled policy set and who its policies are.
 struct Pack {
     engine: AuthzEngine,
@@ -149,6 +154,8 @@ struct Pack {
     /// The `needs_approval` rules (`@approval` forbids), kept out of the
     /// deciding set: after an allow, a match asks a person (GOV-8).
     approvals: Option<Approvals>,
+    /// Shadow-mode files (GOV-2): a permit-all plus their forbids.
+    shadow: Option<Approvals>,
     /// sha256 of the policy and schema source, first 16 hex (AUD-2).
     version: String,
 }
@@ -198,7 +205,15 @@ impl Pack {
         let mut labels = Labels::of(baseline, "baseline")?;
         let mut appr_text = String::new();
         let mut appr_labels: Vec<(String, Option<String>)> = Vec::new();
+        let mut shadow_text = String::new();
+        let mut shadow_labels: Vec<(String, Option<String>)> = Vec::new();
         for (label, src) in extra {
+            if label.split_once('/').is_some_and(|(_, n)| n.starts_with(SHADOW_PREFIX)) {
+                shadow_labels.extend(Labels::of(src, label)?);
+                shadow_text.push_str(src);
+                shadow_text.push('\n');
+                continue;
+            }
             let (main, appr) = split_approvals(src, label)?;
             if !main.trim().is_empty() {
                 labels.extend(Labels::of(&main, label)?);
@@ -235,13 +250,37 @@ impl Pack {
             text.push_str(&appr_text);
             Some(Approvals { engine, labels, timeouts: t.into_iter().map(|(_, s)| s).collect() })
         };
+        let shadow = if shadow_text.trim().is_empty() {
+            None
+        } else {
+            let base = "@id(\"shadow-base\")\npermit(principal, action, resource);\n\n";
+            let full = format!("{base}{shadow_text}");
+            let mut l = Labels::of(base, "shadow-base")?;
+            l.extend(shadow_labels);
+            let labels = Labels(l);
+            let engine = AuthzEngine::new(&full, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
+            Some(Approvals { engine, labels, timeouts: Vec::new() })
+        };
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
         h.update(text.as_bytes());
         h.update(b"\0");
         h.update(schema.as_bytes());
         let version = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
-        Ok(Self { engine, labels, approvals, version })
+        Ok(Self { engine, labels, approvals, shadow, version })
+    }
+
+    /// GOV-2: what the shadow files would refuse that the enforced set allowed —
+    /// their ids and reasons. Never changes the decision.
+    fn shadow_refusal(&self, ctx: &SecurityContext, action: &AesopAction, resource: &AesopResource) -> Option<(Vec<String>, Vec<String>)> {
+        let a = self.shadow.as_ref()?;
+        match a.engine.enforce(ctx, action, resource) {
+            Err(AesopError::Denied { policy_ids, .. }) if !policy_ids.is_empty() => Some((
+                policy_ids.iter().map(|i| a.labels.label(i).replace(SHADOW_PREFIX, "")).collect(),
+                policy_ids.iter().filter_map(|i| a.labels.reason(i)).collect(),
+            )),
+            _ => None,
+        }
     }
 
     /// After an allow: does a `needs_approval` rule cover this call? Its ids,
@@ -280,12 +319,14 @@ enum ProjectPack {
 pub struct CedarHook {
     global: Pack,
     projects: std::collections::HashMap<String, ProjectPack>,
+    /// Don't log shadow refusals (a replay re-evaluates past decisions).
+    quiet: bool,
 }
 
 impl CedarHook {
     /// Build from explicit Cedar policy + schema source.
     pub fn new(policies_src: &str, schema_src: &str) -> Result<Self, String> {
-        Ok(Self { global: Pack::build(policies_src, &[], schema_src)?, projects: Default::default() })
+        Ok(Self { global: Pack::build(policies_src, &[], schema_src)?, projects: Default::default(), quiet: false })
     }
 
     /// Build from the embedded A3T baseline pack (schema + policies).
@@ -352,7 +393,7 @@ impl CedarHook {
             };
             projects.insert(ns.to_string(), pack);
         }
-        Ok(Self { global, projects })
+        Ok(Self { global, projects, quiet: false })
     }
 
     /// Check that `policies` load: the platform set, and every project's set.
@@ -366,6 +407,12 @@ impl CedarHook {
             }
         }
         Ok(())
+    }
+
+    /// The same hook, logging nothing of its own (for a replay, GOV-2).
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
     }
 
     /// The projects with policies of their own.
@@ -490,6 +537,18 @@ impl CedarHook {
     }
 }
 
+/// Log what a shadow file would have refused (GOV-2), as `policy:shadow` on
+/// the same resource; the call itself goes ahead.
+fn log_shadow(req: &ExecutionRequest, ids: &[String], why: &[String]) {
+    let project = flowr_policy::namespace::request_namespace(req);
+    let reason = format!("shadow: would refuse {} on {}::{} ({}). {}", req.action.as_str(), req.resource.type_name, req.resource.id, ids.join(", "), why.join(" "));
+    flowr_policy::audit::event_decision(
+        &req.principal, "policy:shadow", &req.resource.type_name, &req.resource.id, project.as_deref(), None,
+        &PolicyDecision::Deny { reason: reason.trim_end().to_string(), policy_ids: ids.to_vec() },
+        Some(&format!("not enforced; the call was allowed ({})", req.action.as_str())),
+    );
+}
+
 /// What a `needs_approval` rule makes of an allowed call: a question for the
 /// person behind the agent (or its owner), asked every time; with nobody to
 /// ask, a refusal.
@@ -609,10 +668,14 @@ impl PolicyHook for CedarHook {
             }
         };
         match pack.engine.enforce(&ctx, &action, &resource) {
-            Ok(_allowed) => match pack.approval_needed(&ctx, &action, &resource) {
+            Ok(_allowed) => {
+                if let Some((ids, why)) = pack.shadow_refusal(&ctx, &action, &resource).filter(|_| !self.quiet) {
+                    log_shadow(req, &ids, &why);
+                }
+                match pack.approval_needed(&ctx, &action, &resource) {
                 None => PolicyDecision::Allow,
                 Some((policy_ids, why, timeout_secs)) => required_ask(&req.principal, &action, &resource, policy_ids, why, timeout_secs),
-            },
+            }},
             Err(AesopError::Denied { policy_ids: raw_ids, action: denied_action, resource_type, resource_id }) => {
                 let policy_ids: Vec<String> = raw_ids.iter().map(|i| pack.labels.label(i)).collect();
                 let why: Vec<String> = raw_ids.iter().filter_map(|i| pack.labels.reason(i)).collect();

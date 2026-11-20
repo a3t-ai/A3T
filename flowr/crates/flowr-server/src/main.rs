@@ -17,6 +17,7 @@ mod first_password;
 mod change_password;
 mod refresh;
 mod sessions;
+mod replay;
 mod directory;
 mod people;
 mod config;
@@ -309,6 +310,13 @@ async fn main() -> anyhow::Result<()> {
                     .merge(Router::new().route("/security/baseline", get(baseline_handler)))
                     // Policy files that no longer compile, and what they closed (GOV-4).
                     .merge(Router::new().route("/security/policy-health", get(policy_health_handler)).layer(Extension(storage.clone())))
+                    // Replay an org's policy change against its last days of decisions (GOV-2).
+                    .merge({
+                        #[cfg(feature = "ee")]
+                        { Router::new().route("/security/orgs/:org/replay", post(replay::replay_handler)).layer(Extension(storage.clone())) }
+                        #[cfg(not(feature = "ee"))]
+                        { Router::new() }
+                    })
                     .merge(
                         Router::new()
                             .route("/security/policies", get(policies_list_handler))
@@ -441,7 +449,7 @@ static EDITION_INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLoc
 /// system / a3t / default are the platform's; any other is its project's
 /// (a3t_security::NamedPolicy). What is stored compiles: the policy gate checks
 /// each one before it is saved.
-async fn collect_registry_cedar_policies(
+pub(crate) async fn collect_registry_cedar_policies(
     storage: &Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
 ) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
@@ -484,9 +492,31 @@ async fn collect_registry_cedar_policies(
     // they apply to, never outside the org. They were checked when saved; a set
     // that no longer compiles (the catalogue changed) closes the org's projects.
     #[cfg(feature = "ee")]
+    let shadows = flowr_ce::org_policy::all_shadow_files(storage.as_ref()).await;
+    #[cfg(feature = "ee")]
     for (org, projects, files) in flowr_ce::org_policy::all_org_files(storage.as_ref()).await {
         let files: Vec<a3t_security::policy_files::OrgFile> = files.into_iter()
             .map(|(path, content)| a3t_security::policy_files::OrgFile { path, content }).collect();
+        // GOV-2: its shadow files, compiled with the enforced ones (they may name
+        // the org's roles), placed under `shadow:` names: evaluated, not enforced.
+        if let Some(sh) = shadows.get(&org) {
+            let mut all = files.clone();
+            all.extend(sh.iter().map(|(path, content)| a3t_security::policy_files::OrgFile { path: path.clone(), content: content.clone() }));
+            match a3t_security::policy_files::compile_org_set(&org, &projects, &all) {
+                Ok(set) => {
+                    let shadow_labels: std::collections::BTreeSet<String> = set.files.iter()
+                        .filter(|f| sh.iter().any(|(p, _)| f["path"].as_str() == Some(p)))
+                        .filter_map(|f| Some(format!("org.{org}.{}.{}", f["kind"].as_str()?, f["name"].as_str()?.rsplit('/').next()?)))
+                        .collect();
+                    for (p, label, cedar) in set.policies {
+                        if shadow_labels.contains(&label) {
+                            out.push((p, format!("{}{label}", a3t_security::SHADOW_PREFIX), cedar));
+                        }
+                    }
+                }
+                Err(errors) => warn!(org = %org, errors = ?errors, "an org's shadow files don't compile with its enforced ones; they are not evaluated"),
+            }
+        }
         match a3t_security::policy_files::compile_org_set(&org, &projects, &files) {
             Ok(set) => out.extend(set.policies),
             Err(errors) => {
@@ -509,7 +539,7 @@ async fn collect_registry_cedar_policies(
 }
 
 #[cfg(feature = "ee")]
-fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy> {
+pub(crate) fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy> {
     policies.iter().map(|(ns, n, s)| a3t_security::NamedPolicy::new(ns.clone(), n.clone(), s.clone())).collect()
 }
 
@@ -517,7 +547,7 @@ fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy
 /// (`type_ref: cedarschema`, name `base-schema`) plus per-resource fragments
 /// (a `type_ref: cedarschema` resource's `config.schema`, or any resource's
 /// inline `config.cedar_schema`). Values may be a JSON object or a JSON string.
-async fn collect_registry_schema(
+pub(crate) async fn collect_registry_schema(
     storage: &Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
 ) -> (Option<String>, Vec<String>) {
     let as_str = |v: &serde_json::Value| -> String {
