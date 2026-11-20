@@ -441,13 +441,19 @@ impl TaskHandler for GatewayStep {
         if let Some(storage) = storage_of(ctx) {
             record(storage.as_ref(), &ctx.instance_id, &call, via, &decision, &outcome, took).await;
         }
-        if let Ok(p) = serde_json::from_value::<flowr_policy::Principal>(call.principal.clone()) {
-            let d = if decision.allow { flowr_policy::PolicyDecision::Allow } else {
-                flowr_policy::PolicyDecision::Deny { reason: decision.reason.clone(), policy_ids: vec!["gateway".into()] }
-            };
-            flowr_policy::audit::event_decision(&p, "gateway:call", "Outbound", &call.target, Some(&call.namespace), None, &d,
-                Some(&format!("{} via {via} · caller run {}{}", call.task_type, call.caller_run, if outcome.is_err() && decision.allow { " · the call failed" } else { "" })));
-        }
+        // Every call is in the decision log, refusals included. A verified call
+        // is the caller's; an unverified one is whoever started this gateway
+        // run, with the identity it claimed in the note — never taken on trust.
+        let claimed = serde_json::from_value::<flowr_policy::Principal>(call.principal.clone()).ok();
+        let (actor, forged) = match (&verified, claimed) {
+            (Ok(()), Some(p)) => (p, String::new()),
+            (_, _) => (ctx.principal.clone(), format!(" · claimed caller {}", call.principal.get("id").and_then(|v| v.as_str()).unwrap_or("(unreadable)"))),
+        };
+        let d = if decision.allow { flowr_policy::PolicyDecision::Allow } else {
+            flowr_policy::PolicyDecision::Deny { reason: decision.reason.clone(), policy_ids: vec!["gateway".into()] }
+        };
+        flowr_policy::audit::event_decision(&actor, "gateway:call", "Outbound", &call.target, Some(&call.namespace), None, &d,
+            Some(&format!("{} via {via} · caller run {}{}{forged}", call.task_type, call.caller_run, if outcome.is_err() && decision.allow { " · the call failed" } else { "" })));
         outcome.map(TaskResult::new).map_err(fail)
     }
 }

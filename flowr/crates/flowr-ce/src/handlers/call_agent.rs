@@ -777,7 +777,7 @@ impl TaskHandler for AgentHandler {
             // call to the first server sent e.g. ADB's `recall` to FlowR ("Unknown tool").
             let mut tool_server: HashMap<String, String> = HashMap::new();
             for server in &config.config.mcp_servers {
-                match list_mcp_tools(&http_client, &storage, &agent_principal, server).await {
+                match list_mcp_tools(&http_client, &storage, &agent_principal, &config.session_id, record.namespace.as_deref(), server).await {
                     Ok(mcp_tools) => {
                         let count = mcp_tools.len();
                         for t in mcp_tools {
@@ -2388,10 +2388,21 @@ async fn call_mcp_tool(
 async fn list_mcp_tools(
     client: &reqwest::Client,
     storage: &Arc<dyn StorageBackend>,
-    _caller: &flowr_mcp_core::Principal,
+    caller: &flowr_mcp_core::Principal,
+    session_id: &str,
+    project: Option<&str>,
     resource_name: &str,
 ) -> std::result::Result<Vec<Value>, String> {
     let server_url = resolve_agent_mcp_url(storage, resource_name).await?;
+    // Listing a server's tools is a call out too: the same checks as calling one.
+    if !is_local_mcp_url(&server_url) {
+        crate::gateway::refuse_outbound(storage.as_ref(), caller, session_id, "call:mcp", &format!("mcp:{resource_name}/tools/list")).await?;
+        let platform_server = resource_name.split_once('/').is_some_and(|(ns, _)| flowr_policy::egress::PLATFORM.contains(&ns));
+        if let (false, Some(p)) = (platform_server, project) {
+            let agent = session_id.split(':').next().filter(|a| !a.is_empty() && *a != session_id);
+            crate::egress_rules::guard(caller, p, agent, "call:mcp", &server_url).await?;
+        }
+    }
 
     // E0.4c: local tool discovery is in-process (no loopback HTTP / re-auth).
     if is_local_mcp_url(&server_url) {
@@ -2403,8 +2414,15 @@ async fn list_mcp_tools(
 
     let payload = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 1});
 
-    let resp = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
-        .header("Content-Type", "application/json")
+    let mut req = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
+        .header("Content-Type", "application/json");
+    // ID-4: a server may show an agent only the tools it allows it.
+    if let Some((agent, person)) = crate::agent_token::of_principal(caller) {
+        if let Ok(t) = crate::agent_token::mint(&agent, person.as_deref(), project, &server_url) {
+            req = req.header(crate::agent_token::HEADER, t);
+        }
+    }
+    let resp = req
         .json(&payload)
         .send()
         .await
