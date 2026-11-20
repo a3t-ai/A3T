@@ -38,8 +38,11 @@
   const expertCedar = $derived<string | undefined>((prof?.policy as any)?.file?.cedar);
 
   // ── The file, written back as YAML (JSON values are valid YAML) ──
-  function fileOf(rs: Rule[]): string {
+  function fileOf(rs: Rule[], ceiling: string[] | null = ceilingNow, uses: string[] = usesNow, egress: string[] | null = egressNow): string {
     const lines = ['kind: a3t/policy', 'name: profile', `description: ${JSON.stringify(`What ${agent.name} may not do, wherever it runs.`)}`];
+    if (ceiling) lines.push(`role_ceiling: ${JSON.stringify(ceiling)}`);
+    if (uses.length) lines.push(`uses: ${JSON.stringify(uses)}`);
+    if (egress) lines.push(`egress: ${JSON.stringify(egress)}`);
     if (rs.length) {
       lines.push('rules:');
       for (const r of rs) {
@@ -67,6 +70,36 @@
     return true;
   }
 
+  // ── Role ceiling (UI-3): the most authority it carries, whoever runs it ──
+  const ceilingNow = $derived<string[] | null>(((prof?.policy as any)?.file?.role_ceiling ?? null) as string[] | null);
+  const ROLES = ['Admin', 'Operator', 'Viewer'];
+  let editCeiling = $state(false);
+  let ceilPick = $state<Record<string, boolean>>({});
+  function startCeiling() { ceilPick = Object.fromEntries(ROLES.map((r) => [r, ceilingNow ? ceilingNow.includes(r) : true])); editCeiling = true; }
+  async function saveCeiling(clear = false) {
+    const picked = ROLES.filter((r) => ceilPick[r]);
+    const next = clear ? null : picked;
+    const empty = !rules.length && !expertCedar && !next && !usesNow.length && !egressNow;
+    if (await save(empty ? '' : fileOf(rules, next), 'ceiling')) editCeiling = false;
+  }
+
+  // ── Org policies it runs under (GOV-6): a policy with no applies_to binds
+  // only where it is named, here or in a flow's metadata.a3t.policyRef ──
+  const usesNow = $derived<string[]>(((prof?.policy as any)?.file?.uses ?? []) as string[]);
+  let newUse = $state('');
+  async function setUses(next: string[]) {
+    const empty = !rules.length && !expertCedar && !ceilingNow && !next.length && !egressNow;
+    if (await save(empty ? '' : fileOf(rules, ceilingNow, next), 'uses')) newUse = '';
+  }
+
+  // ── Where it may call out to (RT-1): within its org's egress files ──
+  const egressNow = $derived<string[] | null>(((prof?.policy as any)?.file?.egress ?? null) as string[] | null);
+  let newHost = $state('');
+  async function setEgress(next: string[] | null) {
+    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !next;
+    if (await save(empty ? '' : fileOf(rules, ceilingNow, usesNow, next), 'egress')) newHost = '';
+  }
+
   // ── Add a rule (starters) ──
   let adding = $state(false);
   let nWhat = $state('');
@@ -91,7 +124,7 @@
   }
   async function removeRule(i: number) {
     const next = rules.filter((_, j) => j !== i);
-    await save(next.length || expertCedar ? fileOf(next) : '', `rm${i}`);
+    await save(next.length || expertCedar || ceilingNow || usesNow.length || egressNow ? fileOf(next) : '', `rm${i}`);
   }
 
   // ── Advanced: the file itself ──
@@ -119,10 +152,34 @@
     </div>
 
     <div class="card">
-      <div class="card-head"><h3>2 · What it is bound to</h3><span>set in its Model &amp; tools</span></div>
+      <div class="card-head"><h3>2 · What it is bound to</h3><span>model and tools in its Model &amp; tools; the ceiling here</span></div>
       <ul class="rows wide">
         <li><span class="lbl">Model</span><span class="val mono">{list(prof.bound_to.model).join(', ') || 'the platform default'}</span><span></span></li>
         <li><span class="lbl">MCP servers</span><span class="val mono">{list(prof.bound_to.mcp_servers).join(', ') || 'none'}</span><span></span></li>
+        <li><span class="lbl">Role ceiling</span><span class="val">{ceilingNow ? (ceilingNow.length ? `at most ${ceilingNow.join(', ')} — its roles are the caller's roles that are also here` : 'no roles: it can do nothing a role grants') : 'not narrowed: it carries the roles of whoever runs it'}</span>
+          {#if canEdit}<button class="btn2" onclick={startCeiling}>Change</button>{:else}<span></span>{/if}</li>
+        {#if editCeiling}
+          <li class="full"><span class="val">
+            {#each ROLES as r (r)}<label class="chk"><input type="checkbox" bind:checked={ceilPick[r]} /> {r}</label>{/each}
+            <span class="acts"><button class="btn2 primary" disabled={!!busy} onclick={() => saveCeiling()}>{busy === 'ceiling' ? 'Checking…' : 'Save ceiling'}</button>
+              {#if ceilingNow}<button class="btn2 quiet" disabled={!!busy} onclick={() => saveCeiling(true)}>Remove the ceiling</button>{/if}
+              <button class="btn2 quiet" onclick={() => (editCeiling = false)}>Cancel</button></span></span></li>
+        {/if}
+        <li><span class="lbl">Runs under</span><span class="val">{usesNow.length ? usesNow.join(', ') : 'no named org policies (those that apply everywhere still do)'}</span><span></span></li>
+        {#if canEdit}
+          <li class="full"><span class="val">
+            {#each usesNow as u (u)}<button class="btn2 quiet" disabled={!!busy} onclick={() => setUses(usesNow.filter((x) => x !== u))}>Drop {u}</button>{/each}
+            <input class="mono" bind:value={newUse} placeholder="org/policy-name" />
+            <button class="btn2" disabled={!!busy || !/^[^/\s]+\/[a-z0-9][a-z0-9-]*$/.test(newUse.trim())} onclick={() => setUses([...usesNow, newUse.trim()])}>{busy === 'uses' ? 'Checking…' : 'Add'}</button></span></li>
+        {/if}
+        <li><span class="lbl">Calls out to</span><span class="val">{egressNow ? (egressNow.length ? egressNow.join(', ') : 'nowhere') : 'wherever its org allows (never private or cloud-metadata addresses)'}</span><span></span></li>
+        {#if canEdit}
+          <li class="full"><span class="val">
+            {#each egressNow ?? [] as h (h)}<button class="btn2 quiet" disabled={!!busy} onclick={() => setEgress((egressNow ?? []).filter((x) => x !== h))}>Drop {h}</button>{/each}
+            <input class="mono" bind:value={newHost} placeholder="api.github.com or *.slack.com" />
+            <button class="btn2" disabled={!!busy || !/^(\*\.)?[a-z0-9.-]+$/i.test(newHost.trim())} onclick={() => setEgress([...(egressNow ?? []), newHost.trim()])}>{busy === 'egress' ? 'Checking…' : 'Allow only these'}</button>
+            {#if egressNow}<button class="btn2 quiet" disabled={!!busy} onclick={() => setEgress(null)}>Back to its org's list</button>{/if}</span></li>
+        {/if}
         <li><span class="lbl">Tools it may call</span><span class="val">{Array.isArray(prof.bound_to.enabled_tools) ? (prof.bound_to.enabled_tools.length ? prof.bound_to.enabled_tools.join(', ') : 'none') : 'any its servers offer'}</span><span></span></li>
       </ul>
     </div>

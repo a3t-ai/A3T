@@ -178,10 +178,12 @@ pub fn session_key(session_id: &str) -> String {
 #[derive(Debug, Default, Clone)]
 struct AgentRecord {
     owner: Option<String>,
-    /// The role ceiling set on the agent (UI-3); intersected with the step's.
+    /// The role ceiling in the agent's own policy (UI-3); intersected with the step's.
     role_ceiling: Option<Vec<String>>,
     /// The project the agent lives in.
     namespace: Option<String>,
+    /// The org policies it runs under, from its own policy (`uses`, GOV-6).
+    uses: Vec<String>,
 }
 
 /// Look up the agent behind a session.
@@ -223,11 +225,20 @@ async fn resolve_agent_record(
         .or_else(|| cfg.and_then(|c| c.get("created_by")).and_then(|v| v.as_str()))
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let role_ceiling = cfg.and_then(|c| c.get("role_ceiling")).and_then(|v| v.as_array()).map(|a| {
-        a.iter().filter_map(|r| r.as_str().map(str::to_string)).collect::<Vec<_>>()
-    });
+    // The ceiling set by the org's security admins, in the agent's own policy
+    // (UI-3) — not in its variables, which its project's writers can edit.
+    let own = crate::handlers::call_lancedb::query_platform_table(
+        storage.as_ref(), crate::agent_space::security::TABLE, Some(format!("agent_id = {q}")), 1,
+    ).await.ok()
+        .and_then(|r| r.into_iter().next())
+        .and_then(|r| r.get("policy").and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|y| flowr_policy::policy_file::PolicyFile::parse(&y).ok());
+    let (role_ceiling, uses) = match own {
+        Some(f) => (f.role_ceiling, f.uses),
+        None => (None, Vec::new()),
+    };
     let namespace = row.get("namespace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
-    Some(AgentRecord { owner, role_ceiling, namespace })
+    Some(AgentRecord { owner, role_ceiling, namespace, uses })
 }
 
 /// The tighter of two role ceilings: both bind. `None` means "not narrowed".
@@ -582,6 +593,15 @@ impl TaskHandler for AgentHandler {
             let t = ctx.template_meta.entry("template".to_string()).or_insert_with(|| json!({}));
             if let Some(obj) = t.as_object_mut() {
                 obj.insert("agent".to_string(), json!(agent));
+                // GOV-6: the org policies its own policy says it runs under,
+                // added to the flow's (never removing one).
+                if !record.uses.is_empty() {
+                    let mut refs: Vec<Value> = obj.get("policyRef").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    for u in &record.uses {
+                        if !refs.iter().any(|r| r.as_str() == Some(u)) { refs.push(json!(u)); }
+                    }
+                    obj.insert("policyRef".to_string(), Value::Array(refs));
+                }
             }
         }
         // Approvals given in this conversation on another process (L39).
@@ -2219,6 +2239,12 @@ async fn call_mcp_tool(
     // AC-7: outside production nothing leaves A3T. In-process tools stay inside.
     if !is_local_mcp_url(&server_url) {
         crate::gateway::refuse_outbound(storage.as_ref(), caller, session_id, "call:mcp", &format!("mcp:{resource_name}/{tool_name}")).await?;
+        // RT-1: and only where egress allows (a tool server on the platform is not a call out).
+        let platform_server = resource_name.split_once('/').is_some_and(|(ns, _)| flowr_policy::egress::PLATFORM.contains(&ns));
+        if let (false, Some(p)) = (platform_server, project) {
+            let agent = session_id.split(':').next().filter(|a| !a.is_empty() && *a != session_id);
+            crate::egress_rules::guard(caller, p, agent, "call:mcp", &server_url).await?;
+        }
     }
 
     // E0.4c: local tools → in-process, authorized as the agent principal.

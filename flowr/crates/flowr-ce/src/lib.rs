@@ -13,6 +13,7 @@ pub mod agent_space;
 pub mod approval;
 pub mod policy_health;
 pub mod policy_changes;
+pub mod egress_rules;
 pub mod token_stream;
 pub mod mcp_stream;
 pub mod canvas;

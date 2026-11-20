@@ -16,6 +16,8 @@ async-trait.workspace = true
 uuid.workspace = true
 # A flow definition's document.namespace (the project a create_flow touches).
 serde_yaml = { workspace = true }
+# Egress checks resolve hosts (egress.rs).
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

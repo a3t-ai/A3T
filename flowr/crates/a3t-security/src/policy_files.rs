@@ -238,6 +238,22 @@ pub fn compile_agent_policy(project: &str, agent_id: &str, yaml: &str) -> Result
         return Err("an agent's own policy applies to the agent itself: leave out applies_to".into());
     }
     f.applies_to = Some(AppliesTo { agents: vec![agent_id.to_string()], ..Default::default() });
+    for r in f.role_ceiling.iter().flatten() {
+        if !(BASELINE_ROLES.contains(&r.as_str()) || r.contains('/')) {
+            return Err(format!("role_ceiling names {r:?}: a baseline role ({}) or an org role as <org>/<role>", BASELINE_ROLES.join(", ")));
+        }
+    }
+    // A ceiling or references alone are a whole policy: nothing for the engine.
+    let no_rules = f.rules.is_empty() && f.cedar.as_deref().map_or(true, |c| c.trim().is_empty());
+    if no_rules && (f.role_ceiling.is_some() || !f.uses.is_empty() || f.egress.is_some()) {
+        if f.kind != "a3t/policy" {
+            return Err(format!("kind is {:?}, not a3t/policy", f.kind));
+        }
+        if let Some(bad) = f.uses.iter().find(|u| u.split_once('/').is_none_or(|(o, n)| o.is_empty() || !valid_name(n))) {
+            return Err(format!("uses: {bad:?} is not <org>/<policy name>"));
+        }
+        return Ok(Compiled { name: format!("{project}/{}", f.name), cedar: String::new(), placement: Placement::Org, hidden_apps: Vec::new() });
+    }
     compile_file(project, f)
 }
 
@@ -247,6 +263,19 @@ pub fn compile_policy(org: &str, yaml: &str) -> Result<Compiled, String> {
 }
 
 fn compile_file(org: &str, f: PolicyFile) -> Result<Compiled, String> {
+    let own = f.applies_to.as_ref().is_some_and(|a| a.agents.len() == 1 && !a.org && a.projects.is_empty());
+    if f.role_ceiling.is_some() && !own {
+        return Err("role_ceiling belongs in an agent's own policy (its Security tab), not an org file".into());
+    }
+    if f.egress.is_some() && !own {
+        return Err("egress belongs in an agent's own policy; an org's hosts are an egress/ file".into());
+    }
+    if !f.uses.is_empty() && !own {
+        return Err("uses belongs in an agent's own policy; a flow names its policies in metadata.a3t.policyRef".into());
+    }
+    if let Some(bad) = f.uses.iter().find(|u| u.split_once('/').is_none_or(|(o, n)| o.is_empty() || !valid_name(n))) {
+        return Err(format!("uses: {bad:?} is not <org>/<policy name>"));
+    }
     if f.kind != "a3t/policy" {
         return Err(format!("kind is {:?}, not a3t/policy", f.kind));
     }
@@ -446,6 +475,22 @@ pub fn compile_org_set(org: &str, projects: &[String], files: &[OrgFile]) -> Res
                     }
                 }
             }
+        }
+        if kind == "egress" {
+            // RT-1: where the org's flows may call out to; nothing for the engine.
+            match flowr_policy::policy_file::EgressFile::parse(&f.content) {
+                Ok(_) => set.files.push(serde_json::json!({ "path": f.path, "kind": "egress", "name": f.path, "placement": "org" })),
+                Err(e) => errors.push(format!("{}: {e}", f.path)),
+            }
+            continue;
+        }
+        if kind == "org-access" {
+            // GOV-5: the org's sign-in mapping; nothing for the engine.
+            match flowr_policy::policy_file::OrgAccessFile::parse(&f.content) {
+                Ok(_) => set.files.push(serde_json::json!({ "path": f.path, "kind": "org-access", "name": "org", "placement": "org" })),
+                Err(e) => errors.push(format!("{}: {e}", f.path)),
+            }
+            continue;
         }
         let compiled = match kind {
             "policy" => compile_policy(org, &f.content),

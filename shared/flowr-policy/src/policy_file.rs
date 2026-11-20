@@ -20,6 +20,57 @@ pub struct PolicyFile {
     /// Expert Cedar (`forbid` statements only).
     #[serde(default)]
     pub cedar: Option<String>,
+    /// An agent's own policy only (UI-3): the most authority the agent carries,
+    /// whoever runs it — its roles are the caller's roles that are also here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_ceiling: Option<Vec<String>>,
+    /// An agent's own policy only (GOV-6): org policies it runs under
+    /// (`<org>/<name>`), as a flow names them in `metadata.a3t.policyRef`. A
+    /// policy with no `applies_to` binds only where it is named like this.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
+    /// An agent's own policy only (RT-1): the hosts it may call out to — within
+    /// what its org's egress files allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<Vec<String>>,
+}
+
+/// Where an org's flows and agents may call out to (`egress/<name>.yaml`, RT-1).
+/// With one enforced, only `hosts` are reached (several files: their union);
+/// `private` names hosts, IPs or CIDRs on the org's own network that may be
+/// reached although private (never cloud metadata unless named).
+///
+/// ```yaml
+/// kind: a3t/egress
+/// hosts: [api.github.com, "*.slack.com"]
+/// private: [mcp.internal.acme.com, 10.20.0.0/16]
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EgressFile {
+    pub kind: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    #[serde(default)]
+    pub private: Vec<String>,
+}
+
+impl EgressFile {
+    pub fn parse(yaml: &str) -> Result<Self, String> {
+        let f: Self = serde_yaml::from_str(yaml).map_err(|e| format!("not an egress file: {e}"))?;
+        if f.kind != "a3t/egress" {
+            return Err(format!("kind is {:?}, not a3t/egress", f.kind));
+        }
+        for h in f.hosts.iter().chain(f.private.iter()) {
+            let h = h.trim();
+            if h.is_empty() || h.contains("://") || h.contains(' ') || h.contains('/') && h.split_once('/').is_none_or(|(n, b)| n.parse::<std::net::IpAddr>().is_err() || b.parse::<u8>().is_err()) {
+                return Err(format!("{h:?}: a host name (api.github.com, *.slack.com), an IP or a CIDR range"));
+            }
+        }
+        Ok(f)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -138,8 +189,67 @@ pub fn kind_of_path(path: &str) -> Option<&'static str> {
     match dir {
         "policies" => Some("policy"),
         "roles" => Some("role"),
+        // GOV-5: the org's own sign-in mapping (group → org role).
+        "access" if file == "org.yaml" || file == "org.yml" => Some("org-access"),
+        // RT-1: where the org's flows and agents may call out to.
+        "egress" => Some("egress"),
         "access" => Some("access"),
         _ => None,
+    }
+}
+
+/// Who holds which role in the org itself (`access/org.yaml`, GOV-5): the
+/// org's sign-in groups mapped to its roles (`admin`, `securityadmin`,
+/// `member`), and the role everyone else who signs in through its identity
+/// provider gets (`default`; leave it out and they get none).
+///
+/// ```yaml
+/// kind: a3t/org-access
+/// groups: { acme-it: admin, acme-security: securityadmin, acme-staff: member }
+/// default: member
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrgAccessFile {
+    pub kind: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub groups: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+pub const ORG_ROLES: &[&str] = &["admin", "securityadmin", "member"];
+
+impl OrgAccessFile {
+    pub fn parse(yaml: &str) -> Result<Self, String> {
+        let f: Self = serde_yaml::from_str(yaml).map_err(|e| format!("not an org access file: {e}"))?;
+        if f.kind != "a3t/org-access" {
+            return Err(format!("kind is {:?}, not a3t/org-access", f.kind));
+        }
+        for (g, r) in &f.groups {
+            if !ORG_ROLES.contains(&r.as_str()) {
+                return Err(format!("group {g:?} → {r:?}: an org role is {}", ORG_ROLES.join(", ")));
+            }
+        }
+        if let Some(d) = &f.default {
+            if !ORG_ROLES.contains(&d.as_str()) {
+                return Err(format!("default {d:?}: an org role is {}", ORG_ROLES.join(", ")));
+            }
+        }
+        Ok(f)
+    }
+
+    /// The role a user's groups give them (the highest mapped), else `default`.
+    pub fn role_for(&self, groups: &[String]) -> Option<String> {
+        let rank = |r: &str| match r { "admin" => 3, "securityadmin" => 2, "member" => 1, _ => 0 };
+        self.groups.iter()
+            .filter(|(g, _)| groups.iter().any(|x| x == *g || x.trim_start_matches('/') == g.as_str()))
+            .map(|(_, r)| r.as_str())
+            .max_by_key(|r| rank(r))
+            .or(self.default.as_deref())
+            .map(str::to_string)
     }
 }
 
@@ -248,6 +358,12 @@ mod tests {
             "Operator users and agents may not call language models, call tools named delete_* (models other than acme/sonnet). Approved models only.");
         let g = PolicyFile::parse("kind: a3t/policy\nname: x\nrules:\n  - cannot: [flows.delete]\n    reason: Never.\n").unwrap();
         assert_eq!(describe_rule(&g.rules[0]), "Nobody may delete flows. Never.");
+        let o = OrgAccessFile::parse("kind: a3t/org-access\ngroups: { it: admin, sec: securityadmin }\ndefault: member\n").unwrap();
+        assert_eq!(o.role_for(&["/it".into(), "sec".into()]), Some("admin".into()));
+        assert_eq!(o.role_for(&["sec".into()]), Some("securityadmin".into()));
+        assert_eq!(o.role_for(&[]), Some("member".into()));
+        assert!(OrgAccessFile::parse("kind: a3t/org-access\ngroups: { it: owner }\n").is_err());
+        assert_eq!(kind_of_path("access/org.yaml"), Some("org-access"));
         let a = PolicyFile::parse("kind: a3t/policy\nname: x\nrules:\n  - needs_approval: [tools.delete_*]\n    timeout: 4h\n    reason: A person checks deletes.\n").unwrap();
         assert_eq!(describe_rule(&a.rules[0]), "Agents need a person's approval to call tools named delete_* (asked for up to 4h). A person checks deletes.");
         assert_eq!(approval_timeout_secs("4h"), Ok(14_400));

@@ -19,6 +19,7 @@
   import { getProject, namespacesFor, allProjectNamespaces, loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { isInfosec, opensSecurity, userRole } from '$lib/stores/auth';
+  import { roles, roleLabel } from '$lib/core/auth/roles.svelte.ts';
 
   type Policy = { namespace: string; name: string; cedar: string; description?: string | null; readOnly?: boolean };
   const BASELINE: Policy = { namespace: 'system', name: 'baseline', cedar: '', readOnly: true,
@@ -202,10 +203,11 @@
   // Filters: who, platform role, org, project (and their capacity in it).
   let fQ = $state(''); let fRole = $state(''); let fOrg = $state(''); let fProject = $state(''); let fCap = $state('');
   let openRow = $state('');
-  const CAP_LABEL: Record<string, string> = {
-    owner: 'Owner', developer: 'Developer', operator: 'Operator', viewer: 'Viewer', 'org-admin': 'Org admin',
-    'org-securityadmin': 'Org security admin', 'org-member': 'Org member', superadmin: 'SuperAdmin', exposed: 'Shared with them',
-  };
+  const CAP_LABEL: Record<string, string> = $derived({
+    ...Object.fromEntries(roles('project').map((r) => [r.id, r.label])),
+    'org-admin': roleLabel('org', 'admin', 'Org admin'), 'org-securityadmin': roleLabel('org', 'securityadmin', 'Org security admin'),
+    'org-member': roleLabel('org', 'member', 'Org member'), superadmin: 'SuperAdmin', exposed: 'Shared with them',
+  });
   const ACCESS_WORD: Record<string, string> = { write: 'builds and changes', run: 'runs', read: 'reads' };
   const audRows = $derived.by(() => {
     if (!aud) return [] as (AuditPerson & { here?: AuditPerson['projects'][number] })[];
@@ -226,13 +228,10 @@
   const realmUser = (id: string) => users.find((u) => u.id === id);
   // The realm roles a person can hold. Only a SuperAdmin gives SuperAdmin or
   // SecurityAdmin (the server enforces it too).
-  const REALM_ROLES = [
-    { id: 'viewer', label: 'Viewer', what: 'reads what is in their projects' },
-    { id: 'operator', label: 'Operator', what: 'today the same as Admin in their projects (A3T maps it to Admin)' },
-    { id: 'admin', label: 'Admin', what: 'creates and changes flows, agents and resources in their projects' },
-    { id: 'securityadmin', label: 'SecurityAdmin', what: 'Security and the Decision log; no project work', infosec: true },
-    { id: 'superadmin', label: 'SuperAdmin', what: 'everything, every org', infosec: true },
-  ];
+  // From the role table (ID-1), lowest first.
+  const REALM_ORDER = ['viewer', 'operator', 'admin', 'securityadmin', 'superadmin'];
+  const REALM_ROLES = $derived(roles('platform').slice().sort((a, b) => REALM_ORDER.indexOf(a.id) - REALM_ORDER.indexOf(b.id))
+    .map((r) => ({ id: r.id, label: r.label, what: r.what, infosec: r.id === 'superadmin' || r.id === 'securityadmin' })));
   type UserEdit = { id: string | null; email: string; name: string; password: string; temporary: boolean; roles: string[]; rolesLoaded: boolean; rolesBefore: string };
   let uEdit = $state<UserEdit | null>(null);
   let uMsg = $state('');

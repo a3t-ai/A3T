@@ -3734,6 +3734,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "flowr-policy",
  "flowr-storage",
  "flowr-types",
  "reqwest 0.12.28",
@@ -3818,6 +3819,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 

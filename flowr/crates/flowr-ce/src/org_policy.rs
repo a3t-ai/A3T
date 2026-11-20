@@ -104,6 +104,12 @@ async fn files_of(s: &dyn StorageBackend, org: &str) -> Vec<Value> {
     query_platform_table(s, FILES, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
 }
 
+/// The org's enforced files, `(path, text)` (RT-1 reads its egress files).
+pub async fn enforced_files(s: &dyn StorageBackend, org: &str) -> Vec<(String, String)> {
+    let off = off_of(s, org).await;
+    files_of(s, org).await.iter().map(|r| (col(r, "path"), col(r, "content"))).filter(|(p, _)| !off.contains(p)).collect()
+}
+
 /// The org's files that are switched off.
 async fn off_of(s: &dyn StorageBackend, org: &str) -> BTreeSet<String> {
     query_platform_table(s, OFF, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
@@ -114,6 +120,49 @@ async fn off_of(s: &dyn StorageBackend, org: &str) -> BTreeSet<String> {
 async fn shadow_of(s: &dyn StorageBackend, org: &str) -> BTreeSet<String> {
     query_platform_table(s, SHADOW, Some(format!("org = {}", sql_quote(org))), MAX_FILES * 2).await.unwrap_or_default()
         .iter().map(|r| col(r, "path")).collect()
+}
+
+/// GOV-5, once: an org whose sign-in settings still hold a group → role map
+/// gets it as its policy file `access/org.yaml` (enforced, version v1, noted
+/// as moved), and the map leaves the settings. Idempotent; run at start.
+pub async fn move_sso_maps(s: &dyn StorageBackend) {
+    let Ok(rows) = query_platform_table(s, "orgs", None, 10_000).await else { return };
+    for r in rows {
+        let mut settings: Value = serde_json::from_str(&col(&r, "settings")).unwrap_or(Value::Null);
+        let Some(sso) = settings.get_mut("sso").and_then(|v| v.as_object_mut()) else { continue };
+        if !sso.contains_key("role_map") && !sso.contains_key("default_role") {
+            continue;
+        }
+        let org = col(&r, "slug");
+        let map: std::collections::BTreeMap<String, String> = sso.get("role_map").and_then(|m| m.as_object())
+            .map(|m| m.iter().filter_map(|(g, v)| v.as_str().map(|v| (g.clone(), v.to_string()))).collect()).unwrap_or_default();
+        let default = sso.get("default_role").and_then(|v| v.as_str()).unwrap_or("member").to_string();
+        let have = files_of(s, &org).await.iter().any(|f| col(f, "path") == "access/org.yaml");
+        let Ok(db) = db(s).await else { return };
+        if !have {
+            let mut y = format!("kind: a3t/org-access\ndescription: Which of {org}'s sign-in groups get which org role (moved from its sign-in settings).\n");
+            y.push_str("groups:\n");
+            if map.is_empty() { y.push_str("  {}\n"); }
+            for (g, role) in &map { y.push_str(&format!("  {}: {}\n", serde_json::to_string(g).unwrap_or_default(), role)); }
+            if !default.is_empty() { y.push_str(&format!("default: {default}\n")); }
+            let y = y.replace("groups:\n  {}\n", "groups: {}\n");
+            if flowr_policy::policy_file::OrgAccessFile::parse(&y).is_err() {
+                tracing::warn!(org, "sign-in role map not moved: it doesn't make a valid access/org.yaml");
+                continue;
+            }
+            let now = chrono::Utc::now().to_rfc3339();
+            if db.upsert(FILES, &["org", "path"], &[json!({ "org": org, "path": "access/org.yaml", "kind": "org-access", "content": y, "commit": "v1", "updated_at": now })]).await.is_err() {
+                continue;
+            }
+            let _ = note(db.as_ref(), &org, "access/org.yaml", "v1", "create", "org-access", &y, "moved from sign-in settings").await;
+        }
+        sso.remove("role_map");
+        sso.remove("default_role");
+        let mut values = Map::new();
+        values.insert("settings".into(), json!(settings.to_string()));
+        let _ = db.update("orgs", &format!("id = {}", sql_quote(&col(&r, "id"))), &values).await;
+        tracing::info!(org, "sign-in role map moved to access/org.yaml");
+    }
 }
 
 /// An org's id, from its slug (the decision log is kept per org id).

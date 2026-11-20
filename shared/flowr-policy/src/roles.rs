@@ -22,30 +22,59 @@ pub const VIEWER: &str = "Viewer";
 /// Every canonical role. Policies and the (future) role-seeding reference this.
 pub const ALL: &[&str] = &[SUPER_ADMIN, SECURITY_ADMIN, ADMIN, OPERATOR, VIEWER];
 
-/// Map a provider's `role` claim to the canonical role(s) it grants, **expanding
-/// the hierarchy** so a higher role implicitly holds every lower one:
-/// `SuperAdmin ⊃ Admin ⊃ Operator ⊃ Viewer`. Expanding here (rather than encoding
-/// hierarchy in Cedar) keeps every policy a flat membership check —
-/// `principal.roles.contains("Admin")` matches a superadmin too. `superadmin`
-/// also grants `SecurityAdmin` (the InfoSec seam) until that becomes separately
-/// assignable. Unknown roles pass through unchanged — never silently drop a role.
+/// The role table (ID-1), `a3t/policies/roles.yaml`, compiled into each release.
+pub const ROLES_YAML: &str = include_str!("../../../a3t/policies/roles.yaml");
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RoleTable {
+    pub version: u32,
+    pub roles: Vec<Role>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Role {
+    pub id: String,
+    /// `cedar`, `platform`, `org` or `project`.
+    pub scope: String,
+    pub label: String,
+    pub what: String,
+    /// The Cedar roles it gives where it applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carries: Vec<String>,
+    /// In a project: `write`, `run` or `read`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u8>,
+}
+
+/// The table as shipped (it is checked by a test, so it always parses).
+pub fn table() -> &'static RoleTable {
+    static T: std::sync::OnceLock<RoleTable> = std::sync::OnceLock::new();
+    T.get_or_init(|| serde_yaml::from_str(ROLES_YAML).expect("a3t/policies/roles.yaml parses"))
+}
+
+/// A role of `scope` by id.
+pub fn role(scope: &str, id: &str) -> Option<&'static Role> {
+    table().roles.iter().find(|r| r.scope == scope && r.id == id)
+}
+
+/// Map a provider's `role` claim (a platform role in the sign-in realm) to the
+/// Cedar roles it carries, from the role table: the hierarchy is expanded
+/// there, so a higher role holds every lower one and every policy stays a flat
+/// membership check (`principal.roles.contains("Admin")` matches a superadmin
+/// too). Unknown roles pass through unchanged — never silently drop a role.
 pub fn canonicalize(provider_role: &str) -> Vec<String> {
-    match provider_role.trim().to_ascii_lowercase().as_str() {
-        "superadmin" | "super_admin" | "super-admin" => vec![
-            SUPER_ADMIN.into(),
-            SECURITY_ADMIN.into(),
-            ADMIN.into(),
-            OPERATOR.into(),
-            VIEWER.into(),
-        ],
-        "securityadmin" | "security_admin" | "security-admin" => vec![SECURITY_ADMIN.into()],
-        "admin" => vec![ADMIN.into(), OPERATOR.into(), VIEWER.into()],
-        // `operator` is the developer tier: full authoring (flows/agents/templates/
-        // resources) via `Admin`, but never the InfoSec seam (`SecurityAdmin`).
-        "operator" | "developer" => vec![ADMIN.into(), OPERATOR.into(), VIEWER.into()],
-        "viewer" => vec![VIEWER.into()],
-        _ => vec![provider_role.to_string()],
+    let id = provider_role.trim().to_ascii_lowercase().replace(['_', '-'], "");
+    match role("platform", &id) {
+        Some(r) => r.carries.clone(),
+        None => vec![provider_role.to_string()],
     }
+}
+
+/// What a project role allows in its project: `write`, `run` or `read`.
+pub fn project_access(role_id: &str) -> Option<&'static str> {
+    role("project", role_id).and_then(|r| r.access.as_deref())
 }
 
 #[cfg(test)]
@@ -70,6 +99,24 @@ mod tests {
         assert!(!has("admin", SUPER_ADMIN) && !has("admin", SECURITY_ADMIN));
         // viewer holds only viewer.
         assert_eq!(canonicalize("viewer"), vec![VIEWER]);
+    }
+
+    #[test]
+    fn the_table_parses_and_is_one_vocabulary() {
+        let t = table();
+        for r in &t.roles {
+            assert!(["cedar", "platform", "org", "project"].contains(&r.scope.as_str()), "{}: scope {}", r.id, r.scope);
+            for c in &r.carries {
+                assert!(ALL.contains(&c.as_str()), "{} carries {c}, which is not a Cedar role", r.id);
+            }
+        }
+        for c in ALL {
+            assert!(role("cedar", c).is_some(), "the Cedar role {c} is in the table");
+        }
+        // "developer" is a project role, not a sign-in role.
+        assert!(role("platform", "developer").is_none());
+        assert_eq!(project_access("developer"), Some("write"));
+        assert_eq!(canonicalize("developer"), vec!["developer".to_string()]);
     }
 
     #[test]

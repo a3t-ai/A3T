@@ -24,6 +24,7 @@ pub mod policy_file;
 pub mod audit;
 pub mod op_policy;
 pub mod roles;
+pub mod egress;
 pub mod telemetry;
 
 use serde::{Deserialize, Serialize};

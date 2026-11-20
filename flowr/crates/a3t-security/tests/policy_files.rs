@@ -328,3 +328,23 @@ async fn a_shadow_file_never_decides() {
     assert!(denied(&enforced.check(&call()).await).is_some(), "enforced, it refuses");
     assert_eq!(shadow.check(&call()).await, PolicyDecision::Allow, "in shadow mode, the call goes ahead");
 }
+
+/// UI-3: a role ceiling lives in an agent's own policy, and only there.
+#[test]
+fn a_role_ceiling_is_an_agents_own() {
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nrole_ceiling: [Viewer]\n").is_ok(), "a ceiling alone is a policy");
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nrole_ceiling: [Root]\n").unwrap_err().contains("role_ceiling"));
+    assert!(compile_policy("acme", "kind: a3t/policy\nname: x\napplies_to: { org: true }\nrole_ceiling: [Viewer]\nrules:\n  - cannot: [flows.run]\n    reason: r\n").unwrap_err().contains("agent's own policy"));
+}
+
+/// GOV-6: a policy with no applies_to binds only a flow or agent that names it.
+#[tokio::test]
+async fn a_referenced_policy_binds_only_where_named() {
+    let c = compile_policy("acme", "kind: a3t/policy\nname: no-deletes\nrules:\n  - cannot: [flows.delete]\n    reason: Not from here.\n").unwrap();
+    let h = hook(&[c.cedar]);
+    let call = |refs: serde_json::Value| tool_call(human(&["Admin"]), "delete_flow", serde_json::json!({ "policyRef": refs }));
+    assert!(denied(&h.check(&call(serde_json::json!(["acme/no-deletes"]))).await).is_some(), "named: bound");
+    assert!(denied(&h.check(&call(serde_json::json!(["acme/other"]))).await).is_none(), "not named: free");
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nuses: [acme/no-deletes]\n").is_ok());
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nuses: [no-org]\n").unwrap_err().contains("uses"));
+}

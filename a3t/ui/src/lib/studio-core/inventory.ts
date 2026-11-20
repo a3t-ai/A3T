@@ -143,7 +143,10 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
       const kids = [
         dir('policies', 'Rules', (f) => appliesIn(f.content, ns), `policies:${ns}`),
         dir('roles', 'Roles', () => true, 'roles'),
-        dir('access', 'Access', (f) => accessFor(f.content) === ns, `access:${ns}`),
+        // The project's access file, and the org's own sign-in mapping (GOV-5).
+        dir('access', 'Access', (f) => accessFor(f.content) === ns || /^access\/org\.ya?ml$/.test(f.path), `access:${ns}`),
+        // RT-1: where the org's flows and agents may call out to.
+        dir('egress', 'Calls out', () => true, 'egress'),
       ];
       node.children!.push({ key: `${ns}/policies`, label: 'Policies', count: kids.reduce((n, k) => n + (k.count ?? 0), 0), children: kids });
     }

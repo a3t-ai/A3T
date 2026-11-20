@@ -10,6 +10,8 @@
   /// SecurityAdmin reads members and sign-in and manages policy files. The
   /// server checks every one of these; this page only offers what will work.
   import { untrack } from 'svelte';
+  import { roles, roleLabel } from '$lib/core/auth/roles.svelte.ts';
+  import { draftPolicy, POLICY_AGENT, type PolicyDraft } from './policyAgent';
   import * as YAML from 'yaml';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
@@ -26,11 +28,13 @@
   let { org: handle, section = 'identity', project = '', tab = $bindable('overview') }: { org: string; section?: 'identity' | 'policy'; project?: string; tab?: string } = $props();
 
   const ROLES: OrgRole[] = ['member', 'admin', 'securityadmin'];
-  const ROLE_LABEL: Record<string, string> = { member: 'Member', admin: 'Admin', securityadmin: 'Security admin' };
-  const CAP_LABEL: Record<string, string> = {
-    owner: 'Owner', developer: 'Developer', operator: 'Operator', viewer: 'Viewer', 'org-admin': 'Org admin',
-    'org-securityadmin': 'Org security admin', 'org-member': 'Org member', superadmin: 'SuperAdmin', exposed: 'Shared with them',
-  };
+  // Names from the role table (ID-1).
+  const ROLE_LABEL: Record<string, string> = $derived(Object.fromEntries(['member', 'admin', 'securityadmin'].map((r) => [r, roleLabel('org', r)])));
+  const CAP_LABEL: Record<string, string> = $derived({
+    ...Object.fromEntries(roles('project').map((r) => [r.id, r.label])),
+    'org-admin': roleLabel('org', 'admin', 'Org admin'), 'org-securityadmin': roleLabel('org', 'securityadmin', 'Org security admin'),
+    'org-member': roleLabel('org', 'member', 'Org member'), superadmin: 'SuperAdmin', exposed: 'Shared with them',
+  });
   const ACCESS_WORD: Record<string, string> = { write: 'builds and changes', run: 'runs', read: 'reads' };
 
   let org = $state<OrgInfo | null>(null);
@@ -135,27 +139,35 @@
   }
 
   // ── Sign-in ──
-  let sso = $state({ alias: '', domains: '', map: '', dflt: 'member' as 'member' | '' });
+  let sso = $state({ alias: '', domains: '' });
   function fillSso(o: OrgInfo) {
     const s = o.sso;
-    sso = { alias: s?.idp_alias ?? '', domains: (s?.domains ?? []).join(', '),
-      map: Object.entries(s?.role_map ?? {}).map(([g, r]) => `${g} = ${r}`).join('\n'), dflt: s ? s.default_role : 'member' };
+    sso = { alias: s?.idp_alias ?? '', domains: (s?.domains ?? []).join(', ') };
   }
   async function saveSso() {
     if (!org) return;
-    const role_map: Record<string, OrgRole> = {};
-    for (const line of sso.map.split('\n').map((l) => l.trim()).filter(Boolean)) {
-      const [g, r] = line.split('=').map((x) => x.trim());
-      if (!g || !ROLES.includes(r as OrgRole)) { say(`"${line}": write each line as group = member, admin or securityadmin.`); return; }
-      role_map[g] = r as OrgRole;
-    }
-    const body: OrgSso = { idp_alias: sso.alias.trim(), domains: sso.domains.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean), role_map, default_role: sso.dflt };
+    const body: OrgSso = { idp_alias: sso.alias.trim(), domains: sso.domains.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean) };
     busy = 'sso';
     const r = await orgsApi.setSso(org.handle, body);
     busy = '';
     if (!r.ok) { say(r.error ?? 'Sign-in not saved.'); return; }
     say(body.idp_alias ? `${org.handle} now signs in through "${body.idp_alias}".` : `Sign-in through the org's own provider is off for ${org.handle}.`, true);
     await refreshOrg(); if (org) fillSso(org);
+  }
+  // GOV-5: which groups get which org role is the policy file access/org.yaml.
+  const ORG_ACCESS = 'access/org.yaml';
+  const orgAccess = $derived.by(() => {
+    const f = (files?.files ?? []).find((x) => x.path === ORG_ACCESS || x.path === 'access/org.yml');
+    if (!f) return null;
+    try { return { f, y: (YAML.parse(f.content) ?? {}) as { groups?: Record<string, string>; default?: string } }; } catch { return { f, y: {} }; }
+  });
+  async function newOrgAccess() {
+    busy = 'oa';
+    const r = await orgPolicy.save(handle, ORG_ACCESS, `kind: a3t/org-access\ndescription: Which of ${handle}'s sign-in groups get which org role.\n# group: admin, securityadmin or member\ngroups:\n  ${handle}-admins: admin\n# Everyone else who signs in through the org's provider (leave out: no access).\ndefault: member\n`);
+    busy = '';
+    if (!r.ok) { say(((r as any).detail?.errors ?? [r.error]).join('; ')); return; }
+    await reloadFiles();
+    openFileInStudio(ORG_ACCESS);
   }
 
   // ── Policy files ──
@@ -249,6 +261,41 @@
     busy = '';
     if (!r.ok) { say(`Replay failed: ${((r as any).detail?.errors ?? [r.error]).join('; ')}`); return; }
     replays = { ...replays, [path]: r.data! };
+  }
+
+  // ── Describe a rule (GOV-1) ──
+  let pDesc = $state('');
+  let pBusy = $state(false);
+  let pErr = $state('');
+  let pDraft = $state<PolicyDraft | null>(null);
+  let pReplay = $state<ReplayResult | null>(null);
+  let pAbort: AbortController | null = null;
+  async function askPolicy() {
+    pBusy = true; pErr = ''; pDraft = null; pReplay = null; pAbort = new AbortController();
+    const roles = ['Admin', 'Operator', 'Viewer', ...orgRoles.map((r) => String(r.y.name ?? '')).filter(Boolean)];
+    const r = await draftPolicy(handle, pDesc.trim(), { projects: files?.projects ?? [], files: (files?.files ?? []).map((f) => f.path), roles }, pAbort.signal);
+    pBusy = false;
+    if (!r.ok) { pErr = r.error; return; }
+    pDraft = r.draft;
+  }
+  async function replayDraft() {
+    if (!pDraft) return;
+    busy = 'prp';
+    const r = await orgPolicy.replay(handle, { files: [{ path: pDraft.path, content: pDraft.yaml }] });
+    busy = '';
+    if (!r.ok) { pErr = ((r as any).detail?.errors ?? [r.error]).join('; '); return; }
+    pReplay = r.data!;
+  }
+  async function saveDraft() {
+    if (!pDraft) return;
+    busy = 'psave';
+    const r = await orgPolicy.save(handle, pDraft.path, pDraft.yaml);
+    busy = '';
+    if (!r.ok) { pErr = ((r as any).detail?.errors ?? [r.error]).join('; '); return; }
+    if ((r.data as any)?.pending) { say((r.data as any).message ?? 'Held for a second approver.', true); pDraft = null; return; }
+    say(`${pDraft.path} saved${(r.data as any)?.enforced === false ? ' (switched off)' : ' and enforced'}.`, true);
+    pDraft = null; pDesc = ''; pReplay = null;
+    await reloadFiles();
   }
 
   // ── Changes: a second approver (GOV-3) ──
@@ -407,9 +454,18 @@
           <div class="fields">
             <label class="fld">Identity provider<input class="mono" bind:value={sso.alias} readonly={!canAdmin} placeholder="its name in Keycloak, e.g. acme (empty: off)" /></label>
             <label class="fld">Email domains<input bind:value={sso.domains} readonly={!canAdmin} placeholder="acme.com, acme.co.uk" /></label>
-            <label class="fld full">Groups → role <small>one per line: group = member, admin or securityadmin</small><textarea class="mono" rows="4" bind:value={sso.map} readonly={!canAdmin} placeholder={'a3t-admins = admin\nsecurity = securityadmin'}></textarea></label>
-            <label class="fld">Anyone else<select bind:value={sso.dflt} disabled={!canAdmin}><option value="member">Member</option><option value="">No access</option></select></label>
           </div>
+          <h4 class="sub">Groups → org role</h4>
+          {#if orgAccess}
+            <ul class="olist">
+              {#each pairs(orgAccess.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>org {ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
+              <li class="rrow"><span class="dim">anyone else</span><span>{orgAccess.y.default ? `org ${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><span></span></li>
+            </ul>
+            <p class="dim">From the policy file <button class="lnk2 mono" onclick={() => openFileInStudio(orgAccess!.f.path)}>{orgAccess.f.path}</button>{orgAccess.f.enforced === false ? ' — switched off: nobody gets an org role at sign-in' : ''}: versioned, checked, and approved like the org's other policy files.</p>
+          {:else}
+            <p class="dim">No <span class="mono">{ORG_ACCESS}</span>: people who sign in get no org role until it says which groups get which.</p>
+            {#if managesFiles}<div class="acts"><button class="btn2" disabled={!!busy} onclick={newOrgAccess}>Create {ORG_ACCESS}</button></div>{/if}
+          {/if}
           {#if canAdmin}<div class="acts"><button class="btn2 primary" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Save sign-in'}</button></div>{/if}
         </div>
 
@@ -429,8 +485,8 @@
           <h4 class="sub">In the org, at sign-in</h4>
           {#if org.sso?.idp_alias}
             <ul class="olist">
-              {#each pairs(org.sso.role_map) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>org {ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{org.sso.default_role ? `org ${ROLE_LABEL[org.sso.default_role]?.toLowerCase()}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in</button></li>
+              {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>org {ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
+              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `org ${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in</button></li>
             </ul>
           {:else}<p class="dim">No sign-in of its own: people are added under Members.</p>{/if}
           <h4 class="sub">On its projects</h4>
@@ -451,14 +507,36 @@
           <p class="dim">An org's rules (<span class="mono">policies/</span>), its own roles (<span class="mono">roles/</span>) and who holds which role on its projects (<span class="mono">access/</span>), as YAML files. Open one to edit it in Studio: it's checked against the org's other files as you type, and a save that would break them is refused.</p>
           {#if managesFiles}
             <div class="uf">
-              <select class="tin" bind:value={nDir} aria-label="Kind of file"><option value="policies">Rule (policies/)</option><option value="roles">Role (roles/)</option><option value="access">Access (access/)</option></select>
-              <input class="tin grow mono" bind:value={nName} placeholder={nDir === 'policies' ? 'no-external-models' : nDir === 'roles' ? 'support-lead' : 'support-team'} aria-label="File name" onkeydown={(e) => { if (e.key === 'Enter') newFile(); }} />
+              <select class="tin" bind:value={nDir} aria-label="Kind of file"><option value="policies">Rule (policies/)</option><option value="roles">Role (roles/)</option><option value="access">Access (access/)</option><option value="egress">Calls out (egress/)</option></select>
+              <input class="tin grow mono" bind:value={nName} placeholder={nDir === 'policies' ? 'no-external-models' : nDir === 'roles' ? 'support-lead' : nDir === 'egress' ? 'allowed-hosts' : 'support-team'} aria-label="File name" onkeydown={(e) => { if (e.key === 'Enter') newFile(); }} />
               {#if nDir === 'access'}<select class="tin" bind:value={nProject} aria-label="Project"><option value="">Project…</option>{#each files?.projects ?? [] as p}<option value={p}>{p}</option>{/each}</select>{/if}
               <button class="btn2 primary" disabled={!!busy || !nName.trim()} onclick={newFile}>{busy === 'new' ? 'Creating…' : 'New file'}</button>
             </div>
             <p class="dim small">It starts as a working example of its kind and opens in Studio.</p>
           {/if}
         </div>
+        {#if managesFiles}
+          <div class="card">
+            <div class="card-head"><h3>Describe a rule</h3><span>{POLICY_AGENT} writes it; you check and save it</span></div>
+            <label class="fld full">The rule, in words<textarea rows="3" bind:value={pDesc} placeholder="Operators in acme-web may not delete flows. Agents need a person's OK before merging a pull request."></textarea></label>
+            <div class="acts"><button class="btn2 primary" disabled={pBusy || pDesc.trim().length < 8} onclick={askPolicy}>{pBusy ? 'Writing and checking…' : 'Write it'}</button>{#if pBusy}<button class="btn2 quiet" onclick={() => pAbort?.abort()}>Stop</button>{/if}</div>
+            {#if pErr}<div class="note bad">{pErr}</div>{/if}
+            {#if pDraft}
+              <p class="dim">{pDraft.explanation}{pDraft.assumptions.length ? ` Assumed: ${pDraft.assumptions.join('; ')}.` : ''}</p>
+              <label class="fld">File<input class="mono" bind:value={pDraft.path} /></label>
+              <textarea class="cedar" rows="12" spellcheck="false" bind:value={pDraft.yaml}></textarea>
+              {#if pDraft.ok}<div class="note okn">✓ It works with {handle}'s other files{pDraft.tries > 1 ? ` (asked again ${pDraft.tries - 1}×: the first ${pDraft.tries === 2 ? 'draft' : 'drafts'} didn't check)` : ''}. Nothing is enforced until you save it.</div>
+              {:else}<div class="note bad">It still doesn't check after {pDraft.tries} tries: {pDraft.errors.join('; ')}. Fix it here or describe the rule differently.</div>{/if}
+              {#if pReplay}<div class="note">{pReplay.replayed} decisions of the last {pReplay.days} days replayed: <b>{pReplay.flipped} would change</b>.
+                {#if pReplay.flips.length}<ul>{#each pReplay.flips.slice(0, 15) as x (x.ts_ms + x.resource)}<li class="mono">{x.before} → {x.after} · {x.principal}{x.on_behalf_of ? ` for ${x.on_behalf_of}` : ''} · {x.action} {x.resource}</li>{/each}</ul>{/if}</div>{/if}
+              <div class="acts">
+                <button class="btn2" disabled={!!busy || pBusy} onclick={replayDraft}>{busy === 'prp' ? 'Replaying…' : 'Replay the last 7 days'}</button>
+                <button class="btn2 primary" disabled={!!busy || pBusy} onclick={saveDraft}>{busy === 'psave' ? 'Saving…' : 'Save it'}</button>
+                <button class="btn2 quiet" onclick={() => { pDraft = null; pReplay = null; }}>Discard</button>
+              </div>
+            {/if}
+          </div>
+        {/if}
         <div class="card">
           <div class="card-head"><h3>2 · Files</h3><span>{files ? `${enforcedNow} of ${files.files.length} enforced · for ${files.projects.length} project${files.projects.length === 1 ? '' : 's'}` : ''}</span><span class="grow"></span>{#if files?.files.length}<button class="btn2" onclick={() => openInStudio('policy', `org:${handle}`, files!.files[0].path)}>Open in Studio</button>{/if}</div>
           {#if files?.files.length}

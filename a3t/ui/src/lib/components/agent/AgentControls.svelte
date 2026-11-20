@@ -3,7 +3,7 @@
   /// control plane (agent_a3t_agents, tool_a3t_agent_block): its data plane then
   /// refuses every call. Pausing its deployment and revoking its tools are real
   /// too. Then what its code runs and the policies that have decided about it.
-  import { opsApi } from '$lib/services/api';
+  import { opsApi, agentSpaceApi } from '$lib/services/api';
   import { factsOf, type AgentRec, type TemplateRec } from './agentData';
   import { setBlocked } from './controlPlane';
   import type { AgentLive } from './agentLive.svelte';
@@ -35,10 +35,20 @@
   let reason = $state('');
   async function block(on: boolean) {
     busy = 'block'; msg = '';
-    const r = await setBlocked(agent.id, on, on ? reason.trim() || undefined : undefined);
+    if (on) {
+      // RT-5: the kill switch — blocked everywhere, its runs in flight cancelled on every pod.
+      const r = await agentSpaceApi.kill(agent.id, reason.trim());
+      busy = ''; confirm = ''; reason = '';
+      if (!r.ok) { msg = r.error ?? 'Not stopped'; return; }
+      status = 'blocked';
+      msg = `Stopped: blocked, and ${r.data?.cancelled_runs.length ?? 0} run${r.data?.cancelled_runs.length === 1 ? '' : 's'} in progress cancelled.`;
+      onreload();
+      return;
+    }
+    const r = await setBlocked(agent.id, false);
     busy = ''; confirm = ''; reason = '';
     if (!r.ok) { msg = r.error ?? 'Not changed'; return; }
-    status = r.status ?? (on ? 'blocked' : 'live');
+    status = r.status ?? 'live';
     onreload();
   }
   async function pause(on: boolean) {
@@ -62,13 +72,13 @@
     {#if !canAdmin}<p class="dim">Only its project's admins can use these.</p>{/if}
     <ul class="sw">
       <li>
-        <div><b>Block calls</b><span class="dim">{blocked ? 'Blocked: every call to it is refused — its chat endpoint and its webhook. Its record and memory stay.' : 'Open: it answers on its data plane (POST /chat) and its webhook, if it has one.'}</span></div>
+        <div><b>Stop it everywhere</b><span class="dim">{blocked ? 'Blocked: every call to it is refused — its chat endpoint, its keys, its triggers and its webhook. Its record and memory stay.' : 'Open: it answers on its data plane (POST /chat), its keys and its triggers.'}</span></div>
         {#if blocked}<button class="btn2" disabled={!canAdmin || !!busy} onclick={() => block(false)}>{busy === 'block' ? '…' : 'Unblock'}</button>
-        {:else}<button class="btn2 danger" disabled={!canAdmin || !!busy} onclick={() => (confirm = 'block')}>Block</button>{/if}
+        {:else}<button class="btn2 danger" disabled={!canAdmin || !!busy} onclick={() => (confirm = 'block')}>Stop</button>{/if}
       </li>
-      {#if confirm === 'block'}<li class="cf">Block every call to {agent.name}? Apps calling it get an error until it is unblocked.
-        <input class="why" type="text" bind:value={reason} placeholder="Why (kept in its history)" />
-        <button class="btn2 danger" onclick={() => block(true)}>{busy === 'block' ? 'Blocking…' : 'Block calls'}</button><button class="link" onclick={() => (confirm = '')}>Cancel</button></li>{/if}
+      {#if confirm === 'block'}<li class="cf">Stop {agent.name} everywhere? Every call to it is refused until it is unblocked, and what it is doing now is cancelled, on every server.
+        <input class="why" type="text" bind:value={reason} placeholder="Why (kept in the decision log)" />
+        <button class="btn2 danger" disabled={reason.trim().length < 4} onclick={() => block(true)}>{busy === 'block' ? 'Stopping…' : 'Stop it'}</button><button class="link" onclick={() => (confirm = '')}>Cancel</button></li>{/if}
       <li>
         <div><b>Pause its deployment</b><span class="dim">{p ? `${p.runtime || 'its runtime'} — ${p.deploymentState === 'paused' ? 'paused' : 'running'}` : 'Not deployed: it runs on the shared runtime, which is not paused for one agent — block its calls instead.'}</span></div>
         {#if p}

@@ -142,7 +142,7 @@ pub(crate) fn pick_role(roles: &[String]) -> String {
     if has("superadmin") { "superadmin" }
     else if has("securityadmin") { "securityadmin" }
     else if has("admin") { "admin" }
-    else if has("operator") || has("developer") { "operator" }
+    else if has("operator") { "operator" }
     else { "viewer" }.to_string()
 }
 

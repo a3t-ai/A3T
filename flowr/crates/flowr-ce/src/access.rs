@@ -176,10 +176,11 @@ impl Snapshot {
             let org = PLATFORM_ORGS.iter().find(|(ns, _)| *ns == namespace).map(|(_, id)| *id).unwrap_or_default();
             return if super_ || self.org_role(org, user) == Some("admin") { NsAccess::Write } else { NsAccess::Run };
         }
-        let by_role = |role: &str| match role {
-            "owner" | "developer" => NsAccess::Write,
-            "operator" => NsAccess::Run,
-            "viewer" => NsAccess::Read,
+        // The project roles of the role table (ID-1).
+        let by_role = |role: &str| match flowr_policy::roles::project_access(role) {
+            Some("write") => NsAccess::Write,
+            Some("run") => NsAccess::Run,
+            Some("read") => NsAccess::Read,
             _ => NsAccess::None,
         };
         let Some(p) = self.projects.get(namespace) else {
@@ -270,13 +271,9 @@ impl Snapshot {
             return ProjectRoutes { namespace: namespace.into(), kind: "legacy", owner: "a3t".into(), private: false, people, groups };
         };
         let by_role = |role: &str| -> Option<(&'static str, NsAccess)> {
-            match role {
-                "owner" => Some(("owner", Write)),
-                "developer" => Some(("developer", Write)),
-                "operator" => Some(("operator", Run)),
-                "viewer" => Some(("viewer", Read)),
-                _ => None,
-            }
+            let r = flowr_policy::roles::role("project", role)?;
+            let a = match r.access.as_deref()? { "write" => Write, "run" => Run, "read" => Read, _ => return None };
+            Some((r.id.as_str(), a))
         };
         let is_member = |u: &str| p.members.iter().any(|(id, _)| id == u);
         for (id, role) in &p.members {
@@ -425,6 +422,10 @@ pub const SECURITY_ADMIN_CAPACITY: &str = "security-admin";
 /// How far up a capacity sits: 1 reads, 2 runs, 3 builds, 4 manages; 5 audits
 /// (security, beside the line rather than above it).
 pub fn capacity_rank(capacity: &str) -> u8 {
+    // A project role ranks as the role table says (ID-1).
+    if let Some(n) = flowr_policy::roles::role("project", capacity).and_then(|r| r.rank) {
+        return n;
+    }
     match capacity {
         "viewer" | "org-member" | "exposed" | "everyone" => 1,
         "operator" => 2,

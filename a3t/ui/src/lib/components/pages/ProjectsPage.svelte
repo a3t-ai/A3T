@@ -28,14 +28,11 @@
     type ProjectMember, type ProjectRole, type DirectoryUser, type ProjectPeople, type ProjectPerson,
   } from '$lib/services/api';
   import { categorize } from '$lib/core/resources/categories';
+  import { roleWhat } from '$lib/core/auth/roles.svelte.ts';
 
   const ROLES: ProjectRole[] = ['owner', 'developer', 'operator', 'viewer'];
-  const ROLE_HINT: Record<ProjectRole, string> = {
-    owner: 'Everything, including members and rules',
-    developer: 'Build and run flows, agents and resources',
-    operator: 'Deploy and run; no authoring',
-    viewer: 'Read only',
-  };
+  // What each does, from the role table (ID-1).
+  const ROLE_HINT: Record<ProjectRole, string> = $derived(Object.fromEntries(ROLES.map((r) => [r, roleWhat('project', r)])) as Record<ProjectRole, string>);
   /// Rules a project adds on top of the org baseline. Saved with the project;
   /// enforced once project-scoped Cedar is on.
   const POLICY_PRESETS: { key: string; label: string; hint: string }[] = [

@@ -1,0 +1,61 @@
+# A3T's roles, in one table (ID-1). The server maps every role through this
+# file, the console shows its names and descriptions, and the docs page
+# "Roles" is generated from it. Policy rules (`who.roles`) and role files
+# (`extends`) name the Cedar roles; an org's own roles (`roles/<name>.yaml`)
+# are a Cedar role minus permissions.
+#
+# scope:
+#   cedar    — what policies check (principal.roles). Everything below maps here.
+#   platform — held across A3T, set in the sign-in realm (Keycloak realm roles).
+#   org      — held in one organisation (Security › the org › Members).
+#   project  — held in one project (Projects › Access & policy › People).
+#
+# carries: the Cedar roles the role gives where it applies.
+# access:  in a project: write (build and run), run, read (project scope only).
+# rank:    how far up it sits, for who-sees-whom (1 reads … 4 manages; 5 audits).
+version: 1
+roles:
+  # ── What policies check ──
+  - { id: Admin,    scope: cedar, label: Admin,    what: "Builds and changes flows, agents, templates and resources where it applies." }
+  - { id: Operator, scope: cedar, label: Operator, what: "Runs and deploys what is built; changes nothing." }
+  - { id: Viewer,   scope: cedar, label: Viewer,   what: "Reads." }
+  - { id: SuperAdmin,    scope: cedar, label: SuperAdmin,    what: "Everything, in every org, including Security and the Decision log." }
+  - { id: SecurityAdmin, scope: cedar, label: SecurityAdmin, what: "Security, policies and the Decision log, in every org; no project work." }
+
+  # ── Platform (sign-in realm roles) ──
+  - id: superadmin
+    scope: platform
+    label: SuperAdmin
+    carries: [SuperAdmin, SecurityAdmin, Admin, Operator, Viewer]
+    what: "Runs the platform: every org, every project, Security and the Decision log. Can act as another user, with a reason."
+  - id: securityadmin
+    scope: platform
+    label: SecurityAdmin
+    carries: [SecurityAdmin]
+    what: "Platform InfoSec: Security, policies and the Decision log for every org. No project work."
+  - id: admin
+    scope: platform
+    label: Admin
+    carries: [Admin, Operator, Viewer]
+    what: "Builds in the projects they belong to, and in their own."
+  - id: operator
+    scope: platform
+    label: Operator
+    carries: [Admin, Operator, Viewer]
+    what: "Builds in the projects they belong to, and in their own; never security. (A project's own roles decide in a shared project.)"
+  - id: viewer
+    scope: platform
+    label: Viewer
+    carries: [Viewer]
+    what: "Reads what they are shown."
+
+  # ── Organisation ──
+  - { id: admin,         scope: org, label: Org admin,          rank: 4, what: "Manages the org: its members, its projects, its sign-in and its policy files." }
+  - { id: securityadmin, scope: org, label: Org security admin, rank: 5, what: "The org's security: its policy files, its agents' rules and its decisions; reads its projects." }
+  - { id: member,        scope: org, label: Org member,         rank: 1, what: "Belongs to the org; reads its open projects." }
+
+  # ── Project ──
+  - { id: owner,     scope: project, label: Owner,     access: write, rank: 4, carries: [Admin, Operator, Viewer], what: "Everything in the project, including its people and rules." }
+  - { id: developer, scope: project, label: Developer, access: write, rank: 3, carries: [Admin, Operator, Viewer], what: "Builds and runs: agents, templates, flows, triggers, resources, canvases." }
+  - { id: operator,  scope: project, label: Operator,  access: run,   rank: 2, carries: [Operator, Viewer],        what: "Deploys and runs; no authoring." }
+  - { id: viewer,    scope: project, label: Viewer,    access: read,  rank: 1, carries: [Viewer],                  what: "Reads." }

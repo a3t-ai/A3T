@@ -13,7 +13,8 @@
 //!     signed in through (`identity_provider`) — nothing the enterprise's token
 //!     says can name another org (R2);
 //!   * the role there comes from their groups (`a3t_groups`) through the org's
-//!     `role_map`, else `default_role` (R3);
+//!     policy file `access/org.yaml` (GOV-5; no file, or switched off: no
+//!     membership) (R3);
 //!   * the membership row made at sign-in (`added_by = "sso"`) is rewritten every
 //!     time; rows an admin made (invites) are never touched (R4, R5);
 //!   * the A3T token carries that org, and the browser returns to the console
@@ -60,8 +61,6 @@ pub struct OrgSso {
     pub handle: String,
     pub idp_alias: String,
     pub domains: Vec<String>,
-    pub role_map: Vec<(String, String)>,
-    pub default_role: String,
 }
 
 /// Orgs with sign-in configured, from `orgs` rows (`settings.sso`).
@@ -82,10 +81,6 @@ pub fn orgs_with_sso(rows: &[Value]) -> Vec<OrgSso> {
             domains: sso.get("domains").and_then(|d| d.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(|d| d.to_ascii_lowercase())).collect())
                 .unwrap_or_default(),
-            role_map: sso.get("role_map").and_then(|m| m.as_object())
-                .map(|m| m.iter().filter_map(|(g, r)| r.as_str().map(|r| (g.clone(), r.to_string()))).collect())
-                .unwrap_or_default(),
-            default_role: sso.get("default_role").and_then(|d| d.as_str()).unwrap_or("member").to_string(),
         });
     }
     out
@@ -100,20 +95,30 @@ pub fn find_org<'a>(orgs: &'a [OrgSso], org: Option<&str>, email: Option<&str>) 
     orgs.iter().find(|o| o.domains.iter().any(|d| *d == domain))
 }
 
-/// The role a user's groups give them in `org` (the highest mapped role), else
-/// the org's default; `None` = no membership.
-pub fn role_for(org: &OrgSso, groups: &[String]) -> Option<String> {
-    let rank = |r: &str| match r { "admin" => 3, "securityadmin" => 2, "member" => 1, _ => 0 };
-    let mapped = org.role_map.iter()
-        .filter(|(g, _)| groups.iter().any(|x| x == g || x.trim_start_matches('/') == g))
-        .map(|(_, r)| r.as_str())
-        .filter(|r| rank(r) > 0)
-        .max_by_key(|r| rank(r));
-    match mapped {
-        Some(r) => Some(r.to_string()),
-        None if rank(&org.default_role) > 0 => Some(org.default_role.clone()),
-        None => None,
+/// The org's sign-in mapping, `access/org.yaml` (GOV-5), when it is enforced.
+async fn org_access(config: &AuthConfig, org: &OrgSso) -> Option<flowr_policy::policy_file::OrgAccessFile> {
+    let q = flowr_ce::handlers::call_lancedb::sql_quote;
+    let filter = format!("org = {} AND (path = 'access/org.yaml' OR path = 'access/org.yml')", q(&org.handle));
+    let row = platform_rows(config, flowr_ce::org_policy::FILES, Some(&filter)).await.ok()?.into_iter().next()?;
+    let path = row.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let off = platform_rows(config, flowr_ce::org_policy::OFF, Some(&format!("org = {} AND path = {}", q(&org.handle), q(&path)))).await
+        .map(|r| !r.is_empty()).unwrap_or(false);
+    if off {
+        return None;
     }
+    match flowr_policy::policy_file::OrgAccessFile::parse(row.get("content").and_then(|v| v.as_str()).unwrap_or_default()) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            warn!(org = %org.handle, error = %e, "sso: access/org.yaml doesn't parse; no org role is given");
+            None
+        }
+    }
+}
+
+/// The role a user's groups give them in `org`: from its `access/org.yaml`
+/// (the highest mapped role, else its `default`); `None` = no membership.
+pub fn role_for(file: Option<&flowr_policy::policy_file::OrgAccessFile>, groups: &[String]) -> Option<String> {
+    file?.role_for(groups)
 }
 
 /// A claim that may be a string or a list of strings.
@@ -361,7 +366,8 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
     let mut org_id = "org-default".to_string();
     if let Some(org) = home {
         org_id = org.id.clone();
-        let role = role_for(org, &groups);
+        let file = org_access(&config, org).await;
+        let role = role_for(file.as_ref(), &groups);
         if let Err(e) = sync_membership(&config, org, &sub, &email, &name, role.as_deref()).await {
             warn!(error = %e, org = %org.handle, user = %sub, "sso: membership not updated");
             return back("Your organisation membership could not be updated. Try again.");
@@ -502,12 +508,11 @@ mod tests {
     }
 
     #[test]
-    fn groups_map_to_the_highest_role_else_the_default() {
-        let o = orgs_with_sso(&rows());
-        let acme = &o[0];
-        assert_eq!(role_for(acme, &["a3t-admins".into(), "staff".into()]).as_deref(), Some("admin"));
-        assert_eq!(role_for(acme, &["/a3t-sec".into()]).as_deref(), Some("securityadmin"));
-        assert_eq!(role_for(acme, &["staff".into()]).as_deref(), Some("member"));
-        assert_eq!(role_for(&o[1], &["staff".into()]), None, "default '' = no membership");
+    fn groups_map_through_the_org_access_file() {
+        let f = flowr_policy::policy_file::OrgAccessFile::parse("kind: a3t/org-access\ngroups: { a3t-admins: admin, a3t-sec: securityadmin }\ndefault: member\n").unwrap();
+        assert_eq!(role_for(Some(&f), &["a3t-admins".into(), "staff".into()]).as_deref(), Some("admin"));
+        assert_eq!(role_for(Some(&f), &["/a3t-sec".into()]).as_deref(), Some("securityadmin"));
+        assert_eq!(role_for(Some(&f), &["staff".into()]).as_deref(), Some("member"));
+        assert_eq!(role_for(None, &["a3t-admins".into()]), None, "no file: no membership");
     }
 }

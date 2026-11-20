@@ -9,8 +9,8 @@ import { fail, ok } from '../items';
 import type { Doc } from '../workspace';
 import type { ItemKind } from './types';
 
-export type PolicyDir = 'policies' | 'roles' | 'access';
-const PATH = /^(policies|roles|access)\/[A-Za-z0-9_-]{1,80}\.ya?ml$/;
+export type PolicyDir = 'policies' | 'roles' | 'access' | 'egress';
+const PATH = /^(policies|roles|access|egress)\/[A-Za-z0-9_-]{1,80}\.ya?ml$/;
 
 /// What a new file starts as: a working example of its kind, to change.
 /// `project`: the project it is made in (from a project's Policies folder).
@@ -42,9 +42,18 @@ groups:
 users:
   someone@example.com: Viewer
 `,
+  egress: (name, org) => `kind: a3t/egress
+description: Where ${org}'s flows and agents may call out to.
+# With this file on, only these hosts are reached (calls out of A3T: http, remote MCP servers, outgoing webhooks).
+hosts:
+  - api.github.com
+  - "*.slack.com"
+# Hosts or ranges on ${org}'s own network that may be reached although private (never needed for public hosts).
+private: []
+`,
 };
 
-const SINGULAR: Record<PolicyDir, string> = { policies: 'policy', roles: 'role', access: 'access' };
+const SINGULAR: Record<PolicyDir, string> = { policies: 'policy', roles: 'role', access: 'access', egress: 'egress' };
 const loadedText = (doc: Doc, text: string, data: any) => { doc.text = text; doc.saved = text; doc.data = data; doc.error = undefined; };
 
 export const policyKind: ItemKind = {
@@ -62,11 +71,11 @@ export const policyKind: ItemKind = {
   /// project it is made in, which the starter names (`access:acme-p1`).
   create(project, n, type = 'policies') {
     const [folder, inProject] = type.split(':');
-    const dir = (['policies', 'roles', 'access'].includes(folder) ? folder : 'policies') as PolicyDir;
+    const dir = (['policies', 'roles', 'access', 'egress'].includes(folder) ? folder : 'policies') as PolicyDir;
     const base = inProject && dir === 'access' ? inProject : `new-${SINGULAR[dir]}${n > 1 ? `-${n}` : ''}`;
     return { ref: { project, kind: 'policy', name: `${dir}/${base}.yaml` }, text: STARTERS[dir](base, orgPolicy.orgOf(project), inProject || undefined), type: dir };
   },
-  checkName: (n) => (PATH.test(n) ? '' : 'A path: policies/<name>.yaml, roles/<name>.yaml or access/<name>.yaml (letters, digits, - and _).'),
+  checkName: (n) => (PATH.test(n) ? '' : 'A path: policies/<name>.yaml, roles/<name>.yaml, access/<name>.yaml or egress/<name>.yaml (letters, digits, - and _).'),
   async load(doc) {
     const org = orgPolicy.orgOf(doc.ref.project);
     if (!org) { doc.error = `${doc.ref.project} is not an org`; return; }

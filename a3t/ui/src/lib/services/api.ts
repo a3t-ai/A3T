@@ -411,7 +411,8 @@ export type OrgInfo = {
   /// `invite`: added here by an admin.
   members: { user_id: string; email?: string; name?: string; role: OrgRole; source?: 'sso' | 'invite' }[];
 };
-export type OrgSso = { idp_alias: string; domains: string[]; role_map: Record<string, OrgRole>; default_role: 'member' | '' };
+/// The org's own identity provider; which groups get which role is its access/org.yaml (GOV-5).
+export type OrgSso = { idp_alias: string; domains: string[] };
 export type ProfileInfo = { handle: string; user_id: string; email?: string; name?: string };
 
 /// Run one of the project flows; a flow's own refusal ({ ok: false, error })
@@ -535,6 +536,9 @@ export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' |
 // ── Audit / decision log (EE — durable in ADB EPISODIC, AUD-1) ──
 /// Server-side filters (exact values) and paging: pass the answer's
 /// `next_before_ms` as `before_ms` for the next page. `q` ranks by meaning.
+/// Every role, in one table (ID-1): a3t/policies/roles.yaml.
+export const securityRoles = () => request<{ version: number; roles: any[] }>('/security/roles', { method: 'GET' });
+
 /// A policy file set that stopped compiling: what is wrong and what it closed.
 export type PolicyBroken = { kind: 'org' | 'agent'; owner: string; org?: string | null; errors: string[]; closed: string[]; since: string };
 
@@ -891,8 +895,14 @@ export const agentSpaceApi = {
   merge: (id: string, name: string, body: Record<string, unknown>) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/merge`), { method: 'POST', body: JSON.stringify(body) }),
   /// Its keys: tokens for its data plane. A new key is returned once (`key`).
   keys: (id: string) => request<{ keys: AgentKey[] }>(ag(id, '/keys')),
-  makeKey: (id: string, name: string) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name }) }),
+  /// ID-5: a key expires (`expires_in_days`, default 90, at most 365).
+  makeKey: (id: string, name: string, expires_in_days = 90) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name, expires_in_days }) }),
+  /// ID-5: a new key in its place; the old one keeps working for `grace_hours` (default 24), then expires.
+  rotateKey: (id: string, keyId: string, grace_hours = 24) =>
+    request<AgentKey & { key: string; old_expires_at: string }>(ag(id, `/keys/${encodeURIComponent(keyId)}/rotate`), { method: 'POST', body: JSON.stringify({ grace_hours }) }),
   revokeKey: (id: string, keyId: string) => request(ag(id, `/keys/${encodeURIComponent(keyId)}`), { method: 'DELETE' }),
+  /// RT-5, the kill switch: blocked, and its runs in flight cancelled on every pod.
+  kill: (id: string, reason: string) => request<{ blocked: boolean; was: string; cancelled_runs: string[] }>(ag(id, '/kill'), { method: 'POST', body: JSON.stringify({ reason }) }),
   /** The agent's security profile: what it reaches, what it is bound to, its own rules. */
   security: (id: string) => request<AgentSecurity>(ag(id, '/security')),
   /** Save the agent's own policy (a kind: a3t/policy file); checked before it is saved. */
@@ -901,7 +911,7 @@ export const agentSpaceApi = {
   promote: (id: string, name: string, newAgent: { id: string; name: string }) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/promote`), { method: 'POST', body: JSON.stringify({ new_agent: newAgent }) }),
 };
 export interface AgentVersion { version: string; template: { id: string; version: string }; memory: { namespace: string; tag: string } | null; note: string; created_by: string; created_at: string }
-export interface AgentKey { id: string; name: string; prefix: string; created_by: string; created_at: string; last_used_at: string; revoked_at: string }
+export interface AgentKey { id: string; name: string; prefix: string; created_by: string; created_at: string; last_used_at: string; revoked_at: string; expires_at?: string; rotated_from?: string }
 export interface MemoryBranch { id: string; name: string; parent: string; created_by: string; point_ts: number }
 
 export async function agentTool(agent: string, tool: string, args: Record<string, any> = {}): Promise<ApiResponse> {

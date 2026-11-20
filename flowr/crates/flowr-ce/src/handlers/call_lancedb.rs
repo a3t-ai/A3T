@@ -224,6 +224,6 @@ pub(crate) async fn query_platform_table(
 /// Quote a value for a platform filter expression. Doubling the quote is what the
 /// update path already does; without it a name containing an apostrophe would
 /// break the expression (or worse, change which rows match).
-pub(crate) fn sql_quote(v: &str) -> String {
+pub fn sql_quote(v: &str) -> String {
     format!("'{}'", v.replace('\'', "''"))
 }

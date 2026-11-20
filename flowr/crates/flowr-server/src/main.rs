@@ -187,6 +187,13 @@ async fn main() -> anyhow::Result<()> {
     // AUD-1: every decision this pod makes goes to the durable log in ADB.
     #[cfg(feature = "ee")]
     flowr_ce::decision_log::install(storage.clone());
+    // RT-1: where project flows and agents may call out to (each org's egress files).
+    flowr_ce::egress_rules::install(storage.clone());
+    // GOV-5: sign-in role maps live in each org's access/org.yaml.
+    tokio::spawn({
+        let s = storage.clone();
+        async move { flowr_ce::org_policy::move_sso_maps(s.as_ref()).await }
+    });
     // RT-01: every FlowR reports itself, so the console sees all of them.
     flowr_ce::ops::start_host_heartbeat(storage.clone());
     if enforcing {
@@ -306,6 +313,8 @@ async fn main() -> anyhow::Result<()> {
                     .merge(Router::new().route("/security/audit", get(audit_handler)).layer(Extension(storage.clone())))
                     // The permission catalogue roles and rules are built from (a3t/policies/catalogue.yaml).
                     .merge(Router::new().route("/security/catalogue", get(catalogue_handler)))
+                    // Every role, in one table (ID-1): a3t/policies/roles.yaml.
+                    .merge(Router::new().route("/security/roles", get(|| async { axum::Json(flowr_policy::roles::table().clone()) })))
                     // The baseline pack this build enforces (UI-5: the console shows this, not a copy).
                     .merge(Router::new().route("/security/baseline", get(baseline_handler)))
                     // Policy files that no longer compile, and what they closed (GOV-4).
@@ -1190,9 +1199,10 @@ struct IdpNewUser {
     roles: Vec<String>,
 }
 
-/// Realm roles a person may hold, as Keycloak names them (the spellings
-/// `roles::canonicalize` understands).
-const IDP_ROLE_NAMES: &[&str] = &["superadmin", "securityadmin", "admin", "operator", "developer", "viewer"];
+/// Realm roles a person may hold: the platform roles of the role table (ID-1).
+fn idp_role_names() -> Vec<&'static str> {
+    flowr_policy::roles::table().roles.iter().filter(|r| r.scope == "platform").map(|r| r.id.as_str()).collect()
+}
 
 fn is_super_admin(principal: Option<&flowr_policy::Principal>) -> bool {
     matches!(principal, Some(flowr_policy::Principal::Human { roles: r, .. })
@@ -1210,8 +1220,9 @@ fn grants_infosec(roles: &[String]) -> bool {
 /// gives SuperAdmin or SecurityAdmin, so a SecurityAdmin can't raise anyone
 /// (themselves included) above their own role.
 fn check_role_grant(principal: Option<&flowr_policy::Principal>, roles: &[String]) -> Result<(), String> {
-    if let Some(bad) = roles.iter().find(|r| !IDP_ROLE_NAMES.contains(&r.trim().to_ascii_lowercase().as_str())) {
-        return Err(format!("Unknown role '{bad}'. Roles are: {}.", IDP_ROLE_NAMES.join(", ")));
+    let names = idp_role_names();
+    if let Some(bad) = roles.iter().find(|r| !names.contains(&r.trim().to_ascii_lowercase().as_str())) {
+        return Err(format!("Unknown role '{bad}'. Roles are: {}.", names.join(", ")));
     }
     if grants_infosec(roles) && !is_super_admin(principal) {
         return Err("Only a SuperAdmin can give the SuperAdmin or SecurityAdmin role.".into());
