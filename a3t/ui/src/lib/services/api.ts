@@ -535,6 +535,9 @@ export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' |
 // ── Audit / decision log (EE — durable in ADB EPISODIC, AUD-1) ──
 /// Server-side filters (exact values) and paging: pass the answer's
 /// `next_before_ms` as `before_ms` for the next page. `q` ranks by meaning.
+/// A policy file set that stopped compiling: what is wrong and what it closed.
+export type PolicyBroken = { kind: 'org' | 'agent'; owner: string; org?: string | null; errors: string[]; closed: string[]; since: string };
+
 export type AuditQuery = { org?: string; project?: string; agent?: string; principal?: string; action?: string; decision?: string; since_ms?: number; before_ms?: number; q?: string; limit?: number };
 export interface AuditPage { count: number; records: any[]; scope: string; orgs?: string[]; next_before_ms?: number | null; aql?: string; source?: string }
 export const audit = {
@@ -578,6 +581,8 @@ export const getEdition = () => request('/edition', { method: 'GET' }, false);
 export const securityPolicies = {
   /** The baseline policy pack the server enforces, and its version. */
   baseline: () => request<{ cedar: string; version: string }>('/security/baseline', { method: 'GET' }),
+  /** Policy files that no longer compile and what they closed (GOV-4). */
+  health: () => request<{ broken: PolicyBroken[]; count: number }>('/security/policy-health', { method: 'GET' }),
   /** List saved Cedar policy resources with their source. */
   list: () => request('/security/policies', { method: 'GET' }),
   /** Hot-reload the active policy set — no pod restart. Validate-before-swap. */

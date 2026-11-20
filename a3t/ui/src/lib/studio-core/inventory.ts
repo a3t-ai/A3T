@@ -8,7 +8,7 @@ import * as registry from './adapters/registry';
 import * as orgPolicy from './adapters/orgPolicy';
 import { address, type Item } from './items';
 import { categoryOf, TYPES_BY_CATEGORY } from './resourceTypes';
-import type { OrgPolicyFile } from '$lib/services/api';
+import { securityPolicies, type OrgPolicyFile } from '$lib/services/api';
 import * as YAML from 'yaml';
 
 const parsed = (text: string): any => { try { return YAML.parse(text) ?? {}; } catch { return {}; } };
@@ -114,7 +114,10 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
   // An org's policy files, inside each of its projects: the rules that can apply
   // there, the org's roles, and the project's access file. Only for orgs whose
   // files you manage.
-  const [orgs, owners] = await Promise.all([orgPolicy.managedOrgs(), orgPolicy.orgOfProjects()]);
+  const [orgs, owners, health] = await Promise.all([orgPolicy.managedOrgs(), orgPolicy.orgOfProjects(), securityPolicies.health().catch(() => null)]);
+  // GOV-4: files of a set that no longer compiles (each error names its path).
+  const brokenErrs: string[] = (health?.ok ? health.data?.broken ?? [] : []).filter((b) => b.kind === 'org').flatMap((b) => b.errors);
+  const broken = (path: string) => brokenErrs.some((e) => e.startsWith(`${path}:`));
   if (orgs.ok && owners.ok) {
     const filesOf = new Map<string, OrgPolicyFile[]>();
     for (const org of new Set(projects.map((ns) => owners.data[ns]).filter((o) => o && orgs.data.includes(o)))) {
@@ -133,7 +136,7 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
           key: `${ns}/policies/${d}`, label, count: list.length, open: true, create: { kind: 'policy', type, project },
           children: list.map((f) => {
             const item: Item = { project, kind: 'policy', name: f.path, data: f };
-            return { key: address(item), label: `${f.path.slice(d.length + 1)}${f.enforced ? '' : ' (off)'}`, item };
+            return { key: address(item), label: `${f.path.slice(d.length + 1)}${broken(f.path) ? ' (broken)' : ''}${f.enforced ? '' : ' (off)'}`, item };
           }),
         };
       };
@@ -143,6 +146,25 @@ export async function loadInventory(projects: string[]): Promise<Inventory> {
         dir('access', 'Access', (f) => accessFor(f.content) === ns, `access:${ns}`),
       ];
       node.children!.push({ key: `${ns}/policies`, label: 'Policies', count: kids.reduce((n, k) => n + (k.count ?? 0), 0), children: kids });
+    }
+    // UI-6: a file shown in no project here — it doesn't parse, or names only
+    // projects you can't see, or an access file for no such project — is still
+    // the org's and still checked: list it under the org's "Unplaced".
+    const shownIn = new Set<string>();
+    const walk = (n: TreeNode) => { if (n.item?.kind === 'policy') shownIn.add(`${n.item.project}|${n.item.name}`); n.children?.forEach(walk); };
+    tree.forEach(walk);
+    for (const [org, all] of filesOf) {
+      const project = `${orgPolicy.ORG_PREFIX}${org}`;
+      const rest = all.filter((f) => !shownIn.has(`${project}|${f.path}`)).sort((a, b) => a.path.localeCompare(b.path));
+      if (!rest.length) continue;
+      tree.push({
+        key: `${project}/unplaced`, label: `${org} · Unplaced policy files`, count: rest.length, open: true,
+        children: rest.map((f) => {
+          const item: Item = { project, kind: 'policy', name: f.path, data: f };
+          const why = !Object.keys(parsed(f.content)).length ? 'does not parse' : f.path.startsWith('access/') ? 'no project here' : 'names no project here';
+          return { key: address(item), label: `${f.path} (${why}${broken(f.path) ? ', broken' : ''}${f.enforced ? '' : ', off'})`, item };
+        }),
+      });
     }
   }
   return { tree, errors };

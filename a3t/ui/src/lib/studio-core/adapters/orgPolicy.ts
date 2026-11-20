@@ -51,5 +51,7 @@ export const remove = (org: string, path: string): Promise<Result> =>
     return fail(errors.length ? `${r.error}: ${errors.join('; ')}` : (r.error ?? `remove ${path} failed`));
   });
 
-export const validate = (org: string, drafts: { path: string; content: string }[]): Promise<Result<OrgPolicyCheck>> =>
-  safely('validate', async () => result(await orgPolicy.validate(org, drafts), 'validate'));
+/// The org's enforced set with `drafts` in place and `removed` taken out: what
+/// a save, or a removal, would leave.
+export const validate = (org: string, drafts: { path: string; content: string }[], removed: string[] = []): Promise<Result<OrgPolicyCheck>> =>
+  safely('validate', async () => result(await orgPolicy.validate(org, drafts, removed), 'validate'));

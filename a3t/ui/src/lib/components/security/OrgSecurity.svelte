@@ -15,7 +15,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -58,8 +58,9 @@
   async function load(p = '') {
     err = ''; msg = ''; stopName = ''; org = null; aud = null; files = null; openRow = ''; fQ = ''; fProject = p; fCap = ''; fRole = '';
     const h = handle;
-    const [o, a, f] = await Promise.all([orgsApi.list(), peopleApi.audit(h), orgPolicy.files(h)]);
+    const [o, a, f, hl] = await Promise.all([orgsApi.list(), peopleApi.audit(h), orgPolicy.files(h), securityPolicies.health()]);
     if (h !== handle) return;
+    healthAll = hl.ok ? hl.data?.broken ?? [] : [];
     const found = (o.ok ? o.data?.orgs ?? [] : []).find((x: OrgInfo) => x.handle === h) ?? null;
     if (!found || !found.can_audit) { err = o.ok ? `No org ${h} whose security you look after.` : (o.error ?? 'Organisations could not be read.'); return; }
     org = found; fillSso(found);
@@ -68,6 +69,10 @@
     pickFrom(files);
     if (found.can_admin && !directory.length) directory = await loadDirectory();
   }
+  // GOV-4: this org's files that no longer compile (its projects are closed).
+  let healthAll = $state<PolicyBroken[]>([]);
+  const broken = $derived(healthAll.find((b) => b.kind === 'org' && org && (b.owner === org.id || b.owner === org.handle)) ?? null);
+
   async function refreshOrg() {
     const o = await orgsApi.list();
     const found = (o.ok ? o.data?.orgs ?? [] : []).find((x: OrgInfo) => x.handle === handle) ?? null;
@@ -252,6 +257,8 @@
     {:else if !org}<p class="dim">Reading {handle}…</p>
     {:else}
       {#if msg}<div class="note" class:bad={!msgOk} class:okn={msgOk}>{msg}</div>{/if}
+      {#if broken}<div class="note bad"><b>Its policy files no longer compile</b> (since {new Date(broken.since).toLocaleString()}), so its projects ({broken.closed.join(', ') || 'none'}) refuse every call until they are fixed in Policy files.
+        <ul>{#each broken.errors as e (e)}<li class="mono">{e}</li>{/each}</ul></div>{/if}
 
       {#if tab === 'overview'}
         <div class="card">

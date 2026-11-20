@@ -4,7 +4,7 @@
   /// Rules are built as sentences (starters) or written as a policy file
   /// (experts, Advanced); FlowR checks either before it is saved. No Cedar needed.
   import { untrack } from 'svelte';
-  import { agentSpaceApi, securityCatalogue, type AgentSecurity, type CatalogueEntry } from '$lib/services/api';
+  import { agentSpaceApi, securityCatalogue, securityPolicies, type AgentSecurity, type CatalogueEntry } from '$lib/services/api';
   import type { AgentRec } from './agentData';
 
   // The agent's rules are security: its org's admins and security admins change
@@ -15,12 +15,15 @@
   let prof = $state<AgentSecurity | null>(null);
   let cat = $state<CatalogueEntry[]>([]);
   let err = $state('');
+  /// GOV-4: its policy no longer compiles, so it is stopped until fixed.
+  let brokenErr = $state('');
   let busy = $state('');
   const canEdit = $derived(!!prof?.policy.can_edit);
 
   async function load() {
     err = '';
-    const [p, c] = await Promise.all([agentSpaceApi.security(agent.id), securityCatalogue()]);
+    const [p, c, h] = await Promise.all([agentSpaceApi.security(agent.id), securityCatalogue(), securityPolicies.health()]);
+    brokenErr = h.ok ? (h.data?.broken ?? []).find((b) => b.kind === 'agent' && b.owner === agent.id)?.errors.join('; ') ?? '' : '';
     if (!p.ok) { err = p.error ?? 'Could not read its profile.'; return; }
     prof = p.data!;
     if (c.ok) cat = c.data!.permissions;
@@ -97,6 +100,7 @@
 
 <section class="agt">
   {#if err}<div class="note bad">{err}</div>{/if}
+  {#if brokenErr}<div class="note bad"><b>Its policy no longer compiles</b>, so this agent is stopped everywhere until an org admin or security admin fixes it below: <span class="mono">{brokenErr}</span></div>{/if}
   {#if !prof}<p class="dim">Reading its profile…</p>
   {:else}
     <div class="card">

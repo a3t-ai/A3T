@@ -11,6 +11,7 @@ pub mod tool_flows;
 pub mod agent_keys;
 pub mod agent_space;
 pub mod approval;
+pub mod policy_health;
 pub mod token_stream;
 pub mod mcp_stream;
 pub mod canvas;

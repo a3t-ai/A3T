@@ -305,6 +305,8 @@ async fn main() -> anyhow::Result<()> {
                     .merge(Router::new().route("/security/catalogue", get(catalogue_handler)))
                     // The baseline pack this build enforces (UI-5: the console shows this, not a copy).
                     .merge(Router::new().route("/security/baseline", get(baseline_handler)))
+                    // Policy files that no longer compile, and what they closed (GOV-4).
+                    .merge(Router::new().route("/security/policy-health", get(policy_health_handler)).layer(Extension(storage.clone())))
                     .merge(
                         Router::new()
                             .route("/security/policies", get(policies_list_handler))
@@ -457,25 +459,49 @@ async fn collect_registry_cedar_policies(
     // statement names the agent, so it binds that agent only. It was checked
     // when saved; one that no longer compiles (the catalogue changed) is
     // reported and left out, and the rest of the set still loads.
+    // GOV-4: one that no longer compiles is never quietly left out — what it
+    // guarded is closed, naming the file, until a security admin fixes it.
+    #[cfg(feature = "ee")]
+    let mut broken: Vec<flowr_ce::policy_health::Broken> = Vec::new();
+    #[cfg(feature = "ee")]
+    let now = chrono::Utc::now().to_rfc3339();
     #[cfg(feature = "ee")]
     for (id, project, yaml) in flowr_ce::agent_space::security::all_policies(storage.as_ref()).await {
         match a3t_security::policy_files::compile_agent_policy(&project, &id, &yaml) {
             Ok(c) => out.push(("a3t".to_string(), format!("agent-{id}"), c.cedar)),
-            Err(e) => warn!(agent = %id, error = %e, "an agent's own policy no longer compiles; it is not enforced"),
+            Err(e) => {
+                let why = format!("Agent {id}'s own policy no longer compiles, so the agent is stopped until an org admin or security admin fixes it (Security › the agent › Security). {e}");
+                out.push(("a3t".to_string(), format!("agent-{id}-broken"),
+                    flowr_ce::policy_health::closing_agent_statement(&format!("agent.{id}.broken"), &id, &why)));
+                broken.push(flowr_ce::policy_health::Broken { kind: "agent".into(), owner: id.clone(), org: None,
+                    errors: vec![e], closed: vec![format!("agent {id}")], since: now.clone() });
+            }
         }
     }
-    // Each org's files, kept from its own GitHub repo: placed in the policy set
-    // of every project they apply to, never outside the org. They were checked
-    // when they were synced; a set that no longer compiles (the catalogue
-    // changed) is reported loudly and left out.
+    // Each org's files, kept in A3T: placed in the policy set of every project
+    // they apply to, never outside the org. They were checked when saved; a set
+    // that no longer compiles (the catalogue changed) closes the org's projects.
     #[cfg(feature = "ee")]
     for (org, projects, files) in flowr_ce::org_policy::all_org_files(storage.as_ref()).await {
         let files: Vec<a3t_security::policy_files::OrgFile> = files.into_iter()
             .map(|(path, content)| a3t_security::policy_files::OrgFile { path, content }).collect();
         match a3t_security::policy_files::compile_org_set(&org, &projects, &files) {
             Ok(set) => out.extend(set.policies),
-            Err(errors) => tracing::error!(org = %org, errors = ?errors, "an org's kept policy files no longer compile; they are NOT enforced"),
+            Err(errors) => {
+                let why = format!("{org}'s policy files no longer compile, so its projects refuse every call until an org admin or security admin fixes them (Security › {org} › Policy files): {}", errors.join("; "));
+                for p in &projects {
+                    out.push((p.clone(), format!("org-{org}-broken"),
+                        flowr_ce::policy_health::closing_statement(&format!("org.{org}.broken"), &why)));
+                }
+                broken.push(flowr_ce::policy_health::Broken { kind: "org".into(), owner: org.clone(), org: Some(org.clone()),
+                    errors, closed: projects.clone(), since: now.clone() });
+            }
         }
+    }
+    #[cfg(feature = "ee")]
+    {
+        let (fresh, healed) = flowr_ce::policy_health::set(broken);
+        flowr_ce::policy_health::log(&fresh, &healed);
     }
     out
 }
@@ -708,6 +734,29 @@ async fn baseline_handler() -> axum::response::Response {
     {
         (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "A Community runtime has no baseline: it enforces nothing." }))).into_response()
     }
+}
+
+/// `GET /security/policy-health` — policy files that no longer compile and
+/// what they closed (GOV-4). InfoSec sees all; an org's admins and security
+/// admins see their org's.
+async fn policy_health_handler(
+    principal: Option<axum::Extension<flowr_policy::Principal>>,
+    storage: Option<axum::Extension<Arc<dyn StorageBackend>>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    let Some(axum::Extension(p)) = principal else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "Sign in first." }))).into_response();
+    };
+    let infosec = is_infosec(Some(&p));
+    let mut shown = Vec::new();
+    for b in flowr_ce::policy_health::list() {
+        let ok = infosec || match (b.org.as_deref(), storage.as_ref()) {
+            (Some(org), Some(axum::Extension(s))) => flowr_ce::org_policy::manages_org_security(s.as_ref(), &p, org).await,
+            _ => false,
+        };
+        if ok { shown.push(b); }
+    }
+    axum::Json(serde_json::json!({ "broken": shown, "count": shown.len() })).into_response()
 }
 
 /// `GET /security/catalogue` — every permission a role or rule can name, with
