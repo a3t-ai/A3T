@@ -55,6 +55,10 @@ rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+# ID-4: agent identity tokens (EdDSA).
+base64 = "0.22"
+ring = "0.17"
+jsonwebtoken = "9"
 
 # Inline script runtimes
 mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }

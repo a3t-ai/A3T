@@ -12,12 +12,13 @@
   import { untrack } from 'svelte';
   import { roles, roleLabel } from '$lib/core/auth/roles.svelte.ts';
   import { draftPolicy, checkDraft, POLICY_AGENT, type PolicyDraft } from './policyAgent';
+  import AccessReviews from './AccessReviews.svelte';
   import * as YAML from 'yaml';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, type ReplayResult, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -238,11 +239,12 @@
     { id: 'people', label: 'People', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its members and everyone who reaches its projects, and how' },
     { id: 'members', label: 'Members', icon: '<circle cx="8" cy="5" r="2.5"/><path d="M3 13a5 5 0 0110 0"/>', hint: 'Who is in the org, and as what' },
     { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
+    { id: 'reviews', label: 'Access reviews', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 6l1.5 1.5L10.5 4M5.5 10.5h5"/>', hint: 'Confirm or revoke, item by item, who holds which role and key' },
     { id: 'roles', label: 'Roles & groups', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has, and which groups and people hold them' },
     { id: 'files', label: 'Policy files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
     { id: 'changes', label: 'Changes', icon: '<circle cx="5" cy="8" r="2"/><circle cx="11" cy="8" r="2"/><path d="M7 8h2"/>', hint: 'A second approver for policy changes, and the changes waiting for one' },
   ];
-  const IDENTITY_TABS = ['overview', 'people', 'members', 'signin', 'roles'];
+  const IDENTITY_TABS = ['overview', 'people', 'members', 'signin', 'roles', 'reviews'];
   const STEPS = $derived(section === 'policy' ? ALL_STEPS.filter((x) => x.id === 'files' || x.id === 'changes') : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
@@ -314,8 +316,31 @@
   let changeNote = $state<Record<string, string>>({});
   let changeErr = $state<Record<string, string[]>>({});
   async function loadChanges() {
-    const r = await orgPolicy.changes(handle);
+    const [r, k] = await Promise.all([orgPolicy.changes(handle), orgPolicy.retention(handle)]);
     if (r.ok) { fourEyes = !!r.data?.four_eyes; changes = r.data?.changes ?? []; }
+    if (k.ok) { keepDays = k.data?.retention_days ?? 0; hold = !!k.data?.legal_hold; keepPick = keepDays; }
+  }
+  // ── AUD-6: how long its decisions are kept, and a legal hold ──
+  let keepDays = $state(0);
+  let keepPick = $state(0);
+  let hold = $state(false);
+  // AUD-4: check its log for gaps and edits.
+  let checked = $state<AuditVerify | null>(null);
+  async function checkLog() {
+    if (!org) return;
+    busy = 'verify';
+    const r = await auditApi.verify(org.id, 30);
+    busy = '';
+    if (!r.ok) { say(`Not checked: ${r.error ?? `HTTP ${r.status}`}.`); return; }
+    checked = r.data!;
+  }
+  async function saveRetention(body: { retention_days?: number; legal_hold?: boolean }) {
+    busy = 'ret';
+    const r = await orgPolicy.setRetention(handle, body);
+    busy = '';
+    if (!r.ok) { say(`Not changed: ${r.error ?? `HTTP ${r.status}`}.`); return; }
+    say(r.data?.pending ? (r.data.message ?? 'Held for a second approver.') : 'Saved.', true);
+    await loadChanges();
   }
   $effect(() => { if (tab === 'changes' && org) untrack(() => void loadChanges()); });
   const pendingChanges = $derived(changes.filter((c) => c.status === 'pending'));
@@ -479,6 +504,9 @@
           {#if canAdmin}<div class="acts"><button class="btn2 primary" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Save sign-in'}</button></div>{/if}
         </div>
 
+      {:else if tab === 'reviews'}
+        <AccessReviews org={handle} canReview={managesFiles} />
+
       {:else if tab === 'roles'}
         <div class="card">
           <div class="card-head"><h3>1 · Roles</h3><span>what each role may do is in the policy files</span></div>
@@ -591,6 +619,27 @@
           <div class="card-head"><h3>1 · Second approver</h3><span>{fourEyes ? 'on: every change waits for another admin' : 'off: a change applies at once'}</span><span class="grow"></span>
             {#if managesFiles}<button class="btn2" disabled={busy === 'four'} onclick={toggleFourEyes}>{fourEyes ? 'Turn off…' : 'Turn on'}</button>{/if}</div>
           <p class="dim">With it on, a save, removal or switch of {handle}'s policy files, and a change to one of its agents' own rules, is checked and then waits here until another of its admins or security admins approves it. Nobody approves their own change. Turning it off is a change too.</p>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Decision log</h3><span>{hold ? 'on legal hold: nothing is purged' : keepDays ? `kept ${keepDays} days` : 'kept forever'}</span></div>
+          <p class="dim">How long {handle}'s decisions are kept in its log. Once a day older ones are forgotten (ADB keeps their history), unless the org is on legal hold. Shortening it, or lifting a hold, needs the second approver when it is on.</p>
+          {#if managesFiles}
+            <div class="acts">
+              <select bind:value={keepPick} aria-label="Keep decisions for"><option value={0}>Forever</option><option value={90}>90 days</option><option value={365}>1 year</option><option value={730}>2 years</option><option value={2555}>7 years</option></select>
+              <button class="btn2" disabled={busy === 'ret' || keepPick === keepDays} onclick={() => saveRetention({ retention_days: keepPick })}>Save</button>
+              <button class="btn2" class:danger={hold} disabled={busy === 'ret'} onclick={() => saveRetention({ legal_hold: !hold })}>{hold ? 'Lift the legal hold' : 'Put on legal hold'}</button>
+            </div>
+          {/if}
+          <div class="acts"><button class="btn2" disabled={busy === 'verify'} onclick={checkLog}>{busy === 'verify' ? 'Checking…' : 'Check its log (last 30 days)'}</button></div>
+          {#if checked}
+            <div class="note" class:bad={!checked.ok} class:okn={checked.ok}>
+              {checked.ok ? '✓ Intact' : '✕ Not intact'}: {checked.records} decisions on {checked.chains} chain{checked.chains === 1 ? '' : 's'}{checked.unchained ? ` (${checked.unchained} from before chaining)` : ''}; {checked.anchors_checked} anchor{checked.anchors_checked === 1 ? '' : 's'} matched.
+              {#if checked.gaps.length}<br />Gaps: {checked.gaps.map((g) => `${g.chain} ${g.after}→${g.before}`).join('; ')}{/if}
+              {#if checked.edits.length}<br />Edited: {checked.edits.map((e) => `${e.chain} #${e.seq}`).join('; ')}{/if}
+              {#if checked.broken_links.length}<br />Broken links: {checked.broken_links.length}{/if}
+              {#if checked.anchor_mismatch.length}<br />Anchors that don't match: {checked.anchor_mismatch.length}{/if}
+            </div>
+          {/if}
         </div>
         <div class="card">
           <div class="card-head"><h3>2 · Waiting</h3><span>{pendingChanges.length}</span></div>

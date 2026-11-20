@@ -252,6 +252,7 @@ pub(super) async fn get_security(State(s): St, p: P, Path(id): Path<String>) -> 
         };
         let pol = policy_of(s.as_ref(), &id).await;
         let policy = pol.as_ref().map(|r| col(r, "policy"));
+        let used = crate::budget::used_today(s.as_ref(), &id).await;
         ok(json!({
             "agent_id": id,
             "project": project_of(&row),
@@ -263,6 +264,11 @@ pub(super) async fn get_security(State(s): St, p: P, Path(id): Path<String>) -> 
                 // UI-3: set in its own policy (role_ceiling); absent: not narrowed.
                 "role_ceiling": policy.as_deref().and_then(|y| flowr_policy::policy_file::PolicyFile::parse(y).ok()).and_then(|f| f.role_ceiling),
                 "enabled_tools": pick("enabled_tools"),
+            },
+            // RT-4: its budget (from its own policy) and what it has used today (UTC).
+            "budget": {
+                "limits": policy.as_deref().and_then(|y| flowr_policy::policy_file::PolicyFile::parse(y).ok()).and_then(|f| f.budget),
+                "used_today": { "turns": used.0, "tokens": used.1 },
             },
             "policy": {
                 "set": policy.is_some(),

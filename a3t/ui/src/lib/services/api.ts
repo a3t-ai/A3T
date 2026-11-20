@@ -536,6 +536,15 @@ export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' |
 // ── Audit / decision log (EE — durable in ADB EPISODIC, AUD-1) ──
 /// Server-side filters (exact values) and paging: pass the answer's
 /// `next_before_ms` as `before_ms` for the next page. `q` ranks by meaning.
+/// GOV-10: the agent inventory (an org's, or every org's for platform InfoSec).
+export type InventoryRow = {
+  id: string; name: string; project: string; org: string; owner: string; status: string; template: string;
+  model: any; mcp_servers: string[]; tools: any; keys_live: number; keys_total: number; own_policy: boolean; rules: number;
+  role_ceiling: string[] | null; egress: string[] | null; last_activity: string | null; created_at: string; risk: 'high' | 'medium' | 'low'; why: string;
+};
+export const agentInventory = (org?: string) =>
+  request<{ count: number; high: number; medium: number; low: number; agents: InventoryRow[] }>(`/security/agents${org ? `?org=${encodeURIComponent(org)}` : ''}`, { method: 'GET' });
+
 /// Every role, in one table (ID-1): a3t/policies/roles.yaml.
 export const securityRoles = () => request<{ version: number; roles: any[] }>('/security/roles', { method: 'GET' });
 
@@ -544,7 +553,23 @@ export type PolicyBroken = { kind: 'org' | 'agent'; owner: string; org?: string 
 
 export type AuditQuery = { org?: string; project?: string; agent?: string; principal?: string; action?: string; decision?: string; since_ms?: number; before_ms?: number; q?: string; limit?: number };
 export interface AuditPage { count: number; records: any[]; scope: string; orgs?: string[]; next_before_ms?: number | null; aql?: string; source?: string }
+/// GOV-11: access reviews of an org.
+export type AccessReview = { id: string; name: string; status: 'open' | 'closed'; created_by: string; created_at: string; closed_at?: string; items: number; pending: number; revoked: number };
+export type AccessReviewItem = { id: string; kind: 'org_role' | 'project_role' | 'agent_key'; subject: string; detail: string; target: any; decision: 'pending' | 'keep' | 'revoke'; decided_by?: string; decided_at?: string };
+export const accessReviews = {
+  list: (org: string) => request<{ reviews: AccessReview[] }>(`/security/orgs/${encodeURIComponent(org)}/reviews`, { method: 'GET' }),
+  create: (org: string, name: string) => request<{ id: string }>(`/security/orgs/${encodeURIComponent(org)}/reviews`, { method: 'POST', body: JSON.stringify({ name }) }),
+  get: (org: string, id: string) => request<{ review: AccessReview; items: AccessReviewItem[] }>(`/security/orgs/${encodeURIComponent(org)}/reviews/${encodeURIComponent(id)}`, { method: 'GET' }),
+  decide: (org: string, id: string, item: string, decision: 'keep' | 'revoke', note = '') =>
+    request(`/security/orgs/${encodeURIComponent(org)}/reviews/${encodeURIComponent(id)}/items/${encodeURIComponent(item)}`, { method: 'POST', body: JSON.stringify({ decision, note }) }),
+  close: (org: string, id: string) => request(`/security/orgs/${encodeURIComponent(org)}/reviews/${encodeURIComponent(id)}/close`, { method: 'POST' }),
+};
+
+/// AUD-4: an org's decision chains, checked (gaps, edits, anchors).
+export type AuditVerify = { ok: boolean; records: number; chains: number; unchained: number; gaps: any[]; edits: any[]; broken_links: any[]; anchors_checked: number; anchor_mismatch: any[]; note: string };
+
 export const audit = {
+  verify: (org: string, days = 7) => request<AuditVerify>(`/security/audit/verify?${new URLSearchParams({ org, days: String(days) })}`, { method: 'GET' }),
   query: (q: AuditQuery = {}) => {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v));
@@ -757,6 +782,10 @@ export const orgPolicy = {
   /// GOV-2: replay a change against the org's last `days` of decisions.
   replay: (org: string, change: { files?: { path: string; content: string }[]; removed?: string[]; switch_on?: string[]; days?: number }) =>
     request<ReplayResult>(`${orgBase(org)}/replay`, { method: 'POST', body: JSON.stringify(change) }),
+  /// AUD-6: how long its decisions are kept (0: forever), and its legal hold.
+  retention: (org: string) => request<{ retention_days: number; legal_hold: boolean }>(`${orgBase(org)}/retention`, { method: 'GET' }),
+  setRetention: (org: string, body: { retention_days?: number; legal_hold?: boolean }) =>
+    request<{ retention_days?: number; legal_hold?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/retention`, { method: 'PUT', body: JSON.stringify(body) }),
   /// GOV-3: the org's second approver for policy changes.
   settings: (org: string) => request<{ org: string; four_eyes: boolean; pending: number }>(`${orgBase(org)}/settings`, { method: 'GET' }),
   setFourEyes: (org: string, four_eyes: boolean) =>

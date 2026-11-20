@@ -14,6 +14,7 @@
   import '$lib/components/agent/agent.css';
   import '$lib/components/triggers/triggers.css';
   import OrgSecurity from '$lib/components/security/OrgSecurity.svelte';
+  import AgentInventory from '$lib/components/security/AgentInventory.svelte';
   import { securityPolicies, idp, audit, getEdition, people as peopleApi, type PolicyTestBody, type AuditPeople, type AuditPerson } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { getProject, namespacesFor, allProjectNamespaces, loadProjects } from '$lib/stores/context.svelte.ts';
@@ -25,7 +26,8 @@
   const BASELINE: Policy = { namespace: 'system', name: 'baseline', cedar: '', readOnly: true,
     description: 'Deny-by-default guardrails compiled into the EE runtime. Always applies beneath every project policy; forbid overrides permit.' };
 
-  let view = $state<'policy' | 'identity' | 'org' | 'new' | null>(null);
+  let view = $state<'policy' | 'identity' | 'org' | 'new' | 'agents' | null>(null);
+  let invOrg = $state('');
   let orgH = $state('');
   let orgProject = $state('');
   let orgSection = $state<'identity' | 'policy'>('identity');
@@ -56,6 +58,8 @@
     denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
     // Say who it is for, and ask the server nothing it would refuse.
     if (!opensSecurity()) { denied = NO_SECURITY; view = 'policy'; pol = null; return; }
+    // agents:<org id|all> — the agent inventory (GOV-10).
+    if (id.startsWith('agents:')) { view = 'agents'; pol = null; invOrg = id.slice('agents:'.length); return; }
     // org:<handle>[:<tab>] — the org's identity; orgfiles:<handle> — its policy files.
     if (id.startsWith('org:') || id.startsWith('orgfiles:')) {
       const [kind, h, t, ns] = id.split(':');
@@ -421,6 +425,9 @@
 
   {:else if view === 'org'}
     <OrgSecurity org={orgH} section={orgSection} project={orgProject} bind:tab />
+
+  {:else if view === 'agents'}
+    <AgentInventory org={invOrg} />
 
   {:else if view === 'identity'}
     <div class="panel-layout">

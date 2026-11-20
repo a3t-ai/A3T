@@ -521,6 +521,10 @@ impl TaskHandler for AgentHandler {
             if let Err(b) = crate::ops::admit(storage.as_ref(), None, Some(agent)).await {
                 return Err(RuntimeError::task_failed(&task.name, format!("refused: {b}")));
             }
+            // RT-4: over its budget for today, it doesn't run (and the alert is sent).
+            if let Err(b) = crate::budget::admit(storage.as_ref(), agent).await {
+                return Err(RuntimeError::task_failed(&task.name, format!("refused: {b}")));
+            }
         }
 
         // ── E0.4c: the agent is a first-class principal ──
@@ -2288,8 +2292,16 @@ async fn call_mcp_tool(
         }
     });
 
-    let resp = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
-        .header("Content-Type", "application/json")
+    let mut req = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
+        .header("Content-Type", "application/json");
+    // ID-4: the call names the agent and the person it acts for, signed.
+    if let Some((agent, person)) = crate::agent_token::of_principal(caller) {
+        match crate::agent_token::mint(&agent, person.as_deref(), project, &server_url) {
+            Ok(t) => req = req.header(crate::agent_token::HEADER, t),
+            Err(e) => warn!(error = %e, "agent identity token not made"),
+        }
+    }
+    let resp = req
         .json(&payload)
         .send()
         .await

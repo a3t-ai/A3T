@@ -606,6 +606,23 @@ pub struct ProjectGuard {
 pub const GUARD_TABLES: [&str; 3] = ["projects", "org_members", "orgs"];
 const UNKNOWN_RETRY: Duration = Duration::from_secs(2);
 
+/// RT-12: whether `namespace` belongs to an org (or is a project) that runs on
+/// its own runtimes only, by this pod's last snapshot. Read synchronously (the
+/// router can't wait); a project the snapshot doesn't know yet reads as not.
+pub fn isolated(namespace: &str) -> bool {
+    if PLATFORM.contains(&namespace) {
+        return false;
+    }
+    let Some(g) = PROJECT_GUARD.get() else { return false };
+    let snap = g.snapshot.read().unwrap().1.clone();
+    let policy = match snap.projects.get(namespace) {
+        Some(p) if p.owner_kind == "org" && p.runtime.is_empty() => snap.org_runtime.get(&p.owner).cloned().unwrap_or_default(),
+        Some(p) => p.runtime.clone(),
+        None => return false,
+    };
+    policy == "isolated"
+}
+
 /// Forget this pod's access snapshot; the next decision reads the tables again.
 pub fn invalidate() {
     if let Some(g) = PROJECT_GUARD.get() {

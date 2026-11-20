@@ -38,11 +38,12 @@
   const expertCedar = $derived<string | undefined>((prof?.policy as any)?.file?.cedar);
 
   // ── The file, written back as YAML (JSON values are valid YAML) ──
-  function fileOf(rs: Rule[], ceiling: string[] | null = ceilingNow, uses: string[] = usesNow, egress: string[] | null = egressNow): string {
+  function fileOf(rs: Rule[], ceiling: string[] | null = ceilingNow, uses: string[] = usesNow, egress: string[] | null = egressNow, budget: Budget | null = budgetNow): string {
     const lines = ['kind: a3t/policy', 'name: profile', `description: ${JSON.stringify(`What ${agent.name} may not do, wherever it runs.`)}`];
     if (ceiling) lines.push(`role_ceiling: ${JSON.stringify(ceiling)}`);
     if (uses.length) lines.push(`uses: ${JSON.stringify(uses)}`);
     if (egress) lines.push(`egress: ${JSON.stringify(egress)}`);
+    if (budget && Object.keys(budget).length) lines.push(`budget: ${JSON.stringify(budget)}`);
     if (rs.length) {
       lines.push('rules:');
       for (const r of rs) {
@@ -79,7 +80,7 @@
   async function saveCeiling(clear = false) {
     const picked = ROLES.filter((r) => ceilPick[r]);
     const next = clear ? null : picked;
-    const empty = !rules.length && !expertCedar && !next && !usesNow.length && !egressNow;
+    const empty = !rules.length && !expertCedar && !next && !usesNow.length && !egressNow && !budgetNow;
     if (await save(empty ? '' : fileOf(rules, next), 'ceiling')) editCeiling = false;
   }
 
@@ -88,7 +89,7 @@
   const usesNow = $derived<string[]>(((prof?.policy as any)?.file?.uses ?? []) as string[]);
   let newUse = $state('');
   async function setUses(next: string[]) {
-    const empty = !rules.length && !expertCedar && !ceilingNow && !next.length && !egressNow;
+    const empty = !rules.length && !expertCedar && !ceilingNow && !next.length && !egressNow && !budgetNow;
     if (await save(empty ? '' : fileOf(rules, ceilingNow, next), 'uses')) newUse = '';
   }
 
@@ -96,8 +97,22 @@
   const egressNow = $derived<string[] | null>(((prof?.policy as any)?.file?.egress ?? null) as string[] | null);
   let newHost = $state('');
   async function setEgress(next: string[] | null) {
-    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !next;
+    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !next && !budgetNow;
     if (await save(empty ? '' : fileOf(rules, ceilingNow, usesNow, next), 'egress')) newHost = '';
+  }
+
+  // ── Budget (RT-4): over it, it stops until tomorrow (UTC) and an alert is logged ──
+  type Budget = { runs_per_day?: number; tokens_per_day?: number; key_calls_per_minute?: number };
+  const budgetNow = $derived<Budget | null>(((prof?.policy as any)?.file?.budget ?? null) as Budget | null);
+  const usedToday = $derived<{ turns: number; tokens: number } | null>((prof as any)?.budget?.used_today ?? null);
+  let bRuns = $state(''); let bTokens = $state(''); let bKey = $state(''); let editBudget = $state(false);
+  function startBudget() { bRuns = String(budgetNow?.runs_per_day ?? ''); bTokens = String(budgetNow?.tokens_per_day ?? ''); bKey = String(budgetNow?.key_calls_per_minute ?? ''); editBudget = true; }
+  async function saveBudget(clear = false) {
+    const n = (v: string) => (v.trim() && Number(v) > 0 ? Math.floor(Number(v)) : undefined);
+    const next: Budget | null = clear ? null : Object.fromEntries(Object.entries({ runs_per_day: n(bRuns), tokens_per_day: n(bTokens), key_calls_per_minute: n(bKey) }).filter(([, v]) => v !== undefined)) as Budget;
+    const b = next && Object.keys(next).length ? next : null;
+    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !egressNow && !b;
+    if (await save(empty ? '' : fileOf(rules, ceilingNow, usesNow, egressNow, b), 'budget')) editBudget = false;
   }
 
   // ── Add a rule (starters) ──
@@ -124,7 +139,7 @@
   }
   async function removeRule(i: number) {
     const next = rules.filter((_, j) => j !== i);
-    await save(next.length || expertCedar || ceilingNow || usesNow.length || egressNow ? fileOf(next) : '', `rm${i}`);
+    await save(next.length || expertCedar || ceilingNow || usesNow.length || egressNow || budgetNow ? fileOf(next) : '', `rm${i}`);
   }
 
   // ── Advanced: the file itself ──
@@ -179,6 +194,17 @@
             <input class="mono" bind:value={newHost} placeholder="api.github.com or *.slack.com" />
             <button class="btn2" disabled={!!busy || !/^(\*\.)?[a-z0-9.-]+$/i.test(newHost.trim())} onclick={() => setEgress([...(egressNow ?? []), newHost.trim()])}>{busy === 'egress' ? 'Checking…' : 'Allow only these'}</button>
             {#if egressNow}<button class="btn2 quiet" disabled={!!busy} onclick={() => setEgress(null)}>Back to its org's list</button>{/if}</span></li>
+        {/if}
+        <li><span class="lbl">Budget</span><span class="val">{budgetNow ? [budgetNow.runs_per_day ? `${budgetNow.runs_per_day} turns a day` : '', budgetNow.tokens_per_day ? `${budgetNow.tokens_per_day.toLocaleString()} model tokens a day` : '', budgetNow.key_calls_per_minute ? `${budgetNow.key_calls_per_minute} calls a minute per key` : ''].filter(Boolean).join(' · ') : 'none set'}{usedToday ? ` — today: ${usedToday.turns} turns, ${usedToday.tokens.toLocaleString()} tokens` : ''}</span>
+          {#if canEdit}<button class="btn2" onclick={startBudget}>Change</button>{:else}<span></span>{/if}</li>
+        {#if editBudget}
+          <li class="full"><span class="val">
+            <input class="num" type="number" min="1" bind:value={bRuns} placeholder="turns a day" />
+            <input class="num" type="number" min="1" bind:value={bTokens} placeholder="model tokens a day" />
+            <input class="num" type="number" min="1" bind:value={bKey} placeholder="calls a minute per key" />
+            <span class="acts"><button class="btn2 primary" disabled={!!busy} onclick={() => saveBudget()}>{busy === 'budget' ? 'Checking…' : 'Save budget'}</button>
+              {#if budgetNow}<button class="btn2 quiet" disabled={!!busy} onclick={() => saveBudget(true)}>No budget</button>{/if}
+              <button class="btn2 quiet" onclick={() => (editBudget = false)}>Cancel</button></span></span></li>
         {/if}
         <li><span class="lbl">Tools it may call</span><span class="val">{Array.isArray(prof.bound_to.enabled_tools) ? (prof.bound_to.enabled_tools.length ? prof.bound_to.enabled_tools.join(', ') : 'none') : 'any its servers offer'}</span><span></span></li>
       </ul>

@@ -33,6 +33,25 @@ pub struct PolicyFile {
     /// what its org's egress files allow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<Vec<String>>,
+    /// An agent's own policy only (RT-4): what it may spend; over it, it stops
+    /// until the next day (UTC) and an alert goes to the decision log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<Budget>,
+}
+
+/// An agent's budget (RT-4). Each limit is optional.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Budget {
+    /// Turns (runs) a day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_per_day: Option<u64>,
+    /// Model tokens (prompt + completion) a day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_day: Option<u64>,
+    /// Calls a minute through each of its keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_calls_per_minute: Option<u64>,
 }
 
 /// Where an org's flows and agents may call out to (`egress/<name>.yaml`, RT-1).

@@ -245,7 +245,7 @@ pub fn compile_agent_policy(project: &str, agent_id: &str, yaml: &str) -> Result
     }
     // A ceiling or references alone are a whole policy: nothing for the engine.
     let no_rules = f.rules.is_empty() && f.cedar.as_deref().map_or(true, |c| c.trim().is_empty());
-    if no_rules && (f.role_ceiling.is_some() || !f.uses.is_empty() || f.egress.is_some()) {
+    if no_rules && (f.role_ceiling.is_some() || !f.uses.is_empty() || f.egress.is_some() || f.budget.is_some()) {
         if f.kind != "a3t/policy" {
             return Err(format!("kind is {:?}, not a3t/policy", f.kind));
         }
@@ -266,6 +266,9 @@ fn compile_file(org: &str, f: PolicyFile) -> Result<Compiled, String> {
     let own = f.applies_to.as_ref().is_some_and(|a| a.agents.len() == 1 && !a.org && a.projects.is_empty());
     if f.role_ceiling.is_some() && !own {
         return Err("role_ceiling belongs in an agent's own policy (its Security tab), not an org file".into());
+    }
+    if f.budget.is_some() && !own {
+        return Err("budget belongs in an agent's own policy".into());
     }
     if f.egress.is_some() && !own {
         return Err("egress belongs in an agent's own policy; an org's hosts are an egress/ file".into());

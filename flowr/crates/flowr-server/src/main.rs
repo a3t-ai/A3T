@@ -31,7 +31,7 @@ use axum::{
     response::IntoResponse,
 };
 use flowr_ce::{
-    build_ce_router, init_storage, restore_triggers, run_stdio, serve, spawn_worker, ServerConfig,
+    build_ce_router, init_storage, restore_triggers, run_stdio, spawn_worker, ServerConfig,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -174,6 +174,18 @@ async fn main() -> anyhow::Result<()> {
         }
         warn!(authn = %authn, enforcing, "{why}; tolerated only because this server enforces no policy or accepts OIDC tokens only");
     }
+    // RT-11: one edition. A FlowR that enforces no policy lets anyone who reaches
+    // it do anything, so it listens on loopback; listening anywhere else without
+    // policy is refused unless the network is declared sealed (FLOWR_ALLOW_OPEN=1).
+    let bind = std::env::var("FLOWR_BIND").ok().filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| if enforcing { "0.0.0.0".to_string() } else { "127.0.0.1".to_string() });
+    let loopback = bind == "localhost" || bind.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    if !enforcing && !loopback && std::env::var("FLOWR_ALLOW_OPEN").as_deref() != Ok("1") {
+        anyhow::bail!("this FlowR enforces no policy (security.policy_hook = {effective_hook}), so anyone who reaches it could do anything: it listens on 127.0.0.1 unless policy is on (security.policy_hook = cedar). To listen on {bind} without policy, on a network nobody else reaches, set FLOWR_ALLOW_OPEN=1");
+    }
+    if !enforcing && !loopback {
+        warn!(%bind, "FLOWR_ALLOW_OPEN=1: listening without policy on a non-loopback address");
+    }
     // ID-6: an OIDC token must be minted for A3T. Without an audience to check,
     // any token the realm issues to any client would do.
     if enforcing && authn != "hs256" && oidc_audience.trim().is_empty() {
@@ -187,6 +199,11 @@ async fn main() -> anyhow::Result<()> {
     // AUD-1: every decision this pod makes goes to the durable log in ADB.
     #[cfg(feature = "ee")]
     flowr_ce::decision_log::install(storage.clone());
+    // AUD-6: each org's decisions past its retention are forgotten once a day (not on legal hold).
+    #[cfg(feature = "ee")]
+    flowr_ce::audit_retention::spawn(storage.clone());
+    // ID-4: this FlowR's key for agent identity tokens, published for verifiers.
+    flowr_ce::agent_token::install(storage.clone());
     // RT-1: where project flows and agents may call out to (each org's egress files).
     flowr_ce::egress_rules::install(storage.clone());
     // GOV-5: sign-in role maps live in each org's access/org.yaml.
@@ -312,12 +329,18 @@ async fn main() -> anyhow::Result<()> {
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
                     .merge(Router::new().route("/security/audit", get(audit_handler)).layer(Extension(storage.clone())))
+                    // AUD-4: check an org's decision chains for gaps and edits.
+                    .merge(Router::new().route("/security/audit/verify", get(audit_verify_handler)).layer(Extension(storage.clone())))
                     // The permission catalogue roles and rules are built from (a3t/policies/catalogue.yaml).
                     .merge(Router::new().route("/security/catalogue", get(catalogue_handler)))
                     // Every role, in one table (ID-1): a3t/policies/roles.yaml.
                     .merge(Router::new().route("/security/roles", get(|| async { axum::Json(flowr_policy::roles::table().clone()) })))
                     // The baseline pack this build enforces (UI-5: the console shows this, not a copy).
                     .merge(Router::new().route("/security/baseline", get(baseline_handler)))
+                    // ID-4: the keys agent identity tokens are signed with (public).
+                    .merge(Router::new().route("/.well-known/agent-jwks.json", get(|axum::Extension(s): axum::Extension<Arc<dyn StorageBackend>>| async move {
+                        axum::Json(flowr_ce::agent_token::jwks(s.as_ref()).await)
+                    })).layer(Extension(storage.clone())))
                     // Policy files that no longer compile, and what they closed (GOV-4).
                     .merge(Router::new().route("/security/policy-health", get(policy_health_handler)).layer(Extension(storage.clone())))
                     // Replay an org's policy change against its last days of decisions (GOV-2).
@@ -421,7 +444,7 @@ async fn main() -> anyhow::Result<()> {
 
             router = router.layer(cors);
 
-            serve(router, port).await?;
+            flowr_ce::serve_on(router, &bind, port).await?;
         }
         _ => {
             run_stdio(storage).await?;
@@ -746,6 +769,36 @@ async fn audit_handler(
             warn!(error = %e, "decision log: read failed");
             refuse(StatusCode::SERVICE_UNAVAILABLE, "The decision log can't be read right now. Try again in a moment.")
         }
+    }
+}
+
+/// `GET /security/audit/verify?org=<org id>&days=7` — AUD-4: recompute the
+/// org's decision chains (each record's hash, its link to the one before, no
+/// missing sequence numbers) and check them against the anchors.
+async fn audit_verify_handler(
+    principal: Option<axum::Extension<flowr_policy::Principal>>,
+    storage: Option<axum::Extension<Arc<dyn StorageBackend>>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    let refuse = |code: StatusCode, msg: &str| (code, axum::Json(serde_json::json!({ "error": msg }))).into_response();
+    let Some(axum::Extension(p)) = principal else { return refuse(StatusCode::UNAUTHORIZED, "Sign in first.") };
+    let Some(org) = params.get("org").filter(|o| !o.is_empty()).cloned() else { return refuse(StatusCode::BAD_REQUEST, "org: the org id (or platform)") };
+    let allowed = is_infosec(Some(&p)) || match storage.as_ref() {
+        Some(axum::Extension(s)) if org != "platform" => flowr_ce::org_policy::manages_org_security(s.as_ref(), &p, &org).await,
+        _ => false,
+    };
+    if !allowed {
+        return refuse(StatusCode::FORBIDDEN, "An org's decision log is checked by its admins and security admins, and platform InfoSec.");
+    }
+    if !flowr_ce::decision_log::installed() {
+        return refuse(StatusCode::NOT_IMPLEMENTED, "This server keeps no durable decision log.");
+    }
+    let days: u64 = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(7).clamp(1, 366);
+    let since = (chrono::Utc::now() - chrono::Duration::days(days as i64)).timestamp_millis() as u64;
+    match flowr_ce::decision_log::verify(&org, since, 20_000).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &format!("The log can't be read right now: {e}")),
     }
 }
 

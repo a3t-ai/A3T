@@ -86,6 +86,7 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         .route("/security/orgs/:org/file", get(get_file).put(put_file).delete(delete_file))
         .route("/security/orgs/:org/validate", post(validate))
         .merge(crate::policy_changes::routes())
+        .merge(crate::audit_retention::routes())
         .with_state(storage)
 }
 

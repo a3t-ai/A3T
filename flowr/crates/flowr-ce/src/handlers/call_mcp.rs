@@ -127,8 +127,17 @@ impl TaskHandler for McpHandler {
             }
         }
 
-        let resp = flowr_mcp_core::with_adb_auth(self.client.post(&server_url), &server_url)
-            .header("Content-Type", "application/json")
+        let mut req = flowr_mcp_core::with_adb_auth(self.client.post(&server_url), &server_url)
+            .header("Content-Type", "application/json");
+        // ID-4: a flow step acting as an agent names it, and its person, signed.
+        if !flowr_mcp_core::is_self_mcp_url(&server_url) {
+            if let Some((agent, person)) = crate::agent_token::of_principal(&ctx.principal) {
+                if let Ok(t) = crate::agent_token::mint(&agent, person.as_deref(), Some(&ctx.namespace), &server_url) {
+                    req = req.header(crate::agent_token::HEADER, t);
+                }
+            }
+        }
+        let resp = req
             .json(&mcp_request)
             .send()
             .await

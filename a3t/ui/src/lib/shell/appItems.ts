@@ -420,12 +420,14 @@ async function loadAll(source: string): Promise<AppItem[]> {
       out.push({ id: `org:${org.handle}`, label: 'Identity', namespace: org.handle,
         sub: `${n} member${n === 1 ? '' : 's'}${org.sso?.idp_alias ? ` · signs in through ${org.sso.idp_alias}` : ''} · who reaches its projects` });
       out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: 'its roles, rules and access, as files' });
+      out.push({ id: `agents:${org.id}`, label: 'Agents', namespace: org.handle, sub: 'every agent: owner, reach, keys, risk' });
     }
     for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
       if (!inContext(p.namespace, 'shared')) continue;
       out.push({ id: `policy:${p.namespace}/${p.name}`, label: p.name, namespace: p.namespace, sub: p.description || 'Cedar policy' });
     }
     if (infosec) out.push({ id: 'baseline', label: 'baseline', namespace: PLATFORM_GROUP, sub: 'compiled deny-by-default guardrails · read only' });
+    if (infosec) out.push({ id: 'agents:all', label: 'All agents', namespace: PLATFORM_GROUP, sub: 'every org\'s agents, by risk' });
     return out;
   }
   if (source === 'canvases') {

@@ -65,6 +65,16 @@ pub struct AuditRecord {
     /// The version (hash) of the policy set that decided (AUD-2).
     #[serde(default)]
     pub policy_version: Option<String>,
+    /// AUD-4: the hash chain this record is in (`<pod>@<start>/<org>`), its
+    /// place in it, the hash before it and its own. Set by the durable log.
+    #[serde(default)]
+    pub chain: Option<String>,
+    #[serde(default)]
+    pub seq: Option<u64>,
+    #[serde(default)]
+    pub prev_hash: Option<String>,
+    #[serde(default)]
+    pub hash: Option<String>,
 }
 
 /// The resource attribute naming the org an event belongs to (see [`event`]).
@@ -159,6 +169,7 @@ pub fn record_noted(req: &ExecutionRequest, decision: &PolicyDecision, note: Opt
         session,
         flow,
         policy_version: crate::policy_hook().version_for(req),
+        chain: None, seq: None, prev_hash: None, hash: None,
         ts_ms,
         principal_kind: req.principal.kind().to_string(),
         principal_id: req.principal.id().to_string(),

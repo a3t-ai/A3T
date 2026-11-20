@@ -428,11 +428,14 @@ impl AgentMemory {
         }
         if tiers.procedural_read() && !message.trim().is_empty() {
             // ADB matches (F-L2): the best procedure at or above the suggestion
-            // threshold, scored in `metadata.confidence`. Procedures carry no
-            // namespace yet.
-            let aql = format!("RECALL FROM PROCEDURAL LIKE $m CONFIDENCE {PROCEDURE_SUGGESTS:?} LIMIT 1");
+            // threshold, scored in `metadata.confidence` — in this agent's own
+            // space only (RT-13, CA-R6), and never a tool-catalogue record
+            // (`kind = "tool"`), which would read as a canned answer.
+            let aql = format!("RECALL FROM PROCEDURAL LIKE $m CONFIDENCE {PROCEDURE_SUGGESTS:?} LIMIT 5 NAMESPACE {ns}");
             out.procedure = match adb_query(&self.ep, &aql, Some(&serde_json::json!({ "m": message }))).await {
-                Ok(r) => records(&r).into_iter().next().map(|p| {
+                Ok(r) => records(&r).into_iter()
+                    .find(|p| p.pointer("/data/kind").and_then(|k| k.as_str()) != Some("tool"))
+                    .map(|p| {
                     let score = p.pointer("/metadata/confidence").and_then(|v| v.as_f64());
                     // An ADB from before the score: the same overlap, computed here.
                     let pattern = p.pointer("/data/pattern").and_then(|v| v.as_str()).unwrap_or_default();

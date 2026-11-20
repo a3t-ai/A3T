@@ -13,6 +13,11 @@ pub mod agent_space;
 pub mod approval;
 pub mod policy_health;
 pub mod policy_changes;
+pub mod audit_retention;
+pub mod agent_inventory;
+pub mod budget;
+pub mod audit_export;
+pub mod agent_token;
 pub mod egress_rules;
 pub mod token_stream;
 pub mod mcp_stream;
@@ -385,6 +390,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let storage_routes = storage_browse::router(storage.clone());
     let agent_space_routes = agent_space::router(storage.clone());
     let org_policy_routes = org_policy::router(storage.clone());
+    let inventory_routes = agent_inventory::routes(storage.clone());
 
     let state = Arc::new(AppState { storage });
 
@@ -456,6 +462,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         // Agents as repos: an agent's memory space, branches, tags, layers, fork, promote
         .merge(agent_space_routes)
         .merge(org_policy_routes)
+        .merge(inventory_routes)
         // AO-1: this process's metrics (with an embedded ADB's in CE).
         .route("/metrics", get(metrics_text))
         .route("/admin/stats/metrics", get(metrics_json))
@@ -522,7 +529,13 @@ pub fn spawn_pool_worker(storage: Arc<dyn StorageBackend>, pools: Vec<String>) {
 
 /// Run the HTTP server with the given router
 pub async fn serve(router: Router, port: u16) -> anyhow::Result<()> {
-    let addr = format!("0.0.0.0:{}", port);
+    serve_on(router, "0.0.0.0", port).await
+}
+
+/// Serve on `host:port` (RT-11: a FlowR that enforces no policy listens on
+/// loopback unless told otherwise).
+pub async fn serve_on(router: Router, host: &str, port: u16) -> anyhow::Result<()> {
+    let addr = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     info!(addr = %addr, "HTTP/SSE server listening");

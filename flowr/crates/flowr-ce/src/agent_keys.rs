@@ -155,6 +155,10 @@ pub async fn verify(token: &str) -> Result<(flowr_policy::Principal, KeyScope), 
             return Err("the person who made this key can no longer sign in".into());
         }
     }
+    // RT-4: its agent's budget may limit calls a minute through each key.
+    if let Some(n) = crate::budget::of(storage.as_ref(), &agent).await.and_then(|b| b.key_calls_per_minute) {
+        crate::budget::key_call(&col(&row, "id"), n)?;
+    }
     let roles: Vec<String> = col(&row, "roles").split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect();
     let scope = KeyScope { key_id: col(&row, "id"), agent_id: col(&row, "agent_id") };
     // When it was last used, at most once per window (a write per call would be one per message).

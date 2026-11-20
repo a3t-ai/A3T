@@ -110,6 +110,7 @@ fn is_public(path: &str) -> bool {
         "/auth/refresh",
         "/auth/logout", // ends the session its own token names
         "/auth/account", // a redirect to the sign-in realm's account page (ID-9)
+        "/.well-known/agent-jwks.json", // ID-4: public keys of agent identity tokens
         "/auth/me", // validates its own bearer token internally
         "/health",
         "/ready",
@@ -171,6 +172,8 @@ fn key_refused(status: StatusCode, msg: String) -> Response {
 async fn agent_key_gate(token: &str, request: Request, next: Next) -> Response {
     let (principal, scope) = match flowr_ce::agent_keys::verify(token).await {
         Ok(v) => v,
+        // RT-4: past its calls a minute is "slow down", not "who are you".
+        Err(e) if e.contains("calls a minute") => return key_refused(StatusCode::TOO_MANY_REQUESTS, format!("Agent key: {e}")),
         Err(e) => return key_refused(StatusCode::UNAUTHORIZED, format!("Agent key refused: {e}")),
     };
     let path = request.uri().path().to_string();

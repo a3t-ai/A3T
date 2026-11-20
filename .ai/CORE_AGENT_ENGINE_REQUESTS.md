@@ -218,6 +218,8 @@ The agent turn already reaches its own server in-process
 | ADB-R3 | low | `LIKE` returns its score |
 | ADB-R4 | medium | Every FORGET tombstone is logged by ADB |
 | ADB-R5 | medium | A branch merge carries its episodes too |
+| ADB-R6 | high | Encryption at rest: S3 objects, WAL and spill files (RT-8) |
+| ADB-R7 | high | Engine tokens scoped to a pool (RT-9) |
 
 ### ADB-R1 — Variables in `STORE` and `UPDATE` values
 
@@ -281,3 +283,33 @@ branch to bring its episodes into the agent's memory as well.
 - **Until then:** the console's merge preview shows only facts and procedures; a branch
   that only chatted shows "no changes of its own", and AG-05 stays blocked on this.
 
+### ADB-R6 — Encryption at rest: S3 objects, WAL and spill files (RT-8)
+
+*20 Nov 2026, from the security & governance task list (RT-8).*
+
+A3T's step data, transcripts and memory all live in ADB: the S3 objects (WAL
+segments, checkpoints), the in-memory WAL's NVMe spill, and the embedded store's
+files. None is encrypted by ADB; a copy of a bucket or a disk reads in clear.
+
+- **Done when:** ADB encrypts what it writes — S3 objects with SSE-KMS or a key
+  ADB holds (envelope: a data key per namespace or org, wrapped by a master key
+  from a secret store), and local WAL/spill/embedded files with the same — and a
+  test shows a copied object or file doesn't read without the key.
+- **Until then:** A3T seals its own secrets (RT-7, `enc:v1:` values) and the
+  buckets rely on the provider's encryption, where the provider has one.
+
+### ADB-R7 — Engine tokens scoped to a pool (RT-9)
+
+*20 Nov 2026, from the security & governance task list (RT-9).*
+
+Every FlowR (console, gateway, runtime pods of every org) talks to ADB's engine
+store with the same token (`FLOWR_ENGINE_TOKEN`). A runtime pod can therefore
+claim tasks of any pool and read any run, including another org's isolated runs.
+
+- **Done when:** ADB accepts tokens scoped to pools (and the namespaces those pools
+  serve): a pool's token claims and reads only that pool's tasks and runs; the
+  console's token stays unscoped. A test: a runtime pod with pool `acme` can't
+  claim a task routed to pool `beta`, nor read a `beta` run.
+- **Until then:** A3T routes an isolated org's runs only to its own pool (RT-12)
+  and checks the gateway's callers against the engine store (RT-2); a compromised
+  runtime pod could still reach other pools' runs through the shared token.

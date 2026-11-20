@@ -79,6 +79,51 @@ pub async fn four_eyes(s: &dyn StorageBackend, org: &str) -> bool {
         .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "four_eyes") == "true").unwrap_or(false)
 }
 
+/// GOV-9: an update to an agent's record, held for a second approver when its
+/// org has four_eyes on. `Some(answer)` when held (the flow says so); `None`:
+/// apply it now.
+pub async fn hold_agent_update(s: &dyn StorageBackend, principal: &Principal, row: &Value, filter: &str, values: &Map<String, Value>) -> Option<Value> {
+    let org_id = col(row, "org_id");
+    let slug = query_platform_table(s, "orgs", Some(format!("id = {}", sql_quote(&org_id))), 1).await.ok()
+        .and_then(|r| r.into_iter().next()).map(|r| col(&r, "slug")).filter(|x| !x.is_empty())?;
+    if !four_eyes(s, &slug).await {
+        return None;
+    }
+    let id = col(row, "id");
+    let resp = propose(s, principal, &slug, "agent-record", "update", &id, json!({ "filter": filter, "values": values }),
+        &format!("change agent {}'s record", col(row, "name"))).await;
+    let change = match resp {
+        Ok(_) => query_platform_table(s, CHANGES, Some(format!("org = {} AND subject = {} AND status = 'pending'", sql_quote(&slug), sql_quote(&id))), 1000).await.ok()
+            .and_then(|mut r| { r.sort_by(|a, b| col(b, "at").cmp(&col(a, "at"))); r.into_iter().next() }).map(|r| col(&r, "id")),
+        Err(_) => None,
+    };
+    Some(json!({ "updated": false, "held": true, "change": change,
+        "message": format!("{slug} needs a second approver for changes to its agents: another admin or security admin approves it in Security › {slug} › Policy files › Changes.") }))
+}
+
+/// Apply an approved agent-record update.
+async fn apply_agent_update(s: &dyn StorageBackend, principal: &Principal, payload: &Value, author: &str) -> Reply {
+    let filter = payload["filter"].as_str().unwrap_or_default();
+    let values = payload["values"].as_object().cloned().unwrap_or_default();
+    if filter.is_empty() || values.is_empty() {
+        return Err(err(StatusCode::UNPROCESSABLE_ENTITY, "the held change has no filter or values"));
+    }
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let before = query_platform_table(s, "agent_configs", Some(filter.to_string()), 1).await.ok().and_then(|r| r.into_iter().next());
+    db.update("agent_configs", filter, &values).await.map_err(internal)?;
+    if let Some(b) = before {
+        let changed: Vec<&String> = values.keys().filter(|k| b.get(*k) != values.get(*k)).collect();
+        let _ = db.insert("agent_events", &[json!({
+            "id": format!("{}-evt-{}", col(&b, "id"), chrono::Utc::now().timestamp_micros()), "agent_config_id": col(&b, "id"), "event_type": "updated",
+            "payload": json!({ "by": author, "approved_by": principal.id(), "changed": changed,
+                "before": changed.iter().map(|k| (k.to_string(), b.get(*k).cloned().unwrap_or(Value::Null))).collect::<Map<String, Value>>(),
+                "after": changed.iter().map(|k| (k.to_string(), values.get(*k).cloned().unwrap_or(Value::Null))).collect::<Map<String, Value>>() }).to_string(),
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        })]).await;
+    }
+    Ok(Json(json!({ "updated": true })).into_response())
+}
+
 /// Hold a change for a second approver. The reply says so (202).
 #[allow(clippy::too_many_arguments)]
 pub async fn propose(s: &dyn StorageBackend, principal: &Principal, org: &str, target: &str, op: &str, subject: &str, payload: Value, summary: &str) -> Reply {
@@ -208,6 +253,8 @@ async fn approve(State(s): St, p: P, Path((org, id)): Path<(String, String)>, bo
         ("file", "enforce") => crate::org_policy::enforce(s, &principal, &org, &payload, Some(&author)).await,
         ("agent", "save") => crate::agent_space::security::save_policy(s, &principal, &subject, payload["policy"].as_str().unwrap_or_default(), Some(&author)).await,
         ("agent", "delete") => crate::agent_space::security::drop_policy(s, &principal, &subject, Some(&author)).await,
+        ("agent-record", "update") => apply_agent_update(s, &principal, &payload, &author).await,
+        ("settings", "retention") => crate::audit_retention::set(s, &principal, &org, &payload, Some(&author)).await,
         ("settings", "four_eyes") => set_four_eyes(s, &principal, &org, payload["four_eyes"].as_bool().unwrap_or(true), Some(&author)).await,
         (t, o) => Err(err(StatusCode::UNPROCESSABLE_ENTITY, format!("unknown change {t}/{o}"))),
     };

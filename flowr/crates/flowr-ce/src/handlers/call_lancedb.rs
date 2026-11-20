@@ -120,6 +120,18 @@ impl TaskHandler for LanceDbHandler {
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "update requires 'filter'"))?;
                 let values = with.get("values").and_then(|v| v.as_object())
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "update requires 'values' object"))?;
+                // GOV-9: a change to an agent's record waits for a second admin when
+                // its org asks for one (four_eyes), as policy changes do.
+                if table_name == "agent_configs" && !matches!(ctx.principal, flowr_policy::Principal::Service { .. }) {
+                    if let Some(storage) = ctx.storage.as_ref().and_then(|s| s.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()) {
+                        let rows = db.query(table_name, Some(filter), 2).await.map(|b| batches_to_json(&b)).unwrap_or_default();
+                        if let [row] = rows.as_slice() {
+                            if let Some(held) = crate::policy_changes::hold_agent_update(storage.as_ref(), &ctx.principal, row, filter, values).await {
+                                return Ok(TaskResult::new(held));
+                            }
+                        }
+                    }
+                }
                 // Say what was changed: an update that matches no row changed nothing.
                 let rows = db.query(table_name, Some(filter), 100_000).await.map(|b| batches_to_json(&b).len()).map_err(comm)?;
                 if rows == 0 {
