@@ -20,6 +20,9 @@ use crate::first_password::refuse;
 #[derive(Deserialize)]
 pub struct ChangePasswordBody {
     pub current_password: String,
+    /// ID-9: the authenticator code, for accounts whose sign-in needs one.
+    #[serde(default)]
+    pub otp: Option<String>,
     pub new_password: String,
 }
 
@@ -80,7 +83,7 @@ pub async fn change_password_handler(
     if email.is_empty() {
         return refuse(StatusCode::BAD_REQUEST, "This account has no email to sign in with.");
     }
-    match keycloak_login(&config, &email, &body.current_password).await {
+    match keycloak_login(&config, &email, &body.current_password, body.otp.as_deref()).await {
         KcLogin::Ok(_) | KcLogin::SetupRequired => {}
         KcLogin::Failed => return refuse(StatusCode::UNAUTHORIZED, "Your current password is not right."),
     }

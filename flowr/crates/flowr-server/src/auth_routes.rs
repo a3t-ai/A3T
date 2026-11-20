@@ -23,6 +23,10 @@ use crate::auth::{
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    /// ID-9: the authenticator code, for accounts whose sign-in needs one
+    /// (SuperAdmin and SecurityAdmin).
+    #[serde(default)]
+    pub otp: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -66,8 +70,17 @@ pub async fn login_handler(
     // signups); on failure fall back to Keycloak (EE) so SSO-provisioned users can
     // sign in through the same email/password form. `(user_id, org, role, email, name)`.
     let resolved = match authenticate_user(config.platform.get().await.as_ref(), &body.email, &body.password).await {
+        // ID-9: SuperAdmin and SecurityAdmin sign in through the realm, which asks
+        // for their second factor; a local password alone never makes one.
+        Ok(t) if mfa_role(&t.2) && !config.oidc_issuer.is_empty() => {
+            warn!(email = %body.email, role = %t.2, "Login: a local password for a role that needs a second factor was refused");
+            return (StatusCode::FORBIDDEN, Json(json!({
+                "error": "This account signs in through A3T's sign-in, with its authenticator code.",
+                "code": "mfa_required",
+            }))).into_response();
+        }
         Ok(t) => Some(t),
-        Err(local_err) => match keycloak_login(&config, &body.email, &body.password).await {
+        Err(local_err) => match keycloak_login(&config, &body.email, &body.password, body.otp.as_deref()).await {
             KcLogin::Ok(t) => Some(t),
             // The password was right; the account still has a temporary password.
             // The console asks for a new one and posts it to /auth/first-password.
@@ -86,7 +99,11 @@ pub async fn login_handler(
     };
 
     let Some(identity) = resolved else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response();
+        // The realm answers a wrong password and a missing or wrong code alike.
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "Invalid credentials",
+            "hint": "SuperAdmin and SecurityAdmin accounts also give their authenticator code.",
+        }))).into_response();
     };
     issue_session(&config, identity).await
 }
@@ -158,17 +175,33 @@ pub(crate) enum KcLogin {
 
 /// EE login fallback: authenticate against Keycloak (password grant) and return an
 /// A3T identity tuple.
+/// GET /auth/account — the sign-in realm's own account page (set up an
+/// authenticator, ID-9; see your sessions), when FlowR signs in through one.
+pub async fn account_handler(Extension(config): Extension<Arc<AuthConfig>>) -> axum::response::Response {
+    if config.oidc_issuer.is_empty() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "This FlowR has no sign-in realm." }))).into_response();
+    }
+    let url = format!("{}/account/#/security/signingin", config.oidc_issuer.trim_end_matches('/'));
+    axum::response::Redirect::temporary(&url).into_response()
+}
+
+/// Roles whose sign-in needs a second factor (ID-9).
+pub(crate) fn mfa_role(role: &str) -> bool {
+    matches!(role, "superadmin" | "securityadmin")
+}
+
 pub(crate) async fn keycloak_login(
     config: &AuthConfig,
     email: &str,
     password: &str,
+    otp: Option<&str>,
 ) -> KcLogin {
     #[cfg(feature = "ee")]
     {
         if config.oidc_issuer.is_empty() { return KcLogin::Failed; }
         let Some((base, realm)) = split_issuer(&config.oidc_issuer) else { return KcLogin::Failed };
         let client = reqwest::Client::new();
-        match a3t_security::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password).await {
+        match a3t_security::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password, otp).await {
             Ok(id) => {
                 let role = pick_role(&id.roles);
                 let user_id = if id.sub.is_empty() { format!("kc-{email}") } else { id.sub.clone() };
@@ -183,7 +216,7 @@ pub(crate) async fn keycloak_login(
     }
     #[cfg(not(feature = "ee"))]
     {
-        let _ = (config, email, password);
+        let _ = (config, email, password, otp);
         KcLogin::Failed
     }
 }

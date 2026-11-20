@@ -215,10 +215,10 @@ export interface LoginResponse {
   };
 }
 
-export async function login(email: string, password: string): Promise<ApiResponse<LoginResponse>> {
+export async function login(email: string, password: string, otp?: string): Promise<ApiResponse<LoginResponse>> {
   return request<LoginResponse>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(otp ? { otp } : {}) }),
   }, false);
 }
 

@@ -109,6 +109,7 @@ fn is_public(path: &str) -> bool {
         "/auth/signup",
         "/auth/refresh",
         "/auth/logout", // ends the session its own token names
+        "/auth/account", // a redirect to the sign-in realm's account page (ID-9)
         "/auth/me", // validates its own bearer token internally
         "/health",
         "/ready",

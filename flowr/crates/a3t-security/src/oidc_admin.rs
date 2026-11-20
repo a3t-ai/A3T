@@ -259,17 +259,23 @@ pub async fn password_login(
     client_id: &str,
     username: &str,
     password: &str,
+    otp: Option<&str>,
 ) -> Result<UserIdentity, IdpAdminError> {
     let url = format!("{}/realms/{}/protocol/openid-connect/token", base_url.trim_end_matches('/'), realm);
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "password"),
+        ("client_id", client_id),
+        ("username", username),
+        ("password", password),
+        ("scope", "openid"),
+    ];
+    // ID-9: the authenticator code, for accounts whose sign-in needs one.
+    if let Some(code) = otp.map(str::trim).filter(|c| !c.is_empty()) {
+        form.push(("otp", code));
+    }
     let resp = client
         .post(&url)
-        .form(&[
-            ("grant_type", "password"),
-            ("client_id", client_id),
-            ("username", username),
-            ("password", password),
-            ("scope", "openid"),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|e| IdpAdminError::Http(e.to_string()))?;

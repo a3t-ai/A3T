@@ -307,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
                     // A new session from a refresh token, with roles read again (refresh.rs).
                     .route("/auth/refresh", post(refresh::refresh_handler))
                     .route("/auth/logout", post(auth_routes::logout_handler))
+                    .route("/auth/account", get(auth_routes::account_handler))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
