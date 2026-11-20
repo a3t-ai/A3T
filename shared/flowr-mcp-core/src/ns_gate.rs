@@ -102,7 +102,7 @@ pub async fn check(storage: &dyn StorageBackend, principal: &Principal, tool: &s
 /// AUD-3: a refusal by project isolation goes in the decision log.
 pub fn refused(principal: &Principal, ns: &str, what: &str, needed: NsAccess, has: NsAccess) {
     flowr_policy::audit::event(principal, "project:access", "Project", ns, Some(ns), None,
-        Some(&format!("{what} needs {} access; the caller has {}", level(needed), level(has))), None);
+        Some(&format!("{what} needs {} access; the caller has {} access", level(needed), level(has))), None);
 }
 
 fn level(a: NsAccess) -> &'static str {

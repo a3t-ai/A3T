@@ -127,7 +127,7 @@
         {:else}
           {#if edition === 'ce'}<div class="note">A Community runtime allows everything and decides nothing, so this log stays empty. Connect an EE runtime to enforce and record decisions.</div>{/if}
           {#if source}
-            <div class="note">Every pod's decisions, kept in {source} — scope: {scope}.
+            <div class="note">Kept in {source}. Scope: {scope === 'all' ? 'every organisation' : scope === 'org' ? 'your organisation' : 'decisions about the agents you own'}.
               {#if aql}<details class="aql"><summary>The AQL this read ran</summary><code class="mono">{aql}</code></details>{/if}</div>
           {:else}
             <div class="note warn">Scope: {scope || 'this FlowR replica, in memory'} — this server keeps no durable log; a restart clears it.</div>
