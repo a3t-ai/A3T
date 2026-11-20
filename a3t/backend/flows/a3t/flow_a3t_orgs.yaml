@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_orgs
-  version: 1.4.0
+  version: 1.4.1
   metadata:
     description: >
       Organisations and their members. A user is independent and can be in
@@ -416,6 +416,7 @@ do:
     set:
       ok: true
       runtime: '${ $context._args.runtime }'
+    then: end
 
 # ── sign-in per org (superadmin or the org's admins) ──
 - sso-check:

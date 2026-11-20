@@ -38,12 +38,13 @@
   const expertCedar = $derived<string | undefined>((prof?.policy as any)?.file?.cedar);
 
   // ── The file, written back as YAML (JSON values are valid YAML) ──
-  function fileOf(rs: Rule[], ceiling: string[] | null = ceilingNow, uses: string[] = usesNow, egress: string[] | null = egressNow, budget: Budget | null = budgetNow): string {
+  function fileOf(rs: Rule[], ceiling: string[] | null = ceilingNow, uses: string[] = usesNow, egress: string[] | null = egressNow, budget: Budget | null = budgetNow, redact: boolean = piiNow): string {
     const lines = ['kind: a3t/policy', 'name: profile', `description: ${JSON.stringify(`What ${agent.name} may not do, wherever it runs.`)}`];
     if (ceiling) lines.push(`role_ceiling: ${JSON.stringify(ceiling)}`);
     if (uses.length) lines.push(`uses: ${JSON.stringify(uses)}`);
     if (egress) lines.push(`egress: ${JSON.stringify(egress)}`);
     if (budget && Object.keys(budget).length) lines.push(`budget: ${JSON.stringify(budget)}`);
+    if (redact) lines.push('pii: redact');
     if (rs.length) {
       lines.push('rules:');
       for (const r of rs) {
@@ -80,7 +81,7 @@
   async function saveCeiling(clear = false) {
     const picked = ROLES.filter((r) => ceilPick[r]);
     const next = clear ? null : picked;
-    const empty = !rules.length && !expertCedar && !next && !usesNow.length && !egressNow && !budgetNow;
+    const empty = !rules.length && !expertCedar && !next && !usesNow.length && !egressNow && !budgetNow && !piiNow;
     if (await save(empty ? '' : fileOf(rules, next), 'ceiling')) editCeiling = false;
   }
 
@@ -89,7 +90,7 @@
   const usesNow = $derived<string[]>(((prof?.policy as any)?.file?.uses ?? []) as string[]);
   let newUse = $state('');
   async function setUses(next: string[]) {
-    const empty = !rules.length && !expertCedar && !ceilingNow && !next.length && !egressNow && !budgetNow;
+    const empty = !rules.length && !expertCedar && !ceilingNow && !next.length && !egressNow && !budgetNow && !piiNow;
     if (await save(empty ? '' : fileOf(rules, ceilingNow, next), 'uses')) newUse = '';
   }
 
@@ -97,7 +98,7 @@
   const egressNow = $derived<string[] | null>(((prof?.policy as any)?.file?.egress ?? null) as string[] | null);
   let newHost = $state('');
   async function setEgress(next: string[] | null) {
-    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !next && !budgetNow;
+    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !next && !budgetNow && !piiNow;
     if (await save(empty ? '' : fileOf(rules, ceilingNow, usesNow, next), 'egress')) newHost = '';
   }
 
@@ -111,8 +112,15 @@
     const n = (v: string) => (v.trim() && Number(v) > 0 ? Math.floor(Number(v)) : undefined);
     const next: Budget | null = clear ? null : Object.fromEntries(Object.entries({ runs_per_day: n(bRuns), tokens_per_day: n(bTokens), key_calls_per_minute: n(bKey) }).filter(([, v]) => v !== undefined)) as Budget;
     const b = next && Object.keys(next).length ? next : null;
-    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !egressNow && !b;
+    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !egressNow && !b && !piiNow;
     if (await save(empty ? '' : fileOf(rules, ceilingNow, usesNow, egressNow, b), 'budget')) editBudget = false;
+  }
+
+  // ── Personal data (RT-10): redact what it stores — transcripts, memory ──
+  const piiNow = $derived<boolean>(((prof?.policy as any)?.file?.pii ?? '') === 'redact');
+  async function setPii(on: boolean) {
+    const empty = !rules.length && !expertCedar && !ceilingNow && !usesNow.length && !egressNow && !budgetNow && !on;
+    await save(empty ? '' : fileOf(rules, ceilingNow, usesNow, egressNow, budgetNow, on), 'pii');
   }
 
   // ── Add a rule (starters) ──
@@ -139,7 +147,7 @@
   }
   async function removeRule(i: number) {
     const next = rules.filter((_, j) => j !== i);
-    await save(next.length || expertCedar || ceilingNow || usesNow.length || egressNow || budgetNow ? fileOf(next) : '', `rm${i}`);
+    await save(next.length || expertCedar || ceilingNow || usesNow.length || egressNow || budgetNow || piiNow ? fileOf(next) : '', `rm${i}`);
   }
 
   // ── Advanced: the file itself ──
@@ -206,6 +214,8 @@
               {#if budgetNow}<button class="btn2 quiet" disabled={!!busy} onclick={() => saveBudget(true)}>No budget</button>{/if}
               <button class="btn2 quiet" onclick={() => (editBudget = false)}>Cancel</button></span></span></li>
         {/if}
+        <li><span class="lbl">Personal data</span><span class="val">{piiNow ? 'Redacted from what it stores: transcripts, memory, its memory tools' : 'Stored as said (the decision log is redacted either way)'}</span>
+          {#if canEdit}<button class="btn2" disabled={!!busy} onclick={() => setPii(!piiNow)}>{busy === 'pii' ? 'Checking…' : piiNow ? 'Store as said' : 'Redact'}</button>{:else}<span></span>{/if}</li>
         <li><span class="lbl">Tools it may call</span><span class="val">{Array.isArray(prof.bound_to.enabled_tools) ? (prof.bound_to.enabled_tools.length ? prof.bound_to.enabled_tools.join(', ') : 'none') : 'any its servers offer'}</span><span></span></li>
       </ul>
     </div>

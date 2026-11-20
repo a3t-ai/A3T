@@ -37,6 +37,12 @@ pub struct PolicyFile {
     /// until the next day (UTC) and an alert goes to the decision log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<Budget>,
+    /// An agent's own policy only (RT-10): `redact` keeps personal data and
+    /// secrets out of what the agent stores — its transcripts, its memory and
+    /// what its memory tools are given (`keep`, the default, stores them as
+    /// said). The decision log and FlowR's logs are redacted either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pii: Option<String>,
 }
 
 /// An agent's budget (RT-4). Each limit is optional.

@@ -184,6 +184,8 @@ struct AgentRecord {
     namespace: Option<String>,
     /// The org policies it runs under, from its own policy (`uses`, GOV-6).
     uses: Vec<String>,
+    /// Its own policy says `pii: redact` (RT-10): what it stores is redacted.
+    redact_pii: bool,
 }
 
 /// Look up the agent behind a session.
@@ -233,12 +235,12 @@ async fn resolve_agent_record(
         .and_then(|r| r.into_iter().next())
         .and_then(|r| r.get("policy").and_then(|v| v.as_str()).map(str::to_string))
         .and_then(|y| flowr_policy::policy_file::PolicyFile::parse(&y).ok());
-    let (role_ceiling, uses) = match own {
-        Some(f) => (f.role_ceiling, f.uses),
-        None => (None, Vec::new()),
+    let (role_ceiling, uses, redact_pii) = match own {
+        Some(f) => (f.role_ceiling, f.uses, f.pii.as_deref() == Some("redact")),
+        None => (None, Vec::new(), false),
     };
     let namespace = row.get("namespace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
-    Some(AgentRecord { owner, role_ceiling, namespace, uses })
+    Some(AgentRecord { owner, role_ceiling, namespace, uses, redact_pii })
 }
 
 /// The tighter of two role ceilings: both bind. `None` means "not narrowed".
@@ -882,10 +884,14 @@ impl TaskHandler for AgentHandler {
                 // RT-3: each model call is in the decision log, beside the
                 // agent's tool calls (allowed by authorize_model above).
                 {
-                    let n = |k: &str| llm_result.get("usage").and_then(|u| u.get(k)).and_then(|v| v.as_u64()).unwrap_or(0);
+                    let n = |k: &str| llm_result.get("usage").and_then(|u| u.get(k)).and_then(|v| v.as_u64());
+                    let used = match (n("prompt_tokens"), n("completion_tokens")) {
+                        (Some(i), Some(o)) => format!("{i} tokens in, {o} out"),
+                        _ => "tokens not reported by the model".to_string(),
+                    };
                     flowr_policy::audit::event_decision(&agent_principal, "gateway:model", "Model", llm_resource,
                         record.namespace.as_deref(), None, &flowr_policy::PolicyDecision::Allow,
-                        Some(&format!("model call {} · {} tokens in, {} out", state.iteration + 1, n("prompt_tokens"), n("completion_tokens"))));
+                        Some(&format!("model call {} · {used}", state.iteration + 1)));
                 }
 
                 state.iteration += 1;
@@ -939,6 +945,10 @@ impl TaskHandler for AgentHandler {
                             Ok((out, None)) => if let Some(i) = out.get("input").filter(|v| !v.is_null()) { tool_input = i.clone(); },
                             Ok((_, Some(why))) => hook_refused = Some(why),
                             Err(e) => hook_refused = Some(e),
+                        }
+                        // RT-10: what an agent with `pii: redact` gives its memory tools.
+                        if record.redact_pii && crate::pii::memory_write(tool_name) {
+                            tool_input = crate::pii::clean_value(&tool_input);
                         }
 
                         // Recorded (fine mode): a resumed turn replays it, and a
@@ -1368,12 +1378,18 @@ impl TaskHandler for AgentHandler {
         if let Some(m) = memory.as_ref().filter(|_| !skip_store) {
             // Journaled (L39): a turn that runs again after a crash doesn't
             // write its episode twice (an interrupted write is not repeated).
+            // RT-10: an agent whose policy says `pii: redact` keeps none in memory.
+            let (said_in, said_out) = if record.redact_pii {
+                (crate::pii::clean(&config.message), crate::pii::clean(&remembered))
+            } else {
+                (config.message.clone(), remembered.clone())
+            };
             let (stored, _) = swf_runtime::effects::effect("memory/turn", swf_runtime::effects::EffectKind::Effect, || async {
                 m.store_turn(
                     &config.config.memory_config,
                     config.config.ttl,
-                    &config.message,
-                    &remembered,
+                    &said_in,
+                    &said_out,
                     state.tool_calls_made,
                     state.iteration,
                 )
@@ -1399,6 +1415,7 @@ impl TaskHandler for AgentHandler {
                 let context = &said[before.saturating_sub(REFLECT_CONTEXT)..before];
                 let known = recalled.as_ref().map(|r| r.known_keys()).unwrap_or_default();
                 let input = reflection_input(context, &config.message, &reply, &known);
+                let input = if record.redact_pii { crate::pii::clean(&input) } else { input };
                 let (m, client, storage) = (m.clone(), http_client.clone(), storage.clone());
                 let llm = config.config.llm_resource.clone().unwrap_or_else(|| "default-llm".to_string());
                 // Started once per turn (L39): a turn run again doesn't reflect
@@ -1429,8 +1446,16 @@ impl TaskHandler for AgentHandler {
         // id, so signing in on another device showed an empty sidebar even though
         // the history was sitting in LanceDB.
         let owner = ctx.principal.id().to_string();
+        // RT-10: the transcript of an agent whose policy says `pii: redact`.
+        let kept: Vec<Value> = state.messages.iter().map(|m| {
+            let mut v = serde_json::to_value(m).unwrap_or(Value::Null);
+            if record.redact_pii {
+                if let Some(c) = v.get("content").and_then(|c| c.as_str()).map(crate::pii::clean) { v["content"] = json!(c); }
+            }
+            v
+        }).collect();
         let session_value = json!({
-            "messages": state.messages,
+            "messages": kept,
             "last_response": state.agent_response,
             "iteration_count": state.iteration,
             "tool_calls_made": state.tool_calls_made,

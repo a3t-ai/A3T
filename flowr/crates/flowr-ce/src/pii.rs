@@ -83,6 +83,24 @@ pub fn clean(text: &str) -> String {
     redact(text).0
 }
 
+/// Every string in a value, redacted.
+pub fn clean_value(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(t) => Value::String(clean(t)),
+        Value::Array(a) => Value::Array(a.iter().map(clean_value).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), clean_value(x))).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Whether a tool writes to memory (remember, store, learn… a fact or note).
+pub fn memory_write(tool: &str) -> bool {
+    let t = tool.to_ascii_lowercase();
+    ["remember", "memorize", "memory_store", "memory_write", "memory_add", "store_fact", "store_memory", "learn", "save_note", "add_note"]
+        .iter().any(|v| t.contains(v))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +113,14 @@ mod tests {
             assert!(!out.contains(leak), "{leak} leaked: {out}");
         }
         assert_eq!(kinds, vec!["card", "email", "iban", "phone", "secret", "ssn"]);
+    }
+
+    #[test]
+    fn memory_tool_inputs_are_redacted_whole() {
+        assert!(memory_write("memory_remember") && memory_write("tool_crm_store_fact") && !memory_write("list_flows"));
+        let v = clean_value(&serde_json::json!({ "fact": "Jane is jane.doe@acme.com", "tags": ["call +44 20 7946 0958"], "n": 3 }));
+        assert!(!v.to_string().contains("jane.doe@acme.com") && !v.to_string().contains("7946 0958"));
+        assert_eq!(v["n"], 3);
     }
 
     #[test]
