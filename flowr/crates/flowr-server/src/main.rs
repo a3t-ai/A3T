@@ -502,8 +502,17 @@ pub(crate) async fn collect_registry_cedar_policies(
     // that no longer compiles (the catalogue changed) closes the org's projects.
     #[cfg(feature = "ee")]
     let shadows = flowr_ce::org_policy::all_shadow_files(storage.as_ref()).await;
+    // Every org with enforced files, and every org with shadow files only.
     #[cfg(feature = "ee")]
-    for (org, projects, files) in flowr_ce::org_policy::all_org_files(storage.as_ref()).await {
+    let mut orgs = flowr_ce::org_policy::all_org_files(storage.as_ref()).await;
+    #[cfg(feature = "ee")]
+    for org in shadows.keys() {
+        if !orgs.iter().any(|(o, _, _)| o == org) {
+            orgs.push((org.clone(), flowr_ce::org_policy::org_projects(storage.as_ref(), org).await, Vec::new()));
+        }
+    }
+    #[cfg(feature = "ee")]
+    for (org, projects, files) in orgs {
         let files: Vec<a3t_security::policy_files::OrgFile> = files.into_iter()
             .map(|(path, content)| a3t_security::policy_files::OrgFile { path, content }).collect();
         // GOV-2: its shadow files, compiled with the enforced ones (they may name
@@ -525,6 +534,9 @@ pub(crate) async fn collect_registry_cedar_policies(
                 }
                 Err(errors) => warn!(org = %org, errors = ?errors, "an org's shadow files don't compile with its enforced ones; they are not evaluated"),
             }
+        }
+        if files.is_empty() {
+            continue; // shadow files only: placed above
         }
         match a3t_security::policy_files::compile_org_set(&org, &projects, &files) {
             Ok(set) => out.extend(set.policies),

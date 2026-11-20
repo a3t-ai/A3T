@@ -88,9 +88,23 @@ async fn ensure_table(storage: &dyn StorageBackend) -> Result<(), String> {
     let schema: Map<String, Value> = COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
     db.create_table(TABLE, Some(&schema), "create_if_not_exists").await?;
     // ID-5: a table made before keys expired gains the columns; its keys get
-    // the default life from now, so nothing stops at once.
-    if let Ok(Some(cols)) = db.columns(TABLE).await {
-        if !cols.iter().any(|c| c == "expires_at") {
+    // the default life from now, so nothing stops at once. Asked of the backend
+    // when it can say (LanceDB), else read from a row (ADB); an empty old table
+    // is simply made again with the columns.
+    // Once per process: a table seen with the columns stays that way.
+    static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let current = match db.columns(TABLE).await {
+        Ok(Some(cols)) => Some(cols.iter().any(|c| c == "expires_at")),
+        _ => match query_platform_table(storage, TABLE, None, 1).await {
+            Ok(rows) => rows.first().map(|r| r.get("expires_at").is_some()),
+            Err(_) => Some(true),
+        },
+    };
+    if current != Some(true) {
+        {
             let rows = query_platform_table(storage, TABLE, None, 100_000).await.unwrap_or_default();
             let until = (chrono::Utc::now() + chrono::Duration::days(DEFAULT_DAYS)).to_rfc3339();
             let rows: Vec<Value> = rows.into_iter().map(|mut r| {
@@ -105,6 +119,7 @@ async fn ensure_table(storage: &dyn StorageBackend) -> Result<(), String> {
             tracing::info!(keys = rows.len(), "agent keys: expiry added; existing keys expire in {DEFAULT_DAYS} days");
         }
     }
+    CHECKED.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
