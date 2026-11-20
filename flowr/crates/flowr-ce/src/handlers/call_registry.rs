@@ -461,10 +461,12 @@ impl TaskHandler for RegistryHandler {
                 if g.enforcing() && g.access(&ctx.principal, &ns).await < flowr_policy::namespace::NsAccess::Write {
                     return Err(RuntimeError::task_failed(&task.name, format!("a key for {agent_id} needs write access to {ns}")));
                 }
-                crate::agent_keys::create(store.as_ref(), &agent, &s("name"), ctx.principal.id(), ctx.principal.roles())
+                let k = crate::agent_keys::create(store.as_ref(), &agent, &s("name"), ctx.principal.id(), ctx.principal.roles())
                     .await
-                    .map(TaskResult::new)
-                    .map_err(|e| RuntimeError::task_failed(&task.name, e))
+                    .map_err(|e| RuntimeError::task_failed(&task.name, e))?;
+                flowr_policy::audit::event(&ctx.principal, "key:create", "AgentKey",
+                    &format!("{agent_id}/{}", k.get("id").and_then(|v| v.as_str()).unwrap_or_default()), Some(&ns), None, None, None);
+                Ok(TaskResult::new(k))
             }
             // An agent's next version, made by a save (`{agent_id, note}`): see
             // crate::agent_space::version_on_save. Needs write access to the agent.

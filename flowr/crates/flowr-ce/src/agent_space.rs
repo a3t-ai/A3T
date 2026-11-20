@@ -581,15 +581,22 @@ async fn create_key(State(s): St, p: P, Path(id): Path<String>, body: Option<Jso
         let name = body.as_ref().map(|Json(b)| col(b, "name")).unwrap_or_default();
         let k = crate::agent_keys::create(s.as_ref(), &row, &name, principal.id(), principal.roles())
             .await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        flowr_policy::audit::event(&principal, "key:create", "AgentKey", &format!("{id}/{}", col(&k, "id")),
+            Some(&project_of(&row)), None, None, Some(&format!("key {:?} for agent {id}", name)));
         Ok((StatusCode::CREATED, Json(k)).into_response())
     }.await)
 }
 
 async fn revoke_key(State(s): St, p: P, Path((id, key_id)): Path<(String, String)>) -> Response {
     both(async {
-        key_owner(s.as_ref(), &who(p), &id).await?;
+        let principal = who(p);
+        let row = key_owner(s.as_ref(), &principal, &id).await?;
         match crate::agent_keys::revoke(s.as_ref(), &id, &key_id).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))? {
-            true => ok(json!({ "agent_id": id, "key": key_id, "revoked": true })),
+            true => {
+                flowr_policy::audit::event(&principal, "key:revoke", "AgentKey", &format!("{id}/{key_id}"),
+                    Some(&project_of(&row)), None, None, None);
+                ok(json!({ "agent_id": id, "key": key_id, "revoked": true }))
+            }
             false => Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no key {key_id:?}"))),
         }
     }.await)
@@ -851,18 +858,24 @@ pub fn environment() -> String {
     std::env::var("A3T_ENVIRONMENT").ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "prod".to_string())
 }
 
-pub async fn record_run(s: &dyn StorageBackend, run_id: &str, sp: &Space, branch: Option<&str>, point: Option<Value>) {
+/// The version of `agent_id` that runs here: the one pinned to this environment,
+/// else the latest (empty when it has none).
+pub async fn running_version(s: &dyn StorageBackend, agent_id: &str) -> String {
     let environment = environment();
-    let version = async {
-        // The pinned version here, else the latest.
-        let pinned = deployment_rows(s, &sp.agent_id).await.ok()?.iter().find(|r| col(r, "environment") == environment).map(|r| col(r, "version"));
+    async {
+        let pinned = deployment_rows(s, agent_id).await.ok()?.iter().find(|r| col(r, "environment") == environment).map(|r| col(r, "version"));
         match pinned {
             Some(v) => Some(v),
-            None => version_rows(s, &sp.agent_id).await.ok()?.last().map(|r| col(r, "version")),
+            None => version_rows(s, agent_id).await.ok()?.last().map(|r| col(r, "version")),
         }
     }
     .await
-    .unwrap_or_default();
+    .unwrap_or_default()
+}
+
+pub async fn record_run(s: &dyn StorageBackend, run_id: &str, sp: &Space, branch: Option<&str>, point: Option<Value>) {
+    let environment = environment();
+    let version = running_version(s, &sp.agent_id).await;
     let row = json!({
         "run_id": run_id, "agent_id": sp.agent_id, "agent_version": version, "environment": environment,
         "memory_namespace": sp.namespace, "memory_branch": branch.unwrap_or(BRANCH_MAIN),

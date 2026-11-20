@@ -514,6 +514,11 @@ impl PolicyDecision {
 #[async_trait::async_trait]
 pub trait PolicyHook: Send + Sync {
     async fn check(&self, req: &ExecutionRequest) -> PolicyDecision;
+    /// The version of the policy set that decides `req` (AUD-2): a hash of its
+    /// source, so any past decision names exactly the rules that made it.
+    fn version_for(&self, _req: &ExecutionRequest) -> Option<String> {
+        None
+    }
 }
 
 /// CE default: allows everything. One virtual call, always `Allow`.

@@ -51,16 +51,19 @@ Memberships made by sign-in are rewritten at every sign-in, from the person's gr
 | **Platform** | The platform's name |
 | **Runtime**, **Clusters** | Where A3T runs work |
 | **Appearance** | The console's look |
-| **Authentication**, **Users**, **Roles**, **Identity Providers** | Sign-in, its users and how their roles map to A3T roles (Enterprise) |
-| **Authorization**, **Policy Engine** | How decisions are made: the policy engine and its mode (Enterprise). Policies themselves are in [Security](../security/) |
-| **Audit Log**, **Monitoring**, **Compliance** | Records and checks (Enterprise) |
 | **Storage & Data**, **Storage Backend**, **Platform Database** | Where A3T keeps its own data (Enterprise) |
 | **ADB Embeddings** | The embedding model ADB uses to recall by meaning. A different model re-embeds every memory (Enterprise) |
 | **ADB Memory Cache** | Which memory ADB keeps hot, per memory type (Enterprise) |
 | **Logs & Retention**, **Image Registry**, **Notifications**, **Webhooks** | Operations |
 | **Plan & Usage**, **Payment Methods**, **Invoices** | Billing (Enterprise) |
-| **API Keys**, **Feature Flags**, **Telemetry** | Developer settings |
+| **Feature Flags**, **Telemetry** | Developer settings |
+
+Settings has no security or identity controls. Sign-in, people and roles are under [Security](../security/) › Identity, policies under [Security](../security/), the record of decisions in the [Decision log](../decision-log/), and agent keys on each agent's own page.
 
 ## Your profile
 
-The menu under your name in the top bar has your **Profile**: your handle, your organisations and your roles. A SuperAdmin also has **Act as**: see the console exactly as a given person or role sees it. The session is short and can't be extended; an amber **Acting as … Stop** pill shows it, and every decision made during it records the SuperAdmin who acted.
+The menu under your name in the top bar has your **Profile**: your handle, your organisations and your roles. A SuperAdmin also has **Act as**: see the console exactly as a given person or role sees it. You say why first; the reason goes in the [Decision log](../decision-log/). You can't act as another SuperAdmin. Your own session ends when acting starts; the borrowed one is short and can't be extended, an amber **Acting as … Stop** pill shows it, and every decision made during it records the SuperAdmin who acted. **Stop** ends it, and you sign in again as yourself.
+
+## Sessions
+
+A sign-in lasts at most a week. Access tokens last an hour and renew on their own while the console is open; each renewal token works once, and if a copy is ever used again the whole session ends. **Sign out** ends the session on every server within seconds, not just in your browser.

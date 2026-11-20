@@ -33,7 +33,7 @@ export class AgentLive {
   /// they describe this agent only once it is deployed on its own.
   ownRuns = $derived(!!this.placement);
   failed = $derived(this.runs.filter((r) => ['failed', 'error', 'cancelled'].includes(r.status)));
-  denied = $derived(this.decisions.filter((d) => !d.allow));
+  denied = $derived(this.decisions.filter((d) => d.decision === 'deny'));
   runsDay = $derived(this.runs.filter((r) => Date.now() - Date.parse(r.started) < DAY));
   lastSeen = $derived.by(() => {
     const ts = [...(this.ownRuns ? this.runs.map((r) => Date.parse(r.started)) : []), ...this.convs.map((c) => Date.parse(c.updated_at)), ...this.decisions.map((d) => d.ts)].filter((x) => x > 0);

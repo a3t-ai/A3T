@@ -15,10 +15,10 @@
 
   /// Policies named in the decisions about it.
   const decided = $derived.by(() => {
-    const m = new Map<string, { id: string; allow: number; deny: number }>();
-    for (const d of live.decisions) for (const id of (d.reason || '').split(/,\s*/).filter((x) => x && !/\s/.test(x))) {
-      const e = m.get(id) ?? { id, allow: 0, deny: 0 };
-      d.allow ? e.allow++ : e.deny++;
+    const m = new Map<string, { id: string; allow: number; deny: number; ask: number }>();
+    for (const d of live.decisions) for (const id of d.policyIds) {
+      const e = m.get(id) ?? { id, allow: 0, deny: 0, ask: 0 };
+      e[d.decision]++;
       m.set(id, e);
     }
     return [...m.values()].sort((a, b) => b.deny - a.deny || b.allow - a.allow);
@@ -77,8 +77,8 @@
     {:else if live.loading}<p class="dim">…</p>
     {:else if decided.length}
       <table class="tbl">
-        <thead><tr><th>Policy</th><th class="num">Allowed</th><th class="num">Blocked</th></tr></thead>
-        <tbody>{#each decided as p (p.id)}<tr><td class="mono">{p.id}</td><td class="num">{p.allow}</td><td class="num" class:bad={p.deny > 0}>{p.deny}</td></tr>{/each}</tbody>
+        <thead><tr><th>Policy</th><th class="num">Allowed</th><th class="num">Blocked</th><th class="num">Asked</th></tr></thead>
+        <tbody>{#each decided as p (p.id)}<tr><td class="mono">{p.id}</td><td class="num">{p.allow}</td><td class="num" class:bad={p.deny > 0}>{p.deny}</td><td class="num">{p.ask}</td></tr>{/each}</tbody>
       </table>
     {:else}<p class="dim">No decision about it names a policy yet: what it has done was allowed by the baseline. Test what a policy would decide below.</p>{/if}
   </div>

@@ -31,6 +31,7 @@ pub mod topic_triggers;
 pub mod platform_db;
 pub mod policy_gate;
 pub mod org_policy;
+pub mod decision_log;
 pub mod router;
 pub mod gateway;
 pub mod shared_registry;
@@ -673,8 +674,13 @@ async fn submit_input_handler(
                 return (StatusCode::NOT_FOUND, Json(json!({"error": "input request not found"}))).into_response();
             }
             let engine = state.storage.engine().expect("listed by the engine");
+            let answer = answer_note(&body);
             return match engine.decide_approval(&request_id, body, caller.as_deref().unwrap_or_default()).await {
                 Ok(true) => {
+                    if let Some(Extension(p)) = &principal {
+                        flowr_policy::audit::event(p, "approval:answer", "Approval", &request_id,
+                            req.pointer("/context/namespace").and_then(|v| v.as_str()), None, None, Some(&answer));
+                    }
                     info!(request_id = %request_id, "approval answered; the run resumes");
                     Json(json!({"submitted": true, "request_id": request_id})).into_response()
                 }
@@ -703,6 +709,9 @@ async fn submit_input_handler(
         }
     }
     let responded_by = principal.as_ref().map(|Extension(p)| p.id().to_string());
+    let answer = answer_note(&body);
+    let project = pending.as_ref().and_then(|r| r.context.as_ref()).and_then(|c| c.get("namespace")).and_then(|v| v.as_str()).map(str::to_string);
+    let kind = pending.as_ref().map(|r| r.request_type.clone()).unwrap_or_default();
 
     let response = flowr_ce_agents::InputResponse {
         request_id: request_id.clone(),
@@ -713,6 +722,10 @@ async fn submit_input_handler(
 
     match flowr_ce_agents::input_manager().submit_response(response).await {
         Ok(()) => {
+            if let Some(Extension(p)) = &principal {
+                let action = if kind == "authz" { "approval:answer" } else { "input:answer" };
+                flowr_policy::audit::event(p, action, "Approval", &request_id, project.as_deref(), None, None, Some(&answer));
+            }
             info!(request_id = %request_id, "Human input submitted, workflow resumed");
             Json(json!({"submitted": true, "request_id": request_id})).into_response()
         }
@@ -720,6 +733,15 @@ async fn submit_input_handler(
             Json(json!({"error": e.to_string(), "request_id": request_id})).into_response()
         }
     }
+}
+
+/// What an approval answer said, for the decision log (AUD-3): the decision
+/// fields, never free text the approver typed beyond 200 characters.
+fn answer_note(body: &Value) -> String {
+    let pick = ["approved", "decision", "approve", "scope", "action", "reason"];
+    let parts: Vec<String> = pick.iter().filter_map(|k| body.get(*k).map(|v| format!("{k}={}", v))).collect();
+    let s = if parts.is_empty() { body.to_string() } else { parts.join(" ") };
+    s.chars().take(200).collect()
 }
 
 // --- Webhook handler ---
@@ -1426,7 +1448,12 @@ async fn session_policy_allows(
         attributes: Default::default(),
         params: serde_json::Value::Null,
     };
-    match flowr_policy::policy_hook().check(&req).await.non_interactive() {
+    let decision = flowr_policy::policy_hook().check(&req).await.non_interactive();
+    // AUD-3: reaching someone else's conversation is logged, allowed or not.
+    if !is_owner {
+        flowr_policy::audit::record(&req, &decision);
+    }
+    match decision {
         flowr_policy::PolicyDecision::Allow => true,
         flowr_policy::PolicyDecision::Deny { reason, policy_ids } => {
             info!(session_id, principal = %principal.id(), %reason, ?policy_ids,

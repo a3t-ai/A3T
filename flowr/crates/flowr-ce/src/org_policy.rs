@@ -186,7 +186,7 @@ fn platform_infosec(principal: &Principal) -> bool {
 
 /// Does `principal` manage the security of the org with this id: platform
 /// InfoSec, or the org's admins and security admins?
-pub(crate) async fn manages_org_security(s: &dyn StorageBackend, principal: &Principal, org_id: &str) -> bool {
+pub async fn manages_org_security(s: &dyn StorageBackend, principal: &Principal, org_id: &str) -> bool {
     if platform_infosec(principal) {
         return true;
     }
@@ -318,6 +318,8 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
             "org": org, "path": q.path, "kind": kind, "content": content, "commit": version, "updated_at": chrono::Utc::now().to_rfc3339(),
         })]).await.map_err(internal)?;
         note(db.as_ref(), &org, &q.path, &version, if prev.is_some() { "save" } else { "create" }, kind, content, &by).await.map_err(internal)?;
+        flowr_policy::audit::event(&principal, "policy:write", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
+            Some(&format!("{} {version}", if prev.is_some() { "saved" } else { "created" })));
         if !off.contains(&q.path) {
             changed().await;
         }
@@ -345,6 +347,8 @@ async fn delete_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Quer
         db.delete(FILES, &filter).await.map_err(internal)?;
         db.delete(OFF, &filter).await.map_err(internal)?;
         note(db.as_ref(), &org, &q.path, &col(prev, "commit"), "delete", kind, &col(prev, "content"), &principal.id()).await.map_err(internal)?;
+        flowr_policy::audit::event(&principal, "policy:delete", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
+            Some(&format!("deleted {}", col(prev, "commit"))));
         if !off.contains(&q.path) {
             changed().await;
         }
@@ -411,6 +415,8 @@ async fn set_enforced(State(s): St, p: P, Path(org): Path<String>, Json(b): Json
                 db.upsert(OFF, &["org", "path"], &[json!({ "org": org, "path": path, "updated_by": by, "updated_at": now })]).await.map_err(internal)?;
             }
             note(db.as_ref(), &org, &path, &col(r, "commit"), if is_on { "on" } else { "off" }, &col(r, "kind"), &col(r, "content"), &by).await.map_err(internal)?;
+            flowr_policy::audit::event(&principal, "policy:switch", "PolicyFile", &format!("{org}/{path}"), None, Some(&org), None,
+                Some(if is_on { "switched on" } else { "switched off" }));
             switched += 1;
         }
         if switched > 0 {

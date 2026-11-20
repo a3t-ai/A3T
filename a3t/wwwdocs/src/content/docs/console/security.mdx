@@ -17,14 +17,14 @@ Items lists:
 |---|---|
 | **Identity** | The sign-in provider and its users, platform-wide |
 | A policy per project | `<project>/<name>`: rules that apply to that project's calls only |
-| **baseline** | The deny-by-default rules compiled into A3T. Read only; they apply everywhere, beneath every project policy |
+| **baseline** | The deny-by-default rules compiled into A3T, read from the server you are connected to (with its version). Read only; they apply everywhere, beneath every project policy |
 
 ## How a decision is made
 
 1. The call's **principal** is the person (or the agent acting for one), with their **role in the project** the call touches: write access makes them Admin there, run access Operator, read access Viewer. SuperAdmin and SecurityAdmin keep their platform roles.
 2. The **baseline** and the **project's own policies** are evaluated together. Platform policies (in `a3t`, `system` or `default`) apply to every project.
 3. Nothing permits it, or a `forbid` matches: **denied**. The refusal names every policy that refused it, and, for a baseline rule, what access it needs.
-4. The decision is written to the [Decision log](../decision-log/).
+4. The decision is written to the [Decision log](../decision-log/), with the version of the policy set that made it.
 
 A refusal reads, for example:
 
@@ -117,5 +117,5 @@ An agent's own **Audit › Policies** has the same test, for that agent and its 
 An organisation can sign its people in with its own identity provider; see [Settings](../settings/).
 
 <Aside type="note">
-**Act as.** A SuperAdmin can see the console exactly as a given user or role sees it: **Profile › Act as**. The session is short, can't be extended, and every decision made during it records the SuperAdmin who acted.
+**Act as.** A SuperAdmin can see the console exactly as a given user or role sees it: **Profile › Act as**. They give a reason, which goes in the [Decision log](../decision-log/); acting as another SuperAdmin is refused. The session is short, can't be extended, and every decision made during it records the SuperAdmin who acted.
 </Aside>

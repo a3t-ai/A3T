@@ -29,7 +29,7 @@
       const who = d.obo || (d.principal.startsWith('agent:') ? '' : d.principal);
       if (!who) continue;
       const e = m.get(who) ?? { who, n: 0, last: 0, blocked: 0 };
-      e.n++; e.last = Math.max(e.last, d.ts); if (!d.allow) e.blocked++;
+      e.n++; e.last = Math.max(e.last, d.ts); if (d.decision === 'deny') e.blocked++;
       m.set(who, e);
     }
     return [...m.values()].sort((a, b) => b.last - a.last);

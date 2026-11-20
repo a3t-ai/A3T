@@ -233,47 +233,6 @@
       { type: 'select', label: 'Theme', options: ['System', 'Light', 'Dark'] },
       { type: 'toggle', label: 'Compact density', on: false },
     ]},
-    'security.authn': { title: 'Authentication', desc: 'How users prove who they are.', ee: true, controls: [
-      { type: 'toggle', label: 'Single Sign-On (OIDC/SAML)', hint: 'Federate with Entra, Okta, Google', on: false },
-      { type: 'toggle', label: 'Require MFA', on: true },
-      { type: 'toggle', label: 'Passkeys', on: false },
-      { type: 'select', label: 'Session lifetime', options: ['8 hours', '24 hours', '7 days'] },
-    ]},
-    'security.authz': { title: 'Authorization', desc: 'What users and agents may do.', ee: true, controls: [
-      { type: 'toggle', label: 'Enforce RBAC + ABAC', on: true },
-      { type: 'select', label: 'Policy language', options: ['Cedar', 'OPA / Rego'] },
-      { type: 'toggle', label: 'Field-level authorization', on: true },
-    ]},
-    'security.policy': { title: 'Policy Engine', desc: 'The decision point for every request.', ee: true, controls: [
-      { type: 'select', label: 'Engine', options: ['Cedar (built-in)', 'External PDP'] },
-      { type: 'toggle', label: 'Shadow mode (log, don’t enforce)', on: false },
-      { type: 'toggle', label: 'Static analysis on publish', on: true },
-    ]},
-    'security.audit': { title: 'Audit Log', desc: 'Immutable record of authN + authZ decisions.', ee: true, controls: [
-      { type: 'toggle', label: 'Immutable append-only log', on: true },
-      { type: 'select', label: 'SIEM export', options: ['None', 'Splunk', 'Microsoft Sentinel', 'S3'] },
-    ]},
-    'security.monitoring': { title: 'Monitoring', desc: 'Detect anomalous access.', ee: true, controls: [
-      { type: 'toggle', label: 'Anomaly detection', on: false },
-      { type: 'toggle', label: 'UEBA', on: false },
-    ]},
-    'security.compliance': { title: 'Compliance', desc: 'Evidence for auditors.', ee: true, controls: [
-      { type: 'select', label: 'Framework', options: ['SOC 2', 'ISO 27001', 'HIPAA'] },
-      { type: 'toggle', label: 'Access certification campaigns', on: false },
-    ]},
-    'iam.users': { title: 'Users', desc: 'People with access to this platform.', ee: true, controls: [
-      { type: 'toggle', label: 'Directory sync (SCIM)', on: false },
-      { type: 'toggle', label: 'Auto-disable on IdP removal', on: true },
-    ]},
-    'iam.roles': { title: 'Roles', desc: 'Named sets of permissions.', ee: true, controls: [
-      { type: 'toggle', label: 'Allow custom roles', on: true },
-      { type: 'select', label: 'Default role for new users', options: ['Viewer', 'Developer'] },
-    ]},
-    'iam.idp': { title: 'Identity Providers', desc: 'Federate identity with your directory.', ee: true, controls: [
-      { type: 'select', label: 'Provider', options: ['Microsoft Entra ID', 'Okta', 'Google', 'Keycloak'] },
-      { type: 'text', label: 'Discovery URL', hint: '.well-known/openid-configuration' },
-      { type: 'toggle', label: 'SailPoint / Saviynt (IGA)', on: false },
-    ]},
     'infra.clusters': { title: 'Clusters', desc: 'Runtime targets for agents and flows.', controls: [
       { type: 'toggle', label: 'Auto-scale worker pool', on: true },
       { type: 'select', label: 'Default cluster', options: ['vc-dev', 'vprod'] },
@@ -316,9 +275,6 @@
       { type: 'text', label: 'Billing email', hint: 'billing@company.com' },
     ]},
     'billing.invoices': { title: 'Invoices', desc: 'Billing history.', ee: true, controls: [] },
-    'advanced.apikeys': { title: 'API Keys', desc: 'Programmatic access to the platform.', controls: [
-      { type: 'toggle', label: 'Allow personal API keys', on: true },
-    ]},
     'advanced.flags': { title: 'Feature Flags', desc: 'Toggle experimental behavior.', controls: [
       { type: 'toggle', label: 'New flow editor', on: false },
       { type: 'toggle', label: 'Beta agent runtime', on: false },

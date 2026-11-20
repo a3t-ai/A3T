@@ -532,12 +532,20 @@ export const runsApi = {
 export type Breakpoint = { step_key: string; when?: 'before' | 'after' | 'on_error'; condition?: string; hit?: number; enabled?: boolean };
 export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' | 'run_to' | 'stop';
 
-// ── Audit / decision log (EE — the Cedar allow/deny record) ──
+// ── Audit / decision log (EE — durable in ADB EPISODIC, AUD-1) ──
+/// Server-side filters (exact values) and paging: pass the answer's
+/// `next_before_ms` as `before_ms` for the next page. `q` ranks by meaning.
+export type AuditQuery = { org?: string; project?: string; agent?: string; principal?: string; action?: string; decision?: string; since_ms?: number; before_ms?: number; q?: string; limit?: number };
+export interface AuditPage { count: number; records: any[]; scope: string; orgs?: string[]; next_before_ms?: number | null; aql?: string; source?: string }
 export const audit = {
-  /** Most-recent authorization decisions, newest-first. */
-  /// `project`: that project's decisions; '-' the platform-wide ones; absent all.
+  query: (q: AuditQuery = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v));
+    return request<AuditPage>(`/security/audit?${p}`, { method: 'GET' });
+  },
+  /** Most-recent decisions, newest first. */
   recent: (limit = 100, denialsOnly = false, project?: string) =>
-    request(`/security/audit?limit=${limit}${denialsOnly ? '&denials_only=true' : ''}${project ? `&project=${encodeURIComponent(project)}` : ''}`, { method: 'GET' }),
+    audit.query({ limit, decision: denialsOnly ? 'deny' : undefined, project }),
 };
 
 export const state = {
@@ -568,6 +576,8 @@ export interface PolicyTestBody {
 export const getEdition = () => request('/edition', { method: 'GET' }, false);
 
 export const securityPolicies = {
+  /** The baseline policy pack the server enforces, and its version. */
+  baseline: () => request<{ cedar: string; version: string }>('/security/baseline', { method: 'GET' }),
   /** List saved Cedar policy resources with their source. */
   list: () => request('/security/policies', { method: 'GET' }),
   /** Hot-reload the active policy set — no pod restart. Validate-before-swap. */

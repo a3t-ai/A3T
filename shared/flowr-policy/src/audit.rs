@@ -16,10 +16,16 @@ use serde::Serialize;
 use crate::{ExecutionRequest, PolicyDecision};
 
 /// One authorization decision, flattened for the audit log.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Default)]
 pub struct AuditRecord {
+    /// Unique per decision: `<pod>-<uuid v7>` (time ordered).
+    #[serde(default)]
+    pub id: String,
     /// Unix milliseconds when the decision was recorded.
     pub ts_ms: u64,
+    /// The FlowR pod that decided (`HOSTNAME`).
+    #[serde(default)]
+    pub pod: String,
     pub principal_kind: String,
     pub principal_id: String,
     pub on_behalf_of: Option<String>,
@@ -37,6 +43,54 @@ pub struct AuditRecord {
     /// a tool's `namespace` / `project` argument, a `ns/name` resource, or the
     /// resource's own namespace. `None` for platform-wide calls.
     pub project: Option<String>,
+    /// The org whose log holds the decision (the project's org; `platform` for
+    /// platform-wide calls and personal projects). Set by the durable log.
+    #[serde(default)]
+    pub org: Option<String>,
+    /// The roles the principal carried into the decision (AUD-2).
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// ID-2: the A3T agent acting (its id, not the session), the version it ran,
+    /// its owner, and the flow it ran in. The person it acts for is `on_behalf_of`.
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub agent_version: Option<String>,
+    #[serde(default)]
+    pub agent_owner: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub flow: Option<String>,
+    /// The version (hash) of the policy set that decided (AUD-2).
+    #[serde(default)]
+    pub policy_version: Option<String>,
+}
+
+/// The resource attribute naming the org an event belongs to (see [`event`]).
+const ORG_ATTR: &str = "a3t_audit_org";
+
+/// Where each decision goes besides this pod's recent buffer: the durable,
+/// cluster-wide log (flowr-ce `decision_log`). Set once at start.
+static SINK: OnceLock<Box<dyn Fn(AuditRecord) + Send + Sync>> = OnceLock::new();
+
+pub fn set_sink(sink: Box<dyn Fn(AuditRecord) + Send + Sync>) {
+    let _ = SINK.set(sink);
+}
+
+fn pod() -> &'static str {
+    static POD: OnceLock<String> = OnceLock::new();
+    POD.get_or_init(|| std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| "local".into()))
+}
+
+/// (agent, session) from an agent principal's id `agent:<session>`, where an A3T
+/// agent's session is `<agent-id>:<session>`.
+pub fn agent_and_session(agent_id: &str) -> (Option<String>, Option<String>) {
+    let session = agent_id.strip_prefix("agent:").unwrap_or(agent_id);
+    match session.split_once(':') {
+        Some((agent, _)) if !agent.is_empty() => (Some(agent.to_string()), Some(session.to_string())),
+        _ => (None, Some(session.to_string()).filter(|s| !s.is_empty())),
+    }
 }
 
 /// The project a request concerns, read from what the call itself names.
@@ -85,7 +139,26 @@ pub fn record_noted(req: &ExecutionRequest, decision: &PolicyDecision, note: Opt
             ("ask".to_string(), policy_ids.clone(), Some(reason.clone()))
         }
     };
+    let (roles, agent, session, agent_owner, flow) = match &req.principal {
+        crate::Principal::Human { roles, .. } => (roles.clone(), None, None, None, None),
+        crate::Principal::Agent { agent_id, roles, owner, flow_id, .. } => {
+            let (agent, session) = agent_and_session(&agent_id.0);
+            (roles.clone(), agent, session, owner.clone(), flow_id.clone())
+        }
+        crate::Principal::Service { .. } => (Vec::new(), None, None, None, None),
+    };
     let rec = AuditRecord {
+        id: format!("{}-{}", pod(), uuid::Uuid::now_v7().simple()),
+        pod: pod().to_string(),
+        // An event about an org itself (its policy files) names the org.
+        org: req.resource.attributes.get(ORG_ATTR).and_then(|v| v.as_str()).map(str::to_string),
+        roles,
+        agent,
+        agent_version: None,
+        agent_owner,
+        session,
+        flow,
+        policy_version: crate::policy_hook().version_for(req),
         ts_ms,
         principal_kind: req.principal.kind().to_string(),
         principal_id: req.principal.id().to_string(),
@@ -102,6 +175,9 @@ pub fn record_noted(req: &ExecutionRequest, decision: &PolicyDecision, note: Opt
     let mut rec = rec;
     if rec.reason.is_none() {
         rec.reason = note.map(str::to_string);
+    }
+    if let Some(sink) = SINK.get() {
+        sink(rec.clone());
     }
     if let Ok(mut b) = buffer().lock() {
         if b.len() >= CAPACITY {
@@ -193,4 +269,40 @@ mod project_tests {
         assert_eq!(project_of(&req(serde_json::json!({}), "list_projects")), None);
         assert_eq!(project_of(&req(serde_json::json!({}), "call:llm")), None);
     }
+}
+
+/// Record something that happened outside a policy check (AUD-3): an approval
+/// answered, a key made or revoked, a policy changed, a refusal by project
+/// isolation, Act as stopped. `denied`: the reason, when it was refused.
+pub fn event(
+    principal: &crate::Principal,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+    project: Option<&str>,
+    org: Option<&str>,
+    denied: Option<&str>,
+    note: Option<&str>,
+) {
+    let Ok(action) = crate::Action::new(action) else { return };
+    let mut resource = crate::Resource::new(resource_type, resource_id.to_string());
+    if let Some(p) = project.filter(|p| !p.is_empty()) {
+        resource.attributes.insert("namespace".into(), serde_json::Value::String(p.to_string()));
+    }
+    if let Some(o) = org.filter(|o| !o.is_empty()) {
+        resource.attributes.insert(ORG_ATTR.into(), serde_json::Value::String(o.to_string()));
+    }
+    let req = ExecutionRequest {
+        principal: principal.clone(),
+        action,
+        resource,
+        context: Default::default(),
+        attributes: Default::default(),
+        params: serde_json::Value::Null,
+    };
+    let decision = match denied {
+        Some(reason) => PolicyDecision::Deny { reason: reason.to_string(), policy_ids: vec!["project-isolation".into()] },
+        None => PolicyDecision::Allow,
+    };
+    record_noted(&req, &decision, note);
 }

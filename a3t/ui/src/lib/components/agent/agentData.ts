@@ -5,7 +5,6 @@
 // (see .ai/A3T_UI_LIMITATIONS.md, UI-n) rather than faked.
 import * as YAML from 'yaml';
 import { audit, fetchChatSessions, opsApi, runsApi, type ChatSessionSummary } from '$lib/services/api';
-import { isInfosec } from '$lib/stores/auth';
 
 export type AgentRec = {
   id: string; name: string; namespace: string; mode: string; status: string;
@@ -87,25 +86,30 @@ export async function servingRuns(f: Facts, limit = 100): Promise<{ runs: Run[];
   };
 }
 
-export type Decision = { ts: number; allow: boolean; principal: string; obo: string; action: string; resource: string; reason: string };
-/// Authorization decisions that involve this agent: as the principal, acting on
-/// behalf of someone, or as the resource. Read from the latest `limit` records of
-/// the whole log and filtered here (UI-3: no server-side filter yet).
+export type Decision = {
+  ts: number; decision: 'allow' | 'deny' | 'ask'; allow: boolean; principal: string; obo: string; action: string; resource: string; reason: string;
+  /** The policies that decided (exact ids), the policy set's version, and the agent version that ran. */
+  policyIds: string[]; policyVersion: string; agentVersion: string; impersonatedBy: string;
+};
+/// Authorization decisions about this agent (ID-2: the log names the agent by
+/// id), read from the durable log on the server (AUD-5). Its owner sees them
+/// as well as InfoSec (AUD-8).
 export async function decisionsFor(agent: AgentRec, limit = 500): Promise<{ list: Decision[]; error: string; scanned: number }> {
-  // The decision log is SuperAdmin and SecurityAdmin only: don't ask for it otherwise.
-  if (!isInfosec()) return { list: [], error: 'Its allowed and blocked decisions are shown to SuperAdmin and SecurityAdmin.', scanned: 0 };
-  const r = await audit.recent(limit);
-  if (!r.ok) return { list: [], error: r.status === 403 ? 'Its allowed and blocked decisions are shown to SuperAdmin and SecurityAdmin.' : (r.error ?? 'Decision log unavailable'), scanned: 0 };
-  const rows: any[] = Array.isArray(r.data) ? r.data : (r.data?.records ?? r.data?.decisions ?? []);
-  const id = agent.id.toLowerCase();
-  const hit = (s: unknown) => typeof s === 'string' && s.toLowerCase().includes(id);
+  const r = await audit.query({ agent: agent.id, limit: Math.min(limit, 500) });
+  if (!r.ok) return { list: [], error: r.status === 403 ? 'Its decisions are shown to its owner, its org\'s security admins, SuperAdmin and SecurityAdmin.' : (r.error ?? 'Decision log unavailable'), scanned: 0 };
+  const rows: any[] = r.data?.records ?? [];
   return {
-    list: rows.filter((x) => hit(x.principal_id) || hit(x.on_behalf_of) || hit(x.resource_id) || hit(x.context?.agent_id)).map((x) => ({
-      ts: x.ts_ms ?? 0,
-      allow: String(x.decision ?? '').toLowerCase() === 'allow',
-      principal: `${x.principal_kind ?? ''}:${x.principal_id ?? ''}`, obo: x.on_behalf_of ?? '',
-      action: x.action ?? '', resource: `${x.resource_type ?? ''}:${x.resource_id ?? ''}`, reason: x.reason ?? (Array.isArray(x.policy_ids) ? x.policy_ids.join(', ') : ''),
-    })),
+    list: rows.map((x) => {
+      const d = String(x.decision ?? '').toLowerCase();
+      const decision: Decision['decision'] = d === 'allow' ? 'allow' : d === 'ask' ? 'ask' : 'deny';
+      return {
+        ts: x.ts_ms ?? 0, decision, allow: decision === 'allow',
+        principal: `${x.principal_kind ?? ''}:${x.principal_id ?? ''}`, obo: x.on_behalf_of ?? '',
+        action: x.action ?? '', resource: `${x.resource_type ?? ''}:${x.resource_id ?? ''}`, reason: x.reason ?? '',
+        policyIds: Array.isArray(x.policy_ids) ? x.policy_ids : [], policyVersion: x.policy_version ?? '',
+        agentVersion: x.agent_version ?? '', impersonatedBy: x.impersonated_by ?? '',
+      };
+    }),
     error: '', scanned: rows.length,
   };
 }

@@ -6,6 +6,8 @@ edition = "2021"
 license = "Elastic-2.0"
 
 [dependencies]
+# The version (hash) of each compiled policy set, named on every decision (AUD-2).
+sha2 = "0.10"
 # The policy contract it implements (PolicyHook, ExecutionRequest, actions).
 flowr-policy = { path = "../../../shared/flowr-policy" }
 cedar-policy = "4"

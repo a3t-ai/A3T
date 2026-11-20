@@ -170,6 +170,7 @@ pub(super) async fn put_policy(State(s): St, p: P, Path(id): Path<String>, Json(
             "updated_at": chrono::Utc::now().to_rfc3339(),
         })]).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         let version = note(s.as_ref(), &id, "save", &policy, principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        flowr_policy::audit::event(&principal, "agent_policy:write", "AgentPolicy", &id, Some(&project_of(&row)), None, None, Some(&format!("saved {version}")));
         gate.changed().await;
         ok(json!({ "agent_id": id, "policy": policy, "version": version, "rules": sentences(&policy), "hidden_apps": compiled.get("hidden_apps") }))
     }.await)
@@ -185,7 +186,8 @@ pub(super) async fn delete_policy(State(s): St, p: P, Path(id): Path<String>) ->
         };
         let db = table(s.as_ref()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         db.delete(TABLE, &format!("agent_id = {}", sql_quote(&id))).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        note(s.as_ref(), &id, "delete", &col(&prev, "policy"), principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let version = note(s.as_ref(), &id, "delete", &col(&prev, "policy"), principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        flowr_policy::audit::event(&principal, "agent_policy:delete", "AgentPolicy", &id, Some(&project_of(&row)), None, None, Some(&format!("deleted ({version})")));
         if let Some(gate) = crate::policy_gate::get() {
             gate.changed().await;
         }

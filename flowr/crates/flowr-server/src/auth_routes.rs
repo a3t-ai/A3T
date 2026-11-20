@@ -311,8 +311,14 @@ pub async fn logout_handler(
     body: Option<Json<LogoutBody>>,
 ) -> axum::response::Response {
     let mut sids: Vec<String> = Vec::new();
-    if let Some(sid) = extract_bearer_token(&headers).and_then(|t| crate::auth::session_of(&t, &config)) {
+    let bearer = extract_bearer_token(&headers);
+    if let Some(sid) = bearer.as_deref().and_then(|t| crate::auth::session_of(t, &config)) {
         sids.push(sid);
+    }
+    // AUD-3: ending a borrowed session is Act as stopping.
+    if let Some(claims) = bearer.as_deref().and_then(|t| crate::auth::validate_token(t, &config).ok()).filter(|c| c.act.is_some()) {
+        let p = crate::auth::principal_for(&claims);
+        flowr_policy::audit::event(&p, "auth:impersonate_stop", "User", &claims.sub, None, None, None, Some("acting stopped"));
     }
     if let Some(rt) = body.and_then(|b| b.0.refresh_token).and_then(|t| crate::auth::validate_refresh(&t, &config, true).ok()) {
         if !sids.contains(&rt.sid) {
