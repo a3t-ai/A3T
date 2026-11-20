@@ -284,6 +284,25 @@ pub fn event(
     denied: Option<&str>,
     note: Option<&str>,
 ) {
+    let decision = match denied {
+        Some(reason) => PolicyDecision::Deny { reason: reason.to_string(), policy_ids: vec!["project-isolation".into()] },
+        None => PolicyDecision::Allow,
+    };
+    event_decision(principal, action, resource_type, resource_id, project, org, &decision, note);
+}
+
+/// [`event`] with any decision, e.g. an `Ask` an agent approval rule raised.
+#[allow(clippy::too_many_arguments)]
+pub fn event_decision(
+    principal: &crate::Principal,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+    project: Option<&str>,
+    org: Option<&str>,
+    decision: &PolicyDecision,
+    note: Option<&str>,
+) {
     let Ok(action) = crate::Action::new(action) else { return };
     let mut resource = crate::Resource::new(resource_type, resource_id.to_string());
     if let Some(p) = project.filter(|p| !p.is_empty()) {
@@ -300,9 +319,5 @@ pub fn event(
         attributes: Default::default(),
         params: serde_json::Value::Null,
     };
-    let decision = match denied {
-        Some(reason) => PolicyDecision::Deny { reason: reason.to_string(), policy_ids: vec!["project-isolation".into()] },
-        None => PolicyDecision::Allow,
-    };
-    record_noted(&req, &decision, note);
+    record_noted(&req, decision, note);
 }

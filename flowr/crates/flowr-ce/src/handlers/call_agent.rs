@@ -173,16 +173,27 @@ pub fn session_key(session_id: &str) -> String {
 /// State-store key for one user's list of conversations. The transcripts are the
 /// source of truth; this is a pointer list so the sidebar can be built without
 /// scanning every key in the state table.
-/// Look up who owns the agent behind a session.
+/// What the registry says about the agent behind a session, read server-side:
+/// a flow's step config can't name its own owner, approval rules or ceiling.
+#[derive(Debug, Default, Clone)]
+struct AgentRecord {
+    owner: Option<String>,
+    /// The role ceiling set on the agent (UI-3); intersected with the step's.
+    role_ceiling: Option<Vec<String>>,
+    /// The project the agent lives in.
+    namespace: Option<String>,
+}
+
+/// Look up the agent behind a session.
 ///
 /// `session_id` is `<agent-id>:session-…` when a chat runs a configured agent,
-/// and a bare session id otherwise (no agent, so no owner). Prefers the stamped
-/// `owner`, falling back to `created_by` for records written before ownership was
-/// recorded.
-async fn resolve_agent_owner(
+/// and a bare session id otherwise (no agent, so no record). The owner prefers
+/// the stamped `owner`, falling back to `created_by` for records written before
+/// ownership was recorded.
+async fn resolve_agent_record(
     storage: &Arc<dyn StorageBackend>,
     session_id: &str,
-) -> Option<String> {
+) -> Option<AgentRecord> {
     let agent_id = session_id.split(':').next().filter(|s| !s.is_empty())?;
     if agent_id == session_id {
         return None; // no agent prefix — a plain chat session
@@ -199,13 +210,33 @@ async fn resolve_agent_owner(
     .await
     .ok()?;
     let row = rows.into_iter().next()?;
-    let cfg = row.get("config").and_then(|c| c.as_object());
-    row.get("owner")
+    let cfg_owned: Option<serde_json::Map<String, Value>> = match row.get("config") {
+        Some(Value::Object(m)) => Some(m.clone()),
+        Some(Value::String(t)) => serde_json::from_str(t).ok(),
+        _ => None,
+    };
+    let cfg = cfg_owned.as_ref();
+    let owner = row.get("owner")
         .and_then(|v| v.as_str())
         .or_else(|| row.get("created_by").and_then(|v| v.as_str()))
         .or_else(|| cfg.and_then(|c| c.get("owner")).and_then(|v| v.as_str()))
         .or_else(|| cfg.and_then(|c| c.get("created_by")).and_then(|v| v.as_str()))
-        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let role_ceiling = cfg.and_then(|c| c.get("role_ceiling")).and_then(|v| v.as_array()).map(|a| {
+        a.iter().filter_map(|r| r.as_str().map(str::to_string)).collect::<Vec<_>>()
+    });
+    let namespace = row.get("namespace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+    Some(AgentRecord { owner, role_ceiling, namespace })
+}
+
+/// The tighter of two role ceilings: both bind. `None` means "not narrowed".
+fn meet_ceilings(a: Option<&[String]>, b: Option<&[String]>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x.to_vec()),
+        (Some(x), Some(y)) => Some(x.iter().filter(|r| y.contains(r)).cloned().collect()),
+    }
 }
 
 pub fn session_index_key(owner: &str) -> String {
@@ -502,17 +533,21 @@ impl TaskHandler for AgentHandler {
         // do carry `created_by` — real provenance, not an invention — so that is
         // the fallback. Without it every pre-existing agent could never produce a
         // permission prompt, because the owner check would always fail.
+        let record = resolve_agent_record(&storage, &config.session_id).await.unwrap_or_default();
         let owner = match config.config.owner.clone() {
             Some(o) => Some(o),
-            None => resolve_agent_owner(&storage, &config.session_id).await,
+            None => record.owner.clone(),
         };
-        let role_ceiling = config.config.role_ceiling.as_deref();
+        // The ceiling is attenuate-only, so the step's and the registry's both
+        // bind: a flow can narrow its agent further, never lift what was set
+        // on the agent itself (UI-3).
+        let role_ceiling = meet_ceilings(config.config.role_ceiling.as_deref(), record.role_ceiling.as_deref());
         let agent_principal = flowr_mcp_core::Principal::agent_for(
             flowr_mcp_core::AgentId(format!("agent:{}", config.session_id)),
             &ctx.principal,
             Some(format!("{}/{}", ctx.namespace, ctx.name)),
             owner,
-            role_ceiling,
+            role_ceiling.as_deref(),
         );
 
         let mut state = AgentState::new(&config);
@@ -888,6 +923,23 @@ impl TaskHandler for AgentHandler {
                                         json!({"toolCallId": tool_id, "toolName": tool_name, "input": tool_input}).to_string());
                                 }
 
+                                // GOV-8: a tool flow is not an MCP call, so its
+                                // `needs_approval` rules are asked here — the
+                                // flow's own steps are checked as they run.
+                                if config.config.tool_flows.contains_key(tool_name) {
+                                    let attrs = build_ceiling_attributes(&config.config, &ctx.template_meta);
+                                    let d = flowr_mcp_core::authorize_mcp_tool_call(&agent_principal, Some("tool-flows"), tool_name, &tool_input, attrs).await;
+                                    if let flowr_policy::PolicyDecision::Ask { reason, required: Some(r), policy_ids, .. } = d {
+                                        let asked = crate::approval::request_approval_with(
+                                            &config.session_id, &agent_principal, Some("tool-flows"), tool_name, &tool_input, &reason,
+                                            &[flowr_policy::GrantScope::Once],
+                                            &crate::approval::Ask { rule: Some(policy_ids.join(", ")), timeout_secs: r.timeout_secs, project: record.namespace.clone() },
+                                        ).await;
+                                        if let flowr_policy::PolicyDecision::Deny { reason, policy_ids } = asked {
+                                            return Ok(json!({ "error": format!("denied: {tool_name} — {reason}"), "denied": true, "policies": policy_ids }));
+                                        }
+                                    }
+                                }
                                 // Check if tool maps to a workflow
                                 if let Some(flow_ref) = config.config.tool_flows.get(tool_name) {
                                     // Execute as nested workflow
@@ -905,7 +957,7 @@ impl TaskHandler for AgentHandler {
                                     // hook gates this call as the agent (§6.5). Merges over any
                                     // flow-level metadata.a3t already on the context.
                                     let ceiling_attrs = build_ceiling_attributes(&config.config, &ctx.template_meta);
-                                    call_mcp_tool(&http_client, &storage, &agent_principal, &config.session_id, mcp_resource, tool_name, &tool_input, ceiling_attrs).await
+                                    call_mcp_tool(&http_client, &storage, &agent_principal, &config.session_id, mcp_resource, tool_name, &tool_input, ceiling_attrs, record.namespace.as_deref()).await
                                 }
                             },
                         ).await? };
@@ -1969,6 +2021,7 @@ async fn call_mcp_tool(
     tool_name: &str,
     arguments: &Value,
     attributes: serde_json::Map<String, Value>,
+    project: Option<&str>,
 ) -> std::result::Result<Value, String> {
     // ── Permission introspection ──
     //
@@ -2138,11 +2191,16 @@ async fn call_mcp_tool(
         session_id, decision, flowr_policy::actions::MCP_CALL, "Tool", &decision_id,
     );
     let decision = match decision {
-        flowr_policy::PolicyDecision::Ask { reason, scopes, .. } => {
+        flowr_policy::PolicyDecision::Ask { reason, scopes, required, policy_ids } => {
             // Stop the turn and put it to the human. Blocks until they answer or
-            // it times out.
-            crate::approval::request_approval(
-                session_id, caller, Some(resource_name), tool_name, arguments, &reason, &scopes,
+            // it times out. A `needs_approval` rule sets how long (GOV-8).
+            let ask = crate::approval::Ask {
+                rule: required.is_some().then(|| policy_ids.join(", ")),
+                timeout_secs: required.and_then(|r| r.timeout_secs),
+                project: project.map(str::to_string),
+            };
+            crate::approval::request_approval_with(
+                session_id, caller, Some(resource_name), tool_name, arguments, &reason, &scopes, &ask,
             ).await
         }
         settled => settled,

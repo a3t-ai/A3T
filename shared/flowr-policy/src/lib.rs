@@ -471,7 +471,20 @@ pub enum PolicyDecision {
         policy_ids: Vec<String>,
         /// Which scopes this approver may choose from, narrowest first.
         scopes: Vec<GrantScope>,
+        /// Set when a `needs_approval` rule asked (GOV-8): the call waits for a
+        /// person every time — an earlier answer in the conversation never
+        /// covers it, and only `Once` is offered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required: Option<RequiredApproval>,
     },
+}
+
+/// A `needs_approval` rule's terms (GOV-8).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredApproval {
+    /// How long the question may wait; `None`: the server's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 impl PolicyDecision {
@@ -694,6 +707,7 @@ mod tests {
             reason: "needs approval".into(),
             policy_ids: vec!["p1".into()],
             scopes: vec![GrantScope::Once, GrantScope::Session],
+            required: None,
         };
         // The fail-closed contract: anything that has not learned to prompt
         // must treat Ask as "no".
@@ -708,6 +722,7 @@ mod tests {
             reason: "needs approval".into(),
             policy_ids: vec!["p1".into()],
             scopes: vec![GrantScope::Session],
+            required: None,
         };
         match ask.non_interactive() {
             PolicyDecision::Deny { reason, policy_ids } => {

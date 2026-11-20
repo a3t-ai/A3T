@@ -21,7 +21,7 @@ struct AskBeforePoke;
 impl PolicyHook for AskBeforePoke {
     async fn check(&self, req: &PolicyRequest) -> PolicyDecision {
         if req.action.as_str() == flowr_policy::actions::MCP_CALL && req.resource.id.ends_with("poke") {
-            PolicyDecision::Ask { reason: "poking needs your OK".into(), policy_ids: vec!["test".into()], scopes: vec![GrantScope::Once, GrantScope::Session] }
+            PolicyDecision::Ask { reason: "poking needs your OK".into(), policy_ids: vec!["test".into()], scopes: vec![GrantScope::Once, GrantScope::Session], required: None }
         } else {
             PolicyDecision::Allow
         }

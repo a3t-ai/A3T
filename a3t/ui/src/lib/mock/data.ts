@@ -180,34 +180,6 @@ export const mockTriggers = [
   { id: 'trg-003', name: 'market-alerts', config: { type: 'event', source: 'market.*' }, enabled: false, targets: [] },
 ];
 
-export const mockInputs = [
-  {
-    id: 'inp-001', request_type: 'approval', channel: 'form',
-    message: 'Approve deployment of rtb-bidder v2.2 to production?',
-    title: 'Production Deployment', status: 'pending',
-    options: [
-      { label: 'Approve', value: 'approved', style: 'primary' },
-      { label: 'Reject', value: 'rejected', style: 'danger' },
-      { label: 'Defer', value: 'deferred', style: 'default' },
-    ],
-    context: { version: 'v2.2', environment: 'production', changes: '3 files, +142 -28 lines' },
-    created_at: '2026-04-20T08:30:00Z', expires_at: '2026-04-20T09:30:00Z',
-    agent_id: 'bidder-emea-premium',
-  },
-  {
-    id: 'inp-002', request_type: 'form', channel: 'form',
-    message: 'Configure budget allocation for Q2 campaigns',
-    title: 'Budget Input Required', status: 'pending',
-    fields: [
-      { name: 'total_budget', type: 'number', label: 'Total Budget ($)', required: true },
-      { name: 'split', type: 'select', label: 'Split Strategy', options: ['Even', 'Performance-weighted', 'Manual'] },
-      { name: 'notes', type: 'text', label: 'Notes', required: false },
-    ],
-    context: { campaign: 'Q2-awareness', current_spend: 12500 },
-    created_at: '2026-04-20T09:15:00Z', expires_at: '2026-04-21T09:15:00Z',
-    agent_id: null,
-  },
-];
 
 export const mockCanvas = [
   {

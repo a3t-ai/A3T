@@ -69,24 +69,55 @@ pub async fn request_approval(
     reason: &str,
     scopes: &[GrantScope],
 ) -> PolicyDecision {
+    request_approval_with(session_id, principal, server, tool, arguments, reason, scopes, &Ask::default()).await
+}
+
+/// What raised a question beyond the policy itself (GOV-7/GOV-8).
+#[derive(Debug, Clone, Default)]
+pub struct Ask {
+    /// The agent approval rule that asked (`<agent>/<tool pattern>`), when one did.
+    pub rule: Option<String>,
+    /// How long it may wait, from that rule; else `FLOWR_APPROVAL_TIMEOUT_SECS`.
+    pub timeout_secs: Option<u64>,
+    /// The project the agent works in, for the inbox and the decision log.
+    pub project: Option<String>,
+}
+
+/// Who answers a question raised by `principal`: the person the agent acts
+/// for; with nobody behind the run (a trigger, a schedule), the agent's owner.
+pub fn approver_for(principal: &Principal) -> Option<String> {
+    principal.on_behalf_of().or_else(|| principal.owner()).map(str::to_string)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn request_approval_with(
+    session_id: &str,
+    principal: &Principal,
+    server: Option<&str>,
+    tool: &str,
+    arguments: &Value,
+    reason: &str,
+    scopes: &[GrantScope],
+    ask: &Ask,
+) -> PolicyDecision {
     let decision_id = flowr_mcp_core::mcp_decision_id(server, tool);
     let key = grants::decision_key(flowr_policy::actions::MCP_CALL, "Tool", &decision_id);
     let offered = offerable(scopes);
 
-    // The approver is the human the agent acts for; with nobody behind it there
-    // is no one to ask. The hook should not have produced an Ask in that case,
-    // so treat it as a denial rather than hanging.
-    let Some(approver) = principal.on_behalf_of().map(str::to_string) else {
+    // The approver is the human the agent acts for, else its owner; with
+    // nobody at all there is no one to ask, so it is a denial, not a hang.
+    let Some(approver) = approver_for(principal) else {
         warn!(tool, "approval requested for a principal with no human behind it");
         return PolicyDecision::Deny {
             reason: "approval required, but this run has no interactive approver".into(),
             policy_ids: vec!["no-approver".into()],
         };
     };
+    let q = Question { session_id, principal, approver: &approver, server, tool, arguments, reason, decision_id: &decision_id, offered: &offered, ask };
 
-    let answer = match durable_answer(session_id, principal, &approver, server, tool, arguments, reason, &decision_id, &offered).await {
+    let answer = match durable_answer(&q).await {
         Some(Durable::Answered(request_id, answer)) => Some((request_id, answer)),
-        Some(Durable::Expired(request_id)) => return timed_out(session_id, tool, &request_id),
+        Some(Durable::Expired(request_id)) => return timed_out(&q, &request_id),
         Some(Durable::Waiting) => {
             // The run has let go; this result is never used.
             return PolicyDecision::Deny { reason: "waiting for approval".into(), policy_ids: vec!["approval-pending".into()] };
@@ -95,45 +126,78 @@ pub async fn request_approval(
     };
     let (request_id, answer) = match answer {
         Some(a) => a,
-        None => match in_memory_answer(session_id, principal, &approver, server, tool, arguments, reason, &decision_id, &offered).await {
+        None => match in_memory_answer(&q).await {
             Ok(a) => a,
-            Err(request_id) => return timed_out(session_id, tool, &request_id),
+            Err(request_id) => return timed_out(&q, &request_id),
         },
     };
     settle(session_id, &key, &decision_id, &approver, tool, &request_id, &answer)
 }
 
-/// The question as streamed to the chat and listed for the approver.
-#[allow(clippy::too_many_arguments)]
-fn question(
-    request_id: &str,
-    session_id: &str,
-    principal: &Principal,
-    approver: &str,
-    server: Option<&str>,
-    tool: &str,
-    arguments: &Value,
-    reason: &str,
-    decision_id: &str,
-    offered: &[GrantScope],
-) -> Value {
-    json!({
-        "request_id": request_id,
-        "request_type": "authz",
-        "title": format!("Allow {tool}?"),
-        "message": reason,
-        "options": offered.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-        "agent_id": principal.id(),
-        "context": {
-            "tool": tool,
-            "server": server,
-            "arguments": arguments,
-            "decision_id": decision_id,
-            "reason": reason,
-            "approver": approver,
-            "session_id": session_id,
-        },
-    })
+/// One question, as asked.
+struct Question<'a> {
+    session_id: &'a str,
+    principal: &'a Principal,
+    approver: &'a str,
+    server: Option<&'a str>,
+    tool: &'a str,
+    arguments: &'a Value,
+    reason: &'a str,
+    decision_id: &'a str,
+    offered: &'a [GrantScope],
+    ask: &'a Ask,
+}
+
+impl Question<'_> {
+    fn timeout_secs(&self) -> i64 {
+        self.ask.timeout_secs.map(|s| s as i64).unwrap_or_else(|| {
+            std::env::var("FLOWR_APPROVAL_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(86_400)
+        }).max(1)
+    }
+
+    /// The question as streamed to the chat and listed in the approvals inbox.
+    fn json(&self, request_id: &str, expires_at: chrono::DateTime<chrono::Utc>) -> Value {
+        let p = self.principal;
+        json!({
+            "request_id": request_id,
+            "request_type": "authz",
+            "title": format!("Allow {}?", self.tool),
+            "message": self.reason,
+            "options": self.offered.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "agent_id": p.id(),
+            "created_at": chrono::Utc::now().to_rfc3339(),
+            "expires_at": expires_at.to_rfc3339(),
+            "context": {
+                "tool": self.tool,
+                "server": self.server,
+                "arguments": self.arguments,
+                "decision_id": self.decision_id,
+                "reason": self.reason,
+                // Who may answer. An approval is a security decision, so the
+                // endpoint verifies the responder against this rather than
+                // trusting whoever holds the request id.
+                "approver": self.approver,
+                "on_behalf_of": p.on_behalf_of(),
+                "agent_owner": p.owner(),
+                "session_id": self.session_id,
+                "rule": self.ask.rule,
+                "namespace": self.ask.project,
+                "timeout_secs": self.timeout_secs(),
+            },
+        })
+    }
+
+    /// The question goes into the decision log when first asked (GOV-7).
+    fn log(&self, request_id: &str, action: &str, note: &str) {
+        flowr_policy::audit::event(self.principal, action, "Approval", request_id, self.ask.project.as_deref(), None, None, Some(note));
+    }
+
+    fn asked_note(&self) -> String {
+        let mut n = format!("{} · answer by {}", self.tool, self.approver);
+        if let Some(r) = &self.ask.rule { n.push_str(&format!(" · rule {r}")); }
+        n.push_str(&format!(" · waits {}s", self.timeout_secs()));
+        n
+    }
 }
 
 fn publish_card(session_id: &str, request_id: &str, server: Option<&str>, tool: &str, arguments: &Value, reason: &str, offered: &[GrantScope]) {
@@ -160,30 +224,19 @@ enum Durable {
 
 /// On a journaled run: the recorded answer, or record the question and stop
 /// the run until it comes. `None` when the run has no journal.
-#[allow(clippy::too_many_arguments)]
-async fn durable_answer(
-    session_id: &str,
-    principal: &Principal,
-    approver: &str,
-    server: Option<&str>,
-    tool: &str,
-    arguments: &Value,
-    reason: &str,
-    decision_id: &str,
-    offered: &[GrantScope],
-) -> Option<Durable> {
+async fn durable_answer(q: &Question<'_>) -> Option<Durable> {
     if !swf_runtime::effects::journaled() {
         return None;
     }
     let fresh = !swf_runtime::effects::asked("ask");
     let request_id = Uuid::now_v7().to_string();
-    let request = question(&request_id, session_id, principal, approver, server, tool, arguments, reason, decision_id, offered);
-    let secs: i64 = std::env::var("FLOWR_APPROVAL_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(86_400);
-    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(secs);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(q.timeout_secs());
+    let request = q.json(&request_id, expires_at);
     if fresh {
         // Shown once, when first asked; `ask` records it with this id.
-        publish_card(session_id, &request_id, server, tool, arguments, reason, offered);
-        info!(session_id, tool, request_id, "approval requested; the run waits for it durably");
+        publish_card(q.session_id, &request_id, q.server, q.tool, q.arguments, q.reason, q.offered);
+        q.log(&request_id, "approval:request", &q.asked_note());
+        info!(session_id = q.session_id, tool = q.tool, request_id, "approval requested; the run waits for it durably");
     }
     match swf_runtime::effects::ask("ask", &request, expires_at).await? {
         Ok(swf_runtime::effects::Answer::Given { request_id, decision, .. }) => Some(Durable::Answered(request_id, decision)),
@@ -192,61 +245,41 @@ async fn durable_answer(
     }
 }
 
-/// Without a journal: wait in this process (`InputManager`), five minutes.
-#[allow(clippy::too_many_arguments)]
-async fn in_memory_answer(
-    session_id: &str,
-    principal: &Principal,
-    approver: &str,
-    server: Option<&str>,
-    tool: &str,
-    arguments: &Value,
-    reason: &str,
-    decision_id: &str,
-    offered: &[GrantScope],
-) -> Result<(String, Value), String> {
+/// Without a journal: wait in this process (`InputManager`), at most five
+/// minutes (or the rule's timeout, if shorter).
+async fn in_memory_answer(q: &Question<'_>) -> Result<(String, Value), String> {
     let request_id = Uuid::now_v7().to_string();
+    let wait = Duration::from_secs((q.timeout_secs() as u64).min(APPROVAL_TIMEOUT.as_secs()));
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(wait.as_secs() as i64);
+    let shown = q.json(&request_id, expires_at);
     let request = flowr_ce_agents::InputRequest {
         id: request_id.clone(),
         request_type: "authz".to_string(),
         channel: "chat".to_string(),
-        title: Some(format!("Allow {tool}?")),
-        message: Some(reason.to_string()),
-        options: Some(json!(offered.iter().map(|s| s.as_str()).collect::<Vec<_>>())),
+        title: Some(format!("Allow {}?", q.tool)),
+        message: Some(q.reason.to_string()),
+        options: Some(shown["options"].clone()),
         fields: None,
         schema: None,
         // Everything the person needs to judge the request: which tool, on which
         // server, with what arguments. Withholding the arguments would make the
         // prompt unanswerable in any considered way.
-        context: Some(json!({
-            "tool": tool,
-            "server": server,
-            "arguments": arguments,
-            "decision_id": decision_id,
-            "reason": reason,
-            // Who may answer. An approval is a security decision, so the
-            // endpoint verifies the responder against this rather than trusting
-            // whoever holds the request id.
-            "approver": approver,
-            "session_id": session_id,
-        })),
+        context: Some(shown["context"].clone()),
         workflow: None,
-        agent_id: Some(principal.id().to_string()),
+        agent_id: Some(q.principal.id().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
-        expires_at: (chrono::Utc::now() + chrono::Duration::seconds(APPROVAL_TIMEOUT.as_secs() as i64))
-            .to_rfc3339(),
+        expires_at: expires_at.to_rfc3339(),
         status: flowr_ce_agents::InputStatus::Pending,
     };
 
-    let rx = flowr_ce_agents::input_manager()
-        .create_request(request, APPROVAL_TIMEOUT)
-        .await;
+    let rx = flowr_ce_agents::input_manager().create_request(request, wait).await;
 
     // Stream the card into the conversation that raised it.
-    publish_card(session_id, &request_id, server, tool, arguments, reason, offered);
-    info!(session_id, tool, request_id, "approval requested, agent suspended");
+    publish_card(q.session_id, &request_id, q.server, q.tool, q.arguments, q.reason, q.offered);
+    q.log(&request_id, "approval:request", &q.asked_note());
+    info!(session_id = q.session_id, tool = q.tool, request_id, "approval requested, agent suspended");
 
-    match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
+    match tokio::time::timeout(wait, rx).await {
         Ok(Ok(resp)) => Ok((request_id, resp.data)),
         // Timed out, or the channel dropped.
         _ => Err(request_id),
@@ -256,8 +289,10 @@ async fn in_memory_answer(
 /// Nobody answered in time. The question is deliberately NOT recorded as a
 /// refusal: remembering a non-answer would silently harden into a permanent
 /// "no" the user never chose. This call fails; the next one asks again.
-fn timed_out(session_id: &str, tool: &str, request_id: &str) -> PolicyDecision {
+fn timed_out(q: &Question<'_>, request_id: &str) -> PolicyDecision {
+    let (session_id, tool) = (q.session_id, q.tool);
     warn!(session_id, tool, request_id, "approval timed out unanswered");
+    q.log(request_id, "approval:expired", &format!("{tool} · not answered by {} in {}s", q.approver, q.timeout_secs()));
     crate::token_stream::publish(
         session_id,
         "authz-resolved",

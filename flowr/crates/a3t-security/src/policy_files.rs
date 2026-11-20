@@ -262,22 +262,46 @@ fn compile_file(org: &str, f: PolicyFile) -> Result<Compiled, String> {
     let mut out = String::new();
     let mut hidden = Vec::new();
     for (i, r) in f.rules.iter().enumerate() {
-        if r.cannot.is_empty() {
-            return Err(format!("rule {}: `cannot` names nothing", i + 1));
+        let approval = !r.needs_approval.is_empty();
+        match (r.cannot.is_empty(), approval) {
+            (true, false) => return Err(format!("rule {}: `cannot` names nothing", i + 1)),
+            (false, true) => return Err(format!("rule {}: a rule has `cannot` or `needs_approval`, not both", i + 1)),
+            _ => {}
+        }
+        if r.timeout.is_some() && !approval {
+            return Err(format!("rule {}: `timeout` goes with `needs_approval`", i + 1));
         }
         if r.reason.trim().is_empty() {
             return Err(format!("rule {}: give a reason (people see it when they are refused)", i + 1));
         }
+        let timeout = match &r.timeout {
+            Some(t) => Some(flowr_policy::policy_file::approval_timeout_secs(t).map_err(|e| format!("rule {}: {e}", i + 1))?),
+            None => None,
+        };
         let (who, roles) = who_cond(org, &r.who)?;
+        // An approval is asked of the person behind an agent: it binds agents
+        // only (a person calling a tool themselves is the approver).
+        let who = if approval {
+            Some(match who { Some(w) => format!("(principal is Agent && {w})"), None => "principal is Agent".to_string() })
+        } else {
+            who
+        };
         let on = on_cond(&r.on)?;
-        for (k, item) in r.cannot.iter().enumerate() {
+        let items = if approval { &r.needs_approval } else { &r.cannot };
+        for (k, item) in items.iter().enumerate() {
             match target_of(cat, item).map_err(|e| format!("rule {}: {e}", i + 1))? {
+                Target::App(_) if approval => return Err(format!("rule {}: {item} is a console app; approvals are for what agents call", i + 1)),
                 Target::App(app) => hidden.push(HiddenApp { app, roles: roles.clone() }),
                 Target::Cedar(parts) => {
                     for (j, (head, res)) in parts.into_iter().enumerate() {
                         let conds: Vec<String> = scope.iter().cloned().chain(who.iter().cloned()).chain(res).chain(on.iter().cloned()).collect();
                         let when = if conds.is_empty() { String::new() } else { format!(" when {{\n  {}\n}}", conds.join(" &&\n  ")) };
                         out.push_str(&annotate(&format!("{full}/r{}.{}.{}", i + 1, k + 1, j + 1), &r.reason));
+                        if approval {
+                            // Kept out of the deciding set by the hook: a match
+                            // asks a person instead of refusing (GOV-8).
+                            out.push_str(&format!("@approval({})\n", q(&timeout.map(|t| t.to_string()).unwrap_or_default())));
+                        }
                         out.push_str(&format!("forbid(principal, {head}, resource){when};\n\n"));
                     }
                 }

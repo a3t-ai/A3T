@@ -11,7 +11,7 @@
   // them (FlowR says so in `policy.can_edit`), not its project's writers.
   let { agent }: { agent: AgentRec; canEdit?: boolean } = $props();
 
-  type Rule = { cannot: string[]; on?: { tools?: string[]; models?: { not_in?: string[]; in?: string[] } }; reason: string; who?: unknown };
+  type Rule = { cannot?: string[]; needs_approval?: string[]; timeout?: string; on?: { tools?: string[]; models?: { not_in?: string[]; in?: string[] } }; reason: string; who?: unknown };
   let prof = $state<AgentSecurity | null>(null);
   let cat = $state<CatalogueEntry[]>([]);
   let err = $state('');
@@ -40,7 +40,10 @@
     if (rs.length) {
       lines.push('rules:');
       for (const r of rs) {
-        lines.push(`  - cannot: ${JSON.stringify(r.cannot)}`);
+        if (r.needs_approval?.length) {
+          lines.push(`  - needs_approval: ${JSON.stringify(r.needs_approval)}`);
+          if (r.timeout) lines.push(`    timeout: ${JSON.stringify(r.timeout)}`);
+        } else lines.push(`  - cannot: ${JSON.stringify(r.cannot ?? [])}`);
         if (r.who) lines.push(`    who: ${JSON.stringify(r.who)}`);
         if (r.on && Object.keys(r.on).length) lines.push(`    on: ${JSON.stringify(r.on)}`);
         lines.push(`    reason: ${JSON.stringify(r.reason)}`);
@@ -62,20 +65,24 @@
   // ── Add a rule (starters) ──
   let adding = $state(false);
   let nWhat = $state('');
+  /// 'cannot': it may not; 'approval': only once a person approves each call (GOV-8).
+  let nKind = $state<'cannot' | 'approval'>('cannot');
+  let nTimeout = $state('');
   let nTools = $state('');
   let nModels = $state('');
   let nReason = $state('');
   const needsTools = $derived(nWhat === 'tools.external');
   const needsModels = $derived(nWhat === 'models.use');
   async function addRule() {
-    if (!nWhat || !nReason.trim()) { err = 'Pick what it may not do, and say why: people see the reason when it is refused.'; return; }
+    if (!nWhat || !nReason.trim()) { err = nKind === 'approval' ? 'Pick what needs approval, and say why: the approver reads it.' : 'Pick what it may not do, and say why: people see the reason when it is refused.'; return; }
     const on: Rule['on'] = {};
     const tools = nTools.split(',').map((t) => t.trim()).filter(Boolean);
     const models = nModels.split(',').map((t) => t.trim()).filter(Boolean);
     if (needsTools && tools.length) on.tools = tools;
     if (needsModels && models.length) on.models = { not_in: models };
-    const next = [...rules, { cannot: [nWhat], ...(Object.keys(on).length ? { on } : {}), reason: nReason.trim() }];
-    if (await save(fileOf(next), 'add')) { adding = false; nWhat = ''; nTools = ''; nModels = ''; nReason = ''; }
+    const what = nKind === 'approval' ? { needs_approval: [nWhat], ...(nTimeout ? { timeout: nTimeout } : {}) } : { cannot: [nWhat] };
+    const next = [...rules, { ...what, ...(Object.keys(on).length ? { on } : {}), reason: nReason.trim() }];
+    if (await save(fileOf(next), 'add')) { adding = false; nWhat = ''; nTools = ''; nModels = ''; nReason = ''; nTimeout = ''; nKind = 'cannot'; }
   }
   async function removeRule(i: number) {
     const next = rules.filter((_, j) => j !== i);
@@ -132,16 +139,28 @@
           {#if adding}
             <div class="review">
               <div class="fields">
-                <label class="fld full">It may not
+                <label class="fld">Kind
+                  <select bind:value={nKind}>
+                    <option value="cannot">It may not</option>
+                    <option value="approval">It needs a person's approval to</option>
+                  </select></label>
+                {#if nKind === 'approval'}<label class="fld">Ask for up to
+                  <select bind:value={nTimeout}>
+                    <option value="">a day (the default)</option>
+                    <option value="15m">15 minutes</option><option value="1h">1 hour</option><option value="4h">4 hours</option>
+                    <option value="3d">3 days</option><option value="7d">7 days</option>
+                  </select></label>{/if}
+                <label class="fld full">{nKind === 'approval' ? 'Needs approval to' : 'It may not'}
                   <select bind:value={nWhat}>
                     <option value="">Pick…</option>
                     {#each choices as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
                   </select></label>
                 {#if needsTools}<label class="fld full">Only tools named <small>comma-separated; * matches anything, e.g. github*</small><input bind:value={nTools} placeholder="empty: every tool of a connected server" /></label>{/if}
                 {#if needsModels}<label class="fld full">Except these models <small>comma-separated resource names</small><input class="mono" bind:value={nModels} placeholder="a3t/claude-cli-max" /></label>{/if}
-                <label class="fld full">Why <small>shown when it is refused</small><input bind:value={nReason} placeholder="It works only with the customer's own systems." /></label>
+                <label class="fld full">Why <small>{nKind === 'approval' ? 'shown to the approver' : 'shown when it is refused'}</small><input bind:value={nReason} placeholder="It works only with the customer's own systems." /></label>
               </div>
-              {#if nWhat}<p class="dim">This agent may not {label(nWhat).toLowerCase()}{needsTools && nTools ? ` (tools named ${nTools})` : ''}{needsModels && nModels ? ` (models other than ${nModels})` : ''}.</p>{/if}
+              {#if nWhat && nKind === 'approval'}<p class="dim">Each time this agent would {label(nWhat).toLowerCase()}{needsTools && nTools ? ` (tools named ${nTools})` : ''}, it waits until the person it acts for approves that one call in their Approvals inbox or the chat. Unanswered, it is refused.</p>
+              {:else if nWhat}<p class="dim">This agent may not {label(nWhat).toLowerCase()}{needsTools && nTools ? ` (tools named ${nTools})` : ''}{needsModels && nModels ? ` (models other than ${nModels})` : ''}.</p>{/if}
               <div class="acts"><button class="btn2 primary" disabled={!!busy} onclick={addRule}>{busy === 'add' ? 'Checking…' : 'Add rule'}</button><button class="btn2 quiet" onclick={() => (adding = false)}>Cancel</button></div>
             </div>
           {:else}<div class="acts"><button class="btn2 primary" onclick={() => (adding = true)}>+ Rule</button></div>{/if}

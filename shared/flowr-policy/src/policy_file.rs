@@ -45,10 +45,38 @@ pub struct Rule {
     #[serde(default)]
     pub who: Option<Who>,
     /// Catalogue ids (`flows.run`, `apps.security`) or tool globs (`tools.delete_*`).
+    #[serde(default)]
     pub cannot: Vec<String>,
+    /// What agents may do only once a person approves that call (GOV-8): the
+    /// same ids and globs as `cannot`. A rule has `cannot` or `needs_approval`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs_approval: Vec<String>,
+    /// How long a `needs_approval` question may wait: `30m`, `4h`, `2d`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
     #[serde(default)]
     pub on: Option<On>,
     pub reason: String,
+}
+
+/// `30m`, `4h`, `2d`, `90s` (or bare seconds) → seconds; between a minute and
+/// thirty days.
+pub fn approval_timeout_secs(t: &str) -> Result<u64, String> {
+    let t = t.trim();
+    let cut = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let (num, unit) = t.split_at(cut);
+    let n: u64 = num.parse().map_err(|_| format!("timeout {t:?}: say e.g. 30m, 4h or 2d"))?;
+    let secs = match unit.trim() {
+        "" | "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86_400,
+        _ => return Err(format!("timeout {t:?}: say e.g. 30m, 4h or 2d")),
+    };
+    if !(60..=30 * 86_400).contains(&secs) {
+        return Err(format!("timeout {t:?}: between 1m and 30d"));
+    }
+    Ok(secs)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -187,8 +215,11 @@ pub fn describe_rule(r: &Rule) -> String {
             if parts.is_empty() { "Nobody".into() } else { parts.join(" and ") }
         }
     };
-    let verb = if who == "Nobody" { "may" } else { "may not" };
-    let what = r.cannot.iter().map(|c| label(c)).collect::<Vec<_>>().join(", ");
+    let approval = !r.needs_approval.is_empty();
+    let who = if approval && who == "Nobody" { "Agents".to_string() } else { who };
+    let verb = if approval { "need a person's approval to" } else if who == "Nobody" { "may" } else { "may not" };
+    let items = if approval { &r.needs_approval } else { &r.cannot };
+    let what = items.iter().map(|c| label(c)).collect::<Vec<_>>().join(", ");
     let mut on = Vec::new();
     if let Some(o) = &r.on {
         if !o.tools.is_empty() {
@@ -198,6 +229,9 @@ pub fn describe_rule(r: &Rule) -> String {
             if !m.is_in.is_empty() { on.push(format!("the models {}", m.is_in.join(", "))); }
             if !m.not_in.is_empty() { on.push(format!("models other than {}", m.not_in.join(", "))); }
         }
+    }
+    if approval {
+        if let Some(t) = &r.timeout { on.push(format!("asked for up to {t}")); }
     }
     let on = if on.is_empty() { String::new() } else { format!(" ({})", on.join("; ")) };
     format!("{who} {verb} {what}{on}. {}", r.reason.trim())
@@ -214,5 +248,10 @@ mod tests {
             "Operator users and agents may not call language models, call tools named delete_* (models other than acme/sonnet). Approved models only.");
         let g = PolicyFile::parse("kind: a3t/policy\nname: x\nrules:\n  - cannot: [flows.delete]\n    reason: Never.\n").unwrap();
         assert_eq!(describe_rule(&g.rules[0]), "Nobody may delete flows. Never.");
+        let a = PolicyFile::parse("kind: a3t/policy\nname: x\nrules:\n  - needs_approval: [tools.delete_*]\n    timeout: 4h\n    reason: A person checks deletes.\n").unwrap();
+        assert_eq!(describe_rule(&a.rules[0]), "Agents need a person's approval to call tools named delete_* (asked for up to 4h). A person checks deletes.");
+        assert_eq!(approval_timeout_secs("4h"), Ok(14_400));
+        assert!(approval_timeout_secs("10s").is_err());
+        assert!(approval_timeout_secs("4w").is_err());
     }
 }

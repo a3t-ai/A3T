@@ -258,3 +258,62 @@ fn the_test_policy_repo_compiles() {
     assert!(p1.contains(&"org.acme.policy.no-flow-deletes-p1") && p1.contains(&"org.acme.policy.approved-models"), "{p1:?}");
     assert!(!set.policies.iter().any(|(p, n, _)| p == "acme-sam1" && n.contains("no-flow-deletes")), "p1's rule stays in p1");
 }
+
+/// GOV-8: a `needs_approval` rule turns an allowed agent call into a question
+/// asked every time; a person calling the tool themselves is not asked.
+#[tokio::test]
+async fn needs_approval_asks_a_person_every_time() {
+    let yaml = "kind: a3t/policy\nname: profile\nrules:\n  - needs_approval: [tools.delete_*]\n    timeout: 30m\n    reason: A person checks every delete.\n";
+    let c = compile_agent_policy("acme-crm", "agt-1", yaml).unwrap();
+    assert!(c.cedar.contains("@approval(\"1800\")"), "{}", c.cedar);
+    let h = hook(&[c.cedar]);
+    let agent = |id: &str, on_behalf_of: Option<&str>, owner: Option<&str>| {
+        let p = Principal::Agent {
+            memory_branch: None, agent_id: flowr_policy::AgentId(format!("agent:{id}:s1")),
+            on_behalf_of: on_behalf_of.map(str::to_string), flow_id: None, roles: vec!["Admin".into()], owner: owner.map(str::to_string),
+        };
+        tool_call(p, "delete_flow", serde_json::json!({ "agent": id }))
+    };
+    match h.check(&agent("agt-1", Some("u1"), Some("u1"))).await {
+        PolicyDecision::Ask { scopes, required: Some(r), policy_ids, reason } => {
+            assert_eq!(scopes, vec![flowr_policy::GrantScope::Once]);
+            assert_eq!(r.timeout_secs, Some(1800));
+            assert!(policy_ids.iter().any(|i| i.starts_with("acme-crm/profile/r1")), "{policy_ids:?}");
+            assert!(reason.contains("every delete"), "{reason}");
+        }
+        other => panic!("expected a required ask, got {other:?}"),
+    }
+    // An agent with nobody behind it is refused by the baseline before any rule.
+    assert!(!h.check(&agent("agt-1", None, Some("u1"))).await.is_allow());
+    // Other tools and other agents are not touched.
+    let mut list = agent("agt-1", Some("u1"), None);
+    list.resource = flowr_policy::Resource::tool("list_flows");
+    assert_eq!(h.check(&list).await, PolicyDecision::Allow);
+    // Another agent: only the baseline's own question (destructive tools), no rule.
+    assert!(matches!(h.check(&agent("agt-2", Some("u1"), None)).await, PolicyDecision::Ask { required: None, .. }));
+    // A person calling it directly is the approver: allowed.
+    assert_eq!(h.check(&tool_call(human(&["Admin"]), "delete_flow", serde_json::json!({ "agent": "agt-1" }))).await, PolicyDecision::Allow);
+}
+
+#[test]
+fn needs_approval_mistakes_are_refused() {
+    let bad = |rule: &str| compile_policy("acme", &format!("kind: a3t/policy\nname: x\napplies_to: {{ org: true }}\nrules:\n  - {rule}\n    reason: r\n")).unwrap_err();
+    assert!(bad("cannot: [flows.run]\n    needs_approval: [tools.x]").contains("not both"));
+    assert!(bad("cannot: [flows.run]\n    timeout: 4h").contains("timeout"));
+    assert!(bad("needs_approval: [tools.x]\n    timeout: 10s").contains("between"));
+    assert!(bad("needs_approval: [apps.security]").contains("console app"));
+}
+
+/// An org-wide approval rule binds every agent in the org, by role too.
+#[tokio::test]
+async fn an_org_approval_rule_binds_agents_carrying_a_role() {
+    let c = compile_policy("acme", "kind: a3t/policy\nname: merges\napplies_to: { org: true }\nrules:\n  - who: { roles: [Operator] }\n    needs_approval: [tools.merge_*]\n    reason: Merges are checked.\n").unwrap();
+    let h = hook(&[c.cedar]);
+    let agent = |roles: &[&str]| tool_call(Principal::Agent {
+        memory_branch: None, agent_id: flowr_policy::AgentId("agent:a:s".into()), on_behalf_of: Some("u1".into()),
+        flow_id: None, roles: roles.iter().map(|r| r.to_string()).collect(), owner: None,
+    }, "merge_pr", serde_json::json!({}));
+    assert!(matches!(h.check(&agent(&["Operator"])).await, PolicyDecision::Ask { required: Some(_), .. }));
+    assert_eq!(h.check(&agent(&["Admin"])).await, PolicyDecision::Allow);
+    assert_eq!(h.check(&tool_call(human(&["Operator"]), "merge_pr", serde_json::json!({}))).await, PolicyDecision::Allow);
+}

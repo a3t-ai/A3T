@@ -643,9 +643,14 @@ async fn audit_handler(
                 let Some(me) = flowr_policy::namespace::acting_user(&p) else {
                     return refuse(StatusCode::FORBIDDEN, "The decision log is read by people, not agents.");
                 };
-                q.agent_owner = Some(me.to_string());
                 q.orgs = every_org().await;
-                "own agents"
+                // Or what they did themselves (their approval answers, GOV-7).
+                if q.principal.as_deref() == Some(me) {
+                    "yours"
+                } else {
+                    q.agent_owner = Some(me.to_string());
+                    "own agents"
+                }
             }
         }
     };
@@ -1045,7 +1050,7 @@ async fn policies_test_handler(
             flowr_policy::PolicyDecision::Allow => (true, None, deciding.clone(), Vec::new()),
             flowr_policy::PolicyDecision::Deny { reason, policy_ids } =>
                 (false, Some(reason.clone()), policy_ids.clone(), Vec::new()),
-            flowr_policy::PolicyDecision::Ask { reason, policy_ids, scopes } => (
+            flowr_policy::PolicyDecision::Ask { reason, policy_ids, scopes, .. } => (
                 false,
                 Some(reason.clone()),
                 policy_ids.clone(),

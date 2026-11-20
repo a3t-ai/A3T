@@ -4,7 +4,7 @@
  * Access rules:
  *   superadmin — sees all menu items (platform-level access)
  *   admin      — sees all menu items
- *   (per-item roles below; Security and the Decision log: SuperAdmin and SecurityAdmin only)
+ *   (per-item roles below; Security: SuperAdmin, SecurityAdmin and org security managers)
  */
 
 import type { UserRole, MenuGroup } from './types';
@@ -53,7 +53,9 @@ export const MENU_CONFIG: MenuGroup[] = [
     roles: ALL_ROLES,
     items: [
       { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield', roles: INFOSEC },
-      { type: 'logs',       label: 'Decision log', tag: null, icon: 'decision', roles: INFOSEC },
+      { type: 'approvals',  label: 'Approvals',    tag: null, icon: 'decision', roles: ALL_ROLES },
+      // Everyone: the server scopes it (InfoSec all, org admins their org, owners their agents).
+      { type: 'logs',       label: 'Decision log', tag: null, icon: 'decision', roles: ALL_ROLES },
     ],
   },
   {

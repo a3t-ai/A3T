@@ -373,11 +373,22 @@ async function loadAll(source: string): Promise<AppItem[]> {
       id: it.key, label: it.label, namespace: g.label, sub: it.ee ? 'Enterprise' : '',
     })));
   }
+  if (source === 'approvals') {
+    // What waits on a person (GOV-7): yours to answer, and for InfoSec everyone's.
+    const { approvalsApi } = await import('$lib/services/api');
+    const r = await approvalsApi.pending();
+    if (!r.ok) throw new Error(r.error ?? 'The approvals could not be read.');
+    const out: AppItem[] = r.items.map((a) => ({
+      id: a.id, label: a.tool, namespace: a.project || 'Waiting',
+      sub: `${a.agent || 'an agent'}${a.onBehalfOf ? ` for ${a.onBehalfOf}` : ''}${a.createdAt ? ` · ${relTime(a.createdAt)}` : ''}`,
+      status: 'waiting',
+    }));
+    out.push({ id: 'answered', label: 'Answered', namespace: 'History', sub: 'your answers, from the decision log' });
+    return out;
+  }
   if (source === 'decision-views') {
-    // SuperAdmin and SecurityAdmin only (the server refuses anyone else): say so
-    // here, as Security does, rather than list views that can only fail.
-    const { isInfosec } = await import('$lib/stores/auth');
-    if (!isInfosec()) throw new Error('The decision log is for SuperAdmin and SecurityAdmin.');
+    // Everyone: the server scopes what each person sees (AUD-8) — InfoSec every
+    // org, an org's admins their org, anyone else the agents they own.
     return [
       { id: 'all', label: 'All decisions', sub: 'every allow, deny and approval asked' },
       { id: 'deny', label: 'Denials', sub: 'what was refused, and why' },

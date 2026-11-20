@@ -1200,6 +1200,64 @@ export async function answerApproval(
   return res.ok;
 }
 
+/// The approvals inbox (GOV-7): every question waiting on a person — from a
+/// chat, a flow's agent, a trigger or an API call — with what it would do.
+export interface InboxItem {
+  id: string;
+  title: string;
+  tool: string;
+  server?: string | null;
+  arguments?: any;
+  reason: string;
+  agent: string;
+  approver?: string | null;
+  onBehalfOf?: string | null;
+  owner?: string | null;
+  project?: string | null;
+  rule?: string | null;
+  session?: string | null;
+  scopes: string[];
+  createdAt?: string | null;
+  expiresAt?: string | null;
+  /** Durable (journaled run, survives restarts) or in this FlowR only. */
+  durable: boolean;
+}
+
+export const approvalsApi = {
+  async pending(): Promise<{ ok: boolean; items: InboxItem[]; error?: string }> {
+    const res = await request<{ inputs: any[] }>('/inputs');
+    if (!res.ok) return { ok: false, items: [], error: res.error };
+    const items = (res.data?.inputs ?? []).filter((i: any) => i?.request_type === 'authz').map((i: any): InboxItem => ({
+      id: i.id ?? i.request_id,
+      title: i.title ?? `Allow ${i.context?.tool ?? 'a tool'}?`,
+      tool: i.context?.tool ?? 'a tool',
+      server: i.context?.server ?? null,
+      arguments: i.context?.arguments,
+      reason: i.context?.reason ?? i.message ?? '',
+      agent: String(i.agent_id ?? '').replace(/^agent:/, ''),
+      approver: i.context?.approver ?? null,
+      onBehalfOf: i.context?.on_behalf_of ?? null,
+      owner: i.context?.agent_owner ?? null,
+      project: i.context?.namespace ?? null,
+      rule: i.context?.rule ?? null,
+      session: i.context?.session_id ?? null,
+      scopes: Array.isArray(i.options) ? i.options : ['once'],
+      createdAt: i.created_at ?? null,
+      expiresAt: i.expires_at ?? null,
+      durable: !!i.run_id,
+    }));
+    items.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    return { ok: true, items };
+  },
+  /// Answer one. Only its approver may; anyone else is told it does not exist.
+  answer(id: string, allow: boolean, scope: 'once' | 'session', reason?: string) {
+    return request(`/inputs/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify({ allow, scope, ...(reason ? { reason } : {}) }),
+    });
+  },
+};
+
 // ── Pins (per user, server-side so they follow you across devices) ──
 
 export type PinMap = Record<string, string[]>;

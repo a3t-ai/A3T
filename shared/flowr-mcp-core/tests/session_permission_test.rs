@@ -16,6 +16,7 @@ fn ask() -> PolicyDecision {
         reason: "outside this agent's grants".into(),
         policy_ids: vec!["baseline".into()],
         scopes: vec![GrantScope::Once, GrantScope::Session],
+        required: None,
     }
 }
 

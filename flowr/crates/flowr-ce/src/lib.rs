@@ -738,7 +738,7 @@ async fn submit_input_handler(
 /// What an approval answer said, for the decision log (AUD-3): the decision
 /// fields, never free text the approver typed beyond 200 characters.
 fn answer_note(body: &Value) -> String {
-    let pick = ["approved", "decision", "approve", "scope", "action", "reason"];
+    let pick = ["allow", "approved", "decision", "approve", "scope", "action", "reason"];
     let parts: Vec<String> = pick.iter().filter_map(|k| body.get(*k).map(|v| format!("{k}={}", v))).collect();
     let s = if parts.is_empty() { body.to_string() } else { parts.join(" ") };
     s.chars().take(200).collect()

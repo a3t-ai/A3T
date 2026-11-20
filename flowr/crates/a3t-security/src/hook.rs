@@ -146,8 +146,49 @@ impl Labels {
 struct Pack {
     engine: AuthzEngine,
     labels: Labels,
+    /// The `needs_approval` rules (`@approval` forbids), kept out of the
+    /// deciding set: after an allow, a match asks a person (GOV-8).
+    approvals: Option<Approvals>,
     /// sha256 of the policy and schema source, first 16 hex (AUD-2).
     version: String,
+}
+
+/// The approval set: a permit-all plus the `@approval` forbids, so it denies
+/// exactly when an approval rule matches.
+struct Approvals {
+    engine: AuthzEngine,
+    labels: Labels,
+    /// Each policy's timeout (seconds), by Cedar position.
+    timeouts: Vec<Option<u64>>,
+}
+
+/// Split a policy source into its deciding statements and its `@approval`
+/// ones. A source with no `@approval` is returned as it is.
+fn split_approvals(src: &str, origin: &str) -> Result<(String, String), String> {
+    if !src.contains("@approval") {
+        return Ok((src.to_string(), String::new()));
+    }
+    use std::str::FromStr;
+    let set = cedar_policy::PolicySet::from_str(src).map_err(|e| format!("{origin}: {e}"))?;
+    let mut ps: Vec<(usize, &cedar_policy::Policy)> = set
+        .policies()
+        .map(|p| (p.id().to_string().trim_start_matches("policy").parse::<usize>().unwrap_or(usize::MAX), p))
+        .collect();
+    ps.sort_by_key(|(n, _)| *n);
+    let (mut main, mut appr) = (String::new(), String::new());
+    for (_, p) in ps {
+        let out = if p.annotation("approval").is_some() {
+            if p.effect() != cedar_policy::Effect::Forbid {
+                return Err(format!("{origin}: an @approval statement must be a forbid"));
+            }
+            &mut appr
+        } else {
+            &mut main
+        };
+        out.push_str(&p.to_string());
+        out.push_str("\n\n");
+    }
+    Ok((main, appr))
 }
 
 impl Pack {
@@ -155,23 +196,70 @@ impl Pack {
     fn build(baseline: &str, extra: &[(String, String)], schema: &str) -> Result<Self, String> {
         let mut text = String::from(baseline);
         let mut labels = Labels::of(baseline, "baseline")?;
+        let mut appr_text = String::new();
+        let mut appr_labels: Vec<(String, Option<String>)> = Vec::new();
         for (label, src) in extra {
-            labels.extend(Labels::of(src, label)?);
-            text.push_str("\n// ── ");
-            text.push_str(label);
-            text.push_str(" ──\n");
-            text.push_str(src);
-            text.push('\n');
+            let (main, appr) = split_approvals(src, label)?;
+            if !main.trim().is_empty() {
+                labels.extend(Labels::of(&main, label)?);
+                text.push_str("\n// ── ");
+                text.push_str(label);
+                text.push_str(" ──\n");
+                text.push_str(&main);
+                text.push('\n');
+            }
+            if !appr.trim().is_empty() {
+                appr_labels.extend(Labels::of(&appr, label)?);
+                appr_text.push_str(&appr);
+            }
         }
         let labels = Labels(labels);
         let engine = AuthzEngine::new(&text, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
+        let approvals = if appr_text.trim().is_empty() {
+            None
+        } else {
+            let base = "@id(\"approval-base\")\npermit(principal, action, resource);\n\n";
+            let full = format!("{base}{appr_text}");
+            let mut l = Labels::of(base, "approval-base")?;
+            l.extend(appr_labels);
+            let labels = Labels(l);
+            let engine = AuthzEngine::new(&full, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
+            use std::str::FromStr;
+            let set = cedar_policy::PolicySet::from_str(&full).map_err(|e| e.to_string())?;
+            let mut t: Vec<(usize, Option<u64>)> = set.policies().map(|p| (
+                p.id().to_string().trim_start_matches("policy").parse::<usize>().unwrap_or(usize::MAX),
+                p.annotation("approval").and_then(|v| v.parse::<u64>().ok()),
+            )).collect();
+            t.sort_by_key(|(n, _)| *n);
+            text.push_str("\n// ── approvals ──\n");
+            text.push_str(&appr_text);
+            Some(Approvals { engine, labels, timeouts: t.into_iter().map(|(_, s)| s).collect() })
+        };
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
         h.update(text.as_bytes());
         h.update(b"\0");
         h.update(schema.as_bytes());
         let version = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
-        Ok(Self { engine, labels, version })
+        Ok(Self { engine, labels, approvals, version })
+    }
+
+    /// After an allow: does a `needs_approval` rule cover this call? Its ids,
+    /// reasons and the shortest timeout among them.
+    fn approval_needed(&self, ctx: &SecurityContext, action: &AesopAction, resource: &AesopResource) -> Option<(Vec<String>, Vec<String>, Option<u64>)> {
+        let a = self.approvals.as_ref()?;
+        match a.engine.enforce(ctx, action, resource) {
+            Ok(_) => None,
+            Err(AesopError::Denied { policy_ids, .. }) if !policy_ids.is_empty() => {
+                let ids = policy_ids.iter().map(|i| a.labels.label(i)).collect();
+                let why = policy_ids.iter().filter_map(|i| a.labels.reason(i)).collect();
+                let pos = |i: &String| i.strip_prefix("policy").and_then(|n| n.parse::<usize>().ok());
+                let timeout = policy_ids.iter().filter_map(|i| pos(i).and_then(|n| a.timeouts.get(n).copied().flatten())).min();
+                Some((ids, why, timeout))
+            }
+            // A fault in the approval set asks rather than letting it through.
+            Err(_) => Some((vec!["approval-set".into()], Vec::new(), None)),
+        }
     }
 }
 
@@ -402,6 +490,27 @@ impl CedarHook {
     }
 }
 
+/// What a `needs_approval` rule makes of an allowed call: a question for the
+/// person behind the agent (or its owner), asked every time; with nobody to
+/// ask, a refusal.
+fn required_ask(p: &Principal, action: &AesopAction, resource: &AesopResource, policy_ids: Vec<String>, why: Vec<String>, timeout_secs: Option<u64>) -> PolicyDecision {
+    let what = format!("{} on {}::{}", action.as_str(), resource.type_name, resource.id);
+    let because = if why.is_empty() { String::new() } else { format!(" {}", why.join(" ")) };
+    let someone = matches!(p, Principal::Agent { .. }) && (p.on_behalf_of().is_some() || p.owner().is_some());
+    if !someone {
+        return PolicyDecision::Deny {
+            reason: format!("{what} needs a person's approval (policy {}), and nobody stands behind this call to give it.{because}", policy_ids.join(", ")),
+            policy_ids,
+        };
+    }
+    PolicyDecision::Ask {
+        reason: format!("{what} needs a person's approval (policy {}).{because}", policy_ids.join(", ")),
+        policy_ids,
+        scopes: vec![flowr_policy::GrantScope::Once],
+        required: Some(flowr_policy::RequiredApproval { timeout_secs }),
+    }
+}
+
 /// A refusal in words: what was refused, which policy refused it and what access
 /// it needs (the rule's `@reason`), or that nothing permits it for these roles.
 fn deny_reason(p: &Principal, action: &str, rtype: &str, rid: &str, ids: &[String], why: &[String]) -> String {
@@ -500,7 +609,10 @@ impl PolicyHook for CedarHook {
             }
         };
         match pack.engine.enforce(&ctx, &action, &resource) {
-            Ok(_allowed) => PolicyDecision::Allow,
+            Ok(_allowed) => match pack.approval_needed(&ctx, &action, &resource) {
+                None => PolicyDecision::Allow,
+                Some((policy_ids, why, timeout_secs)) => required_ask(&req.principal, &action, &resource, policy_ids, why, timeout_secs),
+            },
             Err(AesopError::Denied { policy_ids: raw_ids, action: denied_action, resource_type, resource_id }) => {
                 let policy_ids: Vec<String> = raw_ids.iter().map(|i| pack.labels.label(i)).collect();
                 let why: Vec<String> = raw_ids.iter().filter_map(|i| pack.labels.reason(i)).collect();
@@ -544,17 +656,31 @@ impl PolicyHook for CedarHook {
                         attributes: as_approver_attributes(&req.attributes, is_owner),
                     };
                     if pack.engine.enforce(&approver_ctx, &action, &resource).is_ok() {
+                        let reason = format!(
+                            "{denied_action} on {resource_type}::{resource_id} is outside this agent's \
+                             grants, but you can authorize it"
+                        );
+                        // An approval rule covers it too: one question, asked
+                        // every time, as the rule says.
+                        if let Some((ids, why, timeout_secs)) = pack.approval_needed(&ctx, &action, &resource) {
+                            let mut all = policy_ids;
+                            all.extend(ids);
+                            return PolicyDecision::Ask {
+                                reason: format!("{reason}; a rule also asks a person every time. {}", why.join(" ")).trim_end().to_string(),
+                                policy_ids: all,
+                                scopes: vec![flowr_policy::GrantScope::Once],
+                                required: Some(flowr_policy::RequiredApproval { timeout_secs }),
+                            };
+                        }
                         return PolicyDecision::Ask {
-                            reason: format!(
-                                "{denied_action} on {resource_type}::{resource_id} is outside this agent's \
-                                 grants, but you can authorize it"
-                            ),
+                            reason,
                             policy_ids,
                             scopes: vec![
                                 flowr_policy::GrantScope::Once,
                                 flowr_policy::GrantScope::Session,
                                 flowr_policy::GrantScope::Agent,
                             ],
+                            required: None,
                         };
                     }
                 }
