@@ -2740,7 +2740,7 @@ async fn list_triggers(storage: &dyn StorageBackend, principal: &flowr_policy::P
                 let ns = t.get("namespace").and_then(|v| v.as_str()).unwrap_or("default").to_string();
                 let name = t.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
                 if crate::ns_gate::can_read(principal, flowr_policy::namespace::ItemKind::Trigger, &ns, &name, "", "").await {
-                    triggers.push(t);
+                    triggers.push(redact_trigger(t));
                 }
             }
             // Optionally filter by target flow name
@@ -2775,6 +2775,18 @@ async fn list_triggers(storage: &dyn StorageBackend, principal: &flowr_policy::P
     }
 }
 
+/// A trigger as shown to people: a webhook's secret is never returned, only
+/// whether one is set (`config.secret_set`).
+pub fn redact_trigger(mut v: Value) -> Value {
+    if let Some(cfg) = v.get_mut("config").and_then(|c| c.as_object_mut()) {
+        let set = cfg.remove("secret").and_then(|s| s.as_str().map(|s| !s.is_empty())).unwrap_or(false);
+        if cfg.get("type").and_then(|t| t.as_str()) == Some("webhook") {
+            cfg.insert("secret_set".into(), Value::Bool(set));
+        }
+    }
+    v
+}
+
 async fn get_trigger(storage: &dyn StorageBackend, args: &Value) -> CallToolResult {
     let id = match args.get("id").and_then(|v| v.as_str()) {
         Some(id) => id,
@@ -2782,7 +2794,7 @@ async fn get_trigger(storage: &dyn StorageBackend, args: &Value) -> CallToolResu
     };
 
     match storage.triggers().get(id).await {
-        Ok(Some(trigger)) => CallToolResult::json(trigger),
+        Ok(Some(trigger)) => CallToolResult::json(redact_trigger(trigger)),
         Ok(None) => CallToolResult::error(format!("Trigger '{}' not found", id)),
         Err(e) => CallToolResult::error(format!("Failed to get trigger: {}", e)),
     }

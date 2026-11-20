@@ -2,16 +2,18 @@ document:
   dsl: '1.0.3'
   namespace: a3t
   name: tmpl_a3t_agent
-  version: '4.5.0'
+  version: '4.6.0'
   metadata:
     description: >
       A3T chat: every message from the console's AI Chat and from an agent's Chat
       tab (POST /chat) runs here. It is an A3T agent on the core agent: it extends
       system/tmpl_system_agent_engine@2.2.0 and runs it with the agent's own values, read from
       the agent's record (agent_configs; the session id is <agent-id>:<session>).
-      A session with no agent is the A3T assistant. What the request carries wins
-      over the record (llm_resource, enabled_tools, mcp_servers), as the Chat tab
-      sends them. A blocked agent (status blocked) refuses the call. Its hooks
+      A session with no agent is the A3T assistant, as the caller. An agent's record is the ceiling:
+      a request may narrow the agent's MCP servers and tools (the Chat tab sends
+      them), never widen them, and may not swap its model; a request that asks
+      for more is refused (403). With a document open (ui_context), propose_edit
+      is allowed too: it stores nothing. A blocked agent (status blocked) refuses the call. Its hooks
       (values.hooks: {<phase>: ["<project>/<flow>"]}) run inside the turn, in the engine. Input: { message, session_id, llm_resource?, enabled_tools?,
       mcp_servers?, context?, ui_context? }. Output: the core agent's.
 
@@ -56,7 +58,7 @@ do:
                     input:
                       error: '${ $context.error }'
                       flow: a3t/tmpl_a3t_agent
-                      version: 4.5.0
+                      version: 4.6.0
                       run_id: '${ (($workflow // {}).id // "") | tostring }'
                       principal: '${ (($context._principal // {}).user // "") | tostring }'
                       step: load_agent
@@ -103,14 +105,47 @@ do:
           title: Agent blocked
           detail: '${ $context._agent_id + " is blocked by its owner: it takes no calls until it is unblocked" }'
 
+  # An agent's own reach is the ceiling (its record). A request may ask for
+  # less, never for more. The assistant (no agent) runs as the caller, whose
+  # own permissions gate every server and tool.
+  - ceiling:
+      set:
+        _max_mcp: '${ if $context._row != null then ($context._vars.mcp_servers // ["a3t/agent-flows"]) else null end }'
+        _max_tools: >-
+          ${ if $context._row != null and ($context._vars.enabled_tools | type) == "array"
+             then ($context._vars.enabled_tools + (if $context._in.ui_context != null then ["propose_edit"] else [] end))
+             else null end }
+        _own_llm: '${ if $context._row != null then ($context._rb.llm // $context._vars.llm_resource // "a3t/claude-cli-max") else null end }'
+      export:
+        as: '${ $context + . }'
+
+  - widened:
+      if: >-
+        ${ ($context._max_mcp != null and (($context._in.mcp_servers // []) - $context._max_mcp | length) > 0)
+           or ($context._max_tools != null and ($context._in | has("enabled_tools"))
+               and (($context._in.enabled_tools // []) - $context._max_tools | length) > 0)
+           or ($context._own_llm != null and $context._in.llm_resource != null and $context._in.llm_resource != $context._own_llm) }
+      raise:
+        error:
+          type: https://a3t.io/errors/authorization
+          status: 403
+          title: More than the agent may use
+          detail: >-
+            ${ "This call asks for more than " + ($context._agent_id // "the assistant") + " may use: "
+               + ([ (if $context._max_mcp != null then (($context._in.mcp_servers // []) - $context._max_mcp | if length > 0 then "MCP servers " + join(", ") else empty end) else empty end),
+                    (if $context._max_tools != null then (($context._in.enabled_tools // []) - $context._max_tools | if length > 0 then "tools " + join(", ") else empty end) else empty end),
+                    (if $context._own_llm != null and $context._in.llm_resource != null and $context._in.llm_resource != $context._own_llm then "model " + $context._in.llm_resource else empty end)
+                  ] | join("; "))
+               + ". A call may narrow an agent's reach, never widen it; change the agent to give it more." }
+
   - config:
       set:
         _cfg: >-
           ${ {
               system_prompt: ($context._vars.system_prompt // $context._vars.instructions
                 // "You are the A3T assistant, inside the A3T console. A3T runs AI agents: templates are their code (CNCF Serverless Workflow flows on the FlowR engine), agents are templates with their own values, released and called by other apps over REST, MCP or A2A. Their memory is ADB.\n\nHelp the user build, inspect and operate agents, flows, triggers and resources. Use your tools to read the real state instead of guessing. Propose changes to flows as YAML for the user to review rather than saving behind their back, unless they ask you to. Be concise."),
-              llm_resource: ($context._in.llm_resource // $context._rb.llm // $context._vars.llm_resource // "a3t/claude-cli-max"),
-              mcp_servers: ($context._in.mcp_servers // $context._vars.mcp_servers // ["a3t/agent-flows"]),
+              llm_resource: ($context._own_llm // $context._in.llm_resource // "a3t/claude-cli-max"),
+              mcp_servers: ($context._in.mcp_servers // $context._max_mcp // ["a3t/agent-flows"]),
               temperature: ($context._vars.temperature // 0.4),
               max_iterations: ($context._vars.max_iterations // 10),
               memory_namespace: ($context._space // $context._agent_id // "a3t-assistant")
@@ -119,8 +154,8 @@ do:
                then {hooks: ($context._vars.hooks | with_entries(.value |= ((. // []) | map(tostring) | map(select(contains("/"))))))} else {} end)
             + (if (($context._vars.tool_flows // {}) | length) > 0 then {tool_flows: $context._vars.tool_flows} else {} end)
             + (if (($context._vars.semantic_spaces // []) | length) > 0 then {knowledge: {attached: ($context._vars.semantic_spaces | map(tostring))}} else {} end)
-            + (if ($context._in | has("enabled_tools")) then {enabled_tools: $context._in.enabled_tools}
-               elif ($context._vars.enabled_tools != null) then {enabled_tools: $context._vars.enabled_tools}
+            + (if ($context._in.enabled_tools | type) == "array" then {enabled_tools: $context._in.enabled_tools}
+               elif $context._max_tools != null then {enabled_tools: $context._max_tools}
                else {} end)
             + (if $context._mode == "ephemeral" then {memory_resource: null}
                elif ($context._mode == "persistent" or $context._mode == "reactive") then {memory_config: {semantic: {read: true, reflect: true}}}

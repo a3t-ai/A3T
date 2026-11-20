@@ -83,18 +83,26 @@ pub async fn check(storage: &dyn StorageBackend, principal: &Principal, tool: &s
     }
     let (ns, needed) = requirement(storage, tool, args).await?;
     if needed == NsAccess::Read && flowr_policy::namespace::platform_hidden(principal, &ns) {
+        refused(principal, &ns, tool, needed, NsAccess::None);
         return Some(CallToolResult::error(format!("Not found: no project '{ns}' that you can see.")));
     }
     let has = g.access(principal, &ns).await;
     if has >= needed {
         return None;
     }
+    refused(principal, &ns, tool, needed, has);
     Some(if has == NsAccess::None {
         CallToolResult::error(format!("Not found: no project '{ns}' that you can see."))
     } else {
         CallToolResult::error(format!("Forbidden: this needs {} access to project '{ns}'; you have {}.",
             level(needed), level(has)))
     })
+}
+
+/// AUD-3: a refusal by project isolation goes in the decision log.
+pub fn refused(principal: &Principal, ns: &str, what: &str, needed: NsAccess, has: NsAccess) {
+    flowr_policy::audit::event(principal, "project:access", "Project", ns, Some(ns), None,
+        Some(&format!("{what} needs {} access; the caller has {} access", level(needed), level(has))), None);
 }
 
 fn level(a: NsAccess) -> &'static str {

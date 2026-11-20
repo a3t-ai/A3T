@@ -17,6 +17,40 @@ use super::*;
 
 pub const TABLE: &str = "agent_policies";
 const COLUMNS: [&str; 4] = ["agent_id", "policy", "updated_by", "updated_at"];
+/// Every change to an agent's policy, kept: who, when, what it became.
+pub const HISTORY: &str = "agent_policy_history";
+const HISTORY_COLUMNS: [&str; 6] = ["agent_id", "version", "action", "policy", "by", "at"];
+
+/// An agent's limits are security: only its org's admins and security admins
+/// (or platform InfoSec) change them, not the project's writers whose agent it is.
+async fn may_change_policy(s: &dyn StorageBackend, principal: &Principal, row: &Value) -> Result<(), Response> {
+    if crate::org_policy::manages_org_security(s, principal, &col(row, "org_id")).await {
+        Ok(())
+    } else {
+        Err(err(StatusCode::FORBIDDEN, "an agent's policy is changed by its org's admins or security admins"))
+    }
+}
+
+async fn history_of(s: &dyn StorageBackend, id: &str) -> Vec<Value> {
+    let mut h = query_platform_table(s, HISTORY, Some(format!("agent_id = {}", sql_quote(id))), 10_000).await.unwrap_or_default();
+    h.sort_by_key(|r| std::cmp::Reverse(col(r, "version").trim_start_matches('v').parse::<u64>().unwrap_or(0)));
+    h
+}
+
+/// Record a change; returns its version (`v<n>`, never reused).
+async fn note(s: &dyn StorageBackend, id: &str, action: &str, policy: &str, by: &str) -> Result<String, String> {
+    let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: Map<String, Value> = HISTORY_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    db.create_table(HISTORY, Some(&schema), "create_if_not_exists").await?;
+    let last = history_of(s, id).await.first().map(|r| col(r, "version").trim_start_matches('v').parse::<u64>().unwrap_or(0)).unwrap_or(0);
+    let version = format!("v{}", last + 1);
+    db.insert(HISTORY, &[json!({
+        "agent_id": id, "version": version, "action": action, "policy": policy, "by": by,
+        "at": chrono::Utc::now().to_rfc3339(),
+    })]).await?;
+    tracing::info!(agent = %id, %version, %action, %by, "agent policy changed");
+    Ok(version)
+}
 
 /// The agent row, if the caller may see it (`write`: change its project).
 async fn agent_for(s: &dyn StorageBackend, principal: &Principal, id: &str, write: bool) -> Result<Value, Response> {
@@ -24,7 +58,10 @@ async fn agent_for(s: &dyn StorageBackend, principal: &Principal, id: &str, writ
     let project = project_of(&row);
     if write {
         crate::access::rest_write(principal, &project).await.map_err(IntoResponse::into_response)?;
-    } else if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await {
+    } else if !crate::access::can_read_item(principal, ItemKind::Agent, &project, &col(&row, "name"), "").await
+        // Its org's security managers see its security profile, member of its project or not.
+        && !crate::org_policy::manages_org_security(s, principal, &col(&row, "org_id")).await
+    {
         return Err(err(StatusCode::NOT_FOUND, format!("no agent {id:?}")));
     }
     Ok(row)
@@ -85,6 +122,7 @@ pub(super) async fn copy_policy(s: &dyn StorageBackend, from: &str, to: &str, by
         "agent_id": to, "policy": col(&row, "policy"), "updated_by": by,
         "updated_at": chrono::Utc::now().to_rfc3339(),
     })]).await?;
+    note(s, to, &format!("copy from {from}"), &col(&row, "policy"), by).await?;
     if let Some(gate) = crate::policy_gate::get() {
         gate.changed().await;
     }
@@ -93,15 +131,21 @@ pub(super) async fn copy_policy(s: &dyn StorageBackend, from: &str, to: &str, by
 
 pub(super) async fn get_policy(State(s): St, p: P, Path(id): Path<String>) -> Response {
     both(async {
-        agent_for(s.as_ref(), &who(p), &id, false).await?;
+        let principal = who(p);
+        let agent = agent_for(s.as_ref(), &principal, &id, false).await?;
+        let can_edit = crate::org_policy::manages_org_security(s.as_ref(), &principal, &col(&agent, "org_id")).await;
         let row = policy_of(s.as_ref(), &id).await;
         let policy = row.as_ref().map(|r| col(r, "policy"));
         ok(json!({
             "agent_id": id,
             "policy": policy,
+            "can_edit": can_edit,
             "rules": policy.as_deref().map(sentences).unwrap_or_default(),
             "updated_by": row.as_ref().map(|r| col(r, "updated_by")),
             "updated_at": row.as_ref().map(|r| col(r, "updated_at")),
+            "history": history_of(s.as_ref(), &id).await.iter().map(|h| json!({
+                "version": col(h, "version"), "action": col(h, "action"), "by": col(h, "by"), "at": col(h, "at"), "policy": col(h, "policy"),
+            })).collect::<Vec<_>>(),
         }))
     }.await)
 }
@@ -109,7 +153,8 @@ pub(super) async fn get_policy(State(s): St, p: P, Path(id): Path<String>) -> Re
 pub(super) async fn put_policy(State(s): St, p: P, Path(id): Path<String>, Json(b): Json<Value>) -> Response {
     both(async {
         let principal = who(p);
-        let row = agent_for(s.as_ref(), &principal, &id, true).await?;
+        let row = agent_for(s.as_ref(), &principal, &id, false).await?;
+        may_change_policy(s.as_ref(), &principal, &row).await?;
         let policy = b.get("policy").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if policy.trim().is_empty() {
             return Err(err(StatusCode::BAD_REQUEST, "policy: a kind: a3t/policy file (DELETE removes it)"));
@@ -124,16 +169,25 @@ pub(super) async fn put_policy(State(s): St, p: P, Path(id): Path<String>, Json(
             "agent_id": id, "policy": policy, "updated_by": principal.id(),
             "updated_at": chrono::Utc::now().to_rfc3339(),
         })]).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let version = note(s.as_ref(), &id, "save", &policy, principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        flowr_policy::audit::event(&principal, "agent_policy:write", "AgentPolicy", &id, Some(&project_of(&row)), None, None, Some(&format!("saved {version}")));
         gate.changed().await;
-        ok(json!({ "agent_id": id, "policy": policy, "rules": sentences(&policy), "hidden_apps": compiled.get("hidden_apps") }))
+        ok(json!({ "agent_id": id, "policy": policy, "version": version, "rules": sentences(&policy), "hidden_apps": compiled.get("hidden_apps") }))
     }.await)
 }
 
 pub(super) async fn delete_policy(State(s): St, p: P, Path(id): Path<String>) -> Response {
     both(async {
-        agent_for(s.as_ref(), &who(p), &id, true).await?;
+        let principal = who(p);
+        let row = agent_for(s.as_ref(), &principal, &id, false).await?;
+        may_change_policy(s.as_ref(), &principal, &row).await?;
+        let Some(prev) = policy_of(s.as_ref(), &id).await else {
+            return Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no policy")));
+        };
         let db = table(s.as_ref()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         db.delete(TABLE, &format!("agent_id = {}", sql_quote(&id))).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let version = note(s.as_ref(), &id, "delete", &col(&prev, "policy"), principal.id()).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        flowr_policy::audit::event(&principal, "agent_policy:delete", "AgentPolicy", &id, Some(&project_of(&row)), None, None, Some(&format!("deleted ({version})")));
         if let Some(gate) = crate::policy_gate::get() {
             gate.changed().await;
         }
@@ -146,7 +200,12 @@ pub(super) async fn delete_policy(State(s): St, p: P, Path(id): Path<String>) ->
 /// own policy in plain words. For buyers and SecOps; no Cedar.
 pub(super) async fn get_security(State(s): St, p: P, Path(id): Path<String>) -> Response {
     both(async {
-        let row = agent_for(s.as_ref(), &who(p), &id, false).await?;
+        let principal = who(p);
+        let row = agent_for(s.as_ref(), &principal, &id, false).await?;
+        let can_edit = crate::org_policy::manages_org_security(s.as_ref(), &principal, &col(&row, "org_id")).await;
+        let history: Vec<Value> = history_of(s.as_ref(), &id).await.iter().map(|h| json!({
+            "version": col(h, "version"), "action": col(h, "action"), "by": col(h, "by"), "at": col(h, "at"),
+        })).collect();
         let parse = |k: &str| -> Value {
             match row.get(k) {
                 Some(Value::String(t)) => serde_json::from_str(t).unwrap_or(Value::Null),
@@ -181,6 +240,9 @@ pub(super) async fn get_security(State(s): St, p: P, Path(id): Path<String>) -> 
                 "file": policy.as_deref().and_then(|y| flowr_policy::policy_file::PolicyFile::parse(y).ok()),
                 "source": policy,
                 "updated_by": pol.as_ref().map(|r| col(r, "updated_by")),
+                // Only the org's admins and security admins change it.
+                "can_edit": can_edit,
+                "history": history,
             },
             "note": "The agent's own policy travels with it when it is copied. The A3T baseline and the policies of the org running it apply too; they can only narrow what it may do.",
         }))

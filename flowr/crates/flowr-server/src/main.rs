@@ -16,6 +16,7 @@ mod forgot;
 mod first_password;
 mod change_password;
 mod refresh;
+mod sessions;
 mod directory;
 mod people;
 mod config;
@@ -161,11 +162,30 @@ async fn main() -> anyhow::Result<()> {
         "features": if cfg!(feature = "ee") { serde_json::json!(["cedar"]) } else { serde_json::json!([]) },
     }));
     info!(policy_hook = %effective_hook, edition = %edition, "AESOP policy hook installed");
+    // HS256 tokens (console login, Act as, refresh) are signed with this secret.
+    // A server that accepts them (`hs256`, `dual`) and enforces policy would take
+    // a token anyone can mint with a known secret, for any role: it refuses to
+    // start. One that takes OIDC tokens only never accepts them, so it warns.
+    if let Some(why) = flowr_config.auth.weak_jwt_secret() {
+        let accepts_hs256 = authn != "oidc";
+        if enforcing && accepts_hs256 {
+            anyhow::bail!("{why}; set it from a secret store (32+ random bytes) before starting with policy enforced and HS256 tokens accepted (security.authn = {authn})");
+        }
+        warn!(authn = %authn, enforcing, "{why}; tolerated only because this server enforces no policy or accepts OIDC tokens only");
+    }
+    // ID-6: an OIDC token must be minted for A3T. Without an audience to check,
+    // any token the realm issues to any client would do.
+    if enforcing && authn != "hs256" && oidc_audience.trim().is_empty() {
+        anyhow::bail!("security.oidc_audience (FLOWR_SECURITY_OIDC_AUDIENCE) is empty; set it to the audience A3T's tokens carry before starting with policy enforced and OIDC tokens accepted (security.authn = {authn})");
+    }
     // Projects: with policy enforcing, a caller sees and changes only the
     // namespaces (projects), runs and runtimes it may — the rules of the A3T
     // project flows, enforced at every boundary.
     // Agent keys (a3tk_…) are looked up in the platform tables, enforcing or not.
     flowr_ce::agent_keys::install(storage.clone());
+    // AUD-1: every decision this pod makes goes to the durable log in ADB.
+    #[cfg(feature = "ee")]
+    flowr_ce::decision_log::install(storage.clone());
     // RT-01: every FlowR reports itself, so the console sees all of them.
     flowr_ce::ops::start_host_heartbeat(storage.clone());
     if enforcing {
@@ -187,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
             // Clone storage for the EE policy-admin endpoints (reload re-reads the
             // registry) before `build_ce_router` moves it.
             let sec_storage = storage.clone();
-            let ce_router = build_ce_router(storage);
+            let ce_router = build_ce_router(storage.clone());
 
             // Superadmin / platform seeding is handled by the a3t install flow
             // (a3t-install → a3t_schema_install), not in-process here.
@@ -213,7 +233,9 @@ async fn main() -> anyhow::Result<()> {
                     // same email/password form. Empty issuer disables it.
                     oidc_issuer: oidc_issuer.clone(),
                     oidc_client_id: oidc_client_id.clone(),
+                    revoked: Arc::new(sessions::Revoked::default()),
                 });
+                sessions::spawn_upkeep(auth_config.clone());
 
                 info!(
                     a3t_db = %auth_config.a3t_db_path,
@@ -274,12 +296,15 @@ async fn main() -> anyhow::Result<()> {
                     .route("/auth/first-password", post(first_password::first_password_handler))
                     // A new session from a refresh token, with roles read again (refresh.rs).
                     .route("/auth/refresh", post(refresh::refresh_handler))
+                    .route("/auth/logout", post(auth_routes::logout_handler))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
-                    .merge(Router::new().route("/security/audit", get(audit_handler)))
+                    .merge(Router::new().route("/security/audit", get(audit_handler)).layer(Extension(storage.clone())))
                     // The permission catalogue roles and rules are built from (a3t/policies/catalogue.yaml).
                     .merge(Router::new().route("/security/catalogue", get(catalogue_handler)))
+                    // The baseline pack this build enforces (UI-5: the console shows this, not a copy).
+                    .merge(Router::new().route("/security/baseline", get(baseline_handler)))
                     .merge(
                         Router::new()
                             .route("/security/policies", get(policies_list_handler))
@@ -553,31 +578,90 @@ fn install_policy_hook(
     }
 }
 
-/// `GET /security/audit` (E2 #1) — the decision audit log (JWT-protected).
-/// `?limit=N` (default 100), `?denials_only=true` for the security-relevant subset.
+/// `GET /security/audit` — the decision log (AUD-1/5/8).
+///
+/// Read from the durable log (ADB EPISODIC, `_audit.<org>`), filtered and paged
+/// on the server: `org`, `project`, `agent`, `principal`, `action`, `decision`
+/// (exact values), `since_ms`, `before_ms` (the next page: the last row's
+/// `ts_ms`), `q` (ranked by meaning), `limit` (≤ 500, default 100).
+///
+/// Who sees what:
+/// - SuperAdmin / SecurityAdmin: every org (or the `org` named);
+/// - an org's admins and security admins: that org (`org` required);
+/// - anyone else: decisions about the agents they own.
+///
+/// Without the durable log (CE), this pod's recent decisions, for InfoSec only.
 async fn audit_handler(
     principal: Option<axum::Extension<flowr_policy::Principal>>,
+    storage: Option<axum::Extension<Arc<dyn StorageBackend>>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
-    // The decision log names everyone's actions: Platform InfoSec only
-    // (SuperAdmin / SecurityAdmin). Anyone else is refused, not shown a subset.
-    if !is_infosec(principal.as_ref().map(|e| &e.0)) {
-        return (axum::http::StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "The decision log is for SuperAdmin and SecurityAdmin." }))).into_response();
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    let refuse = |code: StatusCode, msg: &str| (code, axum::Json(serde_json::json!({ "error": msg }))).into_response();
+    let Some(axum::Extension(p)) = principal else { return refuse(StatusCode::UNAUTHORIZED, "Sign in first.") };
+    let infosec = is_infosec(Some(&p));
+    let param = |k: &str| params.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let num = |k: &str| param(k).and_then(|v| v.parse::<u64>().ok());
+    let limit: usize = num("limit").map(|n| n as usize).unwrap_or(100).clamp(1, 500);
+
+    if !flowr_ce::decision_log::installed() {
+        if !infosec {
+            return refuse(StatusCode::FORBIDDEN, "The decision log is for SuperAdmin and SecurityAdmin.");
+        }
+        let project = param("project");
+        let mut records: Vec<_> = flowr_policy::audit::recent(1000).into_iter()
+            .filter(|r| project.as_deref().is_none_or(|p| r.project.as_deref() == Some(p)))
+            .filter(|r| param("decision").as_deref().is_none_or(|d| r.decision == d))
+            .collect();
+        records.truncate(limit);
+        return axum::Json(serde_json::json!({ "count": records.len(), "records": records, "scope": "this FlowR replica, in memory (newest 1000)" })).into_response();
     }
-    let limit: usize = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(100).min(1000);
-    let denials_only = params.get("denials_only").map(|s| s == "true").unwrap_or(false);
-    // `project=<ns>`: the decisions about that project; `project=-`: the
-    // platform-wide ones (no project). Absent: all.
-    let project = params.get("project").map(String::as_str).filter(|p| !p.is_empty());
-    let all = if denials_only { flowr_policy::audit::recent_denials(1000) } else { flowr_policy::audit::recent(1000) };
-    let mut records: Vec<_> = all.into_iter().filter(|r| match project {
-        None => true,
-        Some("-") => r.project.is_none(),
-        Some(p) => r.project.as_deref() == Some(p),
-    }).collect();
-    records.truncate(limit);
-    axum::Json(serde_json::json!({ "count": records.len(), "records": records, "scope": "this FlowR replica, in memory (newest 1000)" })).into_response()
+
+    let mut q = flowr_ce::decision_log::Query {
+        project: param("project"), agent: param("agent"), principal: param("principal"),
+        action: param("action"), decision: param("decision"),
+        since_ms: num("since_ms"), before_ms: num("before_ms"), like: param("q"), limit,
+        ..Default::default()
+    };
+    let every_org = || async {
+        let mut o = flowr_ce::access::all_org_ids().await;
+        o.push("platform".to_string());
+        o
+    };
+    let scope = if infosec {
+        q.orgs = match param("org") { Some(o) => vec![o], None => every_org().await };
+        "all"
+    } else {
+        let manages = match (param("org"), storage.as_ref()) {
+            (Some(org), Some(axum::Extension(s))) => flowr_ce::org_policy::manages_org_security(s.as_ref(), &p, &org).await.then_some(org),
+            _ => None,
+        };
+        match manages {
+            Some(org) => { q.orgs = vec![org]; "org" }
+            None => {
+                // Decisions about the agents this person owns, wherever they ran.
+                let Some(me) = flowr_policy::namespace::acting_user(&p) else {
+                    return refuse(StatusCode::FORBIDDEN, "The decision log is read by people, not agents.");
+                };
+                q.agent_owner = Some(me.to_string());
+                q.orgs = every_org().await;
+                "own agents"
+            }
+        }
+    };
+    match flowr_ce::decision_log::recall(&q).await {
+        Ok((records, aql)) => {
+            let next = (records.len() >= limit && q.like.is_none()).then(|| records.last().and_then(|r| r["ts_ms"].as_u64())).flatten();
+            axum::Json(serde_json::json!({
+                "count": records.len(), "records": records, "scope": scope, "orgs": q.orgs,
+                "next_before_ms": next, "aql": aql, "source": "ADB EPISODIC (durable, every pod)",
+            })).into_response()
+        }
+        Err(e) => {
+            warn!(error = %e, "decision log: read failed");
+            refuse(StatusCode::SERVICE_UNAVAILABLE, "The decision log can't be read right now. Try again in a moment.")
+        }
+    }
 }
 
 /// `GET /edition` — reports the active edition and policy hook (public).
@@ -603,6 +687,22 @@ struct PolicyAdminState {
     storage: Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
     policies_dir: String,
     hook_setting: String,
+}
+
+/// `GET /security/baseline` — the baseline policy pack compiled into this build,
+/// and its version (sha256, first 16 hex). Anyone signed in may read it.
+async fn baseline_handler() -> axum::response::Response {
+    #[cfg(feature = "ee")]
+    {
+        use sha2::Digest;
+        let cedar = a3t_security::hook::A3T_BASELINE;
+        let version: String = sha2::Sha256::digest(cedar.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
+        axum::Json(serde_json::json!({ "cedar": cedar, "version": version })).into_response()
+    }
+    #[cfg(not(feature = "ee"))]
+    {
+        (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "A Community runtime has no baseline: it enforces nothing." }))).into_response()
+    }
 }
 
 /// `GET /security/catalogue` — every permission a role or rule can name, with

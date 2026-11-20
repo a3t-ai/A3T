@@ -64,6 +64,7 @@ impl TriggerManager {
         if trigger.id.is_empty() {
             trigger.id = Uuid::now_v7().to_string();
         }
+        check_webhook_secret(&mut trigger)?;
         let id = trigger.id.clone();
 
         let mut triggers = self.triggers.write().await;
@@ -75,6 +76,21 @@ impl TriggerManager {
         triggers.insert(id.clone(), trigger);
 
         Ok(id)
+    }
+
+    /// Replace a trigger (same id). A webhook's secret is never shown, so an
+    /// update that leaves it out keeps the one already set.
+    pub async fn replace(&self, id: &str, mut next: Trigger) -> anyhow::Result<()> {
+        next.id = id.to_string();
+        check_webhook_secret(&mut next)?;
+        let mut triggers = self.triggers.write().await;
+        let kept = triggers.get(id).and_then(|t| t.webhook_secret().map(str::to_string));
+        if let (TriggerConfig::Webhook { secret: s @ None, .. }, Some(old)) = (&mut next.config, kept) {
+            *s = Some(old);
+        }
+        info!(trigger_id = %id, name = %next.name, "Trigger replaced");
+        triggers.insert(id.to_string(), next);
+        Ok(())
     }
 
     /// Get a trigger by ID
@@ -171,16 +187,20 @@ impl TriggerManager {
     // Delivery
     // =========================================================================
 
-    /// Deliver a webhook to matching triggers
+    /// Deliver a webhook to the matching triggers that `admit` lets in (the
+    /// caller checks the request's token or signature against each trigger).
+    /// Returns the deliveries and how many matching triggers refused the request.
     pub async fn deliver_webhook(
         &self,
         path: &str,
         body: Value,
+        admit: &(dyn Fn(&Trigger) -> bool + Send + Sync),
         agent_sender: &dyn AgentMessageSender,
         workflow_executor: &dyn WorkflowExecutor,
-    ) -> Vec<TriggerDeliveryResult> {
+    ) -> (Vec<TriggerDeliveryResult>, usize) {
         let triggers = self.triggers.read().await;
         let mut results = Vec::new();
+        let mut refused = 0;
 
         for trigger in triggers.values() {
             if !trigger.active_here() {
@@ -189,6 +209,10 @@ impl TriggerManager {
 
             if let TriggerConfig::Webhook { path: trigger_path, message_template, .. } = &trigger.config {
                 if trigger_path != path {
+                    continue;
+                }
+                if !admit(trigger) {
+                    refused += 1;
                     continue;
                 }
 
@@ -213,7 +237,7 @@ impl TriggerManager {
             }
         }
 
-        results
+        (results, refused)
     }
 
     /// Deliver one ADB topic message (`message` = the published fields) to an
@@ -735,4 +759,20 @@ static TRIGGER_MANAGER: std::sync::OnceLock<Arc<TriggerManager>> = std::sync::On
 
 pub fn trigger_manager() -> &'static Arc<TriggerManager> {
     TRIGGER_MANAGER.get_or_init(|| Arc::new(TriggerManager::new()))
+}
+
+/// A webhook secret, when given, must be long enough to resist guessing; an
+/// empty one means none (the webhook then takes signed-in callers only).
+fn check_webhook_secret(trigger: &mut Trigger) -> anyhow::Result<()> {
+    if let TriggerConfig::Webhook { secret, .. } = &mut trigger.config {
+        if secret.as_deref() == Some("") {
+            *secret = None;
+        }
+        if let Some(s) = secret {
+            if s.len() < MIN_WEBHOOK_SECRET_LEN {
+                anyhow::bail!("a webhook secret must be at least {MIN_WEBHOOK_SECRET_LEN} characters");
+            }
+        }
+    }
+    Ok(())
 }

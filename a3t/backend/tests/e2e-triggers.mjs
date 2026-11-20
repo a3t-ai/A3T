@@ -6,11 +6,14 @@
  *   - a schedule (cron) that fires on its own, once per minute however many
  *     FlowRs run the scheduler (one run per tick);
  *   - a mapping that fails is reported, and nothing runs;
- *   - dev time: a mapping checked on samples against the flow's input schema.
+ *   - dev time: a mapping checked on samples against the flow's input schema;
+ *   - a webhook takes a token or a body signed with its secret, nothing else;
+ *     its secret is never shown back.
  *
  *   A3T_TOKEN_FILE=<file with a console token> node a3t/backend/tests/e2e-triggers.mjs [--url …] [--keep]
  */
 import { readFileSync } from 'node:fs';
+import { createHmac, randomBytes } from 'node:crypto';
 const arg = (k) => { const i = process.argv.indexOf(`--${k}`); return i < 0 ? undefined : process.argv[i + 1]; };
 const URL_ = (arg('url') ?? 'https://console.dev.a3t.io').replace(/\/$/, '');
 const KEEP = process.argv.includes('--keep');
@@ -48,6 +51,32 @@ check(`  POST fired it (${w.status})`, w.ok && !!inst, JSON.stringify(wj).slice(
 let d = inst ? await status(inst) : null;
 const got = d?.output?.got ?? {};
 check(`  the flow got the mapped input: ${JSON.stringify(got)}`, got.order === 'A-17' && got.amount === 450 && got.from === `e2e-map-${run}` && !('noise' in got), JSON.stringify(d).slice(0, 300));
+
+// 1b. Who may fire it: a token, or the body signed with the trigger's secret.
+const spath = `/e2e/${run}/signed`;
+const secret = randomBytes(24).toString('hex');
+r = await mcp('create_trigger', { name: `e2e-signed-${run}`, namespace: 'default', enabled: true,
+  config: { type: 'webhook', path: spath, method: 'POST', secret }, targets: [{ type: 'workflow', namespace: 'default', name: echo }] });
+const sId = idOf(r); created.triggers.push(sId);
+check('webhook trigger with a secret', !r.err && !!sId, r.text);
+const sbody = JSON.stringify({ order_id: 'S-1' });
+const sign = (k, b) => 'sha256=' + createHmac('sha256', k).update(b).digest('hex');
+const plain = { 'content-type': 'application/json' };
+w = await fetch(`${URL_}/webhook${spath}`, { method: 'POST', headers: plain, body: sbody });
+check(`  unsigned, no token: refused (${w.status})`, w.status === 401);
+w = await fetch(`${URL_}/webhook${spath}`, { method: 'POST', headers: { ...plain, 'x-a3t-signature': sign('another-secret-0123456789', sbody) }, body: sbody });
+check(`  wrongly signed: refused (${w.status})`, w.status === 401);
+w = await fetch(`${URL_}/webhook${spath}`, { method: 'POST', headers: { ...plain, 'x-a3t-signature': sign(secret, sbody) }, body: sbody });
+check(`  signed with its secret: fired (${w.status})`, w.ok, await w.text());
+w = await fetch(`${URL_}/webhook${spath}`, { method: 'POST', headers: { ...plain, 'x-hub-signature-256': sign(secret, sbody) }, body: sbody });
+check(`  GitHub's signature header: fired (${w.status})`, w.ok);
+w = await fetch(`${URL_}/webhook${path}`, { method: 'POST', headers: plain, body: sbody });
+check(`  a trigger with no secret takes signed-in callers only (${w.status})`, w.status === 401);
+const listed = await mcp('get_trigger', { id: sId });
+check('  its secret is never shown back', !listed.text.includes(secret) && listed.data?.config?.secret_set === true, listed.text.slice(0, 300));
+r = await mcp('create_trigger', { name: `e2e-short-${run}`, namespace: 'default', config: { type: 'webhook', path: `/e2e/${run}/short`, secret: 'short' }, targets: [] });
+check('  a short secret is refused', r.err, r.text);
+if (!r.err) created.triggers.push(idOf(r));
 
 // 2. A mapping that fails: reported, nothing runs.
 const bad = `/e2e/${run}/bad`;

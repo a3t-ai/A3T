@@ -180,19 +180,34 @@ async fn org_exists(s: &dyn StorageBackend, org: &str) -> bool {
         .map(|r| !r.is_empty()).unwrap_or(false)
 }
 
+fn platform_infosec(principal: &Principal) -> bool {
+    principal.roles().iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN)
+}
+
+/// Does `principal` manage the security of the org with this id: platform
+/// InfoSec, or the org's admins and security admins?
+pub async fn manages_org_security(s: &dyn StorageBackend, principal: &Principal, org_id: &str) -> bool {
+    if platform_infosec(principal) {
+        return true;
+    }
+    let Some(user) = flowr_policy::namespace::acting_user(principal) else { return false };
+    if org_id.is_empty() {
+        return false;
+    }
+    let filter = format!("org_id = {} AND user_id = {}", sql_quote(org_id), sql_quote(user));
+    let role = query_platform_table(s, "org_members", Some(filter), 1).await
+        .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "role")).unwrap_or_default();
+    role == "admin" || role == "securityadmin"
+}
+
 async fn may_manage(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
-    let roles = principal.roles();
-    if roles.iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN) {
+    if platform_infosec(principal) {
         return Ok(());
     }
     let nope = || err(StatusCode::NOT_FOUND, format!("no org {org:?} whose security you manage"));
-    let Some(user) = flowr_policy::namespace::acting_user(principal) else { return Err(nope()) };
     let org_id = query_platform_table(s, "orgs", Some(format!("slug = {}", sql_quote(org))), 1).await
         .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "id")).ok_or_else(nope)?;
-    let filter = format!("org_id = {} AND user_id = {}", sql_quote(&org_id), sql_quote(user));
-    let role = query_platform_table(s, "org_members", Some(filter), 1).await
-        .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "role")).unwrap_or_default();
-    if role == "admin" || role == "securityadmin" { Ok(()) } else { Err(nope()) }
+    if manages_org_security(s, principal, &org_id).await { Ok(()) } else { Err(nope()) }
 }
 
 /// Both: the org exists, and the caller manages its security.
@@ -303,6 +318,8 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
             "org": org, "path": q.path, "kind": kind, "content": content, "commit": version, "updated_at": chrono::Utc::now().to_rfc3339(),
         })]).await.map_err(internal)?;
         note(db.as_ref(), &org, &q.path, &version, if prev.is_some() { "save" } else { "create" }, kind, content, &by).await.map_err(internal)?;
+        flowr_policy::audit::event(&principal, "policy:write", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
+            Some(&format!("{} {version}", if prev.is_some() { "saved" } else { "created" })));
         if !off.contains(&q.path) {
             changed().await;
         }
@@ -330,6 +347,8 @@ async fn delete_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Quer
         db.delete(FILES, &filter).await.map_err(internal)?;
         db.delete(OFF, &filter).await.map_err(internal)?;
         note(db.as_ref(), &org, &q.path, &col(prev, "commit"), "delete", kind, &col(prev, "content"), &principal.id()).await.map_err(internal)?;
+        flowr_policy::audit::event(&principal, "policy:delete", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
+            Some(&format!("deleted {}", col(prev, "commit"))));
         if !off.contains(&q.path) {
             changed().await;
         }
@@ -396,6 +415,8 @@ async fn set_enforced(State(s): St, p: P, Path(org): Path<String>, Json(b): Json
                 db.upsert(OFF, &["org", "path"], &[json!({ "org": org, "path": path, "updated_by": by, "updated_at": now })]).await.map_err(internal)?;
             }
             note(db.as_ref(), &org, &path, &col(r, "commit"), if is_on { "on" } else { "off" }, &col(r, "kind"), &col(r, "content"), &by).await.map_err(internal)?;
+            flowr_policy::audit::event(&principal, "policy:switch", "PolicyFile", &format!("{org}/{path}"), None, Some(&org), None,
+                Some(if is_on { "switched on" } else { "switched off" }));
             switched += 1;
         }
         if switched > 0 {

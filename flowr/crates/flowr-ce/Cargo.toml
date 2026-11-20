@@ -53,6 +53,8 @@ object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
 suppaftp = { version = "12", default-features = false }
 rand = "0.8"
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 
 # Inline script runtimes
 mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }

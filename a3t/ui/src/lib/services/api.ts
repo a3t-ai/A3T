@@ -20,15 +20,41 @@ interface ApiResponse<T = any> {
 let accessToken: string | null = null;
 let refreshToken: string | null = null;
 let onAuthExpired: (() => void) | null = null;
+/// Where the session's tokens are kept between page loads and shared between
+/// tabs (the auth store's localStorage). A refresh token is good once (ID-6), so
+/// every renewal is written back and every tab reads the newest before renewing.
+let tokenStore: { read: () => { access: string; refresh: string } | null; write: (access: string, refresh: string) => void } | null = null;
+let renewTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function setTokens(access: string, refresh: string) {
   accessToken = access;
   refreshToken = refresh;
+  scheduleRenewal();
 }
 
 export function clearTokens() {
   accessToken = null;
   refreshToken = null;
+  if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
+}
+
+export function useTokenStore(store: typeof tokenStore) {
+  tokenStore = store;
+}
+
+/// When a JWT runs out (unix seconds), or null.
+function expiresAt(token: string | null): number | null {
+  try { const exp = JSON.parse(atob(token!.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp; return typeof exp === 'number' ? exp : null; } catch { return null; }
+}
+
+/// Renew a minute before the access token runs out, so streams and direct
+/// fetches (which don't retry on 401) always hold a live token.
+function scheduleRenewal() {
+  if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
+  const exp = expiresAt(accessToken);
+  if (!exp || !refreshToken || typeof window === 'undefined') return;
+  const ms = Math.max(5_000, exp * 1000 - Date.now() - 60_000);
+  renewTimer = setTimeout(() => { void tryRefresh().then((ok) => { if (!ok && onAuthExpired) onAuthExpired(); }); }, ms);
 }
 
 export function getAccessToken(): string | null {
@@ -120,21 +146,57 @@ async function send<T = any>(
   }
 }
 
-async function tryRefresh(): Promise<boolean> {
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      accessToken = data.access_token;
-      refreshToken = data.refresh_token;
-      return true;
-    }
-  } catch {}
+let renewing: Promise<boolean> | null = null;
+
+/// Renew the session once, however many requests ask at the same moment, and in
+/// one tab at a time (Web Locks); a tab that waited takes the tokens the other
+/// one stored instead of spending the same refresh token again.
+function tryRefresh(): Promise<boolean> {
+  if (!renewing) renewing = renewOnce().finally(() => { renewing = null; });
+  return renewing;
+}
+
+function adoptStored(): boolean {
+  const s = tokenStore?.read();
+  if (s?.refresh && s.refresh !== refreshToken) { setTokens(s.access, s.refresh); return true; }
   return false;
+}
+
+async function renewOnce(): Promise<boolean> {
+  const run = async (): Promise<boolean> => {
+    if (adoptStored()) return true;
+    if (!refreshToken) return false;
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTokens(data.access_token, data.refresh_token);
+        tokenStore?.write(data.access_token, data.refresh_token);
+        return true;
+      }
+      // Renewed a moment ago elsewhere: the newer tokens are in storage.
+      if (res.status === 409) return adoptStored();
+    } catch { /* network: the caller reports it */ }
+    return false;
+  };
+  const locks = typeof navigator !== 'undefined' ? (navigator as any).locks : undefined;
+  return locks?.request ? locks.request('a3t-session-renew', run) : run();
+}
+
+/// End a session on the server (ID-6): its tokens stop working on every pod.
+export async function endSession(access: string | null, refresh: string | null): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(access ? { Authorization: `Bearer ${access}` } : {}) },
+      body: JSON.stringify(refresh ? { refresh_token: refresh } : {}),
+      keepalive: true,
+    });
+  } catch { /* signed out here either way */ }
 }
 
 // ── Auth endpoints (public — no JWT needed) ──
@@ -470,12 +532,20 @@ export const runsApi = {
 export type Breakpoint = { step_key: string; when?: 'before' | 'after' | 'on_error'; condition?: string; hit?: number; enabled?: boolean };
 export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' | 'run_to' | 'stop';
 
-// ── Audit / decision log (EE — the Cedar allow/deny record) ──
+// ── Audit / decision log (EE — durable in ADB EPISODIC, AUD-1) ──
+/// Server-side filters (exact values) and paging: pass the answer's
+/// `next_before_ms` as `before_ms` for the next page. `q` ranks by meaning.
+export type AuditQuery = { org?: string; project?: string; agent?: string; principal?: string; action?: string; decision?: string; since_ms?: number; before_ms?: number; q?: string; limit?: number };
+export interface AuditPage { count: number; records: any[]; scope: string; orgs?: string[]; next_before_ms?: number | null; aql?: string; source?: string }
 export const audit = {
-  /** Most-recent authorization decisions, newest-first. */
-  /// `project`: that project's decisions; '-' the platform-wide ones; absent all.
+  query: (q: AuditQuery = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v));
+    return request<AuditPage>(`/security/audit?${p}`, { method: 'GET' });
+  },
+  /** Most-recent decisions, newest first. */
   recent: (limit = 100, denialsOnly = false, project?: string) =>
-    request(`/security/audit?limit=${limit}${denialsOnly ? '&denials_only=true' : ''}${project ? `&project=${encodeURIComponent(project)}` : ''}`, { method: 'GET' }),
+    audit.query({ limit, decision: denialsOnly ? 'deny' : undefined, project }),
 };
 
 export const state = {
@@ -506,6 +576,8 @@ export interface PolicyTestBody {
 export const getEdition = () => request('/edition', { method: 'GET' }, false);
 
 export const securityPolicies = {
+  /** The baseline policy pack the server enforces, and its version. */
+  baseline: () => request<{ cedar: string; version: string }>('/security/baseline', { method: 'GET' }),
   /** List saved Cedar policy resources with their source. */
   list: () => request('/security/policies', { method: 'GET' }),
   /** Hot-reload the active policy set — no pod restart. Validate-before-swap. */
@@ -607,7 +679,7 @@ export interface IdpUpdateUser {
 }
 /** A SuperAdmin acting as a user or a role: a short-lived token for them
  *  (FlowR impersonate.rs; the decision log records the SuperAdmin too). */
-export const impersonateApi = (body: { user_id: string } | { role: string }) =>
+export const impersonateApi = (body: ({ user_id: string } | { role: string }) & { reason: string }) =>
   request<{ access_token: string; expires_in: number; user: { id: string; email: string; name: string; role: string; org_id: string }; act: { sub: string; email: string } }>(
     '/auth/impersonate', { method: 'POST', body: JSON.stringify(body) });
 
@@ -764,7 +836,8 @@ export type AgentSecurity = {
   agent_id: string; project: string; version: string | null;
   reach: { hosts?: string[]; mcp?: string[]; llm?: string[]; memory?: string[]; subflows?: string[] } | null;
   bound_to: { model: any; mcp_servers: any; enabled_tools: any };
-  policy: { set: boolean; rules: string[]; source: string | null; updated_by: string | null };
+  policy: { set: boolean; rules: string[]; source: string | null; updated_by: string | null; can_edit: boolean;
+    history: { version: string; action: string; by: string; at: string }[] };
   note: string;
 };
 export type CatalogueEntry = { id: string; label: string; tools?: string[]; actions?: string[]; enforced_by?: string; note?: string };

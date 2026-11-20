@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use axum::{extract::Extension, http::StatusCode, response::{IntoResponse, Response}, Json};
-use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -27,7 +26,13 @@ pub struct ImpersonateBody {
     pub user_id: Option<String>,
     /// Or as a role: securityadmin, admin, operator or viewer.
     pub role: Option<String>,
+    /// Why (ID-7): required, written to the decision log.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
+
+const MIN_REASON: usize = 8;
+const MAX_REASON: usize = 500;
 
 fn refuse(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "error": msg }))).into_response()
@@ -57,6 +62,13 @@ pub async fn impersonate_handler(
         return refuse(StatusCode::FORBIDDEN, "Only a SuperAdmin can act as another user or role.");
     }
     let my_email = claims.map(|c| c.0.email.clone()).unwrap_or_default();
+    let reason = body.reason.as_deref().map(str::trim).unwrap_or_default().to_string();
+    if reason.chars().count() < MIN_REASON {
+        return refuse(StatusCode::BAD_REQUEST, "Say why you are acting as them (at least 8 characters). It goes in the decision log.");
+    }
+    if reason.chars().count() > MAX_REASON {
+        return refuse(StatusCode::BAD_REQUEST, "Keep the reason under 500 characters.");
+    }
 
     let target = match (body.user_id.as_deref().map(str::trim).filter(|s| !s.is_empty()), body.role.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
         (Some(_), Some(_)) | (None, None) => return refuse(StatusCode::BAD_REQUEST, "Choose a user or a role."),
@@ -83,16 +95,29 @@ pub async fn impersonate_handler(
     if target.sub == *my_id {
         return refuse(StatusCode::BAD_REQUEST, "That is you.");
     }
+    // ID-7: a SuperAdmin's power is not borrowed from another SuperAdmin.
+    if roles::canonicalize(&target.role).iter().any(|r| r == roles::SUPER_ADMIN) {
+        return refuse(StatusCode::FORBIDDEN, "You cannot act as another SuperAdmin.");
+    }
 
     let now = chrono::Utc::now().timestamp() as usize;
     let secs = config.token_expiry_secs.min(MAX_SECS);
+    // A session of its own (no refresh), so Stop ends it everywhere (ID-6).
+    let (sid, _, _) = match crate::sessions::open(&config, &target.sub, "act", secs).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "impersonate: session not recorded");
+            return refuse(StatusCode::SERVICE_UNAVAILABLE, "Try again in a moment.");
+        }
+    };
     let token_claims = Claims {
         sub: target.sub.clone(), org: target.org.clone(), role: target.role.clone(),
-        email: target.email.clone(), name: target.name.clone(), aud: config.resource_uri.clone(),
+        email: target.email.clone(), name: target.name.clone(),
+        aud: config.resource_uri.clone(), iss: config.resource_uri.clone(), sid,
         exp: now + secs as usize, iat: now,
         act: Some(Actor { sub: my_id.clone(), email: my_email.clone() }),
     };
-    let token = match encode(&Header::default(), &token_claims, &EncodingKey::from_secret(config.jwt_secret.as_bytes())) {
+    let token = match crate::auth::sign(&config, &token_claims) {
         Ok(t) => t,
         Err(e) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, &format!("token: {e}")),
     };
@@ -106,10 +131,10 @@ pub async fn impersonate_handler(
             principal: me.clone(), action, resource,
             context: Default::default(), attributes: Default::default(), params: Value::Null,
         };
-        flowr_policy::audit::record(&req, &flowr_policy::PolicyDecision::Allow);
+        flowr_policy::audit::record_noted(&req, &flowr_policy::PolicyDecision::Allow, Some(&format!("reason: {reason}")));
     }
     info!(superadmin = %my_id, superadmin_email = %my_email, as_user = %target.sub, as_email = %target.email,
-          as_role = %target.role, minutes = secs / 60, "impersonation started");
+          as_role = %target.role, minutes = secs / 60, reason = %reason, "impersonation started");
 
     Json(json!({
         "access_token": token,

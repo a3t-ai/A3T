@@ -8,26 +8,19 @@
 //!   enabled).
 //! Impersonation sessions get no refresh token (impersonate.rs), so none comes here.
 
-use axum::{extract::Extension, http::StatusCode, response::Response, Json};
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use axum::{extract::Extension, http::StatusCode, response::{IntoResponse, Response}, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::auth::AuthConfig;
-use crate::auth_routes::issue_session;
+use crate::auth_routes::session_tokens;
+use crate::sessions::{self, Turn};
 use crate::first_password::refuse;
 
 #[derive(Deserialize)]
 pub struct RefreshBody {
     pub refresh_token: String,
-}
-
-#[derive(Deserialize)]
-struct RefreshClaims {
-    sub: String,
-    #[serde(default)]
-    refresh: bool,
 }
 
 pub async fn refresh_handler(
@@ -36,17 +29,10 @@ pub async fn refresh_handler(
     Json(body): Json<RefreshBody>,
 ) -> Response {
     let expired = || refuse(StatusCode::UNAUTHORIZED, "Your session has ended. Sign in again.");
-    let mut validation = Validation::default();
-    validation.set_required_spec_claims(&["exp", "sub"]);
-    validation.validate_aud = false;
-    let Ok(data) = decode::<RefreshClaims>(&body.refresh_token, &DecodingKey::from_secret(config.jwt_secret.as_bytes()), &validation) else {
+    let Ok(rt) = crate::auth::validate_refresh(&body.refresh_token, &config, false) else {
         return expired();
     };
-    // An access token is not a refresh token.
-    if !data.claims.refresh || data.claims.sub.is_empty() {
-        return expired();
-    }
-    let sub = data.claims.sub;
+    let sub = rt.sub.clone();
 
     // An A3T local account.
     let platform = config.platform.get().await;
@@ -61,8 +47,8 @@ pub async fn refresh_handler(
                 if col("status") != "active" {
                     return expired();
                 }
-                info!(user = %sub, "refresh: local session renewed");
-                return issue_session(&config, (sub.clone(), col("org_id"), col("role"), col("email"), col("name")));
+                info!(user = %sub, "refresh: local account still active");
+                return renew(&config, &rt, (sub.clone(), col("org_id"), col("role"), col("email"), col("name"))).await;
             }
         }
         Err(e) => {
@@ -103,11 +89,31 @@ pub async fn refresh_handler(
         let name = format!("{} {}", s("firstName"), s("lastName")).trim().to_string();
         let role = crate::auth_routes::pick_role(&roles);
         info!(user = %sub, role = %role, "refresh: Keycloak session renewed");
-        return issue_session(&config, (sub, "org-default".to_string(), role, email.clone(), if name.is_empty() { email } else { name }));
+        return renew(&config, &rt, (sub, "org-default".to_string(), role, email.clone(), if name.is_empty() { email } else { name })).await;
     }
     #[cfg(not(feature = "ee"))]
     {
         let _ = idp;
         expired()
+    }
+}
+
+/// The person still holds the account: swap the refresh token and issue new tokens.
+async fn renew(config: &AuthConfig, rt: &crate::auth::RefreshClaims, identity: (String, String, String, String, String)) -> Response {
+    match sessions::rotate(config, &rt.sid, &rt.sub, &rt.jti).await {
+        Ok(Turn::Rotated(jti, ends)) => session_tokens(config, identity, &rt.sid, &jti, ends),
+        // Another tab (or a retried request) renewed it a moment ago: the newer
+        // tokens are in the browser's storage. Nothing is revoked.
+        Ok(Turn::Stale) => (StatusCode::CONFLICT, axum::Json(serde_json::json!({
+            "error": "This sign-in was renewed a moment ago. Use the newer token.", "code": "refresh_stale",
+        }))).into_response(),
+        Ok(Turn::Refused(why)) => {
+            info!(user = %rt.sub, sid = %rt.sid, why, "refresh refused");
+            refuse(StatusCode::UNAUTHORIZED, "Your session has ended. Sign in again.")
+        }
+        Err(e) => {
+            warn!(error = %e, "refresh: sessions table unavailable");
+            refuse(StatusCode::SERVICE_UNAVAILABLE, "Try again in a moment.")
+        }
     }
 }

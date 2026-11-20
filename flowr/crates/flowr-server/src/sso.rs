@@ -282,11 +282,21 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
     }
 
     let role = crate::auth_routes::pick_role(&realm_roles);
-    let access = match create_token(&config, &sub, &org_id, &role, &email, &name) {
+    let (sid, jti, ends) = match crate::sessions::open(&config, &sub, "signin", config.refresh_expiry_secs).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, user = %sub, "sso: session not recorded");
+            return back("Sign-in could not be completed. Try again.");
+        }
+    };
+    let access = match create_token(&config, &sid, &sub, &org_id, &role, &email, &name) {
         Ok(t) => t,
         Err(e) => return back(&e),
     };
-    let refresh = create_refresh_token(&config, &sub).unwrap_or_default();
+    let refresh = match create_refresh_token(&config, &sub, &sid, &jti, ends) {
+        Ok(t) => t,
+        Err(e) => return back(&e),
+    };
     redirect(&format!("{}/#sso={}&sso_refresh={}&expires_in={}", state.ret, access, refresh, config.token_expiry_secs))
 }
 

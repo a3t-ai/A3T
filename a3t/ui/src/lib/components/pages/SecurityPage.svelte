@@ -19,10 +19,9 @@
   import { getProject, namespacesFor, allProjectNamespaces, loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { isInfosec, opensSecurity, userRole } from '$lib/stores/auth';
-  import { BASELINE_POLICY } from '$lib/data/baselinePolicy';
 
   type Policy = { namespace: string; name: string; cedar: string; description?: string | null; readOnly?: boolean };
-  const BASELINE: Policy = { namespace: 'system', name: 'baseline', cedar: BASELINE_POLICY, readOnly: true,
+  const BASELINE: Policy = { namespace: 'system', name: 'baseline', cedar: '', readOnly: true,
     description: 'Deny-by-default guardrails compiled into the EE runtime. Always applies beneath every project policy; forbid overrides permit.' };
 
   let view = $state<'policy' | 'identity' | 'org' | 'new' | null>(null);
@@ -70,7 +69,13 @@
       if (sub === 'users') { tab = 'users'; fQ = ''; fRole = ''; fOrg = ''; fCap = ''; fProject = ns ?? ''; }
       void loadIdp(); return;
     }
-    if (id === 'baseline') { view = 'policy'; pol = { ...BASELINE }; return; }
+    if (id === 'baseline') {
+      // The baseline the server enforces, read from it (UI-5): never a copy kept here.
+      const b = await securityPolicies.baseline();
+      view = 'policy';
+      if (!b.ok) { denied = b.error ?? 'The baseline could not be read.'; pol = null; return; }
+      pol = { ...BASELINE, cedar: b.data?.cedar ?? '' }; saved = pol.cedar; return;
+    }
     const ref = id.replace(/^policy:/, '');
     const [ns, ...rest] = ref.split('/'); const name = rest.join('/');
     const r = await securityPolicies.list();
@@ -152,9 +157,13 @@
   // Decisions: the log entries this policy decided (by its id).
   let decisions = $state<any[] | null>(null);
   $effect(() => { if (tab === 'decisions' && pol && decisions === null) untrack(async () => {
-    const r = await audit.recent(1000, false);
-    const id = pol!.readOnly ? 'baseline' : pol!.name;
-    decisions = r.ok ? (r.data?.records ?? []).filter((d: any) => (d.policy_ids ?? []).some((x: string) => x.includes(id))) : [];
+    // Exact ids (UI-4): a rule's @id, else its policy's "<project>/<name>" ("baseline" for the baseline).
+    const ids = new Set<string>([pol!.readOnly ? 'baseline' : `${pol!.namespace}/${pol!.name}`,
+      ...[...String(pol!.cedar ?? '').matchAll(/@id\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1])]);
+    const [deny, ask] = await Promise.all([audit.query({ decision: 'deny', limit: 500 }), audit.query({ decision: 'ask', limit: 500 })]);
+    decisions = [...(deny.ok ? deny.data?.records ?? [] : []), ...(ask.ok ? ask.data?.records ?? [] : [])]
+      .filter((d: any) => (d.policy_ids ?? []).some((x: string) => ids.has(x)))
+      .sort((a: any, b: any) => (b.ts_ms ?? 0) - (a.ts_ms ?? 0));
   }); });
 
   // ── New policy ──

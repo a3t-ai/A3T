@@ -146,6 +146,8 @@ impl Labels {
 struct Pack {
     engine: AuthzEngine,
     labels: Labels,
+    /// sha256 of the policy and schema source, first 16 hex (AUD-2).
+    version: String,
 }
 
 impl Pack {
@@ -163,7 +165,13 @@ impl Pack {
         }
         let labels = Labels(labels);
         let engine = AuthzEngine::new(&text, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
-        Ok(Self { engine, labels })
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(text.as_bytes());
+        h.update(b"\0");
+        h.update(schema.as_bytes());
+        let version = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+        Ok(Self { engine, labels, version })
     }
 }
 
@@ -448,6 +456,10 @@ fn as_approver_attributes(
 
 #[async_trait::async_trait]
 impl PolicyHook for CedarHook {
+    fn version_for(&self, req: &ExecutionRequest) -> Option<String> {
+        self.pack_for(req).ok().map(|p| p.version.clone())
+    }
+
     async fn check(&self, req: &ExecutionRequest) -> PolicyDecision {
         // The roles a user holds in the project this call touches, not their
         // global ones (.ai/A3T_ORG_SSO_SPEC.md R6/R7): admin in their own org,

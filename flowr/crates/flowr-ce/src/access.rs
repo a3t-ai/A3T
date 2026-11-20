@@ -460,6 +460,31 @@ pub async fn current_snapshot() -> Option<Arc<Snapshot>> {
     Some(g.snapshot().await)
 }
 
+/// The org whose decision log holds a decision about `namespace` (AUD-1): an
+/// org project's org id; `platform` for platform-wide calls, personal projects,
+/// and namespaces this pod doesn't know.
+pub async fn audit_org(namespace: Option<&str>) -> String {
+    let platform = || "platform".to_string();
+    let Some(ns) = namespace.filter(|n| !n.is_empty()) else { return platform() };
+    let Some(g) = PROJECT_GUARD.get() else { return platform() };
+    let snap = g.snapshot().await;
+    match snap.projects.get(ns) {
+        Some(p) if p.owner_kind == "org" => snap.orgs.get(&p.owner).cloned()
+            .or_else(|| Some(p.owner_id.clone()).filter(|id| !id.is_empty()))
+            .unwrap_or_else(platform),
+        _ => platform(),
+    }
+}
+
+/// Every org id this pod knows, for reading all of the decision logs.
+pub async fn all_org_ids() -> Vec<String> {
+    let Some(g) = PROJECT_GUARD.get() else { return Vec::new() };
+    let mut ids: Vec<String> = g.snapshot().await.orgs.values().cloned().collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 impl Snapshot {
     /// Whether this snapshot knows `namespace` as a project.
     pub fn has_project(&self, namespace: &str) -> bool {
@@ -963,12 +988,14 @@ async fn deployment_namespace(d: &crate::ops::Deployment) -> String {
 
 async fn allowed(principal: &Principal, ns: &str, needed: NsAccess) -> Result<(), CallToolResult> {
     if needed == NsAccess::Read && flowr_policy::namespace::platform_hidden(principal, ns) {
+        flowr_mcp_core::ns_gate::refused(principal, ns, "a call", needed, NsAccess::None);
         return Err(CallToolResult::error(format!("Not found: no project '{ns}' that you can see.")));
     }
     let has = guard().access(principal, ns).await;
     if has >= needed {
         return Ok(());
     }
+    flowr_mcp_core::ns_gate::refused(principal, ns, "a call", needed, has);
     Err(CallToolResult::error(if has == NsAccess::None {
         format!("Not found: no project '{ns}' that you can see.")
     } else {
@@ -1157,7 +1184,11 @@ pub async fn rest_write(principal: &Principal, ns: &str) -> Result<(), (axum::ht
     if !g.enforcing() {
         return Ok(());
     }
-    match g.access(principal, ns).await {
+    let has = g.access(principal, ns).await;
+    if has != NsAccess::Write {
+        flowr_mcp_core::ns_gate::refused(principal, ns, "a change", NsAccess::Write, has);
+    }
+    match has {
         NsAccess::Write => Ok(()),
         NsAccess::None => Err((axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": format!("no project '{ns}' that you can see") })))),
         // Not "changing": some of these are reads only writers may make (an

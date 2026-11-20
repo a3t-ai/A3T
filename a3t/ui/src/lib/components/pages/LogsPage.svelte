@@ -24,6 +24,9 @@
     impersonated_by?: string | null;
     action: string; resource_type: string; resource_id: string;
     decision: string; policy_ids: string[]; reason?: string | null; project?: string | null;
+    /** AUD-2 / ID-2: who and what decided, exactly. */
+    id?: string; pod?: string; org?: string | null; roles?: string[]; agent?: string | null; agent_version?: string | null;
+    agent_owner?: string | null; session?: string | null; flow?: string | null; policy_version?: string | null;
   }
   const VIEWS: Record<string, { label: string; hint: string }> = {
     all: { label: 'All decisions', hint: 'every allow, deny and approval asked' },
@@ -54,15 +57,28 @@
   let rev = contextRev_();
   $effect(() => { const r = contextRev_(); if (r !== rev) untrack(() => { rev = r; project = getProject(); if (v) void load(); }); });
 
-  async function load() {
+  /// The next (older) page: the last row's time (AUD-5, paged on the server).
+  let next = $state<number | null>(null);
+  let aql = $state('');
+  let source = $state('');
+  /// The text box ranks by meaning on the server when set (RECALL … LIKE).
+  let meaning = $state(false);
+  async function load(more = false) {
     loading = true; err = '';
     if (!edition) { const e = await getEdition(); edition = e.ok && e.data?.edition === 'ee' ? 'ee' : 'ce'; }
-    const r = await audit.recent(1000, v === 'deny', project || undefined);
+    const decision = dec || (v === 'deny' ? 'deny' : v === 'ask' ? 'ask' : undefined);
+    const r = await audit.query({ limit: 200, project: project || undefined, decision, principal: who || undefined,
+      q: meaning && q.trim() ? q.trim() : undefined, before_ms: more && next ? next : undefined });
     loading = false;
-    if (!r.ok) { recs = []; err = r.status === 403 ? 'The Decision log is for SuperAdmin and SecurityAdmin.' : (r.error ?? 'It could not be read.'); return; }
-    scope = r.data?.scope ?? '';
-    recs = ((r.data?.records ?? []) as Rec[]).filter((x) => v !== 'ask' || x.decision === 'ask');
+    if (!r.ok) { if (!more) recs = []; err = r.status === 403 ? 'The Decision log is for SuperAdmin, SecurityAdmin, an org\'s admins, and the owners of agents (their own).' : (r.error ?? 'It could not be read.'); return; }
+    scope = r.data?.scope ?? ''; aql = r.data?.aql ?? ''; source = r.data?.source ?? '';
+    next = r.data?.next_before_ms ?? null;
+    const page = (r.data?.records ?? []) as Rec[];
+    recs = more ? [...recs, ...page] : page;
   }
+  // A different decision or person is a different read on the server.
+  let lastKey = '';
+  $effect(() => { const k = `${dec}|${who}`; untrack(() => { if (v && k !== lastKey) { const first = !lastKey; lastKey = k; if (!first) void load(); } }); });
   const close = () => navigateTo('logs', 'Decision log');
 
   // ── Filters ──
@@ -71,7 +87,7 @@
   let dec = $state('');
   const filtered = $derived(recs.filter((r) =>
     (!dec || r.decision === dec) && (!who || r.principal_id === who || r.on_behalf_of === who || r.impersonated_by === who) &&
-    (!q.trim() || `${r.principal_id} ${r.on_behalf_of ?? ''} ${r.impersonated_by ?? ''} ${r.action} ${r.resource_type} ${r.resource_id} ${r.reason ?? ''} ${(r.policy_ids ?? []).join(' ')} ${r.project ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()))));
+    (meaning || !q.trim() || `${r.principal_id} ${r.on_behalf_of ?? ''} ${r.impersonated_by ?? ''} ${r.action} ${r.resource_type} ${r.resource_id} ${r.reason ?? ''} ${(r.policy_ids ?? []).join(' ')} ${r.project ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()))));
   let open = $state<Rec | null>(null);
 
   // ── Overview ──
@@ -110,7 +126,12 @@
         {#if err}<div class="note bad">{err}</div>
         {:else}
           {#if edition === 'ce'}<div class="note">A Community runtime allows everything and decides nothing, so this log stays empty. Connect an EE runtime to enforce and record decisions.</div>{/if}
-          <div class="note warn">Scope: {scope || 'this FlowR replica, in memory'} — each FlowR keeps its own recent decisions, and a restart clears them (CA-39).</div>
+          {#if source}
+            <div class="note">Kept in {source}. Scope: {scope === 'all' ? 'every organisation' : scope === 'org' ? 'your organisation' : 'decisions about the agents you own'}.
+              {#if aql}<details class="aql"><summary>The AQL this read ran</summary><code class="mono">{aql}</code></details>{/if}</div>
+          {:else}
+            <div class="note warn">Scope: {scope || 'this FlowR replica, in memory'} — this server keeps no durable log; a restart clears it.</div>
+          {/if}
 
           {#if tab === 'overview'}
             <div class="card">
@@ -136,9 +157,10 @@
 
           {:else}
             <div class="card">
-              <div class="card-head"><h3>Filter</h3><span>{filtered.length} of {recs.length}</span><span class="grow"></span><button class="btn2 quiet rm" disabled={loading} onclick={load}>{loading ? 'Reading…' : 'Refresh'}</button></div>
+              <div class="card-head"><h3>Filter</h3><span>{filtered.length} of {recs.length}</span><span class="grow"></span><button class="btn2 quiet rm" disabled={loading} onclick={() => load()}>{loading ? 'Reading…' : 'Refresh'}</button></div>
               <div class="frow">
-                <input class="fin grow" type="search" bind:value={q} placeholder="Who, action, resource, policy, reason" />
+                <input class="fin grow" type="search" bind:value={q} placeholder={meaning ? 'Describe what you are looking for' : 'Who, action, resource, policy, reason'} onkeydown={(e) => { if (e.key === 'Enter' && meaning) void load(); }} />
+                <label class="dim"><input type="checkbox" bind:checked={meaning} onchange={() => void load()} /> by meaning</label>
                 <select class="fin" bind:value={dec}><option value="">any decision</option><option value="allow">allowed</option><option value="deny">denied</option><option value="ask">asked</option></select>
                 {#if who}<button class="btn2 quiet" onclick={() => (who = '')}>{who} ✕</button>{/if}
               </div>
@@ -158,8 +180,14 @@
                         <dt>Action</dt><dd class="mono">{r.action}</dd>
                         <dt>Resource</dt><dd class="mono">{r.resource_type} · {r.resource_id}</dd>
                         <dt>Project</dt><dd class="mono">{r.project ?? 'platform-wide'}</dd>
-                        <dt>Policies</dt><dd class="mono">{(r.policy_ids ?? []).join(', ') || '—'}</dd>
-                        <dt>When</dt><dd>{new Date(r.ts_ms).toISOString()}</dd>
+                        {#if r.org}<dt>Org</dt><dd class="mono">{r.org}</dd>{/if}
+                        {#if r.roles?.length}<dt>Roles</dt><dd class="mono">{r.roles.join(', ')}</dd>{/if}
+                        {#if r.agent}<dt>Agent</dt><dd class="mono">{r.agent}{r.agent_version ? ` · version ${r.agent_version}` : ''}{r.agent_owner ? ` · owner ${r.agent_owner}` : ''}</dd>{/if}
+                        {#if r.flow}<dt>Flow</dt><dd class="mono">{r.flow}</dd>{/if}
+                        {#if r.session}<dt>Session</dt><dd class="mono">{r.session}</dd>{/if}
+                        <dt>Policies</dt><dd class="mono">{(r.policy_ids ?? []).join(', ') || '—'}{r.policy_version ? ` · set ${r.policy_version}` : ''}</dd>
+                        <dt>When</dt><dd>{new Date(r.ts_ms).toISOString()}{r.pod ? ` · ${r.pod}` : ''}</dd>
+                        {#if r.id}<dt>Id</dt><dd class="mono">{r.id}</dd>{/if}
                       </dl>
                     {/if}
                   </button>
@@ -168,6 +196,7 @@
               {:else}<li class="ev"><span></span><span class="m">{loading ? 'Reading…' : 'No decisions match.'}</span><span></span></li>{/each}
             </ul>
             {#if filtered.length > 300}<p class="dim">The first 300 shown — narrow the filter.</p>{/if}
+            {#if next && !meaning}<button class="btn2" disabled={loading} onclick={() => load(true)}>{loading ? 'Reading…' : 'Older decisions'}</button>{/if}
           {/if}
         {/if}
         </section>
@@ -188,4 +217,6 @@
   .evb { all: unset; display: block; cursor: pointer; min-width: 0; }
   .kvd { margin-top: 8px; grid-template-columns: 100px 1fr; font-size: 12px; }
   .imp { color: #a35a12; font-weight: 600; }
+  .aql { margin-top: 6px; }
+  .aql code { display: block; white-space: pre-wrap; word-break: break-all; font-size: 12px; margin-top: 4px; }
 </style>

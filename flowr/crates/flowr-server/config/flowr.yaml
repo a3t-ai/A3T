@@ -5,9 +5,9 @@
 auth:
   # JWT signing secret — CHANGE IN PRODUCTION
   jwt_secret: "flowr-dev-secret-change-in-production"
-  # Access token expiry (seconds) — default 24h
-  token_expiry: 86400
-  # Refresh token expiry (seconds) — default 7d
+  # Access token expiry (seconds) — 1 h (ID-6); the console renews it before it runs out
+  token_expiry: 3600
+  # Session length (seconds) — 7 d: a sign-in ends this long after it began, however often renewed
   refresh_expiry: 604800
 
 rbac:

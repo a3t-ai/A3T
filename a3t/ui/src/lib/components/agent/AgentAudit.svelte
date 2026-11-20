@@ -16,7 +16,7 @@
   } = $props();
 
   const f = $derived(factsOf(agent, templates));
-  type View = 'all' | 'deny' | 'allow' | 'run' | 'err' | 'conv';
+  type View = 'all' | 'deny' | 'allow' | 'ask' | 'run' | 'err' | 'conv';
   import { insight, describeEvent, type AgentEvent, type Turn, type TurnSummary } from './controlPlane';
   /// Its own turns (the turn log) and its history (agent_events), from the control plane.
   let own = $state<{ summary: TurnSummary; turns: Turn[] } | null>(null);
@@ -29,7 +29,7 @@
     insight.events(id).then((r) => { if (agent.id !== id) return; if (r.ok) history = r.data; else histErr = r.error ?? 'Its history could not be read.'; });
   });
   let view = $state<View>('all');
-  type Item = { kind: 'conv' | 'run' | 'deny' | 'allow'; ts: number; title: string; meta: string; err?: boolean; ic: string };
+  type Item = { kind: 'conv' | 'run' | 'deny' | 'allow' | 'ask'; ts: number; title: string; meta: string; err?: boolean; ic: string };
   /// Its calls: a deployed agent's runs; otherwise its own turns — the serving
   /// flow's runs are every agent's, not its own.
   const deployed = $derived(!!live.placement?.stats);
@@ -41,7 +41,9 @@
     const all: Item[] = [
       ...calls,
       ...live.convs.map((c) => ({ kind: 'conv' as const, ic: 'TEST', ts: Date.parse(c.updated_at), title: c.title || 'Test chat', meta: `${c.message_count} messages · ${c.session_id}` })),
-      ...live.decisions.map((d) => ({ kind: d.allow ? 'allow' as const : 'deny' as const, ic: d.allow ? 'OK' : 'DENY', ts: d.ts, title: `${d.allow ? 'allowed' : 'blocked'}: ${d.action}`, meta: `${d.resource}${d.obo ? ` · on behalf of ${d.obo}` : ''}${d.reason ? ` · ${d.reason}` : ''}`, err: !d.allow })),
+      ...live.decisions.map((d) => ({ kind: d.decision, ic: d.decision === 'allow' ? 'OK' : d.decision === 'ask' ? 'ASK' : 'DENY', ts: d.ts,
+        title: `${d.decision === 'allow' ? 'allowed' : d.decision === 'ask' ? 'asked for approval' : 'blocked'}: ${d.action}`,
+        meta: `${d.resource}${d.obo ? ` · on behalf of ${d.obo}` : ''}${d.agentVersion ? ` · version ${d.agentVersion}` : ''}${d.policyIds.length ? ` · ${d.policyIds.join(', ')}` : ''}${d.reason ? ` · ${d.reason}` : ''}`, err: d.decision === 'deny' })),
     ];
     const keep = (i: Item) => view === 'all' || (view === 'err' ? i.kind === 'run' && !!i.err : i.kind === view);
     return all.filter(keep).sort((a, b) => b.ts - a.ts).slice(0, 200);
@@ -50,7 +52,7 @@
 
 <section class="agt">
   <div class="chips">
-    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.length - live.denied.length})`], ['run', `Calls (${calls.length})`], ['err', `Errors (${calls.filter((c) => c.err).length})`], ['conv', `Test chats (${live.convs.length})`]] as [k, label] (k)}
+    {#each [['all', 'All'], ['deny', `Blocked (${live.denied.length})`], ['allow', `Allowed (${live.decisions.filter((d) => d.decision === 'allow').length})`], ['ask', `Asked (${live.decisions.filter((d) => d.decision === 'ask').length})`], ['run', `Calls (${calls.length})`], ['err', `Errors (${calls.filter((c) => c.err).length})`], ['conv', `Test chats (${live.convs.length})`]] as [k, label] (k)}
       <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
     {/each}
     <span class="grow"></span>

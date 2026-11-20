@@ -34,7 +34,18 @@ pub struct Trigger {
     pub environment: Option<String>,
 }
 
+/// Shortest webhook secret accepted (bytes).
+pub const MIN_WEBHOOK_SECRET_LEN: usize = 16;
+
 impl Trigger {
+    /// A webhook trigger's shared secret, if it has one.
+    pub fn webhook_secret(&self) -> Option<&str> {
+        match &self.config {
+            TriggerConfig::Webhook { secret: Some(s), .. } if !s.is_empty() => Some(s),
+            _ => None,
+        }
+    }
+
     /// Whether it fires in this process: enabled, and of this process's environment.
     pub fn active_here(&self) -> bool {
         self.enabled && self.environment.as_deref().is_none_or(|e| e == current_environment())
@@ -168,3 +179,4 @@ pub struct TriggerExecution {
     pub target: String,
     pub instance_id: String,
 }
+

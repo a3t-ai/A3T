@@ -137,8 +137,27 @@ impl Default for AuthConfig {
     }
 }
 
-fn default_jwt_secret() -> String { "flowr-dev-secret-change-in-production".to_string() }
-fn default_token_expiry() -> u64 { 86400 }
+/// The built-in signing secret. It is public (it is in this file), so a server
+/// that enforces policy must never sign or accept tokens with it.
+pub const DEFAULT_JWT_SECRET: &str = "flowr-dev-secret-change-in-production";
+/// Shortest signing secret accepted where policy is enforced (bytes).
+pub const MIN_JWT_SECRET_LEN: usize = 32;
+
+fn default_jwt_secret() -> String { DEFAULT_JWT_SECRET.to_string() }
+
+impl AuthConfig {
+    /// Why this signing secret must not be used, if it must not.
+    pub fn weak_jwt_secret(&self) -> Option<&'static str> {
+        if self.jwt_secret == DEFAULT_JWT_SECRET {
+            Some("FLOWR_JWT_SECRET is the built-in default, which anyone can read")
+        } else if self.jwt_secret.len() < MIN_JWT_SECRET_LEN {
+            Some("FLOWR_JWT_SECRET is shorter than 32 bytes")
+        } else {
+            None
+        }
+    }
+}
+fn default_token_expiry() -> u64 { 3600 }
 fn default_refresh_expiry() -> u64 { 604800 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,5 +251,20 @@ impl FlowrConfig {
             self.cors.origins = v.split(',').map(|s| s.trim().to_string()).collect();
         }
         if let Ok(v) = std::env::var("FLOWR_SECURITY_POLICY_HOOK") { self.security.policy_hook = v; }
+    }
+}
+
+#[cfg(test)]
+mod jwt_secret_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_and_short_secrets_are_weak() {
+        let mut a = AuthConfig::default();
+        assert!(a.weak_jwt_secret().is_some());
+        a.jwt_secret = "short".into();
+        assert!(a.weak_jwt_secret().is_some());
+        a.jwt_secret = "x".repeat(MIN_JWT_SECRET_LEN);
+        assert!(a.weak_jwt_secret().is_none());
     }
 }

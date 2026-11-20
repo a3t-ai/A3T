@@ -7,13 +7,16 @@
   import { agentSpaceApi, securityCatalogue, type AgentSecurity, type CatalogueEntry } from '$lib/services/api';
   import type { AgentRec } from './agentData';
 
-  let { agent, canEdit }: { agent: AgentRec; canEdit: boolean } = $props();
+  // The agent's rules are security: its org's admins and security admins change
+  // them (FlowR says so in `policy.can_edit`), not its project's writers.
+  let { agent }: { agent: AgentRec; canEdit?: boolean } = $props();
 
   type Rule = { cannot: string[]; on?: { tools?: string[]; models?: { not_in?: string[]; in?: string[] } }; reason: string; who?: unknown };
   let prof = $state<AgentSecurity | null>(null);
   let cat = $state<CatalogueEntry[]>([]);
   let err = $state('');
   let busy = $state('');
+  const canEdit = $derived(!!prof?.policy.can_edit);
 
   async function load() {
     err = '';
@@ -150,6 +153,19 @@
           <button class="btn2 quiet" disabled={source === (prof.policy.source ?? '')} onclick={() => (source = prof?.policy.source ?? '')}>Discard</button></div>{/if}
       {/if}
     </div>
+
+    {#if !canEdit}<p class="dim">Only the org's admins and security admins change these rules.</p>{/if}
+
+    {#if prof.policy.history?.length}
+      <div class="card">
+        <div class="card-head"><h3>Changes</h3><span>every change to its rules, kept</span></div>
+        <ul class="rows wide">
+          {#each prof.policy.history as h (h.version)}
+            <li><span class="lbl mono">{h.version}</span><span class="val">{h.action} · {h.by} · {new Date(h.at).toLocaleString()}</span><span></span></li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
 
     <p class="dim">{prof.note}</p>
   {/if}

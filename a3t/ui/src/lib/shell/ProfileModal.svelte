@@ -87,6 +87,7 @@
   let peopleFilter = $state('');
   let actBusy = $state('');
   let actMsg = $state('');
+  let actReason = $state('');
   $effect(() => {
     if (open && propNode === 'actas' && !peopleLoaded) {
       peopleLoaded = true;
@@ -101,8 +102,9 @@
     { role: 'viewer', what: 'Read-only, no memberships' },
   ];
   async function go(target: { user_id: string } | { role: string }, key: string) {
+    if (actReason.trim().length < 8) { actMsg = 'Say why first (at least 8 characters). It goes in the decision log.'; return; }
     actBusy = key; actMsg = '';
-    const r = await actAs(target);
+    const r = await actAs(target, actReason.trim());
     if (!r.ok) { actMsg = r.error ?? 'Could not act as them'; actBusy = ''; }
   }
 
@@ -230,7 +232,8 @@
           {:else if propNode === 'actas' && canActAs}
             <div class="sp-form">
               <h3>Act as</h3>
-              <p class="pm-note">See A3T exactly as someone else does, to check what they can reach and what they are refused. Everything you do is done as them, and the decision log records you as well. It lasts up to an hour; <b>Stop</b> in the top bar brings you back.</p>
+              <p class="pm-note">See A3T exactly as someone else does, to check what they can reach and what they are refused. Everything you do is done as them, and the decision log records you as well. It lasts up to an hour. Your own session ends when you start; <b>Stop</b> in the top bar ends this one, and you sign in again as yourself. You cannot act as another SuperAdmin.</p>
+              <div class="pm-field"><label for="act-reason">Why (written to the decision log)</label><input id="act-reason" bind:value={actReason} maxlength="500" placeholder="e.g. Ticket 1234: checking why Jane cannot run the report flow" /></div>
               {#if actMsg}<div class="pm-msg">{actMsg}</div>{/if}
               <h4 class="pm-sub">A role</h4>
               <div class="act-roles">

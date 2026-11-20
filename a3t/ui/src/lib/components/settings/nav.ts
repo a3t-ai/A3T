@@ -1,5 +1,12 @@
 // The Settings pages, grouped: one list for the Settings page and for the
 // shell's Items (each leaf is an item; the group is its heading).
+//
+// UI-1 (20 Nov 2026): no security or identity control lives here unless the
+// server enforces it. Sign-in, roles, policies, the decision log and agent keys
+// are under Security, Access and each agent's own pages; the mock pages that
+// saved settings nothing read (Authentication, Authorization, Policy Engine,
+// Audit Log, Monitoring, Compliance, Users, Roles, Identity Providers, API Keys)
+// are gone.
 
 export interface Leaf { key: string; label: string; icon: string; ee?: boolean }
 export interface Group { label: string; icon: string; ee?: boolean; items: Leaf[] }
@@ -10,19 +17,6 @@ export const NAV: Group[] = [
     { key: 'general.runtime', label: 'Runtime', icon: 'swap' },
     { key: 'general.appearance', label: 'Appearance', icon: 'palette' },
     { key: 'general.orgs', label: 'Organisations', icon: 'users' },
-  ]},
-  { label: 'Security', icon: 'shield', ee: true, items: [
-    { key: 'security.authn', label: 'Authentication', icon: 'key', ee: true },
-    { key: 'security.authz', label: 'Authorization', icon: 'lockcheck', ee: true },
-    { key: 'security.policy', label: 'Policy Engine', icon: 'scale', ee: true },
-    { key: 'security.audit', label: 'Audit Log', icon: 'audit', ee: true },
-    { key: 'security.monitoring', label: 'Monitoring', icon: 'pulse', ee: true },
-    { key: 'security.compliance', label: 'Compliance', icon: 'badge', ee: true },
-  ]},
-  { label: 'Identity & Access', icon: 'users', ee: true, items: [
-    { key: 'iam.users', label: 'Users', icon: 'user', ee: true },
-    { key: 'iam.roles', label: 'Roles', icon: 'usercog', ee: true },
-    { key: 'iam.idp', label: 'Identity Providers', icon: 'plug', ee: true },
   ]},
   { label: 'Infrastructure', icon: 'server', items: [
     { key: 'infra.clusters', label: 'Clusters', icon: 'nodes' },
@@ -44,7 +38,6 @@ export const NAV: Group[] = [
     { key: 'billing.invoices', label: 'Invoices', icon: 'receipt', ee: true },
   ]},
   { label: 'Advanced', icon: 'sliders', items: [
-    { key: 'advanced.apikeys', label: 'API Keys', icon: 'key' },
     { key: 'advanced.flags', label: 'Feature Flags', icon: 'flag' },
     { key: 'advanced.telemetry', label: 'Telemetry', icon: 'pulse' },
   ]},
