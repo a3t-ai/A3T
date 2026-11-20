@@ -63,6 +63,12 @@ fn buffer() -> &'static Mutex<VecDeque<AuditRecord>> {
 
 /// Record a decision. Called at the choke point right after `check()`.
 pub fn record(req: &ExecutionRequest, decision: &PolicyDecision) {
+    record_noted(req, decision, None)
+}
+
+/// [`record`], with a note in `reason` when the decision carries none (for
+/// example the reason a SuperAdmin gave for acting as someone).
+pub fn record_noted(req: &ExecutionRequest, decision: &PolicyDecision, note: Option<&str>) {
     let ts_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -93,6 +99,10 @@ pub fn record(req: &ExecutionRequest, decision: &PolicyDecision) {
         reason,
         project: project_of(req),
     };
+    let mut rec = rec;
+    if rec.reason.is_none() {
+        rec.reason = note.map(str::to_string);
+    }
     if let Ok(mut b) = buffer().lock() {
         if b.len() >= CAPACITY {
             b.pop_front();

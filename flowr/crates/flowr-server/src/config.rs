@@ -157,7 +157,7 @@ impl AuthConfig {
         }
     }
 }
-fn default_token_expiry() -> u64 { 86400 }
+fn default_token_expiry() -> u64 { 3600 }
 fn default_refresh_expiry() -> u64 { 604800 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

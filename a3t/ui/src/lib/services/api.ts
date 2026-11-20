@@ -20,15 +20,41 @@ interface ApiResponse<T = any> {
 let accessToken: string | null = null;
 let refreshToken: string | null = null;
 let onAuthExpired: (() => void) | null = null;
+/// Where the session's tokens are kept between page loads and shared between
+/// tabs (the auth store's localStorage). A refresh token is good once (ID-6), so
+/// every renewal is written back and every tab reads the newest before renewing.
+let tokenStore: { read: () => { access: string; refresh: string } | null; write: (access: string, refresh: string) => void } | null = null;
+let renewTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function setTokens(access: string, refresh: string) {
   accessToken = access;
   refreshToken = refresh;
+  scheduleRenewal();
 }
 
 export function clearTokens() {
   accessToken = null;
   refreshToken = null;
+  if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
+}
+
+export function useTokenStore(store: typeof tokenStore) {
+  tokenStore = store;
+}
+
+/// When a JWT runs out (unix seconds), or null.
+function expiresAt(token: string | null): number | null {
+  try { const exp = JSON.parse(atob(token!.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp; return typeof exp === 'number' ? exp : null; } catch { return null; }
+}
+
+/// Renew a minute before the access token runs out, so streams and direct
+/// fetches (which don't retry on 401) always hold a live token.
+function scheduleRenewal() {
+  if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
+  const exp = expiresAt(accessToken);
+  if (!exp || !refreshToken || typeof window === 'undefined') return;
+  const ms = Math.max(5_000, exp * 1000 - Date.now() - 60_000);
+  renewTimer = setTimeout(() => { void tryRefresh().then((ok) => { if (!ok && onAuthExpired) onAuthExpired(); }); }, ms);
 }
 
 export function getAccessToken(): string | null {
@@ -120,21 +146,57 @@ async function send<T = any>(
   }
 }
 
-async function tryRefresh(): Promise<boolean> {
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      accessToken = data.access_token;
-      refreshToken = data.refresh_token;
-      return true;
-    }
-  } catch {}
+let renewing: Promise<boolean> | null = null;
+
+/// Renew the session once, however many requests ask at the same moment, and in
+/// one tab at a time (Web Locks); a tab that waited takes the tokens the other
+/// one stored instead of spending the same refresh token again.
+function tryRefresh(): Promise<boolean> {
+  if (!renewing) renewing = renewOnce().finally(() => { renewing = null; });
+  return renewing;
+}
+
+function adoptStored(): boolean {
+  const s = tokenStore?.read();
+  if (s?.refresh && s.refresh !== refreshToken) { setTokens(s.access, s.refresh); return true; }
   return false;
+}
+
+async function renewOnce(): Promise<boolean> {
+  const run = async (): Promise<boolean> => {
+    if (adoptStored()) return true;
+    if (!refreshToken) return false;
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTokens(data.access_token, data.refresh_token);
+        tokenStore?.write(data.access_token, data.refresh_token);
+        return true;
+      }
+      // Renewed a moment ago elsewhere: the newer tokens are in storage.
+      if (res.status === 409) return adoptStored();
+    } catch { /* network: the caller reports it */ }
+    return false;
+  };
+  const locks = typeof navigator !== 'undefined' ? (navigator as any).locks : undefined;
+  return locks?.request ? locks.request('a3t-session-renew', run) : run();
+}
+
+/// End a session on the server (ID-6): its tokens stop working on every pod.
+export async function endSession(access: string | null, refresh: string | null): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(access ? { Authorization: `Bearer ${access}` } : {}) },
+      body: JSON.stringify(refresh ? { refresh_token: refresh } : {}),
+      keepalive: true,
+    });
+  } catch { /* signed out here either way */ }
 }
 
 // ── Auth endpoints (public — no JWT needed) ──
@@ -607,7 +669,7 @@ export interface IdpUpdateUser {
 }
 /** A SuperAdmin acting as a user or a role: a short-lived token for them
  *  (FlowR impersonate.rs; the decision log records the SuperAdmin too). */
-export const impersonateApi = (body: { user_id: string } | { role: string }) =>
+export const impersonateApi = (body: ({ user_id: string } | { role: string }) & { reason: string }) =>
   request<{ access_token: string; expires_in: number; user: { id: string; email: string; name: string; role: string; org_id: string }; act: { sub: string; email: string } }>(
     '/auth/impersonate', { method: 'POST', body: JSON.stringify(body) });
 

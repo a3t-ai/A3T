@@ -88,24 +88,36 @@ pub async fn login_handler(
     let Some(identity) = resolved else {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response();
     };
-    issue_session(&config, identity)
+    issue_session(&config, identity).await
 }
 
-/// The tokens and user for a signed-in identity `(user_id, org, role, email, name)`.
-pub(crate) fn issue_session(config: &AuthConfig, (user_id, org_id, role, email, name): (String, String, String, String, String)) -> axum::response::Response {
-    let access_token = match create_token(config, &user_id, &org_id, &role, &email, &name) {
+/// Sign in a verified identity `(user_id, org, role, email, name)`: a new
+/// session (sessions.rs) and its tokens.
+pub(crate) async fn issue_session(config: &AuthConfig, identity: (String, String, String, String, String)) -> axum::response::Response {
+    let (sid, jti, ends) = match crate::sessions::open(config, &identity.0, "signin", config.refresh_expiry_secs).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "sign-in: session not recorded");
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Try again in a moment." }))).into_response();
+        }
+    };
+    info!(user = %identity.0, email = %identity.3, role = %identity.2, "Login successful");
+    session_tokens(config, identity, &sid, &jti, ends)
+}
+
+/// The tokens and user for session `sid` with refresh token `jti`.
+pub(crate) fn session_tokens(config: &AuthConfig, (user_id, org_id, role, email, name): (String, String, String, String, String), sid: &str, jti: &str, ends: i64) -> axum::response::Response {
+    let access_token = match create_token(config, sid, &user_id, &org_id, &role, &email, &name) {
         Ok(t) => t,
         Err(e) => {
             warn!(error = %e, "Failed to create token");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response();
         }
     };
-    let refresh_token = match create_refresh_token(config, &user_id) {
+    let refresh_token = match create_refresh_token(config, &user_id, sid, jti, ends) {
         Ok(t) => t,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
     };
-
-    info!(user = %user_id, email = %email, role = %role, "Login successful");
     Json(AuthResponse {
         access_token,
         refresh_token,
@@ -231,29 +243,12 @@ pub async fn signup_handler(
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Insert error: {}", e) }))).into_response();
     }
 
-    // Generate tokens
-    let access_token = match create_token(&config, &user_id, &org_id, &role, &body.email, &body.name) {
-        Ok(t) => t,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response();
-        }
-    };
-    let refresh_token = match create_refresh_token(&config, &user_id) {
-        Ok(t) => t,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response();
-        }
-    };
-
     info!(user = %user_id, email = %body.email, "Signup successful");
-
-    (StatusCode::CREATED, Json(AuthResponse {
-        access_token,
-        refresh_token,
-        token_type: "Bearer".to_string(),
-        expires_in: config.token_expiry_secs,
-        user: UserInfo { id: user_id, org_id, email: body.email, name: body.name, role },
-    })).into_response()
+    let mut res = issue_session(&config, (user_id, org_id, role, body.email, body.name)).await;
+    if res.status() == StatusCode::OK {
+        *res.status_mut() = StatusCode::CREATED;
+    }
+    res
 }
 
 /// GET /auth/me — returns current user from JWT claims
@@ -278,7 +273,7 @@ pub async fn me_handler(
         }
     };
 
-    match validate_token(&token, &config.jwt_secret, &config.resource_uri) {
+    match validate_token(&token, &config) {
         Ok(claims) => Json(UserInfo {
             id: claims.sub,
             org_id: claims.org,
@@ -299,4 +294,36 @@ fn uuid_short() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     format!("{:x}", t)
+}
+
+#[derive(Deserialize, Default)]
+pub struct LogoutBody {
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+}
+
+/// `POST /auth/logout` — end the session named by the bearer token and/or the
+/// refresh token in the body, on every pod (ID-6). Its tokens stop working here
+/// at once and on other pods within `sessions::RELOAD_SECS`.
+pub async fn logout_handler(
+    Extension(config): Extension<Arc<AuthConfig>>,
+    headers: axum::http::HeaderMap,
+    body: Option<Json<LogoutBody>>,
+) -> axum::response::Response {
+    let mut sids: Vec<String> = Vec::new();
+    if let Some(sid) = extract_bearer_token(&headers).and_then(|t| crate::auth::session_of(&t, &config)) {
+        sids.push(sid);
+    }
+    if let Some(rt) = body.and_then(|b| b.0.refresh_token).and_then(|t| crate::auth::validate_refresh(&t, &config, true).ok()) {
+        if !sids.contains(&rt.sid) {
+            sids.push(rt.sid);
+        }
+    }
+    for sid in &sids {
+        if let Err(e) = crate::sessions::revoke(&config, sid, "signed out").await {
+            warn!(error = %e, "sign-out: session not revoked");
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Try again in a moment." }))).into_response();
+        }
+    }
+    Json(json!({ "ok": true, "ended": sids.len() })).into_response()
 }

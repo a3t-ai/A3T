@@ -63,7 +63,7 @@ pub async fn first_password_handler(
         }
         info!("first-password: new password set");
         return match keycloak_login(&config, &email, &body.new_password).await {
-            KcLogin::Ok(identity) => issue_session(&config, identity),
+            KcLogin::Ok(identity) => issue_session(&config, identity).await,
             KcLogin::SetupRequired => refuse(StatusCode::FORBIDDEN, "Your password is set, but your account needs more setup. Ask your administrator."),
             KcLogin::Failed => refuse(StatusCode::SERVICE_UNAVAILABLE, "Your password is set. Sign in with it."),
         };

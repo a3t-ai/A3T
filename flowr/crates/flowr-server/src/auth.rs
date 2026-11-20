@@ -34,6 +34,12 @@ pub struct Claims {
     /// token to this MCP server so it cannot be replayed against another.
     #[serde(default)]
     pub aud: String,
+    /// Issuer: this server (its resource URI). Checked on every token (ID-6).
+    #[serde(default)]
+    pub iss: String,
+    /// The sign-in session (sessions.rs); a revoked session's tokens are refused.
+    #[serde(default)]
+    pub sid: String,
     /// Token expiry (unix timestamp)
     pub exp: usize,
     /// Issued at (unix timestamp)
@@ -68,7 +74,7 @@ pub fn principal_for(claims: &Claims) -> flowr_policy::Principal {
 pub struct AuthConfig {
     /// JWT signing secret (from env: FLOWR_JWT_SECRET)
     pub jwt_secret: String,
-    /// Token expiry duration in seconds (default: 24h)
+    /// Access token lifetime in seconds (default: 1 h)
     pub token_expiry_secs: u64,
     /// Refresh token expiry in seconds (default: 7d)
     pub refresh_expiry_secs: u64,
@@ -86,6 +92,8 @@ pub struct AuthConfig {
     pub oidc_issuer: String,
     /// Public OIDC client id for the password-grant login fallback.
     pub oidc_client_id: String,
+    /// Sessions revoked by sign-out or refresh-token reuse (sessions.rs).
+    pub revoked: Arc<crate::sessions::Revoked>,
 }
 
 /// Endpoints reachable without a bearer token.
@@ -100,6 +108,7 @@ fn is_public(path: &str) -> bool {
         "/auth/login",
         "/auth/signup",
         "/auth/refresh",
+        "/auth/logout", // ends the session its own token names
         "/auth/me", // validates its own bearer token internally
         "/health",
         "/ready",
@@ -223,7 +232,7 @@ pub async fn jwt_auth_middleware(
         // (`mcp:call`) are denied by the baseline. No/invalid token → stays public.
         if let Some(config) = request.extensions().get::<Arc<AuthConfig>>().cloned() {
             if let Some(token) = extract_bearer_token(&headers) {
-                if let Ok(claims) = validate_token(&token, &config.jwt_secret, &config.resource_uri) {
+                if let Ok(claims) = validate_token(&token, &config) {
                     let principal = principal_for(&claims);
                     request.extensions_mut().insert(claims);
                     request.extensions_mut().insert(principal);
@@ -261,7 +270,7 @@ pub async fn jwt_auth_middleware(
         }
     };
 
-    match validate_token(&token, &config.jwt_secret, &config.resource_uri) {
+    match validate_token(&token, &config) {
         Ok(claims) => {
             debug!(user = %claims.sub, role = %claims.role, "Authenticated");
             // E0.4a: map the validated identity into the shared Principal type so
@@ -292,8 +301,8 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Create a JWT token for a user
-pub fn create_token(config: &AuthConfig, user_id: &str, org_id: &str, role: &str, email: &str, name: &str) -> Result<String, String> {
+/// Create an access token for a user in session `sid`.
+pub fn create_token(config: &AuthConfig, sid: &str, user_id: &str, org_id: &str, role: &str, email: &str, name: &str) -> Result<String, String> {
     let now = chrono::Utc::now().timestamp() as usize;
     let claims = Claims {
         sub: user_id.to_string(),
@@ -302,53 +311,92 @@ pub fn create_token(config: &AuthConfig, user_id: &str, org_id: &str, role: &str
         email: email.to_string(),
         name: name.to_string(),
         aud: config.resource_uri.clone(),
+        iss: config.resource_uri.clone(),
+        sid: sid.to_string(),
         exp: now + config.token_expiry_secs as usize,
         iat: now,
         act: None,
     };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
-    )
-    .map_err(|e| format!("Failed to create token: {}", e))
+    sign(config, &claims)
 }
 
-/// Create a refresh token (longer expiry, minimal claims)
-pub fn create_refresh_token(config: &AuthConfig, user_id: &str) -> Result<String, String> {
-    let now = chrono::Utc::now().timestamp() as usize;
-
-    #[derive(Serialize)]
-    struct RefreshClaims { sub: String, exp: usize, iat: usize, refresh: bool }
-
-    encode(
-        &Header::default(),
-        &RefreshClaims {
-            sub: user_id.to_string(),
-            exp: now + config.refresh_expiry_secs as usize,
-            iat: now,
-            refresh: true,
-        },
-        &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
-    )
-    .map_err(|e| format!("Failed to create refresh token: {}", e))
+pub(crate) fn sign<T: Serialize>(config: &AuthConfig, claims: &T) -> Result<String, String> {
+    encode(&Header::default(), claims, &EncodingKey::from_secret(config.jwt_secret.as_bytes()))
+        .map_err(|e| format!("Failed to create token: {}", e))
 }
 
-/// Validate a JWT token and return claims
-pub fn validate_token(token: &str, secret: &str, expected_audience: &str) -> Result<Claims, String> {
-    let mut validation = Validation::default();
-    // RFC 8707: reject any token not minted for this resource. jsonwebtoken
-    // requires the token's `aud` to be a member of this set.
-    validation.set_audience(&[expected_audience]);
-    validation.set_required_spec_claims(&["exp", "aud"]);
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map(|data| data.claims)
-    .map_err(|e| format!("{}", e))
+/// A refresh token: good once (`jti`), for session `sid`, until the session ends.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RefreshClaims {
+    pub sub: String,
+    pub sid: String,
+    pub jti: String,
+    pub aud: String,
+    pub iss: String,
+    pub exp: usize,
+    pub iat: usize,
+    pub refresh: bool,
+}
+
+pub fn create_refresh_token(config: &AuthConfig, user_id: &str, sid: &str, jti: &str, ends: i64) -> Result<String, String> {
+    sign(config, &RefreshClaims {
+        sub: user_id.to_string(),
+        sid: sid.to_string(),
+        jti: jti.to_string(),
+        aud: config.resource_uri.clone(),
+        iss: config.resource_uri.clone(),
+        exp: ends.max(0) as usize,
+        iat: chrono::Utc::now().timestamp() as usize,
+        refresh: true,
+    })
+}
+
+fn validation(config: &AuthConfig) -> Validation {
+    let mut v = Validation::default();
+    // RFC 8707: reject any token not minted for this resource, or by anyone else.
+    v.set_audience(&[&config.resource_uri]);
+    v.set_issuer(&[&config.resource_uri]);
+    v.set_required_spec_claims(&["exp", "aud", "iss"]);
+    v
+}
+
+/// Validate an access token: signature, issuer, audience, expiry, and a live session.
+pub fn validate_token(token: &str, config: &AuthConfig) -> Result<Claims, String> {
+    let claims = decode::<Claims>(token, &DecodingKey::from_secret(config.jwt_secret.as_bytes()), &validation(config))
+        .map(|data| data.claims)
+        .map_err(|e| format!("{}", e))?;
+    if claims.sid.is_empty() {
+        return Err("token names no session".into());
+    }
+    if config.revoked.contains(&claims.sid) {
+        return Err("the session has ended".into());
+    }
+    Ok(claims)
+}
+
+/// The session an access token belongs to, even after it has expired (sign-out).
+pub fn session_of(token: &str, config: &AuthConfig) -> Option<String> {
+    let mut v = validation(config);
+    v.validate_exp = false;
+    decode::<Claims>(token, &DecodingKey::from_secret(config.jwt_secret.as_bytes()), &v)
+        .ok()
+        .map(|d| d.claims.sid)
+        .filter(|s| !s.is_empty())
+}
+
+/// Validate a refresh token. `expired_ok` lets sign-out end a session whose
+/// refresh token has run out.
+pub fn validate_refresh(token: &str, config: &AuthConfig, expired_ok: bool) -> Result<RefreshClaims, String> {
+    let mut v = validation(config);
+    v.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);
+    v.validate_exp = !expired_ok;
+    let c = decode::<RefreshClaims>(token, &DecodingKey::from_secret(config.jwt_secret.as_bytes()), &v)
+        .map(|d| d.claims)
+        .map_err(|e| format!("{}", e))?;
+    if !c.refresh || c.sub.is_empty() || c.sid.is_empty() || c.jti.is_empty() {
+        return Err("not a refresh token".into());
+    }
+    Ok(c)
 }
 
 /// Hash a password with Argon2id, returning a PHC-format string that embeds
@@ -520,7 +568,7 @@ pub async fn dual_auth_middleware(headers: HeaderMap, mut request: Request, next
     async fn attach(headers: &HeaderMap, request: &mut Request) -> bool {
         let Some(token) = extract_bearer_token(headers) else { return false };
         if let Some(config) = request.extensions().get::<Arc<AuthConfig>>().cloned() {
-            if let Ok(claims) = validate_token(&token, &config.jwt_secret, &config.resource_uri) {
+            if let Ok(claims) = validate_token(&token, &config) {
                 let principal = principal_for(&claims);
                 request.extensions_mut().insert(claims);
                 request.extensions_mut().insert(principal);

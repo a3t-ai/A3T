@@ -16,6 +16,7 @@ mod forgot;
 mod first_password;
 mod change_password;
 mod refresh;
+mod sessions;
 mod directory;
 mod people;
 mod config;
@@ -172,6 +173,11 @@ async fn main() -> anyhow::Result<()> {
         }
         warn!(authn = %authn, enforcing, "{why}; tolerated only because this server enforces no policy or accepts OIDC tokens only");
     }
+    // ID-6: an OIDC token must be minted for A3T. Without an audience to check,
+    // any token the realm issues to any client would do.
+    if enforcing && authn != "hs256" && oidc_audience.trim().is_empty() {
+        anyhow::bail!("security.oidc_audience (FLOWR_SECURITY_OIDC_AUDIENCE) is empty; set it to the audience A3T's tokens carry before starting with policy enforced and OIDC tokens accepted (security.authn = {authn})");
+    }
     // Projects: with policy enforcing, a caller sees and changes only the
     // namespaces (projects), runs and runtimes it may — the rules of the A3T
     // project flows, enforced at every boundary.
@@ -224,7 +230,9 @@ async fn main() -> anyhow::Result<()> {
                     // same email/password form. Empty issuer disables it.
                     oidc_issuer: oidc_issuer.clone(),
                     oidc_client_id: oidc_client_id.clone(),
+                    revoked: Arc::new(sessions::Revoked::default()),
                 });
+                sessions::spawn_upkeep(auth_config.clone());
 
                 info!(
                     a3t_db = %auth_config.a3t_db_path,
@@ -285,6 +293,7 @@ async fn main() -> anyhow::Result<()> {
                     .route("/auth/first-password", post(first_password::first_password_handler))
                     // A new session from a refresh token, with roles read again (refresh.rs).
                     .route("/auth/refresh", post(refresh::refresh_handler))
+                    .route("/auth/logout", post(auth_routes::logout_handler))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
