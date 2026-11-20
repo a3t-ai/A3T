@@ -252,6 +252,8 @@ async fn main() -> anyhow::Result<()> {
                     // Sign-in per organisation (.ai/A3T_ORG_SSO_SPEC.md).
                     .route("/auth/sso/start", get(sso::start_handler))
                     .route("/auth/sso/callback", get(sso::callback_handler))
+                    // An editor trades its handoff code for a session (sso.rs).
+                    .route("/auth/sso/token", post(sso::token_handler))
                     // E0.6: report active edition + policy hook (public).
                     .route("/edition", get(edition_handler))
                     .route(
