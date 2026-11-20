@@ -25,6 +25,13 @@ use crate::auth::AuthConfig;
 pub const TABLE: &str = "auth_sessions";
 pub const GRACE_SECS: i64 = 20;
 pub const RELOAD_SECS: u64 = 10;
+const COLUMNS: [&str; 10] = ["sid", "sub", "kind", "jti", "prev_jti", "rotated_at", "revoked", "reason", "created_at", "expires_at"];
+
+/// Make the table if it isn't there (on ADB a read of a missing table fails).
+pub async fn ensure_table(config: &AuthConfig) -> Result<(), String> {
+    let schema: Map<String, Value> = COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
+    config.platform.get().await.create_table(TABLE, Some(&schema), "create_if_not_exists").await.map(|_| ())
+}
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -71,8 +78,6 @@ impl Revoked {
                     *s = set;
                 }
             }
-            // No table yet: nobody has signed in since this release.
-            Err(e) if e.contains("not found") || e.contains("does not exist") || e.contains("No such") => {}
             Err(e) => warn!(error = %e, "sessions: revoked set not reloaded"),
         }
     }
@@ -161,6 +166,10 @@ pub async fn revoke(config: &AuthConfig, sid: &str, reason: &str) -> Result<(), 
 pub fn spawn_upkeep(config: std::sync::Arc<AuthConfig>) {
     tokio::spawn(async move {
         let mut tick: u64 = 0;
+        while let Err(e) = ensure_table(&config).await {
+            warn!(error = %e, "sessions: table not ready; retrying");
+            tokio::time::sleep(std::time::Duration::from_secs(RELOAD_SECS)).await;
+        }
         loop {
             config.revoked.reload(&config).await;
             if tick % (3600 / RELOAD_SECS) == 0 {
