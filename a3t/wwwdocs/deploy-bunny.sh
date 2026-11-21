@@ -24,6 +24,7 @@ build() {
   [ "$major" -ge 22 ] || { echo "Astro 6 needs Node 22.12+ (got $("$NODE" -v)); set NODE=/path/to/node22" >&2; exit 1; }
   # /home/coder (CIFS) has no symlinks, hence --no-bin-links
   [ -d node_modules ] || PATH="$(dirname "$NODE"):$PATH" npm ci --no-bin-links
+  "$NODE" scripts/catalogue.mjs   # DOC-3: the permission catalogue page, from a3t/policies/catalogue.yaml
   "$NODE" node_modules/astro/bin/astro.mjs build
   echo "Built $BUILD_DIR/ ($(find "$BUILD_DIR" -type f | wc -l) files, $(du -sb "$BUILD_DIR" | cut -f1 | numfmt --to=iec))"
 }

@@ -1,0 +1,88 @@
+---
+title: Policy files
+description: An org's rules, roles, access and outbound hosts, kept as versioned YAML files in A3T, checked before they apply and switched on one by one.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Each org keeps its governance as **files**. They live in A3T (no repository to set up), are edited in **Studio** like any other YAML, keep every version, and are switched **on**, **off** or to **shadow** one by one. Org admins and org security admins manage them; platform InfoSec can manage any org's.
+
+| Folder | Kind | What it says |
+|---|---|---|
+| `policies/<name>.yaml` | `a3t/policy` | Rules: what may not happen, or what waits for a person's approval |
+| `roles/<name>.yaml` | `a3t/role` | The org's own roles: a baseline role minus permissions |
+| `access/<project>.yaml` | `a3t/access` | Who holds which role on one project, by group or by email |
+| `access/org.yaml` | `a3t/org-access` | Which sign-in groups get which org role ([Identity and roles](../identity-and-roles/)) |
+| `egress/<name>.yaml` | `a3t/egress` | Where the org's flows and agents may call out to |
+
+Open them in **Security → *org* → Policy files**, or in Studio under each project's **Policies** (rules, roles, access, *Calls out*). A file that names no project you can see, or doesn't parse, is listed under the org's **Unplaced policy files**, so nothing in force is ever hidden.
+
+## Rules: `policies/`
+
+```yaml
+kind: a3t/policy
+name: no-deletes-in-prod
+description: Production flows and agents are never deleted from chat.
+applies_to: { projects: [acme-prod] }
+rules:
+  - cannot: [flows.delete, agents.delete]
+    reason: Deleting in production goes through a change request.
+```
+
+`applies_to` says where it binds: `org: true` (every project), `projects`, project `tags`, `flows` (`<project>/<flow>`) or `agents`. With no `applies_to`, a policy binds only where it is **referenced**: a flow names it in `metadata.a3t.policyRef`, or an agent lists it under `uses` in its own policy. See [Writing a rule](../writing-a-rule/) for everything a rule can say.
+
+## Roles: `roles/`
+
+```yaml
+kind: a3t/role
+name: support-lead
+description: Builds like an Admin, but never deletes.
+extends: Admin
+remove: [flows.delete, agents.delete, resources.delete]
+```
+
+`extends` is a baseline role: `Admin` (builds), `Operator` (runs and deploys) or `Viewer` (reads). `remove` takes [permission ids](../permissions/). Give the role to people in an access file.
+
+## Project access: `access/`
+
+```yaml
+kind: a3t/access
+project: acme-p1
+description: Who holds which role on acme-p1.
+groups:
+  acme-support: Operator
+  acme-leads: support-lead
+users:
+  jane@acme.test: Admin
+```
+
+A role here is `Admin`, `Operator`, `Viewer` or one of the org's `roles/` files. Someone named here holds it on that project.
+
+## Outbound hosts: `egress/`
+
+```yaml
+kind: a3t/egress
+description: What acme's flows and agents may reach.
+hosts: [api.github.com, "*.slack.com"]
+private: [crm.acme.internal]     # on the org's own network; otherwise private addresses are refused
+```
+
+With an egress file in force, flows and agents in the org's projects reach only the listed hosts (several files: their union). Private and cloud-metadata addresses are always refused unless named under `private`. An agent's own policy can narrow this further, never widen it.
+
+## Switching a file on
+
+A file is **off** when first saved. Switching it **on** (or saving a change to a file that is on) compiles the org's whole enforced set with it; if anything would break, nothing changes and you see why.
+
+- **Shadow** evaluates the file on real calls and logs what it *would* refuse (`shadow:` in the decision log), refusing nothing. Use it for a few days before switching on.
+- **Replay** (in Studio's check panel, or `POST /security/orgs/<org>/replay`) runs a draft against the org's recent decisions and lists which would change.
+- **Second approver.** With the org's *four eyes* setting on, saving, removing or switching a file waits until another org admin or security admin approves it (**Security → *org* → Changes**). The author can't approve their own change; the history and the decision log name both.
+
+<Aside type="caution">
+A file that is in force and stops compiling (a project it names was renamed, a role it uses was removed) **closes** what it guarded until it is fixed: calls there are refused with `policy is broken`, the change is logged once, and the console shows the file as broken. A3T fails closed rather than silently dropping a rule.
+</Aside>
+
+## Describe a rule instead of writing it
+
+In **Security → *org* → Policy files**, *Describe a rule* asks the policy agent to draft the files from a sentence ("operators may not run flows in acme-prod; deleting an agent needs approval"). The drafts are checked and replayed like any other change, and nothing applies until you save and switch them on.

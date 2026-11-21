@@ -22,3 +22,4 @@ pnpm-debug.log*
 
 # Bunny deploy keys
 .env.bunny
+src/content/docs/governance/permissions.mdx

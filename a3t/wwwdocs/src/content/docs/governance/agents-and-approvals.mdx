@@ -1,0 +1,65 @@
+---
+title: Agents and approvals
+description: What an agent may do, which calls wait for a person, how to see every agent and its risk, review who holds what, and stop an agent at once.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+An agent acts **for a person** (whoever started the chat or the run) or, called with one of its keys, for the person who made the key. It never carries more than that person, and never more than its own policy allows.
+
+## An agent's own policy
+
+Open **Agent → Security**. The org's security admins set, per agent:
+
+| Setting | Effect |
+|---|---|
+| **Role ceiling** | The most authority it carries, whoever runs it (`Admin`, `Operator`, `Viewer`) |
+| **Org policies it runs under** (`uses`) | Optional org policies that bind it |
+| **Hosts it may reach** (`egress`) | Narrows the org's egress files for this agent |
+| **Budget** | Turns a day, model tokens a day, calls a minute per key. Over it, the agent stops until the next day (UTC) and `budget:exceeded` goes to the decision log |
+| **Personal data** (`pii: redact`) | Emails, phone numbers, cards, IBANs and keys are redacted from what it stores: its transcripts, its memory, and what it gives its memory tools |
+| **Rules** | `cannot` and `needs_approval`, as in [Writing a rule](../writing-a-rule/) |
+
+Changes to an agent's policy or its record are versioned (before and after, who, when) and, with the org's second approver on, wait for another admin.
+
+## Approvals
+
+A rule with `needs_approval` makes the agent **stop and ask** before that call. The question goes to the person the agent acts for (or, for a run nobody started, the agent's owner):
+
+- in the conversation, as a card with **Allow** / **Deny**;
+- in **Approvals** in the console menu, with everything waiting on you.
+
+The run waits (it survives restarts) until someone answers or the rule's `timeout` passes; an expired question is a refusal. Every question, answer and expiry is in the decision log (`approval:request`, `approval:answer`, `approval:expired`).
+
+### Prompt injection
+
+Output from outside A3T (a tool server outside the platform, a fetched web page, a file or an email) reaches the model **marked as untrusted data**, with an instruction not to follow anything inside it. After an agent has read such output in a turn, any **destructive** call (delete, drop, send, pay, merge, deploy, grant…) waits for a person's approval, whatever its policy says, so an injected *"now delete everything"* can't act on its own.
+
+## Calls out
+
+- An agent reaches only the hosts its org's egress files (and its own `egress`) allow; private and cloud-metadata addresses are refused unless the org names them.
+- Each call to a tool server outside A3T carries an `A3T-Agent-Identity` token naming the agent and its person ([Identity and roles](../identity-and-roles/#agent-keys-and-agent-identity)).
+- **Secrets** are encrypted at rest and given only to their own project's resources; a project can't name another project's secret.
+- Every model call is in the decision log (`gateway:model`), with the tokens used when the model reports them.
+
+## Seeing every agent
+
+**Security → All agents** (platform) or ***org* → Agents** lists every agent with its owner, project, tools and servers, keys, last activity and a **risk** tier (high, medium, low) with the reason. Download it as CSV for an audit.
+
+## Access reviews
+
+***org* → Identity → Access reviews** starts a review: a snapshot of who holds what in the org (members' org roles, people's project roles, agents' live keys). Reviewers **keep** or **revoke** each item; a revoke applies at once, every decision is logged (`access_review:keep`, `access_review:revoke`), and the review closes when every item is decided.
+
+## Stopping an agent
+
+| Action | Where | Effect |
+|---|---|---|
+| **Stop** | Agent → Controls | Blocks the agent and cancels its running turns now; its keys stop working |
+| **Revoke a key** | Agent → Keys | That key stops at once |
+| **Pause a deployment** | Agent → Controls | Its endpoint stops taking calls |
+
+<Aside type="tip">
+Everything above is also in the decision log, so **Decision log → filter by agent** shows what an agent did, what it was refused, what it asked and who answered.
+</Aside>

@@ -78,8 +78,38 @@ Besides policy decisions, the log records:
 - someone reading another person's conversation;
 - an org policy file saved, deleted, or switched on or off;
 - an agent's policy saved or deleted;
-- an agent key created or revoked;
-- **Act as** started (with its reason) and stopped.
+- an agent key created, rotated or revoked;
+- **Act as** started (with its reason) and stopped;
+- an approval asked, answered or expired (`approval:request`, `approval:answer`, `approval:expired`);
+- a policy change proposed, approved or rejected under the second approver (`policy:propose`, `policy:approve`, `policy:reject`);
+- what a file in **shadow** would have refused (`shadow:`), and a file in force that broke or was fixed (`policy:broken`, `policy:healed`);
+- an agent over its budget (`budget:exceeded`), and each of its model calls (`gateway:model`) and outbound calls (`gateway:call`, refusals included);
+- access-review decisions (`access_review:keep`, `access_review:revoke`);
+- an org connecting or disconnecting its identity provider, and SCIM provisioning and deprovisioning (`org:idp_connect`, `org:scim_provision`, `org:scim_deprovision`).
+
+## Tamper evidence
+
+Each organisation's decisions are **chained**: every record carries the hash of the one before it, and the heads of the chains are anchored hourly. **Security › *org* › Policy files › Changes › Check the log** (or `GET /security/audit/verify?org=<org id>&days=1`) re-reads the log and reports the records and chains checked, any **gaps** (a record missing) and any **edits** (a record that no longer matches its hash). Org admins and security admins can run it for their org.
+
+## Retention and legal hold
+
+Per organisation (**Security › *org* › Policy files › Changes**): how long decisions are kept (30 days or more, or forever), and a **legal hold** that keeps everything whatever the retention. Old decisions are removed daily. With the second approver on, shortening retention or lifting a hold waits for another admin.
+
+## Export to a SIEM
+
+Each FlowR can send every decision on as it is written, set by its environment:
+
+| Variable | Sends |
+|---|---|
+| `FLOWR_AUDIT_OTLP_URL` | OpenTelemetry logs (OTLP/HTTP, `…/v1/logs`) to a collector, which forwards to Splunk, Sentinel, Datadog, S3 or anything else it exports to |
+| `FLOWR_AUDIT_SYSLOG` | One RFC 5424 line per decision, `udp://host:514` or `tcp://host:514` |
+| `FLOWR_AUDIT_HTTP_URL` (+ `FLOWR_AUDIT_HTTP_AUTH`) | Newline-delimited JSON, for example Splunk HEC or a Sentinel ingestion endpoint |
+
+Export never holds up the log; a sink that fails is retried once and then logged.
+
+## Personal data
+
+The log's free text (reasons and notes) never keeps personal data or secrets: email addresses, phone numbers, payment cards, IBANs, social security numbers and API keys are replaced with `[redacted:<kind>]`. Ids are left as they are.
 
 ## Finding why something was refused
 

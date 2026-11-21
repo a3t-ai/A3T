@@ -1,0 +1,99 @@
+---
+title: Writing a rule
+description: The parts of a rule in a policy file — who, cannot or needs approval, on which tools or models, and why — with examples.
+sidebar:
+  order: 5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A rule **narrows** what the baseline allows; it can never grant anything. Each rule becomes a Cedar `forbid` (or, for `needs_approval`, a question to a person), and a `forbid` always wins.
+
+```yaml
+kind: a3t/policy
+name: approved-models
+description: Acme uses only its approved model.
+applies_to: { org: true }
+rules:
+  - who: { roles: [Operator], agents: any }
+    cannot: [models.use]
+    on: { models: { not_in: [a3t/claude-cli-max] } }
+    reason: Acme uses only its approved model.
+```
+
+## The parts
+
+| Field | Says | Values |
+|---|---|---|
+| `who` | Whom it binds. Left out: everyone. | `roles`: `Admin`, `Operator`, `Viewer`, `SuperAdmin`, `SecurityAdmin` or one of the org's roles. `agents`: `any`, or a list of agent ids. Either matches. |
+| `cannot` | What they may not do | [Permission ids](../permissions/) (`flows.delete`, `apps.security`) or tool globs (`tools.delete_*`) |
+| `needs_approval` | What an agent may do only once a person approves that call (instead of `cannot`) | The same ids and globs |
+| `timeout` | How long an approval question may wait before it is refused | `90s`, `30m`, `4h`, `2d` (a minute to 30 days; default a day) |
+| `on` | Limits the rule to some tools or models | `tools`: globs (`github.*`); `models`: `{ in: [...] }` or `{ not_in: [...] }` |
+| `reason` | Why — shown to the person refused, and to the approver | Plain words; required |
+
+A policy may also hold an expert `cedar:` block, with `forbid` statements only.
+
+## Where a rule binds
+
+`applies_to` on the policy: `org: true`, `projects`, project `tags`, `flows` (`<project>/<flow>`), `agents`. Leave it out and the policy binds only where it is **referenced**: by a flow (`metadata.a3t.policyRef`) or by an agent (`uses` in its own policy). That is how an org offers optional policies, for example *pci-handling*, that each team opts into.
+
+## Examples
+
+**Nobody deletes in production.**
+
+```yaml
+applies_to: { projects: [acme-prod] }
+rules:
+  - cannot: [flows.delete, agents.delete, resources.delete]
+    reason: Deleting in production goes through a change request.
+```
+
+**Agents ask before deleting or merging anything; the question waits up to 4 hours.**
+
+```yaml
+applies_to: { org: true }
+rules:
+  - who: { agents: any }
+    needs_approval: ["tools.delete_*", "tools.merge_*"]
+    timeout: 4h
+    reason: A person confirms deletes and merges.
+```
+
+**Operators can't open Security or the Decision log in the console.**
+
+```yaml
+rules:
+  - who: { roles: [Operator] }
+    cannot: [apps.security, apps.decision-log]
+    reason: Security is for the org's admins.
+```
+
+<Aside type="note">
+Hiding an app (`apps.*`) is a convenience: the data behind it is still guarded by its tool and action permissions. To stop something, forbid the permission that does it.
+</Aside>
+
+## Checking a rule
+
+- **Describe a rule** in plain words and let the policy agent draft it (Security → *org* → Policy files).
+- Studio's **check panel** compiles the org's enforced set with your draft as you type, and can **replay** it against recent decisions.
+- Switch the file to **shadow** to see what it would refuse on real calls, then **on**. See [Policy files](../policy-files/).
+
+## An agent's own policy
+
+Every agent has a policy of its own (Agent → Security), set by the org's security admins. Besides rules (`cannot`, `needs_approval`), it may say:
+
+```yaml
+kind: a3t/policy
+name: profile
+role_ceiling: [Operator, Viewer]     # the most it carries, whoever runs it
+uses: [acme/pci-handling]            # org policies it runs under
+egress: [api.github.com]             # hosts it may reach, within the org's egress files
+budget: { runs_per_day: 200, tokens_per_day: 2000000, key_calls_per_minute: 60 }
+pii: redact                          # keep personal data out of its transcripts and memory
+rules:
+  - needs_approval: ["tools.send_*"]
+    reason: A person checks anything the agent sends.
+```
+
+These fields belong only in an agent's own policy. See [Agents and approvals](../agents-and-approvals/).

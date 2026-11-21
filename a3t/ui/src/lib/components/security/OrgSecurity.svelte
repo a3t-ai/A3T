@@ -543,8 +543,8 @@
           <h4 class="sub">Groups → org role</h4>
           {#if orgAccess}
             <ul class="olist">
-              {#each pairs(orgAccess.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>org {ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else</span><span>{orgAccess.y.default ? `org ${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><span></span></li>
+              {#each pairs(orgAccess.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
+              <li class="rrow"><span class="dim">anyone else</span><span>{orgAccess.y.default ? `${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><span></span></li>
             </ul>
             <p class="dim">From the policy file <button class="lnk2 mono" onclick={() => openFileInStudio(orgAccess!.f.path)}>{orgAccess.f.path}</button>{orgAccess.f.enforced === false ? ' — switched off: nobody gets an org role at sign-in' : ''}: versioned, checked, and approved like the org's other policy files.</p>
           {:else}
@@ -604,8 +604,8 @@
           <h4 class="sub">In the org, at sign-in</h4>
           {#if org.sso?.idp_alias}
             <ul class="olist">
-              {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>org {ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `org ${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in</button></li>
+              {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
+              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in</button></li>
             </ul>
           {:else}<p class="dim">No sign-in of its own: people are added under Members.</p>{/if}
           <h4 class="sub">On its projects</h4>
