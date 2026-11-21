@@ -8,13 +8,14 @@
   import '$lib/components/agent/agent.css';
   import { agentInventory, getAccessToken, type InventoryRow } from '$lib/services/api';
   import { API_BASE } from '$lib/config';
-  import { navigateToDetail } from '$lib/stores/panels.svelte.ts';
+  import AgentSecurity from './AgentSecurity.svelte';
 
   let { org }: { org: string } = $props();
   let rows = $state<InventoryRow[] | null>(null);
   let err = $state('');
   let risk = $state('');
   let q = $state('');
+  let open = $state<InventoryRow | null>(null);
   async function load(o: string) {
     rows = null; err = '';
     const r = await agentInventory(o === 'all' ? undefined : o);
@@ -34,6 +35,9 @@
   const step = { id: 'inventory', label: 'Agents', icon: '<rect x="3" y="1" width="10" height="7" rx="2"/><path d="M5 8v2a3 3 0 006 0V8"/>', hint: 'Every agent: who owns it, what it reaches, its keys, and how risky it looks' };
 </script>
 
+{#if open}
+  {#key open.id}<AgentSecurity row={open} onback={() => (open = null)} />{/key}
+{:else}
 <div class="panel-layout">
   <PropertiesTree icon="AG" color="#5530a8" name="Agents" meta={org === 'all' ? 'every org' : `org ${org}`} nodes={[]} steps={[step]} activeNode="inventory" onselect={() => {}} />
   <div class="panel-col"><div class="panel-content"><div class="pf">
@@ -53,9 +57,9 @@
             <thead><tr><th>Risk</th><th>Agent</th><th>Project</th><th>Owner</th><th>Reaches</th><th>Keys</th><th>Own rules</th><th>Last</th></tr></thead>
             <tbody>
               {#each shown as r (r.id)}
-                <tr>
+                <tr class="click" onclick={() => (open = r)}>
                   <td><span class="risk {r.risk}" title={r.why}>{r.risk}</span></td>
-                  <td><button class="link" onclick={() => navigateToDetail('agents', 'Agents', r.id)}>{r.name}</button>{#if r.status === 'blocked'} <span class="dim">· stopped</span>{/if}</td>
+                  <td><button class="link" onclick={(e) => { e.stopPropagation(); open = r; }}>{r.name}</button>{#if r.status === 'blocked'} <span class="dim">· stopped</span>{/if}</td>
                   <td class="mono">{r.project}</td>
                   <td class="mono">{r.owner}</td>
                   <td>{(r.mcp_servers ?? []).join(', ') || '—'}{r.egress ? ` · only ${r.egress.join(', ')}` : ''}</td>
@@ -72,6 +76,7 @@
     </section>
   </div></div></div>
 </div>
+{/if}
 
 <style>
   .risk { padding: 1px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; text-transform: capitalize; }
@@ -79,4 +84,6 @@
   .risk.medium { background: color-mix(in srgb, #b45309 14%, transparent); color: #b45309; }
   .risk.low { background: color-mix(in srgb, var(--ok, #1a7158) 14%, transparent); color: var(--ok, #1a7158); }
   .grow { flex: 1 1 auto; }
+  tr.click { cursor: pointer; }
+  tr.click:hover td { background: var(--bg-subtle); }
 </style>
