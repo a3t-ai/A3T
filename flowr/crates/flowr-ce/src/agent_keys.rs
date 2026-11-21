@@ -157,7 +157,7 @@ pub async fn verify(token: &str) -> Result<(flowr_policy::Principal, KeyScope), 
     }
     // RT-4: its agent's budget may limit calls a minute through each key.
     if let Some(n) = crate::budget::of(storage.as_ref(), &agent).await.and_then(|b| b.key_calls_per_minute) {
-        crate::budget::key_call(&col(&row, "id"), n)?;
+        crate::budget::key_call(storage.as_ref(), &col(&row, "id"), n).await?;
     }
     let roles: Vec<String> = col(&row, "roles").split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect();
     let scope = KeyScope { key_id: col(&row, "id"), agent_id: col(&row, "agent_id") };

@@ -5,8 +5,9 @@
 //! `agent_usage` (one row per turn: its model tokens); at or over a limit the
 //! turn is refused — a hard stop until the next day — and `budget:exceeded` goes
 //! to the decision log once a day per agent and limit. Keys are rate limited per
-//! minute in each FlowR process (so the cluster-wide ceiling is that times the
-//! number of FlowRs serving the data plane).
+//! minute across every FlowR: each call through a key is one row of
+//! `agent_key_calls`, counted for the minute after it is written (two calls that
+//! race can both be refused at the limit, never both let past it).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -89,8 +90,11 @@ fn alert_once(agent: &str, why: &str) {
         &flowr_policy::PolicyDecision::Deny { reason: why.to_string(), policy_ids: vec!["budget".into()] }, Some("stopped until tomorrow (UTC)"));
 }
 
-/// A key's calls this minute, in this process: `Err` past `per_minute`.
-pub fn key_call(key_id: &str, per_minute: u64) -> Result<(), String> {
+pub const KEY_CALLS: &str = "agent_key_calls";
+
+/// A key's calls this minute, in this process: `Err` past `per_minute` (the
+/// quick refusal before the cluster-wide count).
+fn local_call(key_id: &str, per_minute: u64) -> Result<(), String> {
     static WINDOW: Mutex<Option<HashMap<String, (u64, u64)>>> = Mutex::new(None);
     let minute = (chrono::Utc::now().timestamp() / 60) as u64;
     let mut w = WINDOW.lock().unwrap();
@@ -105,6 +109,46 @@ pub fn key_call(key_id: &str, per_minute: u64) -> Result<(), String> {
     }
     if m.len() > 50_000 {
         m.retain(|_, v| v.0 == minute);
+    }
+    Ok(())
+}
+
+/// One call through key `key_id`: `Err` past `per_minute` calls this minute,
+/// counted across every FlowR.
+pub async fn key_call(s: &dyn StorageBackend, key_id: &str, per_minute: u64) -> Result<(), String> {
+    local_call(key_id, per_minute)?;
+    use crate::handlers::call_lancedb::{DEFAULT_PLATFORM_DB_PATH, PLATFORM_DB_RESOURCE};
+    static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static SWEPT: Mutex<Option<Instant>> = Mutex::new(None);
+    let minute = (chrono::Utc::now().timestamp() / 60).to_string();
+    let db = crate::platform_db::open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    if !READY.load(std::sync::atomic::Ordering::Relaxed) {
+        let schema: serde_json::Map<String, serde_json::Value> = ["id", "key_id", "minute"].iter().map(|c| (c.to_string(), serde_json::json!("string"))).collect();
+        if db.create_table(KEY_CALLS, Some(&schema), "create_if_not_exists").await.is_ok() {
+            READY.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let row = serde_json::json!({ "id": uuid::Uuid::now_v7().to_string(), "key_id": key_id, "minute": minute });
+    if let Err(e) = db.insert(KEY_CALLS, &[row]).await {
+        // The shared count is down: this process's count still holds.
+        tracing::warn!(error = %e, "key rate: shared count not written; this FlowR's own count applies");
+        return Ok(());
+    }
+    let n = query_platform_table(s, KEY_CALLS, Some(format!("key_id = {} AND minute = {}", sql_quote(key_id), sql_quote(&minute))), (per_minute + 1) as usize)
+        .await.map(|r| r.len() as u64).unwrap_or(0);
+    // Old minutes go, from one call every ten minutes per FlowR.
+    let sweep = {
+        let mut last = SWEPT.lock().unwrap();
+        let due = last.is_none_or(|t| t.elapsed() > Duration::from_secs(600));
+        if due { *last = Some(Instant::now()); }
+        due
+    };
+    if sweep {
+        let before = (chrono::Utc::now().timestamp() / 60 - 5).to_string();
+        let _ = db.delete(KEY_CALLS, &format!("minute < {}", sql_quote(&before))).await;
+    }
+    if n > per_minute {
+        return Err(format!("this key may make {per_minute} calls a minute"));
     }
     Ok(())
 }
@@ -124,8 +168,8 @@ mod tests {
 
     #[test]
     fn keys_are_limited_per_minute() {
-        for _ in 0..5 { assert!(key_call("k-test", 5).is_ok()); }
-        assert!(key_call("k-test", 5).is_err());
-        assert!(key_call("k-other", 5).is_ok());
+        for _ in 0..5 { assert!(local_call("k-test", 5).is_ok()); }
+        assert!(local_call("k-test", 5).is_err());
+        assert!(local_call("k-other", 5).is_ok());
     }
 }
