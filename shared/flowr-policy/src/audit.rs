@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn records_allow_and_deny() {
         let req = ExecutionRequest {
-            principal: Principal::Agent {
+            principal: Principal::Agent { session: None,
                 memory_branch: None,
                 agent_id: AgentId("agt-1".into()),
                 on_behalf_of: Some("user::sriram".into()),

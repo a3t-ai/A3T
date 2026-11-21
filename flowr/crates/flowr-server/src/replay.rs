@@ -40,8 +40,8 @@ pub fn request_of(r: &Value) -> Option<ExecutionRequest> {
         .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
     let opt = |k: &str| Some(s(r, k)).filter(|x| !x.is_empty());
     let principal = match s(r, "principal_kind").as_str() {
-        "human" => Principal::Human { user_id: s(r, "principal_id"), roles, memory_branch: None, impersonated_by: None },
-        "agent" => Principal::Agent {
+        "human" => Principal::Human { user_id: s(r, "principal_id"), roles, memory_branch: None, impersonated_by: None, session: None },
+        "agent" => Principal::Agent { session: None,
             agent_id: AgentId(s(r, "principal_id")), on_behalf_of: opt("on_behalf_of"), flow_id: opt("flow"),
             roles, owner: opt("agent_owner"), memory_branch: None,
         },

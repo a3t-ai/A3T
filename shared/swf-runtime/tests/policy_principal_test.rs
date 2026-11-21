@@ -82,7 +82,7 @@ async fn ctx_principal_reaches_choke_point_and_context_is_populated() {
     flowr_policy::set_policy_hook(Arc::new(RecordingHook { seen: seen.clone() }))
         .expect("first and only hook install in this binary");
 
-    let actor = Principal::Agent {
+    let actor = Principal::Agent { session: None,
         memory_branch: None,
         agent_id: flowr_policy::AgentId("agent-007".into()),
         on_behalf_of: Some("user::sriram".into()),

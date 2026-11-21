@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn the_agent_id_comes_from_its_session() {
-        let p = flowr_policy::Principal::Agent { memory_branch: None, agent_id: flowr_policy::AgentId("agent:agt-9:s-1".into()),
+        let p = flowr_policy::Principal::Agent { session: None, memory_branch: None, agent_id: flowr_policy::AgentId("agent:agt-9:s-1".into()),
             on_behalf_of: Some("u".into()), flow_id: None, roles: vec![], owner: None };
         assert_eq!(of_principal(&p), Some(("agt-9".into(), Some("u".into()))));
     }

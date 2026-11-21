@@ -133,6 +133,147 @@ pub struct Rule {
     #[serde(default)]
     pub on: Option<On>,
     pub reason: String,
+    /// "Allow only when": these (same ids and globs as `cannot`) are allowed
+    /// only while every `allowed_only_when` condition holds; `otherwise` says
+    /// what happens the rest of the time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_only_when: Vec<Cond>,
+    /// For an `only` rule: `block` (the default) or `ask` (a person approves,
+    /// within `timeout`, asked of `approver`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otherwise: Option<String>,
+    /// More conditions, all of which must hold for the rule to apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when: Vec<Cond>,
+    /// Exceptions: the rule doesn't apply when any of these holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unless: Vec<Cond>,
+    /// The last day the rule applies (`YYYY-MM-DD`, in the org's time zone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Who answers an approval: a role (`Admin`), an org role
+    /// (`securityadmin`) or a group (`group:finance`). Absent: the person the
+    /// agent acts for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<String>,
+    /// Only logs what it would refuse (as `policy:shadow`); never refuses.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_only: bool,
+}
+
+/// A rule condition: a bare name (`mfa`) or a name with its parameters
+/// (`hours: {days: mon-fri, from: "09:00", to: "18:00"}`). Parameters are kept
+/// as strings; the compiler checks each kind's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cond {
+    pub kind: String,
+    pub params: std::collections::BTreeMap<String, String>,
+}
+
+impl Cond {
+    pub fn get(&self, k: &str) -> Option<&str> {
+        self.params.get(k).map(|s| s.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Cond {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = serde_yaml::Value::deserialize(d)?;
+        let scalar = |v: &serde_yaml::Value| -> Option<String> {
+            match v {
+                serde_yaml::Value::String(s) => Some(s.clone()),
+                serde_yaml::Value::Number(n) => Some(n.to_string()),
+                serde_yaml::Value::Bool(b) => Some(b.to_string()),
+                serde_yaml::Value::Sequence(xs) => Some(xs.iter().filter_map(|x| match x {
+                    serde_yaml::Value::String(s) => Some(s.clone()),
+                    serde_yaml::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                }).collect::<Vec<_>>().join(", ")),
+                _ => None,
+            }
+        };
+        match v {
+            serde_yaml::Value::String(kind) => Ok(Cond { kind, params: Default::default() }),
+            serde_yaml::Value::Mapping(m) if m.len() == 1 => {
+                let (k, ps) = m.into_iter().next().unwrap();
+                let kind = k.as_str().ok_or_else(|| D::Error::custom("a condition is named by a word"))?.to_string();
+                let mut params = std::collections::BTreeMap::new();
+                match ps {
+                    serde_yaml::Value::Null => {}
+                    serde_yaml::Value::Mapping(pm) => {
+                        for (pk, pv) in pm {
+                            let pk = pk.as_str().ok_or_else(|| D::Error::custom(format!("{kind}: parameter names are words")))?.to_string();
+                            let pv = scalar(&pv).ok_or_else(|| D::Error::custom(format!("{kind}.{pk}: a word, a number or a list")))?;
+                            params.insert(pk, pv);
+                        }
+                    }
+                    _ => return Err(D::Error::custom(format!("{kind}: give its parameters as a map"))),
+                }
+                Ok(Cond { kind, params })
+            }
+            _ => Err(D::Error::custom("a condition is a name (mfa) or one name with its parameters (hours: {…})")),
+        }
+    }
+}
+
+impl Serialize for Cond {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if self.params.is_empty() {
+            return s.serialize_str(&self.kind);
+        }
+        let mut m = s.serialize_map(Some(1))?;
+        m.serialize_entry(&self.kind, &self.params)?;
+        m.end()
+    }
+}
+
+/// A named network (`networks/<name>.yaml`): address ranges a rule can name
+/// (`network: {name: office}`).
+///
+/// ```yaml
+/// kind: a3t/network
+/// name: office
+/// ranges: [10.20.0.0/16, 192.0.2.10]
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkFile {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub ranges: Vec<String>,
+}
+
+/// An address or a CIDR range (`10.20.0.0/16`, `192.0.2.10`, `2001:db8::/32`).
+pub fn valid_range(r: &str) -> bool {
+    match r.split_once('/') {
+        Some((a, b)) => a.parse::<std::net::IpAddr>().is_ok_and(|ip| b.parse::<u8>().is_ok_and(|n| n <= if ip.is_ipv4() { 32 } else { 128 })),
+        None => r.parse::<std::net::IpAddr>().is_ok(),
+    }
+}
+
+impl NetworkFile {
+    pub fn parse(yaml: &str) -> Result<Self, String> {
+        let f: Self = serde_yaml::from_str(yaml).map_err(|e| format!("not a network file: {e}"))?;
+        if f.kind != "a3t/network" {
+            return Err(format!("kind is {:?}, not a3t/network", f.kind));
+        }
+        if f.name.is_empty() || !f.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            return Err(format!("name {:?}: lowercase letters, digits and '-'", f.name));
+        }
+        if f.ranges.is_empty() {
+            return Err("a network has at least one address range".into());
+        }
+        if let Some(bad) = f.ranges.iter().find(|r| !valid_range(r.trim())) {
+            return Err(format!("{bad:?}: an IP address or a CIDR range (10.20.0.0/16)"));
+        }
+        Ok(f)
+    }
 }
 
 /// `30m`, `4h`, `2d`, `90s` (or bare seconds) → seconds; between a minute and
@@ -163,6 +304,9 @@ pub struct Who {
     /// `any`, or agent ids.
     #[serde(default)]
     pub agents: Option<AgentsSel>,
+    /// People only: agents acting for them are not bound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub people_only: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -218,6 +362,8 @@ pub fn kind_of_path(path: &str) -> Option<&'static str> {
         "access" if file == "org.yaml" || file == "org.yml" => Some("org-access"),
         // RT-1: where the org's flows and agents may call out to.
         "egress" => Some("egress"),
+        // Named address ranges that rules can name.
+        "networks" => Some("network"),
         "access" => Some("access"),
         _ => None,
     }

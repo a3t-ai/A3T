@@ -61,7 +61,7 @@ pub struct Actor {
 /// The policy principal for a validated console token: the user (or role) the
 /// token is for, and — when a SuperAdmin is acting as them — who that is.
 pub fn principal_for(claims: &Claims) -> flowr_policy::Principal {
-    flowr_policy::Principal::Human {
+    flowr_policy::Principal::Human { session: None,
         user_id: claims.sub.clone(),
         roles: flowr_policy::roles::canonicalize(&claims.role),
         memory_branch: None,

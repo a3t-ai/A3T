@@ -6,7 +6,7 @@ use a3t_security::CedarHook;
 use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource};
 
 fn human(roles: &[&str]) -> Principal {
-    Principal::Human { memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles: roles.iter().map(|r| r.to_string()).collect() }
+    Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles: roles.iter().map(|r| r.to_string()).collect() }
 }
 
 fn llm_call(p: Principal, model: &str) -> ExecutionRequest {
@@ -162,7 +162,7 @@ async fn an_agents_model_rule_holds_on_its_chat_turns() {
     let yaml = "kind: a3t/policy\nname: profile\nrules:\n  - cannot: [models.use]\n    on: { models: { not_in: [a3t/approved] } }\n    reason: It runs only on the approved model.\n";
     let h = hook(&[compile_agent_policy("acme-crm", "agt-1", yaml).unwrap().cedar]);
     let turn = |agent: &str, model: &str| {
-        let mut r = llm_call(Principal::Agent {
+        let mut r = llm_call(Principal::Agent { session: None,
             memory_branch: None, agent_id: flowr_policy::AgentId(format!("agent:{agent}:s1")),
             on_behalf_of: Some("u1".into()), flow_id: None, roles: vec!["Operator".into()], owner: None,
         }, model);
@@ -268,7 +268,7 @@ async fn needs_approval_asks_a_person_every_time() {
     assert!(c.cedar.contains("@approval(\"1800\")"), "{}", c.cedar);
     let h = hook(&[c.cedar]);
     let agent = |id: &str, on_behalf_of: Option<&str>, owner: Option<&str>| {
-        let p = Principal::Agent {
+        let p = Principal::Agent { session: None,
             memory_branch: None, agent_id: flowr_policy::AgentId(format!("agent:{id}:s1")),
             on_behalf_of: on_behalf_of.map(str::to_string), flow_id: None, roles: vec!["Admin".into()], owner: owner.map(str::to_string),
         };
@@ -298,7 +298,7 @@ async fn needs_approval_asks_a_person_every_time() {
 #[test]
 fn needs_approval_mistakes_are_refused() {
     let bad = |rule: &str| compile_policy("acme", &format!("kind: a3t/policy\nname: x\napplies_to: {{ org: true }}\nrules:\n  - {rule}\n    reason: r\n")).unwrap_err();
-    assert!(bad("cannot: [flows.run]\n    needs_approval: [tools.x]").contains("not both"));
+    assert!(bad("cannot: [flows.run]\n    needs_approval: [tools.x]").contains("one of"));
     assert!(bad("cannot: [flows.run]\n    timeout: 4h").contains("timeout"));
     assert!(bad("needs_approval: [tools.x]\n    timeout: 10s").contains("between"));
     assert!(bad("needs_approval: [apps.security]").contains("console app"));
@@ -309,7 +309,7 @@ fn needs_approval_mistakes_are_refused() {
 async fn an_org_approval_rule_binds_agents_carrying_a_role() {
     let c = compile_policy("acme", "kind: a3t/policy\nname: merges\napplies_to: { org: true }\nrules:\n  - who: { roles: [Operator] }\n    needs_approval: [tools.merge_*]\n    reason: Merges are checked.\n").unwrap();
     let h = hook(&[c.cedar]);
-    let agent = |roles: &[&str]| tool_call(Principal::Agent {
+    let agent = |roles: &[&str]| tool_call(Principal::Agent { session: None,
         memory_branch: None, agent_id: flowr_policy::AgentId("agent:a:s".into()), on_behalf_of: Some("u1".into()),
         flow_id: None, roles: roles.iter().map(|r| r.to_string()).collect(), owner: None,
     }, "merge_pr", serde_json::json!({}));

@@ -234,7 +234,7 @@ mod scope_tests {
 
     fn req(params: serde_json::Value) -> crate::ExecutionRequest {
         crate::ExecutionRequest {
-            principal: Principal::Human { user_id: "u".into(), roles: vec!["Viewer".into()], memory_branch: None, impersonated_by: None },
+            principal: Principal::Human { user_id: "u".into(), roles: vec!["Viewer".into()], memory_branch: None, impersonated_by: None, session: None },
             action: crate::actions::mcp_call(),
             resource: crate::Resource::tool("create_flow"),
             context: Default::default(),
@@ -254,11 +254,11 @@ mod scope_tests {
 
     #[test]
     fn the_project_role_replaces_the_global_tenant_role() {
-        let viewer = Principal::Human { user_id: "u".into(), roles: vec!["Viewer".into()], memory_branch: None, impersonated_by: None };
+        let viewer = Principal::Human { user_id: "u".into(), roles: vec!["Viewer".into()], memory_branch: None, impersonated_by: None, session: None };
         assert_eq!(with_tier(&viewer, NsAccess::Write).roles(), ["Admin", "Operator", "Viewer"]);
-        let dev = Principal::Human { user_id: "u".into(), roles: vec!["Admin".into(), "Operator".into(), "Viewer".into()], memory_branch: None, impersonated_by: None };
+        let dev = Principal::Human { user_id: "u".into(), roles: vec!["Admin".into(), "Operator".into(), "Viewer".into()], memory_branch: None, impersonated_by: None, session: None };
         assert_eq!(with_tier(&dev, NsAccess::Read).roles(), ["Viewer"]);
-        let sec = Principal::Human { user_id: "u".into(), roles: vec!["SecurityAdmin".into()], memory_branch: None, impersonated_by: None };
+        let sec = Principal::Human { user_id: "u".into(), roles: vec!["SecurityAdmin".into()], memory_branch: None, impersonated_by: None, session: None };
         assert_eq!(with_tier(&sec, NsAccess::None).roles(), ["SecurityAdmin"]);
     }
 }

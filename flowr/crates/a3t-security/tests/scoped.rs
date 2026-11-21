@@ -7,7 +7,7 @@ use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Princi
 
 fn start_flow_in(ns: &str) -> ExecutionRequest {
     ExecutionRequest {
-        principal: Principal::Human { memory_branch: None, impersonated_by: None, user_id: "op".into(), roles: vec!["Operator".into()] },
+        principal: Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "op".into(), roles: vec!["Operator".into()] },
         action: actions::flow_start(),
         resource: Resource::new("Flow", "flow_x").with_attr("namespace", ns),
         context: Default::default(),
@@ -51,7 +51,7 @@ async fn a_broken_project_policy_closes_that_project_only() {
 async fn baseline_refusals_name_the_rule_and_the_access_needed() {
     let hook = CedarHook::baseline().unwrap();
     let req = ExecutionRequest {
-        principal: Principal::Human { memory_branch: None, impersonated_by: None, user_id: "v".into(), roles: vec!["Viewer".into()] },
+        principal: Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "v".into(), roles: vec!["Viewer".into()] },
         action: actions::tool_invoke(),
         resource: Resource::new("Tool", "delete_flow").with_attr("destructive", true),
         context: Default::default(),

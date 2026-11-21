@@ -205,10 +205,11 @@ impl Engine for AuthzEngine {
         }
         let principal_entity = Entity::new(principal_uid.clone(), p_attrs, HashSet::new())
             .map_err(|e| AesopError::Engine(format!("principal entity: {e}")))?;
-        let resource_entity = Entity::new(
+        let resource_entity = Entity::new_with_tags(
             resource_uid.clone(),
             attrs_to_expr(&resource.attributes)?,
             HashSet::new(),
+            resource.tags.iter().map(|(k, v)| (k.clone(), RestrictedExpression::new_long(*v))),
         )
         .map_err(|e| AesopError::Engine(format!("resource entity: {e}")))?;
 
@@ -224,11 +225,27 @@ impl Engine for AuthzEngine {
         let entities = Entities::from_entities([principal_entity, resource_entity], None)
             .map_err(|e| AesopError::Engine(format!("entities: {e}")))?;
 
+        // The request context (rule conditions), checked against the action's
+        // declared context. An action that declares none (one a registry schema
+        // fragment added) gets an empty context: its facts are then absent,
+        // which no condition reads as true.
+        let context = if ctx.context.is_empty() {
+            Context::empty()
+        } else {
+            let v = serde_json::Value::Object(ctx.context.clone());
+            match Context::from_json_value(v, self.schema.as_ref().map(|s| (s, &action_uid))) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(action = action.as_str(), error = %e, "request context left out: the action declares no such context");
+                    Context::empty()
+                }
+            }
+        };
         let request = Request::new(
             principal_uid,
             action_uid,
             resource_uid,
-            Context::empty(),
+            context,
             self.schema.as_ref(),
         )
         .map_err(|e| AesopError::Engine(format!("request: {e}")))?;
@@ -296,12 +313,13 @@ when { resource has destructive && resource.destructive };
                 roles: roles.iter().map(|s| s.to_string()).collect(),
             },
             attributes: Default::default(),
+            context: Default::default(),
         }
     }
     fn tool(id: &str, destructive: bool) -> Resource {
         let mut attributes = serde_json::Map::new();
         attributes.insert("destructive".into(), serde_json::json!(destructive));
-        Resource { type_name: "Tool".into(), id: id.into(), attributes }
+        Resource { type_name: "Tool".into(), id: id.into(), attributes, tags: Default::default() }
     }
     fn invoke() -> Action { Action::new("tool:invoke").unwrap() }
 
@@ -334,6 +352,7 @@ when { resource has destructive && resource.destructive };
                 owner: None,
             },
             attributes: Default::default(),
+            context: Default::default(),
         };
         let err = engine().enforce(&ctx, &invoke(), &tool("http_fetch", false)).unwrap_err();
         assert!(matches!(err, AesopError::Denied { .. }));
@@ -378,9 +397,10 @@ when { principal has roles && principal.roles.contains("Admin") };
                 owner: Some("usr-sriram".into()),
             },
             attributes: Default::default(),
+            context: Default::default(),
         };
         let act = Action::new("tool:invoke").unwrap();
-        let tool = Resource { type_name: "Tool".into(), id: "http_fetch".into(), attributes: Default::default() };
+        let tool = Resource { type_name: "Tool".into(), id: "http_fetch".into(), attributes: Default::default(), tags: Default::default() };
 
         // Acting for an Admin: the inherited role satisfies the rule.
         assert!(engine.enforce(&agent(&["Admin"]), &act, &tool).is_ok());
@@ -435,11 +455,12 @@ when {
             .as_object()
             .unwrap()
             .clone(),
+            context: Default::default(),
         };
         let named = |name: &str| {
             let mut a = serde_json::Map::new();
             a.insert("name".into(), serde_json::json!(name));
-            Resource { type_name: "Tool".into(), id: name.into(), attributes: a }
+            Resource { type_name: "Tool".into(), id: name.into(), attributes: a, tags: Default::default() }
         };
         assert!(
             engine.enforce(&ctx, &invoke(), &named("http")).is_ok(),
