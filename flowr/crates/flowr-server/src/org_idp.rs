@@ -504,7 +504,7 @@ async fn deprovision(s: &dyn StorageBackend, config: &AuthConfig, idp: &crate::I
             }
         }
         // Their sessions end: tokens already out stop within seconds on every pod.
-        for sess in query_platform_table(s, crate::sessions::TABLE, Some(format!("sub = {} AND revoked = ''", sql_quote(user))), 1000).await.unwrap_or_default() {
+        for sess in query_platform_table(s, crate::sessions::TABLE, Some(format!("sub = {} AND revoked != '1'", sql_quote(user))), 1000).await.unwrap_or_default() {
             let _ = crate::sessions::revoke(config, &col(&sess, "sid"), &format!("removed by {slug}'s identity provider")).await;
         }
         removed += 1;
