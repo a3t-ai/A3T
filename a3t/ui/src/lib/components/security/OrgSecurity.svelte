@@ -556,7 +556,7 @@
         {#if canAdmin}
           <div class="card">
             <div class="card-head"><h3>Connect your identity provider</h3><span>{idp?.sso?.issuer ? `connected: ${idp.sso.issuer}` : 'OpenID Connect'}</span></div>
-            <p class="dim">Register A3T as an app at your provider (redirect URI: the sign-in realm's broker endpoint for <span class="mono">org-{org.handle}</span>), then give its details here. A3T checks the provider's discovery document and connects it; your people land in {org.handle} only, with the role their groups give them.</p>
+            <p class="dim">Register A3T as an app at your provider with the redirect URI <span class="mono">{idp?.redirect_uri ?? '…'}</span>, then give its details here. A3T checks the provider's discovery document and connects it; your people land in {org.handle} only, with the role their groups give them.</p>
             <div class="fields">
               <label class="fld">Issuer<input class="mono" bind:value={conn.issuer} placeholder="https://login.example.com/realms/acme" /></label>
               <label class="fld">Client id<input class="mono" bind:value={conn.client_id} placeholder="a3t" /></label>

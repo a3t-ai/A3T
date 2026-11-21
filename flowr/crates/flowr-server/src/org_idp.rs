@@ -322,6 +322,7 @@ pub async fn put_idp(
 pub async fn get_idp(
     principal: Option<Extension<Principal>>,
     Extension(storage): Extension<Arc<dyn StorageBackend>>,
+    Extension(idp): Extension<crate::IdpAdminState>,
     Path(org): Path<String>,
 ) -> Response {
     both(async {
@@ -331,7 +332,9 @@ pub async fn get_idp(
         let sso = settings_of(&row).get("sso").cloned().unwrap_or(Value::Null);
         let scim = query_platform_table(s, TOKENS, Some(format!("org = {} AND revoked = ''", sql_quote(&org))), 10).await.unwrap_or_default();
         let users = query_platform_table(s, USERS, Some(format!("org = {}", sql_quote(&org))), 100_000).await.unwrap_or_default();
-        Ok(Json(json!({ "org": org, "sso": sso, "scim": {
+        // What the org registers at its provider as A3T's redirect URI.
+        let redirect_uri = format!("{}/broker/{}/endpoint", idp.issuer.trim_end_matches('/'), alias_of(&org));
+        Ok(Json(json!({ "org": org, "sso": sso, "redirect_uri": redirect_uri, "scim": {
             "on": !scim.is_empty(), "since": scim.first().map(|t| col(t, "created_at")), "base_url": format!("/scim/v2/orgs/{org}"),
             "users": users.len(), "deactivated": users.iter().filter(|u| col(u, "active") == "false").count(),
         } })).into_response())

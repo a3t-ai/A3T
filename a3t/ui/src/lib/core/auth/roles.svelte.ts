@@ -9,14 +9,16 @@ export type RoleRow = { id: string; scope: RoleScope; label: string; what: strin
 let rows = $state<RoleRow[]>([]);
 let asked = false;
 
-/// Load the table once (anyone signed in may read it).
+/// Load the table once (anyone signed in may read it). Readers below are
+/// called from templates and `$derived`, where starting a request (which marks
+/// the status bar busy) is not allowed: the request starts just after.
 export function loadRoles(): void {
   if (asked) return;
   asked = true;
-  void securityRoles().then((r) => {
+  queueMicrotask(() => void securityRoles().then((r) => {
     if (r.ok && Array.isArray(r.data?.roles)) rows = r.data!.roles as RoleRow[];
     else asked = false;
-  });
+  }));
 }
 
 export function roles(scope: RoleScope): RoleRow[] {

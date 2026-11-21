@@ -765,6 +765,7 @@ export interface OrgPolicyCheck { ok: boolean; checked: string[]; errors?: strin
 const orgBase = (org: string) => `/security/orgs/${encodeURIComponent(org)}`;
 export type OrgIdp = {
   org: string;
+  redirect_uri?: string;
   sso: { idp_alias?: string; domains?: string[]; issuer?: string; client_id?: string; groups_claim?: string; connected_by?: string; connected_at?: string } | null;
   scim: { on: boolean; since?: string | null; base_url: string; users: number; deactivated: number };
 };
