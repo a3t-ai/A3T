@@ -18,7 +18,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -155,6 +155,56 @@
     say(body.idp_alias ? `${org.handle} now signs in through "${body.idp_alias}".` : `Sign-in through the org's own provider is off for ${org.handle}.`, true);
     await refreshOrg(); if (org) fillSso(org);
   }
+  // ── ID-10: connect the org's own provider; SCIM keeps its people in step ──
+  let idp = $state<OrgIdp | null>(null);
+  let conn = $state({ issuer: '', client_id: '', client_secret: '', groups_claim: 'groups', domains: '' });
+  let scimToken = $state<{ token: string; base_url: string } | null>(null);
+  async function loadIdp() {
+    if (!org) return;
+    const r = await orgPolicy.idp(org.handle);
+    if (!r.ok) return;
+    idp = r.data!;
+    const s = idp.sso;
+    conn = { issuer: s?.issuer ?? '', client_id: s?.client_id ?? '', client_secret: '', groups_claim: s?.groups_claim ?? 'groups', domains: (s?.domains ?? []).join(', ') };
+  }
+  async function connectIdp() {
+    if (!org) return;
+    busy = 'idp';
+    const r = await orgPolicy.connectIdp(org.handle, { issuer: conn.issuer.trim(), client_id: conn.client_id.trim(), client_secret: conn.client_secret || undefined,
+      groups_claim: conn.groups_claim.trim() || undefined, domains: conn.domains.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean) });
+    busy = '';
+    if (!r.ok) { say(r.error ?? 'Not connected.'); return; }
+    say(`${org.handle} now signs in through its own provider (${r.data!.issuer}).`, true);
+    await refreshOrg(); if (org) fillSso(org); await loadIdp();
+  }
+  async function disconnectIdp() {
+    if (!org) return;
+    busy = 'idp';
+    const r = await orgPolicy.disconnectIdp(org.handle);
+    busy = '';
+    if (!r.ok) { say(r.error ?? 'Not disconnected.'); return; }
+    say(`Sign-in through ${org.handle}'s own provider is off.`, true);
+    await refreshOrg(); if (org) fillSso(org); await loadIdp();
+  }
+  async function makeScimToken() {
+    if (!org) return;
+    busy = 'scim';
+    const r = await orgPolicy.newScimToken(org.handle);
+    busy = '';
+    if (!r.ok) { say(r.error ?? 'No token made.'); return; }
+    scimToken = { token: r.data!.token, base_url: `${location.origin.replace('dash.', 'console.')}${r.data!.base_url}` };
+    await loadIdp();
+  }
+  async function scimOff() {
+    if (!org) return;
+    busy = 'scim';
+    const r = await orgPolicy.scimOff(org.handle);
+    busy = '';
+    if (!r.ok) { say(r.error ?? 'SCIM not turned off.'); return; }
+    scimToken = null; say('SCIM is off: the token no longer works.', true); await loadIdp();
+  }
+  $effect(() => { if (tab === 'signin' && org && canAdmin) untrack(() => void loadIdp()); });
+
   // GOV-5: which groups get which org role is the policy file access/org.yaml.
   const ORG_ACCESS = 'access/org.yaml';
   const orgAccess = $derived.by(() => {
@@ -503,6 +553,37 @@
           {/if}
           {#if canAdmin}<div class="acts"><button class="btn2 primary" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Save sign-in'}</button></div>{/if}
         </div>
+        {#if canAdmin}
+          <div class="card">
+            <div class="card-head"><h3>Connect your identity provider</h3><span>{idp?.sso?.issuer ? `connected: ${idp.sso.issuer}` : 'OpenID Connect'}</span></div>
+            <p class="dim">Register A3T as an app at your provider (redirect URI: the sign-in realm's broker endpoint for <span class="mono">org-{org.handle}</span>), then give its details here. A3T checks the provider's discovery document and connects it; your people land in {org.handle} only, with the role their groups give them.</p>
+            <div class="fields">
+              <label class="fld">Issuer<input class="mono" bind:value={conn.issuer} placeholder="https://login.example.com/realms/acme" /></label>
+              <label class="fld">Client id<input class="mono" bind:value={conn.client_id} placeholder="a3t" /></label>
+              <label class="fld">Client secret<input class="mono" type="password" bind:value={conn.client_secret} placeholder={idp?.sso?.issuer ? 'unchanged' : 'from your provider'} autocomplete="off" /></label>
+              <label class="fld">Groups claim<input class="mono" bind:value={conn.groups_claim} placeholder="groups" /></label>
+              <label class="fld">Email domains<input bind:value={conn.domains} placeholder="acme.com" /></label>
+            </div>
+            <div class="acts">
+              <button class="btn2 primary" disabled={!!busy || !conn.issuer.trim() || !conn.client_id.trim()} onclick={connectIdp}>{busy === 'idp' ? 'Connecting…' : idp?.sso?.issuer ? 'Save' : 'Connect'}</button>
+              {#if idp?.sso?.issuer}<button class="btn2 quiet" disabled={!!busy} onclick={disconnectIdp}>Disconnect</button>{/if}
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Provisioning (SCIM)</h3><span>{idp?.scim.on ? `on since ${idp.scim.since?.slice(0, 10) ?? '—'} · ${idp.scim.users} people, ${idp.scim.deactivated} deactivated` : 'off'}</span></div>
+            <p class="dim">Your provider pushes who belongs. Someone deactivated or removed there loses {org.handle} at once: their org membership, their roles on its projects and their sessions — and can't sign in through your provider until they are active again.</p>
+            {#if scimToken}
+              <ul class="olist">
+                <li class="rrow"><span class="lbl">Base URL</span><span class="mono">{scimToken.base_url}</span><span></span></li>
+                <li class="rrow"><span class="lbl">Token</span><span class="mono">{scimToken.token}</span><span class="dim">shown once</span></li>
+              </ul>
+            {/if}
+            <div class="acts">
+              <button class="btn2" disabled={!!busy} onclick={makeScimToken}>{busy === 'scim' ? 'Making…' : idp?.scim.on ? 'New token (the old one stops)' : 'Turn on: make a token'}</button>
+              {#if idp?.scim.on}<button class="btn2 quiet" disabled={!!busy} onclick={scimOff}>Turn off</button>{/if}
+            </div>
+          </div>
+        {/if}
 
       {:else if tab === 'reviews'}
         <AccessReviews org={handle} canReview={managesFiles} />

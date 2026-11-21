@@ -37,6 +37,9 @@ jsonwebtoken = "9"
 argon2 = "0.5"
 # Org SSO: PKCE (S256) and its verifier
 sha2 = "0.10"
+# ID-10: SCIM tokens and filters.
+ring = "0.17"
+regex = "1"
 base64 = "0.22"
 uuid = { workspace = true }
 

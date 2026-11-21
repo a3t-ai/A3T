@@ -218,7 +218,7 @@ pub fn batches_to_json(batches: &[arrow_array::RecordBatch]) -> Vec<Value> {
 /// `a3t-*` CRUD flows are how the console reads it. The MCP agent tools used to scan
 /// a state key instead, which nothing writes — so they reported "no agents" while the
 /// console listed several. This is the one reader they now share.
-pub(crate) async fn query_platform_table(
+pub async fn query_platform_table(
     storage: &dyn flowr_storage::StorageBackend,
     table: &str,
     filter: Option<String>,

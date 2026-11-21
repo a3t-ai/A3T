@@ -18,6 +18,7 @@ mod change_password;
 mod refresh;
 mod sessions;
 mod replay;
+mod org_idp;
 mod directory;
 mod people;
 mod config;
@@ -330,6 +331,12 @@ async fn main() -> anyhow::Result<()> {
                     .route("/auth/refresh", post(refresh::refresh_handler))
                     .route("/auth/logout", post(auth_routes::logout_handler))
                     .route("/auth/account", get(auth_routes::account_handler))
+                    // ID-10: SCIM 2.0 from an org's provider, with the org's own token (org_idp.rs).
+                    .route("/scim/v2/orgs/:org/ServiceProviderConfig", get(org_idp::scim_config))
+                    .route("/scim/v2/orgs/:org/Users", get(org_idp::list_users).post(org_idp::create_user))
+                    .route("/scim/v2/orgs/:org/Users/:id", get(org_idp::get_user).put(org_idp::replace_user)
+                        .patch(org_idp::patch_user).delete(org_idp::delete_user))
+                    .layer(Extension(storage.clone()))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
@@ -377,7 +384,11 @@ async fn main() -> anyhow::Result<()> {
                             // Who can reach a project, and how; everyone's access for an audit (people.rs).
                             .route("/projects/:project/people", get(people::project_people_handler))
                             .route("/security/people", get(people::security_people_handler))
-                            .layer(Extension(idp_admin)),
+                            // ID-10: an org connects its own provider and turns on SCIM (org_idp.rs).
+                            .route("/security/orgs/:org/idp", get(org_idp::get_idp).put(org_idp::put_idp).delete(org_idp::delete_idp))
+                            .route("/security/orgs/:org/scim/token", post(org_idp::new_token).delete(org_idp::drop_token))
+                            .layer(Extension(storage.clone()))
+                            .layer(Extension(idp_admin.clone())),
                     );
 
                 let secured;

@@ -4,8 +4,10 @@
 //! IBANs (mod-97-checked), US social security numbers, and common API key
 //! shapes. Each is replaced by `[redacted:<kind>]`.
 //!
-//! Where it applies: the decision log's free text (reasons and notes) and
-//! FlowR's own log lines that quote tool output.
+//! Where it applies: the decision log's free text (reasons and notes),
+//! FlowR's own log lines that quote tool output, and — for an agent whose own
+//! policy says `pii: redact` — its transcripts, memory and memory-tool inputs.
+//! Ids (UUIDs) are left as they are.
 
 use std::sync::OnceLock;
 
@@ -18,6 +20,7 @@ struct Patterns {
     ssn: Regex,
     phone: Regex,
     key: Regex,
+    uuid: Regex,
 }
 
 fn p() -> &'static Patterns {
@@ -29,6 +32,7 @@ fn p() -> &'static Patterns {
         ssn: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
         phone: Regex::new(r"(?:\+\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?)?\b\d{2,4}[ .-]\d{3,4}[ .-]\d{3,4}\b").unwrap(),
         key: Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|a3tk_[0-9a-f]{20,})\b").unwrap(),
+        uuid: Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b").unwrap(),
     })
 }
 
@@ -58,8 +62,12 @@ fn iban_ok(s: &str) -> bool {
 /// `text` with personal data and secrets replaced, and the kinds found.
 pub fn redact(text: &str) -> (String, Vec<&'static str>) {
     let mut found = Vec::new();
-    let mut out = text.to_string();
     let pat = p();
+    // Ids are not personal data: a UUID's digit groups read like a phone
+    // number, so they are set aside first and put back after.
+    let mut ids: Vec<String> = Vec::new();
+    let tag = |i: usize| format!("\u{E000}{}\u{E001}", (0..).scan(i, |n, _| if *n == usize::MAX { None } else { let c = (b'a' + (*n % 26) as u8) as char; *n = if *n < 26 { usize::MAX } else { *n / 26 - 1 }; Some(c) }).collect::<String>());
+    let mut out = pat.uuid.replace_all(text, |c: &regex::Captures| { ids.push(c[0].to_string()); tag(ids.len() - 1) }).into_owned();
     let mut sub = |re: &Regex, kind: &'static str, check: &dyn Fn(&str) -> bool, out: &mut String| {
         let next = re.replace_all(out, |c: &regex::Captures| {
             let m = &c[0];
@@ -73,6 +81,9 @@ pub fn redact(text: &str) -> (String, Vec<&'static str>) {
     sub(&pat.card, "card", &luhn, &mut out);
     sub(&pat.ssn, "ssn", &|_| true, &mut out);
     sub(&pat.phone, "phone", &|m| m.chars().filter(|c| c.is_ascii_digit()).count() >= 9, &mut out);
+    for (i, id) in ids.iter().enumerate() {
+        out = out.replacen(&tag(i), id, 1);
+    }
     found.sort();
     found.dedup();
     (out, found)
@@ -127,5 +138,7 @@ mod tests {
     fn ordinary_text_and_ids_stay() {
         let t = "Run 01a1fa9f-cfee-7bb3 finished at 2026-11-20 in 1234 ms, order 4111111111111112 (not a card)";
         assert_eq!(clean(t), t);
+        let ids = "caller run 01a1fb00-0000-7000-8000-000000000000 and 01a1fb00-1111-7000-8000-222233334444 doesn't exist; call +44 20 7946 0958";
+        assert_eq!(clean(ids), "caller run 01a1fb00-0000-7000-8000-000000000000 and 01a1fb00-1111-7000-8000-222233334444 doesn't exist; call [redacted:phone]");
     }
 }

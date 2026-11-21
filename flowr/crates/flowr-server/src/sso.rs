@@ -365,6 +365,11 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
     }
     let mut org_id = "org-default".to_string();
     if let Some(org) = home {
+        // ID-10: someone the org's provider deactivated over SCIM stays out.
+        if crate::org_idp::refused(&config, &org.handle, &email).await {
+            warn!(org = %org.handle, user = %sub, "sso: refused, deactivated by the org's provisioning");
+            return back("Your organisation has turned off your access to A3T.");
+        }
         org_id = org.id.clone();
         let file = org_access(&config, org).await;
         let role = role_for(file.as_ref(), &groups);

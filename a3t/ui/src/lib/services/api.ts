@@ -763,6 +763,11 @@ export interface OrgPolicyFileDetail {
 /// A check of the org's enforced files with drafts in place: nothing is saved.
 export interface OrgPolicyCheck { ok: boolean; checked: string[]; errors?: string[]; compiled?: any }
 const orgBase = (org: string) => `/security/orgs/${encodeURIComponent(org)}`;
+export type OrgIdp = {
+  org: string;
+  sso: { idp_alias?: string; domains?: string[]; issuer?: string; client_id?: string; groups_claim?: string; connected_by?: string; connected_at?: string } | null;
+  scim: { on: boolean; since?: string | null; base_url: string; users: number; deactivated: number };
+};
 export const orgPolicy = {
   files: (org: string) => request<OrgPolicyFiles>(`${orgBase(org)}/files`, { method: 'GET' }),
   file: (org: string, path: string) => request<OrgPolicyFileDetail>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'GET' }),
@@ -783,6 +788,13 @@ export const orgPolicy = {
   replay: (org: string, change: { files?: { path: string; content: string }[]; removed?: string[]; switch_on?: string[]; days?: number }) =>
     request<ReplayResult>(`${orgBase(org)}/replay`, { method: 'POST', body: JSON.stringify(change) }),
   /// AUD-6: how long its decisions are kept (0: forever), and its legal hold.
+  /// ID-10: the org's own identity provider (connected by its admins) and SCIM.
+  idp: (org: string) => request<OrgIdp>(`${orgBase(org)}/idp`, { method: 'GET' }),
+  connectIdp: (org: string, body: { issuer: string; client_id: string; client_secret?: string; groups_claim?: string; domains?: string[]; display_name?: string }) =>
+    request<{ ok: boolean; idp_alias: string; issuer: string; domains: string[]; groups_claim: string }>(`${orgBase(org)}/idp`, { method: 'PUT', body: JSON.stringify(body) }),
+  disconnectIdp: (org: string) => request(`${orgBase(org)}/idp`, { method: 'DELETE' }),
+  newScimToken: (org: string) => request<{ token: string; base_url: string; note: string }>(`${orgBase(org)}/scim/token`, { method: 'POST' }),
+  scimOff: (org: string) => request(`${orgBase(org)}/scim/token`, { method: 'DELETE' }),
   retention: (org: string) => request<{ retention_days: number; legal_hold: boolean }>(`${orgBase(org)}/retention`, { method: 'GET' }),
   setRetention: (org: string, body: { retention_days?: number; legal_hold?: boolean }) =>
     request<{ retention_days?: number; legal_hold?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/retention`, { method: 'PUT', body: JSON.stringify(body) }),
