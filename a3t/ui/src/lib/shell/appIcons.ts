@@ -21,6 +21,8 @@ export const APP_ICONS: Record<string, string> = {
     play:      '<polygon points="3,2 13,8 3,14"/>',
     recon:     '<circle cx="8" cy="8" r="6"/><path d="M5 8l2 2 4-4"/>',
     // Rows marked allowed / denied — what the decision log records.
+    // A person and a tick: a call waiting for someone to approve it.
+    approval:  '<circle cx="5.5" cy="4.5" r="2.5"/><path d="M1 14c0-2.8 2-4.6 4.5-4.6 1.2 0 2.3.4 3.1 1.1"/><path d="M9.5 11.8l1.8 1.8 3.4-3.8"/>',
     decision:  '<path d="M1.5 3.5l1.2 1.2 2-2.2"/><path d="M7 3.5h7.5"/><path d="M1.8 7l2.4 2.4M4.2 7L1.8 9.4"/><path d="M7 8.2h7.5"/><path d="M1.5 12.8l1.2 1.2 2-2.2"/><path d="M7 12.8h5"/>',
     alert:     '<path d="M8 1.8l6.5 11.4a.8.8 0 01-.7 1.2H2.2a.8.8 0 01-.7-1.2z"/><path d="M8 6v3.6"/><circle cx="8" cy="12" r="0.6" fill="currentColor"/>',
     logs:      '<path d="M2 4h12M2 8h8M2 12h10"/>',

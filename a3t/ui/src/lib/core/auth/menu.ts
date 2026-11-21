@@ -53,7 +53,7 @@ export const MENU_CONFIG: MenuGroup[] = [
     roles: ALL_ROLES,
     items: [
       { type: 'security',   label: 'Security',     tag: 'ee', icon: 'shield', roles: INFOSEC },
-      { type: 'approvals',  label: 'Approvals',    tag: null, icon: 'decision', roles: ALL_ROLES },
+      { type: 'approvals',  label: 'Approvals',    tag: null, icon: 'approval', roles: ALL_ROLES },
       // Everyone: the server scopes it (InfoSec all, org admins their org, owners their agents).
       { type: 'logs',       label: 'Decision log', tag: null, icon: 'decision', roles: ALL_ROLES },
     ],
