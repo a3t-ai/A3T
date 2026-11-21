@@ -63,7 +63,7 @@
     // org:<handle>[:<tab>] — the org's identity; orgfiles:<handle> — its policy files.
     if (id.startsWith('org:') || id.startsWith('orgfiles:')) {
       const [kind, h, t, ns] = id.split(':');
-      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; orgSection = kind === 'orgfiles' ? 'policy' : 'identity'; tab = t || (kind === 'orgfiles' ? 'files' : 'overview'); return;
+      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; orgSection = kind === 'orgfiles' ? 'policy' : 'identity'; tab = t || (kind === 'orgfiles' ? 'rules' : 'overview'); return;
     }
     const platformOnly = id === 'identity' || id === 'policies' || id.startsWith('identity:') || id === 'baseline';
     if (platformOnly && !infosec) { denied = "The platform's sign-in realm and baseline are for SuperAdmin and SecurityAdmin."; view = 'policy'; pol = null; return; }

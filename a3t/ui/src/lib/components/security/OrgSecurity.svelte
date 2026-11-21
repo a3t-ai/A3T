@@ -13,12 +13,15 @@
   import { roles, roleLabel } from '$lib/core/auth/roles.svelte.ts';
   import { draftPolicy, checkDraft, POLICY_AGENT, type PolicyDraft } from './policyAgent';
   import AccessReviews from './AccessReviews.svelte';
+  import RulesList from './rules/RulesList.svelte';
+  import RuleEditor from './rules/RuleEditor.svelte';
+  import GovernSettings from './rules/GovernSettings.svelte';
   import * as YAML from 'yaml';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -291,11 +294,13 @@
     { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
     { id: 'reviews', label: 'Access reviews', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 6l1.5 1.5L10.5 4M5.5 10.5h5"/>', hint: 'Confirm or revoke, item by item, who holds which role and key' },
     { id: 'roles', label: 'Roles & groups', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has, and which groups and people hold them' },
-    { id: 'files', label: 'Policy files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
+    { id: 'rules', label: 'Rules', icon: '<path d="M3 4h10M3 8h10M3 12h6"/>', hint: 'Every rule of the org, one row each: open one to read, try or change it, or add a new one' },
+    { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/>', hint: 'Who may change the org\'s policies and identity, and who approves a change' },
+    { id: 'files', label: 'Files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
     { id: 'changes', label: 'Changes', icon: '<circle cx="5" cy="8" r="2"/><circle cx="11" cy="8" r="2"/><path d="M7 8h2"/>', hint: 'A second approver for policy changes, and the changes waiting for one' },
   ];
   const IDENTITY_TABS = ['overview', 'people', 'members', 'signin', 'roles', 'reviews'];
-  const STEPS = $derived(section === 'policy' ? ALL_STEPS.filter((x) => x.id === 'files' || x.id === 'changes') : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
+  const STEPS = $derived(section === 'policy' ? ['rules', 'changes', 'settings', 'files'].map((id) => ALL_STEPS.find((x) => x.id === id)!) : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
 
@@ -392,7 +397,15 @@
     say(r.data?.pending ? (r.data.message ?? 'Held for a second approver.') : 'Saved.', true);
     await loadChanges();
   }
-  $effect(() => { if (tab === 'changes' && org) untrack(() => void loadChanges()); });
+  $effect(() => { if ((tab === 'changes' || tab === 'settings') && org) untrack(() => void loadChanges()); });
+
+  // ── Rules (one row per rule) and the rule editor ──
+  let ruleTarget = $state<{ path: string; index: number } | null | undefined>(undefined);
+  let perms = $state<{ id: string; label: string }[]>([]);
+  $effect(() => { if (tab === 'rules' && !perms.length) untrack(() => void securityCatalogue().then((c) => { if (c.ok) perms = (c.data?.permissions ?? []).map((p: any) => ({ id: p.id, label: p.label })); })); });
+  $effect(() => { if (tab !== 'rules') untrack(() => (ruleTarget = undefined)); });
+  const ruleRoles = $derived(['Admin', 'Operator', 'Viewer', ...(files?.files ?? []).filter((f) => f.kind === 'role').map((f) => String(parse(f.content)?.name ?? '')).filter(Boolean)]);
+  async function ruleSaved(m: string) { ruleTarget = undefined; say(m, true); await reloadFiles(); }
   const pendingChanges = $derived(changes.filter((c) => c.status === 'pending'));
   async function toggleFourEyes() {
     busy = 'four'; const r = await orgPolicy.setFourEyes(handle, !fourEyes); busy = '';
@@ -425,7 +438,7 @@
 </script>
 
 <div class="panel-layout">
-  <PropertiesTree icon={section === 'policy' ? 'PF' : 'ID'} color="#5530a8" name={section === 'policy' ? 'Policy files' : 'Identity'} meta={`org ${org?.display_name ?? handle} · ${section === 'policy' ? 'what is allowed' : 'who people are'}`} nodes={[]} steps={STEPS} activeNode={tab} onselect={(id) => (tab = id)} />
+  <PropertiesTree icon={section === 'policy' ? 'PO' : 'ID'} color="#5530a8" name={section === 'policy' ? 'Policies' : 'Identity'} meta={`org ${org?.display_name ?? handle} · ${section === 'policy' ? 'what is allowed' : 'who people are'}`} nodes={[]} steps={STEPS} activeNode={tab} onselect={(id) => (tab = id)} />
   <div class="panel-col"><div class="panel-content"><div class="pf">
     <WizardHead step={STEPS.find((s) => s.id === tab)} />
     <section class="agt">
@@ -436,7 +449,17 @@
       {#if broken}<div class="note bad"><b>Its policy files no longer compile</b> (since {new Date(broken.since).toLocaleString()}), so its projects ({broken.closed.join(', ') || 'none'}) refuse every call until they are fixed in Policy files.
         <ul>{#each broken.errors as e (e)}<li class="mono">{e}</li>{/each}</ul></div>{/if}
 
-      {#if tab === 'overview'}
+      {#if tab === 'rules'}
+        {#if ruleTarget === undefined}
+          <RulesList org={handle} {files} projects={files?.projects ?? []} {perms} canEdit={managesFiles} onopen={(t) => (ruleTarget = t)} />
+        {:else}
+          {#key ruleTarget ? `${ruleTarget.path}#${ruleTarget.index}` : 'new'}
+            <RuleEditor org={handle} {files} projects={files?.projects ?? []} roles={ruleRoles} {perms} canEdit={managesFiles} target={ruleTarget} onclose={() => (ruleTarget = undefined)} onsaved={ruleSaved} />
+          {/key}
+        {/if}
+      {:else if tab === 'settings'}
+        <GovernSettings org={handle} myRole={org.my_role ?? ''} {infosec} {fourEyes} busy={busy === 'four'} onFourEyes={toggleFourEyes} />
+      {:else if tab === 'overview'}
         <div class="card">
           <div class="card-head"><h3>1 · {org.display_name}</h3><span>you are {org.my_role ? ROLE_LABEL[org.my_role].toLowerCase() : infosec ? 'platform InfoSec' : '—'} here</span></div>
           <div class="tiles">

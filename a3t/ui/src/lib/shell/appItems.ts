@@ -419,7 +419,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
       const n = (org.members ?? []).length;
       out.push({ id: `org:${org.handle}`, label: 'Identity', namespace: org.handle,
         sub: `${n} member${n === 1 ? '' : 's'}${org.sso?.idp_alias ? ` · signs in through ${org.sso.idp_alias}` : ''} · who reaches its projects` });
-      out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: 'its roles, rules and access, as files' });
+      out.push({ id: `orgfiles:${org.handle}`, label: 'Policies', namespace: org.handle, sub: 'its rules: who may do what, where and when' });
       out.push({ id: `agents:${org.id}`, label: 'Agents', namespace: org.handle, sub: 'every agent: owner, reach, keys, risk' });
     }
     for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
