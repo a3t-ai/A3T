@@ -307,7 +307,7 @@
 
   const ALL_STEPS = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: "The org's people at a glance, and who looks after what" },
-    { id: 'signin', label: 'Single sign-on', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider (SSO), its domains, and SCIM" },
+    { id: 'signin', label: 'Single sign-on', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "Connect the org's identity provider so its people sign in with their work account; SCIM keeps them in step" },
     { id: 'members', label: 'Org members', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its people and groups, the role each holds, and who else reaches its projects' },
     { id: 'reviews', label: 'Access reviews', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 6l1.5 1.5L10.5 4M5.5 10.5h5"/>', hint: 'Confirm or revoke, item by item, who holds which role and key' },
     { id: 'roles', label: 'Roles', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has and what each may do' },
@@ -571,9 +571,14 @@
           {#if org.sso?.idp_alias}
             <ul class="olist">
               {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r] ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default] ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>SSO →</button></li>
+              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default] ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Single sign-on →</button></li>
             </ul>
-          {:else}<p class="dim">No sign-in of its own, so no groups: people are added above.</p>{/if}
+          {:else}<p class="dim">No identity provider connected, so no groups: people are added above.</p>{/if}
+          {#if org.sso?.idp_alias}
+            {#if orgAccess}<p class="dim small">From the policy file <button class="lnk2 mono" onclick={() => openFileInStudio(orgAccess!.f.path)}>{orgAccess.f.path}</button>{orgAccess.f.enforced === false ? ' (switched off: nobody gets an org role at sign-in)' : ''}: versioned, checked and approved like the org's other policy files.</p>
+            {:else}<p class="dim small">No <span class="mono">{ORG_ACCESS}</span> yet: people who sign in get no org role until it says which groups get which.</p>
+              {#if managesFiles}<div class="acts"><button class="btn2" disabled={!!busy} onclick={newOrgAccess}>Create {ORG_ACCESS}</button></div>{/if}{/if}
+          {/if}
           <h4 class="sub">On its projects</h4>
           {#each accessFiles as a (a.f.path)}
             <div class="proj"><span class="mono">{a.y.project ?? '?'}</span>{#if !a.f.enforced}<span class="dim"> · switched off</span>{/if}<button class="lnk2" onclick={() => openFileInStudio(a.f.path)}>Edit in Studio</button></div>
@@ -587,43 +592,41 @@
 
       {:else if tab === 'signin'}
         <div class="card">
-          <div class="card-head"><h3>Single sign-on</h3><span>{canAdmin ? "the org's own identity provider" : 'read only: its admins change it'}</span></div>
-          <p class="dim">People sign in through the org's own identity provider (Entra ID, Okta, Google, its own Keycloak…), connected to A3T's Keycloak under the name below. They land in this org only, with the role their groups give them, checked at every sign-in. Members added by hand are not changed by sign-in.</p>
-          <div class="fields">
-            <label class="fld">Identity provider<input class="mono" bind:value={sso.alias} readonly={!canAdmin} placeholder="its name in Keycloak, e.g. acme (empty: off)" /></label>
-            <label class="fld">Email domains<input bind:value={sso.domains} readonly={!canAdmin} placeholder="acme.com, acme.co.uk" /></label>
-          </div>
-          <h4 class="sub">Groups → org role</h4>
-          {#if orgAccess}
-            <ul class="olist">
-              {#each pairs(orgAccess.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else</span><span>{orgAccess.y.default ? `${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><span></span></li>
-            </ul>
-            <p class="dim">From the policy file <button class="lnk2 mono" onclick={() => openFileInStudio(orgAccess!.f.path)}>{orgAccess.f.path}</button>{orgAccess.f.enforced === false ? ' — switched off: nobody gets an org role at sign-in' : ''}: versioned, checked, and approved like the org's other policy files.</p>
-          {:else}
-            <p class="dim">No <span class="mono">{ORG_ACCESS}</span>: people who sign in get no org role until it says which groups get which.</p>
-            {#if managesFiles}<div class="acts"><button class="btn2" disabled={!!busy} onclick={newOrgAccess}>Create {ORG_ACCESS}</button></div>{/if}
-          {/if}
-          {#if canAdmin}<div class="acts"><button class="btn2 primary" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Save sign-in'}</button></div>{/if}
-        </div>
-        {#if canAdmin}
-          <div class="card">
-            <div class="card-head"><h3>Connect your identity provider</h3><span>{idp?.sso?.issuer ? `connected: ${idp.sso.issuer}` : 'OpenID Connect'}</span></div>
-            <p class="dim">Register A3T as an app at your provider with the redirect URI <span class="mono">{idp?.redirect_uri ?? '…'}</span>, then give its details here. A3T checks the provider's discovery document and connects it; your people land in {org.handle} only, with the role their groups give them.</p>
+          <div class="card-head"><h3>1 · Your identity provider</h3><span>{idp?.sso?.issuer ? `connected: ${idp.sso.issuer}` : org.sso?.idp_alias ? `linked: ${org.sso.idp_alias}` : 'not connected: people use A3T\'s own sign-in'}</span></div>
+          <p class="dim">Connect the org's own provider (Entra ID, Okta, Google, Keycloak… over OpenID Connect) and its people sign in with their work account. Anyone with an email in its domains lands in {org.handle} only, with the org role their groups give them (see Org members › Groups), checked at every sign-in. Members added by hand are not changed.</p>
+          {#if canAdmin}
+            <p class="dim">At your provider, register A3T as an app with the redirect URI <span class="mono">{idp?.redirect_uri ?? '…'}</span>, then fill in its details.</p>
             <div class="fields">
               <label class="fld">Issuer<input class="mono" bind:value={conn.issuer} placeholder="https://login.example.com/realms/acme" /></label>
               <label class="fld">Client id<input class="mono" bind:value={conn.client_id} placeholder="a3t" /></label>
               <label class="fld">Client secret<input class="mono" type="password" bind:value={conn.client_secret} placeholder={idp?.sso?.issuer ? 'unchanged' : 'from your provider'} autocomplete="off" /></label>
               <label class="fld">Groups claim<input class="mono" bind:value={conn.groups_claim} placeholder="groups" /></label>
-              <label class="fld">Email domains<input bind:value={conn.domains} placeholder="acme.com" /></label>
+              <label class="fld">Email domains<input bind:value={conn.domains} placeholder="acme.com, acme.co.uk" /></label>
             </div>
             <div class="acts">
               <button class="btn2 primary" disabled={!!busy || !conn.issuer.trim() || !conn.client_id.trim()} onclick={connectIdp}>{busy === 'idp' ? 'Connecting…' : idp?.sso?.issuer ? 'Save' : 'Connect'}</button>
-              {#if idp?.sso?.issuer}<button class="btn2 quiet" disabled={!!busy} onclick={disconnectIdp}>Disconnect</button>{/if}
+              {#if idp?.sso?.issuer || org.sso?.idp_alias}<button class="btn2 quiet" disabled={!!busy} onclick={disconnectIdp}>Disconnect</button>{/if}
             </div>
-          </div>
+          {:else}
+            <ul class="olist">
+              <li class="rrow"><span class="lbl">Provider</span><span class="mono">{idp?.sso?.issuer ?? org.sso?.idp_alias ?? '—'}</span><span></span></li>
+              <li class="rrow"><span class="lbl">Email domains</span><span>{(org.sso?.domains ?? []).join(', ') || '—'}</span><span></span></li>
+            </ul>
+            <p class="dim small">Read only: {org.handle}'s admins change it.</p>
+          {/if}
+          {#if infosec && canAdmin}
+            <details class="adv"><summary>Platform only: link a provider already set up in Keycloak</summary>
+              <div class="fields">
+                <label class="fld">Keycloak alias<input class="mono" bind:value={sso.alias} placeholder="e.g. org-acme (empty: off)" /></label>
+                <label class="fld">Email domains<input bind:value={sso.domains} placeholder="acme.com" /></label>
+              </div>
+              <div class="acts"><button class="btn2" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Link'}</button></div>
+            </details>
+          {/if}
+        </div>
+        {#if canAdmin}
           <div class="card">
-            <div class="card-head"><h3>Provisioning (SCIM)</h3><span>{idp?.scim.on ? `on since ${idp.scim.since?.slice(0, 10) ?? '—'} · ${idp.scim.users} people, ${idp.scim.deactivated} deactivated` : 'off'}</span></div>
+            <div class="card-head"><h3>2 · Provisioning (SCIM)</h3><span>{idp?.scim.on ? `on since ${idp.scim.since?.slice(0, 10) ?? '—'} · ${idp.scim.users} people, ${idp.scim.deactivated} deactivated` : 'off'}</span></div>
             <p class="dim">Your provider pushes who belongs. Someone deactivated or removed there loses {org.handle} at once: their org membership, their roles on its projects and their sessions — and can't sign in through your provider until they are active again.</p>
             {#if scimToken}
               <ul class="olist">
@@ -840,6 +843,8 @@
   .fstate.on { color: var(--ok, #1a7158); }
   .rrow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 110px; gap: 10px; align-items: baseline; }
   .rrow > :last-child { justify-self: end; }
+  .adv { margin-top: 12px; font-size: 12.5px; color: var(--text-3); }
+  .adv summary { cursor: pointer; }
   .sub { margin: 6px 0 0; font: 600 12.5px var(--font-sans); color: var(--text-2); }
   .proj { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 13px; }
   .proj .lnk2 { margin-left: auto; }
