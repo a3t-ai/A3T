@@ -130,6 +130,15 @@ pub async fn login_handler(
                             "code": "password_change_required",
                         }))).into_response();
                     }
+                    // The realm's page couldn't be read (see `password_step`): nothing
+                    // is known about the password, so nothing is claimed about it.
+                    None => {
+                        warn!(email = %body.email, error = %local_err, "Login failed; the realm's sign-in page could not say why");
+                        return (StatusCode::UNAUTHORIZED, Json(json!({
+                            "error": "Sign-in failed. Check your email and password; an account with an authenticator also needs its code.",
+                            "code": "not_checked",
+                        }))).into_response();
+                    }
                     _ => {}
                 }
                 warn!(email = %body.email, error = %local_err, "Login failed (local + oidc)");

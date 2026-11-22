@@ -14,6 +14,8 @@
   let otpInput = $state<HTMLInputElement | null>(null);
   /// The password was right; the account must set up an authenticator first.
   let needSetup = $state(false);
+  /// FlowR couldn't check the password on its own: the code step is offered.
+  let mayHaveCode = $state(false);
   let error = $state('');
   let loading = $state(false);
 
@@ -89,7 +91,7 @@
   async function handleSubmit(e?: Event) {
     e?.preventDefault();
     if (loading) return;
-    error = ''; needSetup = false;
+    error = ''; needSetup = false; mayHaveCode = false;
     loading = true;
     const result = await login(email, password, codeStep ? otp : undefined);
     loading = false;
@@ -104,6 +106,11 @@
       if (result.code === 'otp_invalid') error = result.error || "That code didn't work.";
       codeStep = true; otp = '';
       setTimeout(() => otpInput?.focus(), 0);
+    } else if (result.code === 'not_checked') {
+      // FlowR couldn't tell a wrong password from a missing code: say so, and
+      // let an account with an authenticator go on to its code.
+      error = result.error || 'Sign-in failed.';
+      mayHaveCode = true;
     } else if (result.code === 'otp_setup_required') {
       codeStep = false; needSetup = true;
       error = result.error || 'Set up an authenticator app to finish signing in.';
@@ -302,7 +309,7 @@
       <p class="auth-sub">Enter your credentials to access the platform.</p>
 
       {#if error}
-        <div class="auth-error">{error}{#if needSetup} <a class="link-btn small" href={`${API_BASE}/auth/account`} target="_blank" rel="noopener">Set up an authenticator</a>{/if}</div>
+        <div class="auth-error">{error}{#if needSetup} <a class="link-btn small" href={`${API_BASE}/auth/account`} target="_blank" rel="noopener">Set up an authenticator</a>{/if}{#if mayHaveCode} <button type="button" class="link-btn small" onclick={() => { codeStep = true; otp = ''; error = ''; mayHaveCode = false; setTimeout(() => otpInput?.focus(), 0); }}>Enter my authenticator code</button>{/if}</div>
       {/if}
 
       <form onsubmit={handleSubmit}>

@@ -4,7 +4,7 @@
   /// passes), again a moment after each edit, and on demand. Nothing is saved.
   import { untrack } from 'svelte';
   import { orgPolicy, type Doc, type Workspace } from '$lib/studio-core';
-  import { orgPolicy as orgPolicyApi, type ReplayResult } from '$lib/services/api';
+  import type { ReplayResult } from '$lib/studio-core/adapters/orgPolicy';
 
   let { doc }: { doc: Doc | null; workspace: Workspace } = $props();
 
@@ -31,10 +31,10 @@
   async function replay() {
     if (!doc || !org) return;
     replaying = true;
-    const r = await orgPolicyApi.replay(org, { files: [{ path: doc.ref.name, content: doc.text ?? '' }], switch_on: [doc.ref.name] });
+    const r = await orgPolicy.replay(org, { files: [{ path: doc.ref.name, content: doc.text ?? '' }], switch_on: [doc.ref.name] });
     replaying = false;
-    if (!r.ok) { err = ((r as any).detail?.errors ?? [r.error]).join('; '); return; }
-    rp = r.data!;
+    if (!r.ok) { err = r.error; return; }
+    rp = r.data;
   }
   // On opening, and shortly after each edit.
   let timer: ReturnType<typeof setTimeout> | undefined;
