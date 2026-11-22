@@ -3,7 +3,7 @@
   ///   Overview — the org at a glance, and who looks after what;
   ///   Members — its people and groups, the role each holds in it, and who
   ///     else reaches its projects and how (its admins change roles);
-  ///   Sign-in — its own identity provider and which groups get which role;
+  ///   Single sign-on — its own identity provider, domains and SCIM;
   ///   Policy files — its roles, rules and access, kept as files in A3T (edited in Studio).
   /// Its admins change members and sign-in; its security admins read them. Both
   /// manage the policy files (the org's security). SuperAdmin does everything;
@@ -172,7 +172,7 @@
     busy = 'sso';
     const r = await orgsApi.setSso(org.handle, body);
     busy = '';
-    if (!r.ok) { say(r.error ?? 'Sign-in not saved.'); return; }
+    if (!r.ok) { say(r.error ?? 'Single sign-on not saved.'); return; }
     say(body.idp_alias ? `${org.handle} now signs in through "${body.idp_alias}".` : `Sign-in through the org's own provider is off for ${org.handle}.`, true);
     await refreshOrg(); if (org) fillSso(org);
   }
@@ -307,8 +307,8 @@
 
   const ALL_STEPS = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: "The org's people at a glance, and who looks after what" },
+    { id: 'signin', label: 'Single sign-on', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider (SSO), its domains, and SCIM" },
     { id: 'members', label: 'Org members', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its people and groups, the role each holds, and who else reaches its projects' },
-    { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
     { id: 'reviews', label: 'Access reviews', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 6l1.5 1.5L10.5 4M5.5 10.5h5"/>', hint: 'Confirm or revoke, item by item, who holds which role and key' },
     { id: 'roles', label: 'Roles', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has and what each may do' },
     { id: 'rules', label: 'Rules', icon: '<path d="M3 4h10M3 8h10M3 12h6"/>', hint: 'Every rule of the org, one row each: open one to read, try or change it, or add a new one' },
@@ -316,7 +316,7 @@
     { id: 'files', label: 'Files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
     { id: 'changes', label: 'Changes', icon: '<circle cx="5" cy="8" r="2"/><circle cx="11" cy="8" r="2"/><path d="M7 8h2"/>', hint: 'A second approver for policy changes, and the changes waiting for one' },
   ];
-  const IDENTITY_TABS = ['overview', 'members', 'signin', 'roles', 'reviews'];
+  const IDENTITY_TABS = ['overview', 'signin', 'members', 'roles', 'reviews'];
   const STEPS = $derived(section === 'policy' ? ['rules', 'changes', 'settings', 'files'].map((id) => ALL_STEPS.find((x) => x.id === id)!) : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
@@ -495,7 +495,7 @@
           </div>
           <ul class="rows">
             <li><span class="lbl">Members</span><span class="val">{org.members.length} · {memberCount('admin')} admin{memberCount('admin') === 1 ? '' : 's'}, {memberCount('securityadmin')} security admin{memberCount('securityadmin') === 1 ? '' : 's'}{outsiders ? ` · ${outsiders} from outside the org reach its projects` : ''}{pairs(orgAccess?.y.groups).length ? ` · ${pairs(orgAccess?.y.groups).length} group${pairs(orgAccess?.y.groups).length === 1 ? '' : 's'}` : ''}</span><button class="btn2" onclick={() => (tab = 'members')}>{canAdmin ? 'Manage' : 'See'}</button></li>
-            <li><span class="lbl">Sign-in</span><span class="val">{org.sso?.idp_alias ? `through ${org.sso.idp_alias}${org.sso.domains?.length ? ` for ${org.sso.domains.join(', ')}` : ''}` : "A3T's own sign-in"}</span><button class="btn2" onclick={() => (tab = 'signin')}>{canAdmin ? 'Set up' : 'See'}</button></li>
+            <li><span class="lbl">Single sign-on</span><span class="val">{org.sso?.idp_alias ? `through ${org.sso.idp_alias}${org.sso.domains?.length ? ` for ${org.sso.domains.join(', ')}` : ''}` : "A3T's own sign-in"}</span><button class="btn2" onclick={() => (tab = 'signin')}>{canAdmin ? 'Set up' : 'See'}</button></li>
             <li><span class="lbl">Roles</span><span class="val">{BASELINE.length} baseline{orgRoles.length ? ` + ${orgRoles.length} of its own (${orgRoles.map((r) => r.y.name ?? r.f.path).join(', ')})` : ''}</span><button class="btn2" onclick={() => (tab = 'roles')}>See</button></li>
           </ul>
         </div>
@@ -571,7 +571,7 @@
           {#if org.sso?.idp_alias}
             <ul class="olist">
               {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r] ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default] ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in →</button></li>
+              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default] ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>SSO →</button></li>
             </ul>
           {:else}<p class="dim">No sign-in of its own, so no groups: people are added above.</p>{/if}
           <h4 class="sub">On its projects</h4>
@@ -587,7 +587,7 @@
 
       {:else if tab === 'signin'}
         <div class="card">
-          <div class="card-head"><h3>Sign-in</h3><span>{canAdmin ? "the org's own identity provider" : 'read only: its admins change it'}</span></div>
+          <div class="card-head"><h3>Single sign-on</h3><span>{canAdmin ? "the org's own identity provider" : 'read only: its admins change it'}</span></div>
           <p class="dim">People sign in through the org's own identity provider (Entra ID, Okta, Google, its own Keycloak…), connected to A3T's Keycloak under the name below. They land in this org only, with the role their groups give them, checked at every sign-in. Members added by hand are not changed by sign-in.</p>
           <div class="fields">
             <label class="fld">Identity provider<input class="mono" bind:value={sso.alias} readonly={!canAdmin} placeholder="its name in Keycloak, e.g. acme (empty: off)" /></label>
