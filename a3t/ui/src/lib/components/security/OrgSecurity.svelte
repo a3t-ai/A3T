@@ -16,12 +16,13 @@
   import RulesList from './rules/RulesList.svelte';
   import RuleEditor from './rules/RuleEditor.svelte';
   import GovernSettings from './rules/GovernSettings.svelte';
+  import RoleEditor from './rules/RoleEditor.svelte';
   import * as YAML from 'yaml';
   import PropertiesTree from '$lib/components/shared/PropertiesTree.svelte';
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles, type OrgSettings, type OrgGovernance } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles, type OrgSettings, type OrgGovernance, type CatalogueEntry } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { API_BASE } from '$lib/config';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
@@ -411,8 +412,12 @@
 
   // ── Rules (one row per rule) and the rule editor ──
   let ruleTarget = $state<{ path: string; index: number } | null | undefined>(undefined);
-  let perms = $state<{ id: string; label: string }[]>([]);
-  $effect(() => { if (tab === 'rules' && !perms.length) untrack(() => void securityCatalogue().then((c) => { if (c.ok) perms = (c.data?.permissions ?? []).map((p: any) => ({ id: p.id, label: p.label })); })); });
+  let catalogue = $state<CatalogueEntry[]>([]);
+  const perms = $derived(catalogue.map((p) => ({ id: p.id, label: p.label })));
+  $effect(() => { if ((tab === 'rules' || tab === 'roles') && !catalogue.length) untrack(() => void securityCatalogue().then((c) => { if (c.ok) catalogue = c.data?.permissions ?? []; })); });
+  // Roles: an org role is a baseline role minus permissions (roles/<name>.yaml).
+  let roleEdit = $state<{ path: string | null; content: string } | null>(null);
+  async function roleSaved(m: string) { roleEdit = null; say(m, true); await reloadFiles(); }
   $effect(() => { if (tab !== 'rules') untrack(() => (ruleTarget = undefined)); });
   const ruleRoles = $derived(['Admin', 'Operator', 'Viewer', ...(files?.files ?? []).filter((f) => f.kind === 'role').map((f) => String(parse(f.content)?.name ?? '')).filter(Boolean)]);
   async function ruleSaved(m: string) { ruleTarget = undefined; say(m, true); await reloadFiles(); }
@@ -626,16 +631,23 @@
         <AccessReviews org={handle} canReview={managesFiles} />
 
       {:else if tab === 'roles'}
+        {#if roleEdit}
+          {#key roleEdit.path ?? 'new'}
+            <RoleEditor org={handle} perms={catalogue} path={roleEdit.path} content={roleEdit.content} canEdit={managesFiles} taken={orgRoles.map((r) => String(r.y.name ?? ''))} onclose={() => (roleEdit = null)} onsaved={roleSaved} />
+          {/key}
+        {:else}
         <div class="card">
-          <div class="card-head"><h3>Roles</h3><span>what each role may do is in the policy files</span></div>
+          <div class="card-head"><h3>Roles</h3><span>the baseline roles, and {handle}'s own built from them</span><span class="grow"></span>{#if managesFiles}<button class="btn2 primary" onclick={() => (roleEdit = { path: null, content: '' })}>+ New role</button>{/if}</div>
           <ul class="olist">
             {#each BASELINE as r (r.name)}<li class="rrow"><b>{r.name}</b><span class="dim">baseline · {r.what}</span><span></span></li>{/each}
             {#each orgRoles as r (r.f.path)}
-              <li class="rrow"><b>{r.y.name ?? r.f.path}</b><span class="dim">{handle}'s own · {r.y.extends ?? '—'}{(r.y.remove ?? []).length ? ` without ${(r.y.remove ?? []).join(', ')}` : ''}{r.f.enforced ? '' : ' · switched off'}{r.y.description ? ` · ${r.y.description}` : ''}</span>
-                <button class="lnk2" onclick={() => openFileInStudio(r.f.path)}>Edit in Studio</button></li>
+              <li class="rrow"><b>{r.y.name ?? r.f.path}</b><span class="dim">{r.y.extends ?? '—'}{(r.y.remove ?? []).length ? ` without ${(r.y.remove ?? []).join(', ')}` : ''}{r.f.enforced ? '' : ' · switched off'}{r.y.description ? ` · ${r.y.description}` : ''}</span>
+                <button class="lnk2" onclick={() => (roleEdit = { path: r.f.path, content: r.f.content })}>{managesFiles ? 'Edit' : 'Open'}</button></li>
             {/each}
           </ul>
+          {#if !orgRoles.length}<p class="dim small">{handle} has no roles of its own yet.{managesFiles ? ' Create one to give people less than a baseline role, for example an Operator who can\'t change memory.' : ''}</p>{/if}
         </div>
+        {/if}
 
       {:else if tab === 'files'}
         {#if filesErr && !files}<div class="note bad">{filesErr}</div>{/if}
