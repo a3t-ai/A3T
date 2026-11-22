@@ -362,7 +362,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
     return rows(res.data, 'templates').map((r: any) => ({
       ...named(r),
       namespace: projectOf(r.namespace || specNamespace(r.spec_yaml), r.created_by),
-      sub: [r.version ? `v${r.version}` : '', r.source === 'system' ? 'built-in' : r.source === 'my' ? 'yours' : r.source ?? '']
+      sub: [(r.spec_version || r.version) ? `v${r.spec_version || r.version}` : '', r.source === 'system' ? 'built-in' : r.source === 'my' ? 'yours' : r.source ?? '']
         .filter(Boolean).join(' · '),
     }));
   }
