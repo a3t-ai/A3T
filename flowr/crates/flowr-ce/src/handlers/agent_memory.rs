@@ -146,7 +146,7 @@ pub(crate) fn aql_str(s: &str) -> String {
 }
 
 /// The records of a query result (`{type: records, records: [...]}`).
-fn records(result: &Value) -> Vec<Value> {
+pub(crate) fn records(result: &Value) -> Vec<Value> {
     let data = result.get("data").unwrap_or(result);
     data.get("records").and_then(|r| r.as_array()).cloned().unwrap_or_default()
 }
@@ -158,6 +158,11 @@ fn point_of(result: &Value) -> Option<Value> {
 
 fn created_at(r: &Value) -> String {
     r.pointer("/metadata/created_at").and_then(|v| v.as_str()).unwrap_or_default().to_string()
+}
+
+/// `2026-11-22T15:45:08.155Z` → `2026-11-22 15:45`: the minute a turn was said.
+fn when_of(created_at: &str) -> String {
+    created_at.chars().take(16).collect::<String>().replacen('T', " ", 1)
 }
 
 /// Lowercase word set.
@@ -272,7 +277,8 @@ impl AgentMemory {
         let ns = self.namespace_clause.clone();
         let mut found: Vec<Value> = Vec::new();
         if let Some(item) = &self.item {
-            let mut same = self.query(&format!("RECALL FROM EPISODIC WHERE owner = {} AND item = {} NAMESPACE {ns} LIMIT 40", aql_str(&self.owner), aql_str(item))).await;
+            // Newest first in ADB, so a busy item's latest turns are the ones read.
+            let mut same = self.query(&format!("RECALL FROM EPISODIC WHERE owner = {} AND item = {} ORDER BY created_at DESC LIMIT 40 NAMESPACE {ns}", aql_str(&self.owner), aql_str(item))).await;
             same.sort_by_key(|r| std::cmp::Reverse(created_at(r)));
             found.extend(same);
         }
@@ -284,12 +290,16 @@ impl AgentMemory {
             }
         }
         let mut seen = HashSet::new();
-        found
+        // Picked by item, then likeness; shown newest first, each with its time,
+        // so "the last thing I said" has one answer.
+        let mut picked: Vec<Value> = found
             .into_iter()
             .filter(|r| self.earlier_turn(r))
             .filter(|r| key(r).is_some_and(|k| seen.insert(k)))
             .take(limit)
-            .collect()
+            .collect();
+        picked.sort_by_key(|r| std::cmp::Reverse(created_at(r)));
+        picked
     }
 
     /// Whether `r` is one of this owner's turns from another session: a turn with
@@ -682,7 +692,7 @@ impl Recalled {
         }
         let mut s = String::from(
             "\n\n## Your earlier conversations with this user\n\
-             From their other sessions (same item first, then the most alike); use them if relevant, \
+             From their other sessions, newest first (times in UTC); use them if relevant, \
              and say so when you rely on one:\n",
         );
         let start = s.len();
@@ -694,7 +704,7 @@ impl Recalled {
                 said.push('…');
             }
             let place = [get("app"), get("item")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
-            let when: String = created_at(r).chars().take(10).collect();
+            let when = when_of(&created_at(r));
             let who = if get("role") == "assistant" { "you" } else { "they" };
             let line = format!("- [{when}{}] {who}: {}\n", if place.is_empty() { String::new() } else { format!(", {place}") }, said.replace('\n', " "));
             if s.len() - start + line.len() > PROMPT_BUDGET {
@@ -810,7 +820,9 @@ mod tests {
         let s = r.prompt_section().unwrap();
         let (a, b) = (s.find("Ada works at Acme").unwrap(), s.find("## Your earlier conversations").unwrap());
         assert!(a < b, "{s}");
-        assert!(s.contains("[2026-11-18, Studio · flow a3t-test/st1-fault] they: Why does st1-fault fail?"), "{s}");
+        assert!(s.contains("[2026-11-18 10:00, Studio · flow a3t-test/st1-fault] they: Why does st1-fault fail?"), "{s}");
+        assert_eq!(when_of("2026-11-22T15:45:08.155099Z"), "2026-11-22 15:45");
+        assert_eq!(when_of(""), "");
         assert!(s.contains("you: Its second step raises on purpose."), "{s}");
         let only = Recalled { earlier: r.earlier.clone(), ..Default::default() };
         assert!(only.prompt_section().unwrap().starts_with("\n\n## Your earlier conversations"));

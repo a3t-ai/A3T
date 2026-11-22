@@ -1,7 +1,9 @@
 /// An org's policy files, kept in A3T's database (`/security/orgs/{org}/…`).
 /// In the Studio they show inside each of the org's projects (a ref's project is
 /// still `org:<handle>`: the files belong to the org, not to one project).
-import { orgPolicy, orgsApi, projectsApi, type OrgPolicyCheck, type OrgPolicyFileDetail, type OrgPolicyFiles } from '$lib/services/api';
+import { orgPolicy, orgsApi, projectsApi, type OrgPolicyCheck, type OrgPolicyFileDetail, type OrgPolicyFiles, type ReplayResult } from '$lib/services/api';
+
+export type { ReplayResult };
 import { fail, ok, type Result } from '../items';
 import { result, safely } from './util';
 
@@ -56,5 +58,15 @@ export const remove = (org: string, path: string): Promise<Result> =>
 
 /// The org's enforced set with `drafts` in place and `removed` taken out: what
 /// a save, or a removal, would leave.
+/// GOV-2: how the org's recent decisions would have gone with this change.
+/// A refusal says the server's reasons (the files' errors), not only a status.
+export const replay = (org: string, change: { files?: { path: string; content: string }[]; removed?: string[]; switch_on?: string[]; days?: number }): Promise<Result<ReplayResult>> =>
+  safely('replay', async () => {
+    const r = await orgPolicy.replay(org, change);
+    if (r.ok) return ok(r.data as ReplayResult);
+    const errors: string[] | undefined = (r as any).detail?.errors;
+    return errors?.length ? fail(errors.join('; ')) : result<ReplayResult>(r, 'replay');
+  });
+
 export const validate = (org: string, drafts: { path: string; content: string }[], removed: string[] = []): Promise<Result<OrgPolicyCheck>> =>
   safely('validate', async () => result(await orgPolicy.validate(org, drafts, removed), 'validate'));

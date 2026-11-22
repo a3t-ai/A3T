@@ -91,6 +91,11 @@ pub async fn login_handler(
             // The password was right; the account still has a temporary password.
             // The console asks for a new one and posts it to /auth/first-password.
             KcLogin::SetupRequired => {
+                // An authenticator to set up is a pending action too: the realm's
+                // own page says which one.
+                if password_step(&config, &body.email, &body.password).await == Some(PasswordStep::SetUpAuthenticator) {
+                    return otp_setup_required(&body.email);
+                }
                 info!(email = %body.email, "Login: a new password is needed first");
                 return (StatusCode::FORBIDDEN, Json(json!({
                     "error": "Choose a new password to finish setting up your account.",
@@ -98,6 +103,44 @@ pub async fn login_handler(
                 }))).into_response();
             }
             KcLogin::Failed => {
+                // A password grant answers a wrong password and a missing or wrong
+                // code alike. The realm's sign-in page checks the password first:
+                // only once it was right does the console ask for the code, as a
+                // step of its own.
+                let with_code = body.otp.as_deref().is_some_and(|o| !o.trim().is_empty());
+                match password_step(&config, &body.email, &body.password).await {
+                    Some(PasswordStep::CodeNext) if with_code => {
+                        info!(email = %body.email, "Login: the authenticator code was wrong");
+                        return (StatusCode::UNAUTHORIZED, Json(json!({
+                            "error": "That code didn't work. Enter the code your app shows now; it changes every 30 seconds.",
+                            "code": "otp_invalid",
+                        }))).into_response();
+                    }
+                    Some(PasswordStep::CodeNext) => {
+                        info!(email = %body.email, "Login: password right, authenticator code next");
+                        return (StatusCode::UNAUTHORIZED, Json(json!({
+                            "error": "Enter the 6-digit code from your authenticator app.",
+                            "code": "otp_required",
+                        }))).into_response();
+                    }
+                    Some(PasswordStep::SetUpAuthenticator) => return otp_setup_required(&body.email),
+                    Some(PasswordStep::NewPassword) => {
+                        return (StatusCode::FORBIDDEN, Json(json!({
+                            "error": "Choose a new password to finish setting up your account.",
+                            "code": "password_change_required",
+                        }))).into_response();
+                    }
+                    // The realm's page couldn't be read (see `password_step`): nothing
+                    // is known about the password, so nothing is claimed about it.
+                    None => {
+                        warn!(email = %body.email, error = %local_err, "Login failed; the realm's sign-in page could not say why");
+                        return (StatusCode::UNAUTHORIZED, Json(json!({
+                            "error": "Sign-in failed. Check your email and password; an account with an authenticator also needs its code.",
+                            "code": "not_checked",
+                        }))).into_response();
+                    }
+                    _ => {}
+                }
                 warn!(email = %body.email, error = %local_err, "Login failed (local + oidc)");
                 None
             }
@@ -105,10 +148,9 @@ pub async fn login_handler(
     };
 
     let Some((identity, si)) = resolved else {
-        // The realm answers a wrong password and a missing or wrong code alike.
         return (StatusCode::UNAUTHORIZED, Json(json!({
-            "error": "Invalid credentials",
-            "hint": "SuperAdmin and SecurityAdmin accounts also give their authenticator code.",
+            "error": "Email or password is wrong.",
+            "code": "invalid_credentials",
         }))).into_response();
     };
     issue_session(&config, identity, si).await
@@ -190,6 +232,43 @@ pub(crate) fn pick_role(roles: &[String]) -> String {
     else if has("admin") { "admin" }
     else if has("operator") { "operator" }
     else { "viewer" }.to_string()
+}
+
+/// The account must set up an authenticator before it can sign in (ID-9).
+fn otp_setup_required(email: &str) -> axum::response::Response {
+    info!(email = %email, "Login: password right, an authenticator must be set up first");
+    (StatusCode::FORBIDDEN, Json(json!({
+        "error": "Set up an authenticator app to finish signing in.",
+        "code": "otp_setup_required",
+    }))).into_response()
+}
+
+#[cfg(feature = "ee")]
+use a3t_security::oidc_admin::PasswordStep;
+/// What the sign-in realm asks after this password (CE: no realm, `None`).
+#[cfg(not(feature = "ee"))]
+#[derive(PartialEq, Eq)]
+#[allow(dead_code)]
+enum PasswordStep { CodeNext, SetUpAuthenticator, NewPassword }
+
+/// Whether the realm's own sign-in page takes this password and what it asks
+/// next (`None`: no realm here, or its page couldn't be read).
+async fn password_step(config: &AuthConfig, email: &str, password: &str) -> Option<PasswordStep> {
+    #[cfg(feature = "ee")]
+    {
+        let (base, realm) = split_issuer(&config.oidc_issuer)?;
+        let step = a3t_security::oidc_admin::password_step(&base, &realm, &config.oidc_client_id, &crate::sso::callback_uri(config), email, password).await;
+        if step == PasswordStep::Unknown {
+            warn!(email = %email, "Login: the realm's sign-in page could not be read; no code step offered");
+            return None;
+        }
+        Some(step)
+    }
+    #[cfg(not(feature = "ee"))]
+    {
+        let _ = (config, email, password);
+        None
+    }
 }
 
 /// What a Keycloak password sign-in came to.

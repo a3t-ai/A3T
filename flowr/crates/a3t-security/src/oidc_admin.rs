@@ -315,6 +315,133 @@ pub async fn password_login(
     })
 }
 
+/// What the realm's own sign-in page says after a username and password:
+/// see [`password_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordStep {
+    /// The password was right and the page now asks for the authenticator code.
+    CodeNext,
+    /// The password was right and the account must set up an authenticator first.
+    SetUpAuthenticator,
+    /// The password was right and the account must choose a new password first.
+    NewPassword,
+    /// The password was right and nothing more is asked.
+    Accepted,
+    /// Wrong password or no such account (the page doesn't say which).
+    Wrong,
+    /// The page couldn't be read (realm down, redirect URI not allowed, a theme
+    /// that hides the forms): nothing is claimed.
+    Unknown,
+}
+
+/// Runs the first step of the realm's browser sign-in (authorization code flow)
+/// with `username` and `password`, and reports what the realm asks next.
+///
+/// A password grant answers a wrong password and a missing authenticator code
+/// alike ("Invalid user credentials"), so a sign-in form built on it can't ask
+/// for the code as a step of its own. The browser flow checks the password
+/// first and only then shows the code form: what it shows next tells the two
+/// apart, and says nothing to someone without the password. No code is
+/// exchanged and no token is issued here; the realm's brute-force protection
+/// counts this attempt like any other.
+pub async fn password_step(
+    base_url: &str,
+    realm: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    username: &str,
+    password: &str,
+) -> PasswordStep {
+    use base64::Engine;
+    use sha2::Digest;
+    let Ok(client) = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return PasswordStep::Unknown;
+    };
+    // A PKCE challenge the realm may require; its verifier is never sent, as no
+    // code is exchanged.
+    let seed = format!("{username}{:?}{:p}", std::time::SystemTime::now(), &client);
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(seed.as_bytes()));
+    let Ok(auth) = reqwest::Url::parse_with_params(
+        &format!("{}/realms/{}/protocol/openid-connect/auth", base_url.trim_end_matches('/'), realm),
+        &[
+            ("client_id", client_id),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("redirect_uri", redirect_uri),
+            ("state", "password-step"),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+        ],
+    ) else {
+        return PasswordStep::Unknown;
+    };
+    let Ok(page) = client.get(auth).send().await else { return PasswordStep::Unknown };
+    let cookies = cookie_header(&page);
+    let Ok(html) = page.text().await else { return PasswordStep::Unknown };
+    let Some(action) = form_action(&html, "kc-form-login") else { return PasswordStep::Unknown };
+    let Ok(resp) = client
+        .post(action)
+        .header(reqwest::header::COOKIE, cookies)
+        .form(&[("username", username), ("password", password), ("credentialId", "")])
+        .send()
+        .await
+    else {
+        return PasswordStep::Unknown;
+    };
+    if resp.status().is_redirection() {
+        // Straight back to the client: the password was enough.
+        let to_client = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|l| l.to_str().ok())
+            .is_some_and(|l| l.starts_with(redirect_uri));
+        return if to_client { PasswordStep::Accepted } else { PasswordStep::Unknown };
+    }
+    let Ok(html) = resp.text().await else { return PasswordStep::Unknown };
+    step_of(&html)
+}
+
+/// Which form the realm's page shows (Keycloak's stock form ids).
+fn step_of(html: &str) -> PasswordStep {
+    if html.contains("id=\"kc-otp-login-form\"") {
+        PasswordStep::CodeNext
+    } else if html.contains("id=\"kc-totp-settings-form\"") {
+        PasswordStep::SetUpAuthenticator
+    } else if html.contains("id=\"kc-passwd-update-form\"") {
+        PasswordStep::NewPassword
+    } else if html.contains("id=\"kc-form-login\"") {
+        PasswordStep::Wrong
+    } else {
+        PasswordStep::Unknown
+    }
+}
+
+/// The `action` of the form with id `id`, HTML entities in it undone.
+fn form_action(html: &str, id: &str) -> Option<String> {
+    let at = html.find(&format!("id=\"{id}\""))?;
+    let start = html[..at].rfind("<form")?;
+    let end = start + html[start..].find('>')?;
+    let tag = &html[start..end];
+    let a = tag.find("action=\"")? + "action=\"".len();
+    let b = a + tag[a..].find('"')?;
+    Some(tag[a..b].replace("&amp;", "&"))
+}
+
+/// The cookies a response set, as one `Cookie` header.
+fn cookie_header(resp: &reqwest::Response) -> String {
+    resp.headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|c| c.split(';').next())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Whether a user has an authenticator (one-time code) set up. A password
 /// grant that carried a code proves a second factor only for such a user: the
 /// realm ignores a code from anyone without one.
@@ -488,6 +615,18 @@ pub async fn list_users(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_step_reads_the_realm_page() {
+        let login = r#"<form id="kc-form-login" onsubmit="x" action="https://kc/realms/a3t/login-actions/authenticate?session_code=a&amp;execution=b&amp;tab_id=c" method="post"><span id="input-error">Invalid username or password.</span></form>"#;
+        assert_eq!(form_action(login, "kc-form-login").as_deref(), Some("https://kc/realms/a3t/login-actions/authenticate?session_code=a&execution=b&tab_id=c"));
+        assert_eq!(step_of(login), PasswordStep::Wrong);
+        assert_eq!(step_of(r#"<form id="kc-otp-login-form" action="x"><input name="otp"></form>"#), PasswordStep::CodeNext);
+        assert_eq!(step_of(r#"<form id="kc-totp-settings-form" action="x"></form>"#), PasswordStep::SetUpAuthenticator);
+        assert_eq!(step_of(r#"<form id="kc-passwd-update-form" action="x"></form>"#), PasswordStep::NewPassword);
+        assert_eq!(step_of("<html>We are sorry… Invalid parameter: redirect_uri</html>"), PasswordStep::Unknown);
+        assert_eq!(form_action("<p>no form</p>", "kc-form-login"), None);
+    }
 
     #[test]
     fn config_derives_base_and_realm_from_issuer() {
