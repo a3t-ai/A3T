@@ -21,8 +21,9 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles, type OrgSettings, type OrgGovernance } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles, type OrgSettings, type OrgGovernance } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
+  import { API_BASE } from '$lib/config';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
 
@@ -73,7 +74,7 @@
     healthAll = hl.ok ? hl.data?.broken ?? [] : [];
     const found = (o.ok ? o.data?.orgs ?? [] : []).find((x: OrgInfo) => x.handle === h) ?? null;
     if (!found || !found.can_audit) { err = o.ok ? `No org ${h} whose security you look after.` : (o.error ?? 'Organisations could not be read.'); return; }
-    org = found; fillSso(found);
+    org = found;
     aud = a.ok ? a.data ?? null : null; audErr = a.ok ? '' : (a.error ?? `HTTP ${a.status}`);
     files = f.ok ? f.data ?? null : null; filesErr = f.ok ? '' : (f.error ?? `HTTP ${f.status}`);
     pickFrom(files);
@@ -160,22 +161,6 @@
     await refreshOrg(); void loadProjects(true);
   }
 
-  // ── Sign-in ──
-  let sso = $state({ alias: '', domains: '' });
-  function fillSso(o: OrgInfo) {
-    const s = o.sso;
-    sso = { alias: s?.idp_alias ?? '', domains: (s?.domains ?? []).join(', ') };
-  }
-  async function saveSso() {
-    if (!org) return;
-    const body: OrgSso = { idp_alias: sso.alias.trim(), domains: sso.domains.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean) };
-    busy = 'sso';
-    const r = await orgsApi.setSso(org.handle, body);
-    busy = '';
-    if (!r.ok) { say(r.error ?? 'Single sign-on not saved.'); return; }
-    say(body.idp_alias ? `${org.handle} now signs in through "${body.idp_alias}".` : `Sign-in through the org's own provider is off for ${org.handle}.`, true);
-    await refreshOrg(); if (org) fillSso(org);
-  }
   // ── ID-10: connect the org's own provider; SCIM keeps its people in step ──
   let idp = $state<OrgIdp | null>(null);
   let conn = $state({ issuer: '', client_id: '', client_secret: '', groups_claim: 'groups', domains: '' });
@@ -196,7 +181,7 @@
     busy = '';
     if (!r.ok) { say(r.error ?? 'Not connected.'); return; }
     say(`${org.handle} now signs in through its own provider (${r.data!.issuer}).`, true);
-    await refreshOrg(); if (org) fillSso(org); await loadIdp();
+    await refreshOrg(); await loadIdp();
   }
   async function disconnectIdp() {
     if (!org) return;
@@ -205,7 +190,7 @@
     busy = '';
     if (!r.ok) { say(r.error ?? 'Not disconnected.'); return; }
     say(`Sign-in through ${org.handle}'s own provider is off.`, true);
-    await refreshOrg(); if (org) fillSso(org); await loadIdp();
+    await refreshOrg(); await loadIdp();
   }
   async function makeScimToken() {
     if (!org) return;
@@ -213,7 +198,7 @@
     const r = await orgPolicy.newScimToken(org.handle);
     busy = '';
     if (!r.ok) { say(r.error ?? 'No token made.'); return; }
-    scimToken = { token: r.data!.token, base_url: `${location.origin.replace('dash.', 'console.')}${r.data!.base_url}` };
+    scimToken = { token: r.data!.token, base_url: `${API_BASE.replace(/\/$/, '')}${r.data!.base_url}` };
     await loadIdp();
   }
   async function scimOff() {
@@ -614,30 +599,26 @@
             </ul>
             <p class="dim small">Read only: {org.handle}'s admins change it.</p>
           {/if}
-          {#if infosec && canAdmin}
-            <details class="adv"><summary>Platform only: link a provider already set up in Keycloak</summary>
-              <div class="fields">
-                <label class="fld">Keycloak alias<input class="mono" bind:value={sso.alias} placeholder="e.g. org-acme (empty: off)" /></label>
-                <label class="fld">Email domains<input bind:value={sso.domains} placeholder="acme.com" /></label>
-              </div>
-              <div class="acts"><button class="btn2" onclick={saveSso} disabled={!!busy}>{busy === 'sso' ? 'Saving…' : 'Link'}</button></div>
-            </details>
-          {/if}
         </div>
         {#if canAdmin}
           <div class="card">
-            <div class="card-head"><h3>2 · Provisioning (SCIM)</h3><span>{idp?.scim.on ? `on since ${idp.scim.since?.slice(0, 10) ?? '—'} · ${idp.scim.users} people, ${idp.scim.deactivated} deactivated` : 'off'}</span></div>
-            <p class="dim">Your provider pushes who belongs. Someone deactivated or removed there loses {org.handle} at once: their org membership, their roles on its projects and their sessions — and can't sign in through your provider until they are active again.</p>
-            {#if scimToken}
-              <ul class="olist">
-                <li class="rrow"><span class="lbl">Base URL</span><span class="mono">{scimToken.base_url}</span><span></span></li>
-                <li class="rrow"><span class="lbl">Token</span><span class="mono">{scimToken.token}</span><span class="dim">shown once</span></li>
-              </ul>
-            {/if}
+            <div class="card-head"><h3>2 · Provisioning (SCIM)</h3><span>{idp?.scim.on ? `on since ${idp.scim.since?.slice(0, 10) ?? '—'} · ${idp.scim.users} people, ${idp.scim.deactivated} deactivated` : 'off · optional'}</span></div>
+            <p class="dim">Optional. Your provider tells A3T when someone joins, changes or leaves, instead of A3T learning it only when they sign in. Someone deactivated or removed there loses {org.handle} at once: their org membership, their roles on its projects and their sessions.</p>
+            <h4 class="sub">To set it up</h4>
+            <ol class="steps">
+              <li>{#if idp?.scim.on}Your provider already holds a token (A3T can't show it again; replace it if you need a new one).{:else}Make a token below. It is shown only once, so copy it straight away.{/if}</li>
+              <li>In your provider, open the app you registered for A3T and turn on provisioning (Entra ID: <i>Provisioning › Automatic</i>; Okta: <i>Provisioning › SCIM</i>).</li>
+              <li>Paste the base URL as the tenant or connector URL, and the token as the secret or bearer token. Test the connection there and start provisioning.</li>
+            </ol>
+            <ul class="olist">
+              <li class="rrow"><span class="lbl">Base URL</span><span class="mono">{idp ? `${API_BASE.replace(/\/$/, '')}${idp.scim.base_url}` : '…'}</span><span></span></li>
+              {#if scimToken}<li class="rrow"><span class="lbl">Token</span><span class="mono">{scimToken.token}</span><span class="dim">shown once</span></li>{/if}
+            </ul>
             <div class="acts">
-              <button class="btn2" disabled={!!busy} onclick={makeScimToken}>{busy === 'scim' ? 'Making…' : idp?.scim.on ? 'New token (the old one stops)' : 'Turn on: make a token'}</button>
+              <button class="btn2" disabled={!!busy} onclick={makeScimToken}>{busy === 'scim' ? 'Making…' : idp?.scim.on ? 'Replace token' : 'Make a token'}</button>
               {#if idp?.scim.on}<button class="btn2 quiet" disabled={!!busy} onclick={scimOff}>Turn off</button>{/if}
             </div>
+            {#if idp?.scim.on}<p class="dim small">Replace the token if it was lost or may have leaked. The old one stops working at once, so paste the new one into your provider straight away or provisioning stops.</p>{/if}
           </div>
         {/if}
 
@@ -843,8 +824,7 @@
   .fstate.on { color: var(--ok, #1a7158); }
   .rrow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 110px; gap: 10px; align-items: baseline; }
   .rrow > :last-child { justify-self: end; }
-  .adv { margin-top: 12px; font-size: 12.5px; color: var(--text-3); }
-  .adv summary { cursor: pointer; }
+  .steps { margin: 4px 0 8px; padding-left: 20px; font-size: 12.5px; color: var(--text-2); display: flex; flex-direction: column; gap: 4px; }
   .sub { margin: 6px 0 0; font: 600 12.5px var(--font-sans); color: var(--text-2); }
   .proj { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 13px; }
   .proj .lnk2 { margin-left: auto; }

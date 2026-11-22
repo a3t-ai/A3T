@@ -478,7 +478,6 @@ export const orgsApi = {
   removeMember: (org: string, user_id: string) => projectFlow('flow_a3t_orgs', { action: 'remove_member', org, user_id }),
   setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('flow_a3t_orgs', { action: 'set_runtime', org, runtime }),
   /** Sign-in per org (.ai/A3T_ORG_SSO_SPEC.md); an empty idp_alias turns it off. */
-  setSso: (org: string, sso: OrgSso) => projectFlow('flow_a3t_orgs', { action: 'set_sso', org, ...sso }),
 };
 
 /// Everyone who can be added to an org or project: local users and, in EE, the
