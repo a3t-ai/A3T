@@ -1398,24 +1398,49 @@ fn node_metrics() -> Value {
     })
 }
 
-/// Every FlowR of the cluster, as each last reported itself (`flowr_hosts`,
-/// platform DB): each writes its own row every HEARTBEAT; one silent for three
-/// beats is gone. A single FlowR answers the console, so this is how the console
-/// sees all of them.
+/// Every FlowR of the cluster, as each last reported itself: each reports every
+/// HEARTBEAT; one silent for three beats is gone. A single FlowR answers the
+/// console, so this is how the console sees all of them.
+///
+/// With ADB (the org memory resource resolves) a report is a WORKING record
+/// that expires after three beats, in its own namespace: liveness is not kept.
+/// A row rewritten in a platform table every beat made a table version each
+/// time, which ADB replays whenever the system partition opens (22 Nov 2026:
+/// 112k of the 146k records a prod takeover replayed were heartbeats). Without
+/// ADB (CE, the embedded store) the platform table `flowr_hosts` keeps them.
 const HOSTS_TABLE: &str = "flowr_hosts";
+const HOSTS_NAMESPACE: &str = "_flowr.hosts";
 const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The ADB that holds host reports, if there is one.
+async fn hosts_adb(storage: &dyn StorageBackend) -> Option<crate::handlers::call_adb::AdbEndpoint> {
+    crate::handlers::call_adb::resolve_adb(storage, &crate::agent_space::org_adb("")).await.ok()
+}
 
 pub fn start_host_heartbeat(storage: Arc<dyn StorageBackend>) {
     tokio::spawn(async move {
         let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "flowr".into());
         loop {
-            let db = crate::platform_db::open_platform_db(storage.as_ref(), Some(crate::handlers::call_lancedb::PLATFORM_DB_RESOURCE), crate::handlers::call_lancedb::DEFAULT_PLATFORM_DB_PATH).await;
-            let schema: serde_json::Map<String, Value> = ["host", "at", "metrics"].iter().map(|c| (c.to_string(), json!("string"))).collect();
-            let _ = db.create_table(HOSTS_TABLE, Some(&schema), "create_if_not_exists").await;
-            let row = json!({ "host": host, "at": Utc::now().to_rfc3339(), "metrics": host_metrics().to_string() });
-            let filter = format!("host = {}", crate::handlers::call_lancedb::sql_quote(&host));
-            if let Err(e) = db.delete(HOSTS_TABLE, &filter).await.and(db.insert(HOSTS_TABLE, &[row]).await.map(|_| ())) {
-                tracing::debug!(error = %e, "host heartbeat not written");
+            let at = Utc::now().to_rfc3339();
+            let metrics = host_metrics().to_string();
+            if let Some(ep) = hosts_adb(storage.as_ref()).await {
+                use crate::handlers::agent_memory::aql_str;
+                let aql = format!(
+                    "STORE INTO WORKING (kind = \"host\", host = {}, at = {}, metrics = {}) TTL {}s NAMESPACE {}",
+                    aql_str(&host), aql_str(&at), aql_str(&metrics), HEARTBEAT.as_secs() * 3, aql_str(HOSTS_NAMESPACE),
+                );
+                if let Err(e) = crate::handlers::call_adb::adb_query(&ep, &aql, None).await {
+                    tracing::debug!(error = %e, "host heartbeat not written");
+                }
+            } else {
+                let db = crate::platform_db::open_platform_db(storage.as_ref(), Some(crate::handlers::call_lancedb::PLATFORM_DB_RESOURCE), crate::handlers::call_lancedb::DEFAULT_PLATFORM_DB_PATH).await;
+                let schema: serde_json::Map<String, Value> = ["host", "at", "metrics"].iter().map(|c| (c.to_string(), json!("string"))).collect();
+                let _ = db.create_table(HOSTS_TABLE, Some(&schema), "create_if_not_exists").await;
+                let row = json!({ "host": host, "at": at, "metrics": metrics });
+                let filter = format!("host = {}", crate::handlers::call_lancedb::sql_quote(&host));
+                if let Err(e) = db.delete(HOSTS_TABLE, &filter).await.and(db.insert(HOSTS_TABLE, &[row]).await.map(|_| ())) {
+                    tracing::debug!(error = %e, "host heartbeat not written");
+                }
             }
             tokio::time::sleep(HEARTBEAT).await;
         }
@@ -1424,12 +1449,38 @@ pub fn start_host_heartbeat(storage: Arc<dyn StorageBackend>) {
 
 /// The FlowRs that reported in the last three heartbeats, each with its metrics.
 async fn cluster_hosts(storage: &dyn StorageBackend) -> Vec<Value> {
-    let rows = crate::handlers::call_lancedb::query_platform_table(storage, HOSTS_TABLE, None, 1000).await.unwrap_or_default();
-    let cutoff = Utc::now() - chrono::Duration::from_std(HEARTBEAT * 3).unwrap_or_default();
-    let mut hosts: Vec<Value> = rows
-        .into_iter()
-        .filter(|r| r.get("at").and_then(|v| v.as_str()).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).is_some_and(|t| t.with_timezone(&Utc) >= cutoff))
-        .filter_map(|r| r.get("metrics").and_then(|v| v.as_str()).and_then(|m| serde_json::from_str::<Value>(m).ok())
+    let rows: Vec<Value> = match hosts_adb(storage).await {
+        Some(ep) => {
+            let aql = format!("RECALL FROM WORKING WHERE kind = \"host\" NAMESPACE {} LIMIT 1000", crate::handlers::agent_memory::aql_str(HOSTS_NAMESPACE));
+            match crate::handlers::call_adb::adb_query(&ep, &aql, None).await {
+                Ok(r) => crate::handlers::agent_memory::records(&r).into_iter().filter_map(|r| r.get("data").cloned()).collect(),
+                Err(e) => {
+                    tracing::debug!(error = %e, "host reports not read");
+                    Vec::new()
+                }
+            }
+        }
+        None => crate::handlers::call_lancedb::query_platform_table(storage, HOSTS_TABLE, None, 1000).await.unwrap_or_default(),
+    };
+    latest_hosts(rows, Utc::now() - chrono::Duration::from_std(HEARTBEAT * 3).unwrap_or_default())
+}
+
+/// Each host's newest report since `cutoff`, as its metrics plus `seenAt`.
+fn latest_hosts(rows: Vec<Value>, cutoff: DateTime<Utc>) -> Vec<Value> {
+    let mut newest: HashMap<String, (DateTime<Utc>, Value)> = HashMap::new();
+    for r in rows {
+        let (Some(host), Some(at)) = (
+            r.get("host").and_then(|v| v.as_str()),
+            r.get("at").and_then(|v| v.as_str()).and_then(|t| DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&Utc)),
+        ) else { continue };
+        if at < cutoff || newest.get(host).is_some_and(|(seen, _)| *seen >= at) {
+            continue;
+        }
+        newest.insert(host.to_string(), (at, r));
+    }
+    let mut hosts: Vec<Value> = newest
+        .into_values()
+        .filter_map(|(_, r)| r.get("metrics").and_then(|v| v.as_str()).and_then(|m| serde_json::from_str::<Value>(m).ok())
             .map(|mut m| { m["seenAt"] = r.get("at").cloned().unwrap_or(Value::Null); m }))
         .collect();
     hosts.sort_by(|a, b| a["host"].as_str().cmp(&b["host"].as_str()));
@@ -1590,6 +1641,18 @@ async fn http_paused_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_hosts_keeps_each_hosts_newest_live_report() {
+        let now = Utc::now();
+        let r = |h: &str, secs: i64| json!({ "host": h, "at": (now - chrono::Duration::seconds(secs)).to_rfc3339(), "metrics": json!({ "host": h, "age": secs }).to_string() });
+        let hosts = latest_hosts(vec![r("b", 30), r("a", 10), r("a", 40), r("c", 90)], now - chrono::Duration::seconds(60));
+        assert_eq!(hosts.len(), 2, "c is gone (silent for three beats)");
+        assert_eq!(hosts[0]["host"], "a");
+        assert_eq!(hosts[0]["age"], 10, "a's newest report wins");
+        assert_eq!(hosts[1]["host"], "b");
+        assert!(hosts[1]["seenAt"].is_string());
+    }
 
     #[test]
     fn ids_are_deterministic_and_registry_safe() {

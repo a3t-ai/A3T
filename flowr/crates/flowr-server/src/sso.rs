@@ -240,7 +240,7 @@ fn with_query(uri: &str, k: &str, v: &str) -> String {
     format!("{uri}{}{k}={}", if uri.contains('?') { '&' } else { '?' }, urlenc(v))
 }
 
-fn callback_uri(config: &AuthConfig) -> String {
+pub(crate) fn callback_uri(config: &AuthConfig) -> String {
     format!("{}/auth/sso/callback", config.resource_uri.trim_end_matches('/'))
 }
 

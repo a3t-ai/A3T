@@ -594,6 +594,10 @@ async fn flight_action_raw(ep: &AdbEndpoint, at: Option<usize>, kind: &str, body
 }
 
 fn flight_err(ep: &AdbEndpoint, e: tonic::Status) -> String {
+    let code = e.metadata().get("adb-code").and_then(|v| v.to_str().ok());
+    if code == Some("not_ready") {
+        return not_ready(e.message());
+    }
     match e.code() {
         tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::DeadlineExceeded => {
             format!("ADB request to {} failed: {}", ep.flight, e.message())
@@ -601,6 +605,13 @@ fn flight_err(ep: &AdbEndpoint, e: tonic::Status) -> String {
         // DB-18: a refusal carries its stable code in the `adb-code` metadata.
         _ => with_code(format!("ADB: {}", e.message()), e.metadata().get("adb-code").and_then(|v| v.to_str().ok())),
     }
+}
+
+/// ADB is up but still opening what was asked for (e.g. its system partition
+/// replaying after a takeover): said as that, not in ADB's wording for an engine
+/// set up without storage.
+fn not_ready(adb_says: &str) -> String {
+    with_code(format!("A3T's data store (ADB) is still starting and can't answer yet ({adb_says}). Try again in a few minutes."), Some("not_ready"))
 }
 
 /// `text` with ADB's stable error code (DB-18) as a trailing `[adb:<code>]` tag,
@@ -785,7 +796,11 @@ pub async fn adb_query(ep: &AdbEndpoint, query: &str, variables: Option<&Value>)
     let answer = flight_action(ep, "aql", &body).await?;
     if answer.get("success").and_then(|s| s.as_bool()) != Some(true) {
         let err = answer.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
-        return Err(with_code(format!("ADB: {err}"), answer.get("code").and_then(|c| c.as_str())));
+        let code = answer.get("code").and_then(|c| c.as_str());
+        if code == Some("not_ready") {
+            return Err(not_ready(err));
+        }
+        return Err(with_code(format!("ADB: {err}"), code));
     }
     Ok(answer.get("data").cloned().unwrap_or(Value::Null))
 }
@@ -843,6 +858,10 @@ mod tests {
         assert_eq!(code.as_deref(), Some("branch_exists"));
         assert_eq!(msg, "ADB: namespace \"a\" already has a branch \"x\"");
         assert_eq!(adb_code("ADB: plain").0, None);
+        // A store still opening is said as that, its code kept.
+        let nr = not_ready("the system partition is still opening");
+        assert!(nr.starts_with("A3T's data store (ADB) is still starting"), "{nr}");
+        assert_eq!(adb_code(&nr).0.as_deref(), Some("not_ready"));
         // Nothing odd is ever tagged.
         assert_eq!(with_code("x".into(), Some("Bad Code]")), "x");
     }

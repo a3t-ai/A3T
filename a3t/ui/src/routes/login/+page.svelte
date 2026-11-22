@@ -7,9 +7,13 @@
 
   let email = $state('');
   let password = $state('');
-  /// ID-9: SuperAdmin and SecurityAdmin also give their authenticator code.
+  /// ID-9: an account with an authenticator (SuperAdmin, SecurityAdmin) gives
+  /// its code as a second step, once FlowR has found the password right.
   let otp = $state('');
-  let wantOtp = $state(false);
+  let codeStep = $state(false);
+  let otpInput = $state<HTMLInputElement | null>(null);
+  /// The password was right; the account must set up an authenticator first.
+  let needSetup = $state(false);
   let error = $state('');
   let loading = $state(false);
 
@@ -82,25 +86,41 @@
     return unsub;
   });
 
-  async function handleSubmit(e: Event) {
-    e.preventDefault();
-    error = '';
+  async function handleSubmit(e?: Event) {
+    e?.preventDefault();
+    if (loading) return;
+    error = ''; needSetup = false;
     loading = true;
-    const result = await login(email, password, otp);
+    const result = await login(email, password, codeStep ? otp : undefined);
     loading = false;
     if (result.ok) {
       goto('/');
     } else if (result.code === 'password_change_required') {
       // The password was right but temporary: choose your own before going in.
+      codeStep = false;
       choosing = true; newPassword = ''; confirmPassword = ''; chooseError = '';
-    } else if (result.code === 'mfa_required') {
-      error = result.error || 'This account signs in with its authenticator code.';
+    } else if (result.code === 'otp_required' || result.code === 'otp_invalid') {
+      // The password was right: the code is the next step.
+      if (result.code === 'otp_invalid') error = result.error || "That code didn't work.";
+      codeStep = true; otp = '';
+      setTimeout(() => otpInput?.focus(), 0);
+    } else if (result.code === 'otp_setup_required') {
+      codeStep = false; needSetup = true;
+      error = result.error || 'Set up an authenticator app to finish signing in.';
     } else {
-      error = result.error || 'Login failed';
-      // A wrong password and a missing code look the same: offer the code field.
-      if (!wantOtp) wantOtp = true;
+      error = result.error || 'Sign-in failed.';
+      // Back on the password step (e.g. the password changed meanwhile).
+      if (codeStep) { codeStep = false; otp = ''; password = ''; }
     }
   }
+
+  /// Six digits typed or pasted: sign in without waiting for the button.
+  function onCode() {
+    otp = otp.replace(/\D/g, '').slice(0, 6);
+    if (otp.length === 6) handleSubmit();
+  }
+
+  function otherAccount() { codeStep = false; otp = ''; password = ''; error = ''; }
 
   // ── First sign-in: an admin gave a temporary password; choose your own. ──
   let choosing = $state(false);
@@ -252,11 +272,37 @@
         <button type="button" class="link-btn back" onclick={() => (forgotOpen = false)}>← Back to sign in</button>
       {/if}
     {:else}
+      {#if codeStep}
+        <h1>Authenticator code</h1>
+        <p class="auth-sub">Enter the 6-digit code from your authenticator app for <b>{email}</b>.</p>
+
+        {#if error}
+          <div class="auth-error">{error}</div>
+        {/if}
+
+        <form onsubmit={handleSubmit}>
+          <div class="field">
+            <label for="otp">Code</label>
+            <input id="otp" class="otp-input" bind:this={otpInput} type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" bind:value={otp} oninput={onCode} placeholder="000000" autocomplete="one-time-code" required />
+          </div>
+          <button type="submit" class="auth-submit" disabled={loading || otp.length !== 6}>
+            {#if loading}
+              <span class="spinner"></span> Checking...
+            {:else}
+              Verify and sign in
+            {/if}
+          </button>
+        </form>
+        <div class="code-links">
+          <button type="button" class="link-btn small" onclick={otherAccount}>← Use a different account</button>
+          <a class="link-btn small" href={`${API_BASE}/auth/account`} target="_blank" rel="noopener">Lost your authenticator?</a>
+        </div>
+      {:else}
       <h1>Sign in</h1>
       <p class="auth-sub">Enter your credentials to access the platform.</p>
 
       {#if error}
-        <div class="auth-error">{error}</div>
+        <div class="auth-error">{error}{#if needSetup} <a class="link-btn small" href={`${API_BASE}/auth/account`} target="_blank" rel="noopener">Set up an authenticator</a>{/if}</div>
       {/if}
 
       <form onsubmit={handleSubmit}>
@@ -271,17 +317,6 @@
           </div>
           <input id="password" type="password" bind:value={password} placeholder="Password" required autocomplete="current-password" />
         </div>
-        {#if wantOtp}
-          <div class="field">
-            <div class="label-row">
-              <label for="otp">Authenticator code</label>
-              <a class="link-btn small" href={`${API_BASE}/auth/account`} target="_blank" rel="noopener">Set up an authenticator</a>
-            </div>
-            <input id="otp" inputmode="numeric" pattern="[0-9]*" maxlength="8" bind:value={otp} placeholder="SuperAdmin and SecurityAdmin: the 6-digit code" autocomplete="one-time-code" />
-          </div>
-        {:else}
-          <button type="button" class="link-btn small" onclick={() => (wantOtp = true)}>I use an authenticator code</button>
-        {/if}
         <button type="submit" class="auth-submit" disabled={loading}>
           {#if loading}
             <span class="spinner"></span> Signing in...
@@ -312,6 +347,7 @@
             <button type="button" class="link-btn" onclick={() => { ssoOpen = false; ssoError = ''; }}>Cancel</button>
           </div>
         </form>
+      {/if}
       {/if}
     {/if}
 
@@ -734,6 +770,8 @@
   .auth-ok { margin-bottom: 16px; padding: 10px 12px; border-radius: 8px; background: #ecf6f0; border: 1px solid #b9dcc6; color: #1f5b3a; font-size: 13px; line-height: 1.5; }
   .auth-hint { margin: 14px 0 0; font-size: 12px; color: var(--text-4, #8a8578); line-height: 1.5; }
   .field-hint { margin-top: 4px; font-size: 12px; color: var(--text-4, #8a8578); }
+  .otp-input { font-family: var(--font-mono, ui-monospace, monospace); font-size: 22px; letter-spacing: 0.35em; text-align: center; }
+  .code-links { display: flex; justify-content: space-between; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
   .field-error { margin-top: 6px; font-size: 12.5px; color: #b42318; line-height: 1.45; }
   .field input.bad { border-color: #e3a29a; }
   .sso-submit { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
