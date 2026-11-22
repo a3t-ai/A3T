@@ -340,6 +340,8 @@ pub struct Query {
     pub agent: Option<String>,
     pub agent_owner: Option<String>,
     pub principal: Option<String>,
+    /// The person an agent acted for.
+    pub on_behalf_of: Option<String>,
     pub action: Option<String>,
     pub decision: Option<String>,
     pub since_ms: Option<u64>,
@@ -361,6 +363,7 @@ pub fn recall_statement(q: &Query) -> (String, Option<Value>) {
     eq("agent", &q.agent);
     eq("agent_owner", &q.agent_owner);
     eq("principal_id", &q.principal);
+    eq("on_behalf_of", &q.on_behalf_of);
     eq("action", &q.action);
     eq("decision", &q.decision);
     if let Some(t) = q.since_ms {
@@ -385,7 +388,7 @@ pub fn matches(q: &Query, v: &Value) -> bool {
     let is = |k: &str, want: &Option<String>| want.as_deref().filter(|w| !w.is_empty()).is_none_or(|w| v.get(k).and_then(|x| x.as_str()) == Some(w));
     let ts = v.get("ts_ms").and_then(|t| t.as_u64()).unwrap_or(0);
     is("project", &q.project) && is("agent", &q.agent) && is("agent_owner", &q.agent_owner)
-        && is("principal_id", &q.principal) && is("action", &q.action) && is("decision", &q.decision)
+        && is("principal_id", &q.principal) && is("on_behalf_of", &q.on_behalf_of) && is("action", &q.action) && is("decision", &q.decision)
         && q.since_ms.is_none_or(|t| ts >= t) && q.before_ms.is_none_or(|t| ts < t)
 }
 

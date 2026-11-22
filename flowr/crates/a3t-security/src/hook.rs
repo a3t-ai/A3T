@@ -708,6 +708,14 @@ fn as_approver_attributes(
     out
 }
 
+/// A what-if check (`attributes._probe: true`, e.g. an agent's effective
+/// access in Security): decided as usual, but nothing is logged or counted.
+pub const PROBE: &str = "_probe";
+
+fn is_probe(req: &ExecutionRequest) -> bool {
+    req.attributes.get(PROBE).and_then(|v| v.as_bool()) == Some(true)
+}
+
 /// The call's number arguments, as the Tool's tags (`getTag`, whole numbers).
 /// MCP calls carry them under `arguments`. A fraction rounds up, so "over 1000"
 /// reads 1000.50 as over and 999.50 as not.
@@ -748,6 +756,7 @@ async fn facts(req: &ExecutionRequest, scoped: &Principal, attributes: &serde_js
     let mut attrs = attributes.clone();
     // Facts a choke point supplies for this call (e.g. `untrusted_seen` from an
     // agent turn) arrive under `context`; they are context, not principal data.
+    attrs.remove(PROBE);
     let supplied = match attrs.remove("context") {
         Some(Value::Object(m)) => m,
         _ => Default::default(),
@@ -810,6 +819,7 @@ impl CedarHook {
         if self.quiet {
             return None;
         }
+        let probe = is_probe(req);
         let matches = match pack.counted_matches(ctx, action, resource) {
             Ok(m) if m.is_empty() => return None,
             Ok(m) => m,
@@ -843,7 +853,7 @@ impl CedarHook {
         }
         // This call goes on (or waits) under the rules whose count was not met:
         // it counts towards them.
-        if met.iter().all(|(_, _, m)| m.approval.is_some()) {
+        if !probe && met.iter().all(|(_, _, m)| m.approval.is_some()) {
             for (id, meta) in &not_met {
                 let k = key(&rule_of(id));
                 for spec in &meta.count {
@@ -859,7 +869,7 @@ impl CedarHook {
         if met.iter().all(|(_, _, m)| m.approval.is_some()) {
             let metas: Vec<&Meta> = met.iter().map(|(_, _, m)| m).collect();
             // A first use that waits is counted: the next one doesn't ask again.
-            for (id, _, meta) in &met {
+            for (id, _, meta) in met.iter().filter(|_| !probe) {
                 for spec in meta.count.iter().filter(|s| s.get("kind").and_then(|k| k.as_str()) == Some("first_use")) {
                     src.record(spec, &key(&rule_of(id))).await;
                 }
@@ -932,7 +942,7 @@ impl PolicyHook for CedarHook {
         };
         match pack.engine.enforce(&ctx, &action, &resource) {
             Ok(_allowed) => {
-                if let Some((ids, why)) = pack.shadow_refusal(&ctx, &action, &resource).filter(|_| !self.quiet) {
+                if let Some((ids, why)) = pack.shadow_refusal(&ctx, &action, &resource).filter(|_| !self.quiet && !is_probe(req)) {
                     log_shadow(req, &ids, &why);
                 }
                 // Counted rules (rate, lockout, first use, tokens): those this

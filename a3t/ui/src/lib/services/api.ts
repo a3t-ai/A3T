@@ -103,6 +103,8 @@ async function send<T = any>(
   requireAuth = true,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = {
+    // Which A3T client is calling (the `via` rule condition).
+    'X-A3T-Client': 'console',
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
   };
@@ -400,6 +402,9 @@ export type OrgRole = 'member' | 'admin' | 'securityadmin';
 export type OrgInfo = {
   id: string; handle: string; display_name: string; created_at?: string;
   my_role: OrgRole | null; can_admin: boolean;
+  /// May change its members and sign-in (flow_a3t_orgs 1.4.2): SuperAdmin,
+  /// SecurityAdmin, its security admins, and its admins unless identity is locked.
+  can_identity?: boolean;
   /// Sees its members and sign-in without changing them: SuperAdmin,
   /// SecurityAdmin, the org's admins and security admins.
   can_audit?: boolean;
@@ -541,6 +546,19 @@ export type InventoryRow = {
   id: string; name: string; project: string; org: string; owner: string; status: string; template: string;
   model: any; mcp_servers: string[]; tools: any; keys_live: number; keys_total: number; own_policy: boolean; rules: number;
   role_ceiling: string[] | null; egress: string[] | null; last_activity: string | null; created_at: string; risk: 'high' | 'medium' | 'low'; why: string;
+};
+/// One agent as Security sees it: keys, effective access (decided by policy, as
+/// the agent acting for its owner), and what changed.
+export type AgentAccess = { kind: string; what: string; decision: { state: 'allowed' | 'blocked' | 'needs approval' | 'reached'; by?: string[]; why?: string; approver?: string | null } };
+export type AgentSecurityView = {
+  agent: InventoryRow; keys: AgentKey[]; access: AgentAccess[];
+  changes: { at: string; what: string; by?: any; approved_by?: any; changed?: string[] | null; version?: string; key?: string }[];
+  acts_as: { own_key: string; ceiling: string[] | null; outside: string };
+  policy: { set: boolean; rules: string[] };
+};
+export const agentSecurity = {
+  get: (id: string) => request<AgentSecurityView>(`/security/agents/${encodeURIComponent(id)}`, { method: 'GET' }),
+  revokeKeys: (id: string) => request<{ agent_id: string; revoked: number }>(`/security/agents/${encodeURIComponent(id)}/keys/revoke`, { method: 'POST' }),
 };
 export const agentInventory = (org?: string) =>
   request<{ count: number; high: number; medium: number; low: number; agents: InventoryRow[] }>(`/security/agents${org ? `?org=${encodeURIComponent(org)}` : ''}`, { method: 'GET' });
@@ -755,6 +773,13 @@ export const people = {
 /// A3T's database: every save is a version; each file is switched on or off.
 export interface OrgPolicyFile { path: string; kind: string; content: string; version: string; updated_at: string; enforced: boolean }
 export interface OrgPolicyFiles { org: string; projects: string[]; files: OrgPolicyFile[] }
+/// Who may change an org's policies and identity, who approves, its time zone.
+export interface OrgGovernance { policy_lock: 'both' | 'security'; identity_lock: 'both' | 'security'; approver: 'securityadmin' | 'admin'; timezone: string | null }
+export interface OrgSettings {
+  org: string; four_eyes: boolean; pending: number; governance: OrgGovernance;
+  /// The caller: platform | securityadmin | admin | member | ''.
+  my_role: string; can_govern: boolean; can_approve: boolean;
+}
 export interface OrgPolicyFileDetail {
   org: string; path: string;
   file: { kind: string; content: string; version: string; updated_at: string; enforced: boolean } | null;
@@ -773,8 +798,9 @@ export const orgPolicy = {
   files: (org: string) => request<OrgPolicyFiles>(`${orgBase(org)}/files`, { method: 'GET' }),
   file: (org: string, path: string) => request<OrgPolicyFileDetail>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'GET' }),
   /// Saved only if the org's enforced files still work with it (422 + `errors` otherwise).
-  save: (org: string, path: string, content: string) =>
-    request<{ path: string; version: string; changed: boolean; enforced: boolean }>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  /// `shadow`: a new (or switched-off) rule file goes straight into shadow mode, never enforced.
+  save: (org: string, path: string, content: string, opts: { shadow?: boolean } = {}) =>
+    request<{ path: string; version: string; changed: boolean; enforced: boolean; shadow?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'PUT', body: JSON.stringify({ content, ...(opts.shadow ? { shadow: true } : {}) }) }),
   remove: (org: string, path: string) => request(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
   validate: (org: string, files: { path: string; content: string }[] = [], removed: string[] = []) =>
     request<OrgPolicyCheck>(`${orgBase(org)}/validate`, { method: 'POST', body: JSON.stringify({ files, removed }) }),
@@ -800,7 +826,10 @@ export const orgPolicy = {
   setRetention: (org: string, body: { retention_days?: number; legal_hold?: boolean }) =>
     request<{ retention_days?: number; legal_hold?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/retention`, { method: 'PUT', body: JSON.stringify(body) }),
   /// GOV-3: the org's second approver for policy changes.
-  settings: (org: string) => request<{ org: string; four_eyes: boolean; pending: number }>(`${orgBase(org)}/settings`, { method: 'GET' }),
+  settings: (org: string) => request<OrgSettings>(`${orgBase(org)}/settings`, { method: 'GET' }),
+  /// Who governs the org (its security admins and the platform's change it).
+  setGovernance: (org: string, g: Partial<OrgGovernance>) =>
+    request<{ org: string; governance: OrgGovernance }>(`${orgBase(org)}/settings`, { method: 'PUT', body: JSON.stringify(g) }),
   setFourEyes: (org: string, four_eyes: boolean) =>
     request<{ four_eyes?: boolean; changed?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/settings`, { method: 'PUT', body: JSON.stringify({ four_eyes }) }),
   changes: (org: string) => request<{ org: string; four_eyes: boolean; changes: PolicyChange[] }>(`${orgBase(org)}/changes`, { method: 'GET' }),

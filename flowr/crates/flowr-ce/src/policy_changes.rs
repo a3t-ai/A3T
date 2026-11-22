@@ -34,6 +34,11 @@ use crate::platform_db::{open_platform_db, PlatformDb};
 
 pub const SETTINGS: &str = "org_policy_settings";
 const SETTINGS_COLUMNS: [&str; 4] = ["org", "four_eyes", "updated_by", "updated_at"];
+/// Who governs an org (governance round 2): who may change its policies and its
+/// identity (org admins and security admins, or security admins only — then
+/// admins propose), who approves a held change, and the org's time zone.
+pub const GOVERNANCE: &str = "org_governance";
+const GOVERNANCE_COLUMNS: [&str; 7] = ["org", "policy_lock", "identity_lock", "approver", "timezone", "updated_by", "updated_at"];
 pub const CHANGES: &str = "policy_changes";
 const CHANGE_COLUMNS: [&str; 13] = [
     "id", "org", "target", "op", "subject", "payload", "summary", "by", "at", "status", "decided_by", "decided_at", "note",
@@ -66,7 +71,7 @@ pub fn routes() -> Router<Arc<dyn StorageBackend>> {
 
 async fn db(s: &dyn StorageBackend) -> Result<Arc<dyn PlatformDb>, String> {
     let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
-    for (t, cols) in [(SETTINGS, &SETTINGS_COLUMNS[..]), (CHANGES, &CHANGE_COLUMNS[..])] {
+    for (t, cols) in [(SETTINGS, &SETTINGS_COLUMNS[..]), (CHANGES, &CHANGE_COLUMNS[..]), (GOVERNANCE, &GOVERNANCE_COLUMNS[..])] {
         let schema: Map<String, Value> = cols.iter().map(|c| (c.to_string(), json!("string"))).collect();
         db.create_table(t, Some(&schema), "create_if_not_exists").await?;
     }
@@ -77,6 +82,75 @@ async fn db(s: &dyn StorageBackend) -> Result<Arc<dyn PlatformDb>, String> {
 pub async fn four_eyes(s: &dyn StorageBackend, org: &str) -> bool {
     query_platform_table(s, SETTINGS, Some(format!("org = {}", sql_quote(org))), 1).await
         .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "four_eyes") == "true").unwrap_or(false)
+}
+
+/// Make the settings tables at start: the org flow reads `org_governance`.
+pub async fn ensure(s: &dyn StorageBackend) {
+    if let Err(e) = db(s).await {
+        tracing::warn!(error = %e, "org settings tables not made; retried on first use");
+    }
+}
+
+/// An org's governance settings (defaults: both may change, a security admin approves, UTC).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Governance {
+    /// `both` (org admins and security admins) or `security` (security admins only).
+    pub policy_lock: String,
+    pub identity_lock: String,
+    /// Who approves a held change: `securityadmin`, or `admin` (an admin or a security admin).
+    pub approver: String,
+    /// IANA time zone for rule conditions (hours, dates); `None`: UTC.
+    pub timezone: Option<String>,
+}
+
+impl Default for Governance {
+    fn default() -> Self {
+        Governance { policy_lock: "both".into(), identity_lock: "both".into(), approver: "securityadmin".into(), timezone: None }
+    }
+}
+
+pub async fn governance(s: &dyn StorageBackend, org: &str) -> Governance {
+    let Some(r) = query_platform_table(s, GOVERNANCE, Some(format!("org = {}", sql_quote(org))), 1).await.ok().and_then(|r| r.into_iter().next()) else {
+        return Governance::default();
+    };
+    let or = |k: &str, d: &str| Some(col(&r, k)).filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_string());
+    Governance {
+        policy_lock: or("policy_lock", "both"),
+        identity_lock: or("identity_lock", "both"),
+        approver: or("approver", "securityadmin"),
+        timezone: Some(col(&r, "timezone")).filter(|v| !v.is_empty()),
+    }
+}
+
+/// The role `principal` holds for `org` (slug): `platform` (SuperAdmin or
+/// SecurityAdmin), `securityadmin`, `admin`, `member`, or empty.
+pub async fn org_role(s: &dyn StorageBackend, principal: &Principal, org: &str) -> String {
+    if principal.roles().iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN) {
+        return "platform".into();
+    }
+    let Some(user) = flowr_policy::namespace::acting_user(principal) else { return String::new() };
+    let Some(org_id) = crate::org_policy::org_id(s, org).await else { return String::new() };
+    query_platform_table(s, "org_members", Some(format!("org_id = {} AND user_id = {}", sql_quote(&org_id), sql_quote(user))), 1).await
+        .ok().and_then(|r| r.into_iter().next()).map(|r| col(&r, "role")).unwrap_or_default()
+}
+
+/// Is a change by `principal` held for approval because the org lets only its
+/// security admins change its policies (or, `identity`, its identity)?
+pub async fn held_by_lock(s: &dyn StorageBackend, principal: &Principal, org: &str, identity: bool) -> bool {
+    let g = governance(s, org).await;
+    let lock = if identity { &g.identity_lock } else { &g.policy_lock };
+    lock == "security" && org_role(s, principal, org).await == "admin"
+}
+
+/// May `principal` approve `org`'s held changes (as the org says)?
+pub async fn may_approve(s: &dyn StorageBackend, principal: &Principal, org: &str) -> Result<(), Response> {
+    let role = org_role(s, principal, org).await;
+    let g = governance(s, org).await;
+    match role.as_str() {
+        "platform" | "securityadmin" => Ok(()),
+        "admin" if g.approver == "admin" => Ok(()),
+        _ => Err(err(StatusCode::FORBIDDEN, format!("{org}'s changes are approved by {}", if g.approver == "admin" { "an org admin or security admin" } else { "an org security admin" }))),
+    }
 }
 
 /// GOV-9: an update to an agent's record, held for a second approver when its
@@ -150,17 +224,71 @@ async fn get_settings(State(s): St, p: P, Path(org): Path<String>) -> Response {
     }
     let pending = query_platform_table(s, CHANGES, Some(format!("org = {} AND status = 'pending'", sql_quote(&org))), 1000).await
         .map(|r| r.len()).unwrap_or(0);
-    Json(json!({ "org": org, "four_eyes": four_eyes(s, &org).await, "pending": pending })).into_response()
+    let role = org_role(s, &principal, &org).await;
+    Json(json!({ "org": org, "four_eyes": four_eyes(s, &org).await, "pending": pending,
+        "governance": governance(s, &org).await,
+        // What the caller may do here: change this page, and approve.
+        "my_role": role, "can_govern": role == "platform" || role == "securityadmin",
+        "can_approve": may_approve(s, &principal, &org).await.is_ok() })).into_response()
 }
 
 async fn put_settings(State(s): St, p: P, Path(org): Path<String>, Json(b): Json<Value>) -> Response {
     let principal = who(p);
-    let Some(on) = b.get("four_eyes").and_then(|v| v.as_bool()) else {
-        return err(StatusCode::BAD_REQUEST, "four_eyes: true or false");
-    };
-    match set_four_eyes(s.as_ref(), &principal, &org, on, None).await {
-        Ok(r) | Err(r) => r,
+    let s = s.as_ref();
+    if let Err(r) = crate::org_policy::allowed(s, &principal, &org).await {
+        return r;
     }
+    // Who governs the org is decided by its security admins (and the platform's).
+    let role = org_role(s, &principal, &org).await;
+    if role != "platform" && role != "securityadmin" {
+        return err(StatusCode::FORBIDDEN, format!("{org}'s security admins change these settings; you can read them"));
+    }
+    let gov_keys = ["policy_lock", "identity_lock", "approver", "timezone"];
+    if gov_keys.iter().any(|k| b.get(*k).is_some()) {
+        if let Err(r) = set_governance(s, &principal, &org, &b).await {
+            return r;
+        }
+    }
+    match b.get("four_eyes").and_then(|v| v.as_bool()) {
+        Some(on) => match set_four_eyes(s, &principal, &org, on, None).await { Ok(r) | Err(r) => r },
+        None if gov_keys.iter().any(|k| b.get(*k).is_some()) => Json(json!({ "org": org, "governance": governance(s, &org).await })).into_response(),
+        None => err(StatusCode::BAD_REQUEST, "give four_eyes, policy_lock, identity_lock, approver or timezone"),
+    }
+}
+
+async fn set_governance(s: &dyn StorageBackend, principal: &Principal, org: &str, b: &Value) -> Result<(), Response> {
+    let mut g = governance(s, org).await;
+    let pick = |k: &str, allowed: &[&str], cur: &mut String| -> Result<(), Response> {
+        if let Some(v) = b.get(k) {
+            let v = v.as_str().unwrap_or_default();
+            if !allowed.contains(&v) {
+                return Err(err(StatusCode::BAD_REQUEST, format!("{k}: one of {}", allowed.join(", "))));
+            }
+            *cur = v.to_string();
+        }
+        Ok(())
+    };
+    pick("policy_lock", &["both", "security"], &mut g.policy_lock)?;
+    pick("identity_lock", &["both", "security"], &mut g.identity_lock)?;
+    pick("approver", &["securityadmin", "admin"], &mut g.approver)?;
+    if let Some(v) = b.get("timezone") {
+        let tz = v.as_str().unwrap_or_default().trim();
+        if tz.is_empty() || tz == "UTC" {
+            g.timezone = None;
+        } else if tz.parse::<chrono_tz::Tz>().is_ok() {
+            g.timezone = Some(tz.to_string());
+        } else {
+            return Err(err(StatusCode::BAD_REQUEST, format!("timezone {tz:?}: an IANA name such as Europe/Berlin")));
+        }
+    }
+    let db = db(s).await.map_err(internal)?;
+    db.upsert(GOVERNANCE, &["org"], &[json!({
+        "org": org, "policy_lock": g.policy_lock, "identity_lock": g.identity_lock, "approver": g.approver,
+        "timezone": g.timezone.clone().unwrap_or_default(), "updated_by": principal.id(), "updated_at": chrono::Utc::now().to_rfc3339(),
+    })]).await.map_err(internal)?;
+    flowr_policy::audit::event(principal, "policy:settings", "Org", org, None, Some(org), None,
+        Some(&format!("policies: {} · identity: {} · approver: {} · time zone: {}", g.policy_lock, g.identity_lock, g.approver, g.timezone.as_deref().unwrap_or("UTC"))));
+    Ok(())
 }
 
 /// Switch the second approver. Turning it off, while it is on, is a change a
@@ -203,9 +331,10 @@ async fn list_changes(State(s): St, p: P, Path(org): Path<String>) -> Response {
     rows.sort_by(|a, b| (col(b, "status") == "pending").cmp(&(col(a, "status") == "pending")).then(col(b, "at").cmp(&col(a, "at"))));
     rows.truncate(200);
     let me = principal.id().to_string();
+    let can_approve = may_approve(s, &principal, &org).await.is_ok();
     let list: Vec<Value> = rows.iter().map(|r| {
         let mut c = change_json(r);
-        c["can_decide"] = json!(col(r, "status") == "pending" && col(r, "by") != me);
+        c["can_decide"] = json!(can_approve && col(r, "status") == "pending" && col(r, "by") != me);
         c
     }).collect();
     Json(json!({ "org": org, "four_eyes": four_eyes(s, &org).await, "changes": list })).into_response()
@@ -222,6 +351,7 @@ async fn pending(s: &dyn StorageBackend, principal: &Principal, org: &str, id: &
     if col(&row, "by") == principal.id() {
         return Err(err(StatusCode::FORBIDDEN, "a change is approved by someone other than its author"));
     }
+    may_approve(s, principal, org).await?;
     Ok(row)
 }
 
@@ -248,7 +378,7 @@ async fn approve(State(s): St, p: P, Path((org, id)): Path<(String, String)>, bo
     let subject = col(&row, "subject");
     // Applied as it would have been, checked against the files as they are now.
     let applied = match (col(&row, "target").as_str(), col(&row, "op").as_str()) {
-        ("file", "save") => crate::org_policy::save_file(s, &principal, &org, &subject, payload["content"].as_str().unwrap_or_default(), Some(&author)).await,
+        ("file", "save") => crate::org_policy::save_file(s, &principal, &org, &subject, payload["content"].as_str().unwrap_or_default(), payload["shadow"].as_bool().unwrap_or(false), Some(&author)).await,
         ("file", "delete") => crate::org_policy::remove_file(s, &principal, &org, &subject, Some(&author)).await,
         ("file", "enforce") => crate::org_policy::enforce(s, &principal, &org, &payload, Some(&author)).await,
         ("agent", "save") => crate::agent_space::security::save_policy(s, &principal, &subject, payload["policy"].as_str().unwrap_or_default(), Some(&author)).await,

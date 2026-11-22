@@ -245,6 +245,8 @@ pub struct UserIdentity {
     pub email: Option<String>,
     pub name: Option<String>,
     pub roles: Vec<String>,
+    /// The realm says (`amr`) a second factor was used.
+    pub second_factor: bool,
 }
 
 /// Authenticate an END USER by username/password against Keycloak (direct grant,
@@ -309,7 +311,22 @@ pub async fn password_login(
         email: claims.get("email").and_then(|v| v.as_str()).map(String::from),
         name: claims.get("name").and_then(|v| v.as_str()).map(String::from),
         roles,
+        second_factor: claims.get("amr").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|m| matches!(m.as_str(), Some("otp" | "mfa" | "totp" | "hwk" | "swk")))),
     })
+}
+
+/// Whether a user has an authenticator (one-time code) set up. A password
+/// grant that carried a code proves a second factor only for such a user: the
+/// realm ignores a code from anyone without one.
+pub async fn has_otp(client: &reqwest::Client, cfg: &IdpAdminConfig, token: &str, user_id: &str) -> Result<bool, IdpAdminError> {
+    let url = format!("{}/admin/realms/{}/users/{}/credentials", cfg.base_url, cfg.realm, user_id);
+    let resp = client.get(&url).bearer_auth(token).send().await.map_err(|e| IdpAdminError::Http(e.to_string()))?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        return Err(IdpAdminError::Api { status, body: resp.text().await.unwrap_or_default() });
+    }
+    let v: Value = resp.json().await.map_err(|e| IdpAdminError::Http(e.to_string()))?;
+    Ok(v.as_array().is_some_and(|a| a.iter().any(|c| c.get("type").and_then(|t| t.as_str()) == Some("otp"))))
 }
 
 /// Fetch a single user's representation.

@@ -31,7 +31,7 @@ async fn may_change_policy(s: &dyn StorageBackend, principal: &Principal, row: &
     }
 }
 
-async fn history_of(s: &dyn StorageBackend, id: &str) -> Vec<Value> {
+pub(crate) async fn history_of(s: &dyn StorageBackend, id: &str) -> Vec<Value> {
     let mut h = query_platform_table(s, HISTORY, Some(format!("agent_id = {}", sql_quote(id))), 10_000).await.unwrap_or_default();
     h.sort_by_key(|r| std::cmp::Reverse(col(r, "version").trim_start_matches('v').parse::<u64>().unwrap_or(0)));
     h
@@ -95,7 +95,7 @@ pub async fn all_policies(s: &dyn StorageBackend) -> Vec<(String, String, String
     out
 }
 
-async fn policy_of(s: &dyn StorageBackend, id: &str) -> Option<Value> {
+pub(crate) async fn policy_of(s: &dyn StorageBackend, id: &str) -> Option<Value> {
     query_platform_table(s, TABLE, Some(format!("agent_id = {}", sql_quote(id))), 1).await.ok()?.into_iter().next()
 }
 

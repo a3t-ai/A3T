@@ -179,6 +179,15 @@ pub async fn load(storage: &dyn StorageBackend) {
     l.runtimes = runtimes;
 }
 
+/// When the last deploy into project `ns` happened (rule conditions: "soon
+/// after a deploy").
+pub fn last_deploy_in(ns: &str) -> Option<DateTime<Utc>> {
+    let prefix = format!("{ns}/");
+    ledger().read().unwrap().deployments.values()
+        .filter(|d| d.namespace == ns || d.flow_ref.starts_with(&prefix))
+        .map(|d| d.updated_at).max()
+}
+
 /// The deployment of an agent, if it is deployed.
 pub fn deployment_of_agent(agent_id: &str) -> Option<Deployment> {
     ledger().read().unwrap().deployments.values().find(|d| d.kind == "agent" && d.target == agent_id).cloned()

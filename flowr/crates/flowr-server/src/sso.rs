@@ -162,6 +162,9 @@ struct Handoff {
     role: String,
     email: String,
     name: String,
+    /// How they signed in.
+    #[serde(default)]
+    si: crate::auth::SignIn,
 }
 
 #[derive(Deserialize)]
@@ -383,12 +386,21 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
     }
 
     let role = crate::auth_routes::pick_role(&realm_roles);
+    // How they signed in: through the org's own provider (if it is one), with
+    // a second factor when the token's `amr` says so, and their groups.
+    let amr = strings(claims.get("amr"));
+    let si = crate::auth::SignIn {
+        mfa: amr.iter().any(|m| matches!(m.as_str(), "otp" | "mfa" | "hwk" | "swk" | "totp" | "webauthn")),
+        org_idp: home.is_some(),
+        at: chrono::Utc::now().timestamp(),
+        groups: groups.clone(),
+    };
     // An editor: hand it a code for its verifier; the session opens when it trades it.
     if let (Some(to), Some(cc)) = (&state.client_redirect, &state.client_challenge) {
         let h = Handoff {
             aud: HANDOFF_AUD.into(),
             exp: chrono::Utc::now().timestamp() as usize + HANDOFF_TTL_SECS,
-            cc: cc.clone(), sub, org: org_id, role, email, name,
+            cc: cc.clone(), sub, org: org_id, role, email, name, si,
         };
         return match encode(&Header::default(), &h, &EncodingKey::from_secret(config.jwt_secret.as_bytes())) {
             Ok(code) => redirect(&with_query(to, "code", &code)),
@@ -402,11 +414,11 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
             return back("Sign-in could not be completed. Try again.");
         }
     };
-    let access = match create_token(&config, &sid, &sub, &org_id, &role, &email, &name) {
+    let access = match create_token(&config, &sid, &sub, &org_id, &role, &email, &name, Some(&si)) {
         Ok(t) => t,
         Err(e) => return back(&e),
     };
-    let refresh = match create_refresh_token(&config, &sub, &sid, &jti, ends) {
+    let refresh = match create_refresh_token(&config, &sub, &sid, &jti, ends, Some(&si)) {
         Ok(t) => t,
         Err(e) => return back(&e),
     };
@@ -426,7 +438,7 @@ pub async fn token_handler(Extension(config): Extension<Arc<AuthConfig>>, Json(b
         return error(StatusCode::BAD_REQUEST, "This sign-in code was not issued to this editor.");
     }
     info!(user = %h.sub, email = %h.email, "sso: editor signed in");
-    crate::auth_routes::issue_session(&config, (h.sub, h.org, h.role, h.email, h.name)).await
+    crate::auth_routes::issue_session(&config, (h.sub, h.org, h.role, h.email, h.name), h.si).await
 }
 
 /// Rewrite the membership made at sign-in; an invite (any row not made by

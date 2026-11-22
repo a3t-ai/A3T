@@ -81,6 +81,50 @@ pub struct Ask {
     pub timeout_secs: Option<u64>,
     /// The project the agent works in, for the inbox and the decision log.
     pub project: Option<String>,
+    /// Who answers, as the rule names them (`Admin`, `securityadmin`,
+    /// `group:finance`); `None`: the person the agent acts for, else its owner.
+    pub approver: Option<String>,
+}
+
+/// May `p` answer this question (`context.approver`)? Its named person; or,
+/// when a rule named a role or group (`rule:<who>`), anyone who holds it where
+/// the agent works — never the person the agent acts for (no one approves
+/// their own agent's call).
+pub async fn may_answer(storage: &dyn flowr_storage::StorageBackend, p: &Principal, req: &Value) -> bool {
+    let Some(approver) = req.pointer("/context/approver").and_then(|v| v.as_str()) else { return false };
+    if approver == p.id() {
+        return true;
+    }
+    let Some(spec) = approver.strip_prefix("rule:") else { return false };
+    let me = flowr_policy::namespace::acting_user(p);
+    let asker = req.pointer("/context/on_behalf_of").and_then(|v| v.as_str());
+    if me.is_none() || me == asker {
+        return false;
+    }
+    let ns = req.pointer("/context/namespace").and_then(|v| v.as_str());
+    let has = |r: &str| p.roles().iter().any(|x| x == r);
+    match spec {
+        s if s.starts_with("group:") => p.session().is_some_and(|f| f.groups.iter().any(|g| g == &s[6..] || g.trim_start_matches('/') == &s[6..])),
+        "SuperAdmin" | "SecurityAdmin" => has(spec),
+        "Admin" | "Operator" | "Viewer" => match ns {
+            Some(ns) => {
+                let access = flowr_policy::namespace::namespace_guard().access(p, ns).await;
+                flowr_policy::namespace::tier_roles(access).contains(&spec)
+            }
+            None => has(spec),
+        },
+        "admin" | "securityadmin" => {
+            let Some(ns) = ns else { return false };
+            let org = crate::handlers::call_lancedb::query_platform_table(storage, "projects",
+                Some(format!("namespace = {} AND owner_kind = 'org'", crate::handlers::call_lancedb::sql_quote(ns))), 1).await.ok()
+                .and_then(|r| r.into_iter().next()).and_then(|r| r.get("owner").and_then(|v| v.as_str()).map(str::to_string));
+            let Some(org) = org else { return false };
+            let role = crate::policy_changes::org_role(storage, p, &org).await;
+            matches!(role.as_str(), "platform" | "securityadmin") || (spec == "admin" && role == "admin")
+        }
+        // An org's own role (`<org>/<role>`).
+        other => has(other),
+    }
 }
 
 /// Who answers a question raised by `principal`: the person the agent acts
@@ -106,7 +150,9 @@ pub async fn request_approval_with(
 
     // The approver is the human the agent acts for, else its owner; with
     // nobody at all there is no one to ask, so it is a denial, not a hang.
-    let Some(approver) = approver_for(principal) else {
+    // A rule that names its approver (a role or a group) asks them instead.
+    let named = ask.approver.as_ref().map(|a| format!("rule:{a}"));
+    let Some(approver) = named.or_else(|| approver_for(principal)) else {
         warn!(tool, "approval requested for a principal with no human behind it");
         return PolicyDecision::Deny {
             reason: "approval required, but this run has no interactive approver".into(),

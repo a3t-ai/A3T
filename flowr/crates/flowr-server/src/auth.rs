@@ -48,6 +48,32 @@ pub struct Claims {
     /// who really holds the token. Such a token is short-lived and has no refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub act: Option<Actor>,
+    /// How the person signed in (rule conditions read it); kept across refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub si: Option<SignIn>,
+}
+
+/// How a person signed in: with a second factor, through their org's own
+/// provider, when, and the groups the provider gave. Set at sign-in only (never
+/// from a request), carried in the access and refresh tokens.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignIn {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mfa: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub org_idp: bool,
+    /// Unix seconds.
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+}
+
+impl SignIn {
+    /// Signed in now, with nothing more known.
+    pub fn now() -> Self {
+        SignIn { at: chrono::Utc::now().timestamp(), ..Default::default() }
+    }
 }
 
 /// The real caller behind an impersonation token.
@@ -61,7 +87,16 @@ pub struct Actor {
 /// The policy principal for a validated console token: the user (or role) the
 /// token is for, and — when a SuperAdmin is acting as them — who that is.
 pub fn principal_for(claims: &Claims) -> flowr_policy::Principal {
-    flowr_policy::Principal::Human { session: None,
+    let si = claims.si.clone().unwrap_or_default();
+    let session = flowr_policy::SessionFacts {
+        second_factor: si.mfa,
+        org_idp: si.org_idp,
+        auth_time: Some(if si.at > 0 { si.at } else { claims.iat as i64 }),
+        groups: si.groups,
+        email: Some(claims.email.clone()).filter(|e| !e.is_empty()),
+        ..Default::default()
+    };
+    flowr_policy::Principal::Human { session: Some(Box::new(session)),
         user_id: claims.sub.clone(),
         roles: flowr_policy::roles::canonicalize(&claims.role),
         memory_branch: None,
@@ -306,7 +341,7 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Create an access token for a user in session `sid`.
-pub fn create_token(config: &AuthConfig, sid: &str, user_id: &str, org_id: &str, role: &str, email: &str, name: &str) -> Result<String, String> {
+pub fn create_token(config: &AuthConfig, sid: &str, user_id: &str, org_id: &str, role: &str, email: &str, name: &str, si: Option<&SignIn>) -> Result<String, String> {
     let now = chrono::Utc::now().timestamp() as usize;
     let claims = Claims {
         sub: user_id.to_string(),
@@ -320,6 +355,7 @@ pub fn create_token(config: &AuthConfig, sid: &str, user_id: &str, org_id: &str,
         exp: now + config.token_expiry_secs as usize,
         iat: now,
         act: None,
+        si: si.cloned(),
     };
     sign(config, &claims)
 }
@@ -340,9 +376,12 @@ pub struct RefreshClaims {
     pub exp: usize,
     pub iat: usize,
     pub refresh: bool,
+    /// The sign-in the session began with, for the access tokens it renews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub si: Option<SignIn>,
 }
 
-pub fn create_refresh_token(config: &AuthConfig, user_id: &str, sid: &str, jti: &str, ends: i64) -> Result<String, String> {
+pub fn create_refresh_token(config: &AuthConfig, user_id: &str, sid: &str, jti: &str, ends: i64, si: Option<&SignIn>) -> Result<String, String> {
     sign(config, &RefreshClaims {
         sub: user_id.to_string(),
         sid: sid.to_string(),
@@ -352,6 +391,7 @@ pub fn create_refresh_token(config: &AuthConfig, user_id: &str, sid: &str, jti: 
         exp: ends.max(0) as usize,
         iat: chrono::Utc::now().timestamp() as usize,
         refresh: true,
+        si: si.cloned(),
     })
 }
 
@@ -636,4 +676,58 @@ fn principal_from_oidc_claims(claims: &serde_json::Value) -> flowr_policy::Princ
         }
     }
     flowr_policy::Principal::human(id, roles)
+}
+
+
+/// How many proxies in front of FlowR append to X-Forwarded-For
+/// (`FLOWR_TRUSTED_PROXY_HOPS`, default 1: the ingress). The client's address
+/// is the entry they added — never one the client wrote itself.
+fn trusted_hops() -> usize {
+    std::env::var("FLOWR_TRUSTED_PROXY_HOPS").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
+/// The caller's address: the X-Forwarded-For entry the trusted proxies added,
+/// else the TCP peer.
+pub fn client_ip(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> Option<String> {
+    let hops = trusted_hops();
+    if hops > 0 {
+        let all: Vec<&str> = headers.get_all("x-forwarded-for").iter()
+            .filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).map(str::trim).filter(|s| !s.is_empty()).collect();
+        if all.len() >= hops {
+            let ip = all[all.len() - hops];
+            if ip.parse::<std::net::IpAddr>().is_ok() {
+                return Some(ip.to_string());
+            }
+        }
+    }
+    peer.map(|p| p.ip().to_string())
+}
+
+/// Through what a request came: an agent key, MCP, VS Code or the console
+/// (`X-A3T-Client`, sent by A3T's own clients). Unknown: none.
+pub fn channel_of(headers: &HeaderMap, path: &str, by_key: bool) -> Option<String> {
+    if by_key {
+        return Some("api-key".into());
+    }
+    if path == "/sse" || path.starts_with("/sse/") || path == "/message" || path.starts_with("/mcp") {
+        return Some("mcp".into());
+    }
+    match headers.get("x-a3t-client").and_then(|v| v.to_str().ok()).map(|v| v.trim().to_ascii_lowercase()) {
+        Some(c) if c == "vscode" || c == "console" => Some(c),
+        _ => None,
+    }
+}
+
+/// After AuthN: add where the request came from and through what to the
+/// principal's session facts (the sign-in part came from the token).
+pub async fn session_facts_middleware(mut request: Request, next: Next) -> Response {
+    if let Some(p) = request.extensions().get::<flowr_policy::Principal>().cloned() {
+        let peer = request.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0);
+        let by_key = request.extensions().get::<flowr_ce::agent_keys::KeyScope>().is_some();
+        let mut facts = p.session().cloned().unwrap_or_default();
+        facts.ip = client_ip(request.headers(), peer);
+        facts.channel = channel_of(request.headers(), request.uri().path(), by_key);
+        request.extensions_mut().insert(p.with_session(facts));
+    }
+    next.run(request).await
 }

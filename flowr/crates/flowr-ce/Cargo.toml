@@ -88,6 +88,8 @@ tracing-subscriber.workspace = true
 # Utilities
 uuid.workspace = true
 chrono.workspace = true
+# Rule conditions: an org's time zone (conditions.rs).
+chrono-tz = "0.10"
 
 # HTTP client
 reqwest = { workspace = true, features = ["stream"] }

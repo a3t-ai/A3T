@@ -3,23 +3,27 @@
   /// each part of the sentence is a choice; the rule is read back, checked
   /// against the org's other files, replayed against the last 7 days, and saved
   /// into a policy file (shown, so it's clear where it lives). YAML and Cedar
-  /// are one click away for experts. Parts A3T can't check yet are marked
-  /// "not yet": the rule can be tried here, but not saved.
+  /// are one click away for experts (the Cedar as the server compiled it).
   import * as YAML from 'yaml';
   import { untrack } from 'svelte';
   import { orgPolicy, type OrgPolicyFiles, type ReplayResult } from '$lib/services/api';
   import { draftPolicy } from '../policyAgent';
   import {
-    type Rule, type Cond, type Effect, blankRule, CONDS, GROUPS, condDef, newCond, condSay, sentence, notCovered, notYet,
-    fileYaml, toYamlRule, rulesOf, cedarPreview, PATTERNS, fromPattern, slug,
+    type Rule, type Cond, type Effect, blankRule, CONDS, GROUPS, condDef, newCond, condSay, sentence, notCovered, problems,
+    fileYaml, toYamlRule, rulesOf, PATTERNS, fromPattern, slug,
   } from './model';
 
-  let { org, files, projects, roles, perms, canEdit, target, onclose, onsaved }: {
+  let { org, files, projects, roles, perms, canEdit, target, onclose, onsaved, timezone = null, seed = null, closeLabel = '← All rules' }: {
     org: string; files: OrgPolicyFiles | null; projects: string[]; roles: string[];
     perms: { id: string; label: string }[]; canEdit: boolean;
     /// An existing rule (its file and index) or null for a new one.
     target: { path: string; index: number } | null;
     onclose: () => void; onsaved: (msg: string) => void;
+    /// The org's time zone (hours and dates are in it).
+    timezone?: string | null;
+    /// A new rule's starting parts (e.g. the agent it is for).
+    seed?: Partial<Rule> | null;
+    closeLabel?: string;
   } = $props();
 
   const parse = (t: string): any => { try { return YAML.parse(t) ?? {}; } catch { return {}; } };
@@ -29,7 +33,7 @@
   // Read once: the editor is re-made for each rule (keyed by its file and index).
   const existing = untrack(() => (target ? files?.files.find((f) => f.path === target.path) ?? null : null));
   const existingY = existing ? parse(existing.content) : null;
-  const start = untrack(() => (existingY ? rulesOf(existingY)[target!.index] ?? blankRule() : blankRule()));
+  const start = untrack(() => (existingY ? rulesOf(existingY)[target!.index] ?? blankRule() : { ...blankRule(), ...(seed ?? {}) } as Rule));
   let r = $state<Rule>(start);
   let path = $state(existing?.path ?? '');
   let fileName = $state(existingY?.name ?? '');
@@ -42,7 +46,9 @@
   // ── Words ──
   const say = $derived(sentence(r, label));
   const notCov = $derived(notCovered(r, roles));
-  const later = $derived(notYet(r));
+  const later = $derived(problems(r));
+  const networks = $derived((files?.files ?? []).filter((f) => f.path.startsWith('networks/')).map((f) => parse(f.content)?.name).filter(Boolean) as string[]);
+  const tzWord = $derived(timezone || 'UTC');
 
   // ── Describe it (the policy agent) ──
   let desc = $state('');
@@ -88,6 +94,7 @@
   let errors = $state<string[] | null>(null);
   let replay = $state<ReplayResult | null>(null);
   let checking = $state(false);
+  let compiledCedar = $state('');
   function content(): string {
     if (existingY && path === existing?.path) {
       const others = (existingY.rules ?? []).map((x: any, i: number) => (i === target!.index ? toYamlRule(r) : x));
@@ -109,6 +116,7 @@
     const [v, p] = await Promise.all([orgPolicy.validate(org, files_), orgPolicy.replay(org, { files: files_, days: 7 })]);
     checking = false;
     errors = v.ok ? (v.data?.ok ? [] : v.data?.errors ?? ['it does not check']) : [v.error ?? `HTTP ${v.status}`];
+    compiledCedar = (v.data?.compiled?.files ?? []).find((f: any) => f.path === savePath)?.cedar ?? '';
     replay = p.ok ? p.data ?? null : null;
   }
   // Check as the rule changes (debounced), when it can be checked.
@@ -126,33 +134,21 @@
   async function save(mode: 'shadow' | 'enforce') {
     busy = mode; saveErr = '';
     const p = savePath; const body = content();
-    const s = await orgPolicy.save(org, p, body);
-    if (!s.ok) { busy = ''; saveErr = ((s as any).detail?.errors ?? [s.error ?? `HTTP ${s.status}`]).join('; '); return; }
-    if ((s.data as any)?.pending) { busy = ''; onsaved((s.data as any).message ?? 'Held for a second approver (Changes).'); return; }
-    const wantShadow = mode === 'shadow' || r.effect === 'log';
-    if (wantShadow) {
-      const all = await orgPolicy.files(org);
-      const on = (all.data?.files ?? []).filter((f) => f.enforced && f.path !== p).map((f) => f.path);
-      const e = await orgPolicy.setEnforced(org, on);
-      if (!e.ok) { busy = ''; saveErr = `Saved, but still enforced: ${((e as any).detail?.errors ?? [e.error]).join('; ')}`; return; }
-      if ((e.data as any)?.pending) { busy = ''; onsaved(`Saved; switching it to shadow waits for a second approver.`); return; }
-      const sh = await orgPolicy.setShadow(org, p, true);
-      busy = '';
-      if (!sh.ok) { saveErr = `Saved and switched off, but not in shadow: ${((sh as any).detail?.errors ?? [sh.error]).join('; ')}`; return; }
-      onsaved(`Saved in ${p}, running in shadow: what it would refuse goes to the decision log.`);
-    } else {
-      busy = '';
-      onsaved(`Saved in ${p} and enforced.`);
-    }
+    // A rule that only logs, or a save in shadow, never enforces on the way.
+    const shadow = mode === 'shadow' || r.effect === 'log';
+    const s = await orgPolicy.save(org, p, body, { shadow });
+    busy = '';
+    if (!s.ok) { saveErr = ((s as any).detail?.errors ?? [s.error ?? `HTTP ${s.status}`]).join('; '); return; }
+    if (s.data?.pending) { onsaved(s.data.message ?? 'Held for approval (Changes).'); return; }
+    onsaved(shadow ? `Saved in ${p}, running in shadow: what it would refuse goes to the decision log.` : `Saved in ${p} and enforced.`);
   }
 
   let showCode = $state(false);
-  const cedar = $derived(cedarPreview(`${org}/${slug(fileName || 'new-rule')}/r${(target?.index ?? 0) + 1}`, r));
 </script>
 
 <div class="re">
   <div class="row between">
-    <button class="link" onclick={onclose}>← All rules</button>
+    <button class="link" onclick={onclose}>{closeLabel}</button>
     <span class="dim small">{target ? `Rule ${target.index + 1} of ${existing?.path}` : 'New rule'}</span>
   </div>
 
@@ -207,7 +203,7 @@
       <span class="pl">{r.effect === 'only' ? 'Only when' : 'When'}</span>
       <div class="chips rel">
         {#each r.conds as c, i (i)}
-          <span class="pick cond" class:later={!condDef(c.kind)?.today} class:sel={editing?.list === 'conds' && editing.i === i}>
+          <span class="pick cond" class:later={false} class:sel={editing?.list === 'conds' && editing.i === i}>
             <button class="ct" onclick={() => (editing = editing?.list === 'conds' && editing.i === i ? null : { list: 'conds', i })}>{condSay(c)}</button>
             <button aria-label="Remove" onclick={() => remove('conds', i)}>×</button></span>
         {/each}
@@ -224,7 +220,13 @@
       {#if r.effect === 'ask' || (r.effect === 'only' && r.otherwise === 'ask')}
         <span class="pl">Approver</span>
         <div class="chips">
-          <select class="tin sm" bind:value={r.askFrom} aria-label="Who approves"><option value="">the person the agent acts for</option>{#each roles as x (x)}<option value={x}>an {x}</option>{/each}</select>
+          <select class="tin sm" value={r.askFrom.startsWith('group:') ? 'group:' : r.askFrom} onchange={(e) => (r.askFrom = e.currentTarget.value === 'group:' ? 'group:' : e.currentTarget.value)} aria-label="Who approves">
+            <option value="">the person the agent acts for</option>
+            {#each roles.filter((x) => !x.includes('/')) as x (x)}<option value={x}>an {x} of the project</option>{/each}
+            <option value="securityadmin">an org security admin</option><option value="admin">an org admin</option>
+            <option value="group:">someone in a group…</option>
+          </select>
+          {#if r.askFrom.startsWith('group:')}<input class="tin sm mono" value={r.askFrom.slice(6)} oninput={(e) => (r.askFrom = `group:${e.currentTarget.value.trim()}`)} placeholder="finance" aria-label="Group" />{/if}
           <span class="dim small">within</span><select class="tin sm" bind:value={r.timeout} aria-label="Timeout">{#each ['30m', '1h', '4h', '1d', '2d'] as t (t)}<option>{t}</option>{/each}</select>
         </div>
       {/if}
@@ -232,7 +234,7 @@
       <span class="pl">Except</span>
       <div class="chips rel">
         {#each r.unless as c, i (i)}
-          <span class="pick cond exc" class:later={!condDef(c.kind)?.today} class:sel={editing?.list === 'unless' && editing.i === i}>
+          <span class="pick cond exc" class:later={false} class:sel={editing?.list === 'unless' && editing.i === i}>
             <button class="ct" onclick={() => (editing = editing?.list === 'unless' && editing.i === i ? null : { list: 'unless', i })}>{condSay(c)}</button>
             <button aria-label="Remove" onclick={() => remove('unless', i)}>×</button></span>
         {/each}
@@ -255,12 +257,12 @@
   </div>
 
   {#if later.length}
-    <div class="note warn"><b>Preview only.</b> A3T can't check these yet, so this rule can be tried here but not saved: {later.join('; ')}.</div>
+    <div class="note warn"><b>Not yet saveable:</b> {later.join('; ')}.</div>
   {/if}
 
   <div class="card">
     <div class="card-head"><h3>Check</h3><span class="grow"></span><button class="link" onclick={() => (showCode = !showCode)}>{showCode ? 'Hide' : 'Show'} YAML and Cedar</button></div>
-    {#if later.length}<p class="dim">Checked once A3T can check every part.</p>
+    {#if later.length}<p class="dim">Checked once the rule can be saved.</p>
     {:else if !r.doing.length || !r.reason.trim()}<p class="dim">Pick what it is about and say why; it is checked as you go.</p>
     {:else if checking}<p class="dim">Checking with {org}'s other files and replaying the last 7 days…</p>
     {:else if errors?.length}<div class="note bad">{#each errors as e (e)}<div class="mono">{e}</div>{/each}</div>
@@ -272,7 +274,7 @@
     {#if showCode}
       <div class="code2">
         <div><div class="dim small">YAML, saved in <span class="mono">{savePath}</span></div><pre class="code">{yamlText}</pre></div>
-        <div><div class="dim small">Cedar (preview; A3T compiles it at save)</div><pre class="code">{cedar}</pre></div>
+        <div><div class="dim small">Cedar, as A3T compiles it{compiledCedar ? '' : ' (shown once the check passes)'}</div><pre class="code">{compiledCedar || '…'}</pre></div>
       </div>
     {/if}
   </div>
@@ -305,10 +307,10 @@
 {#snippet condMenu(list: 'conds' | 'unless')}
   <div class="menu" role="menu">
     {#each GROUPS as g (g)}
-      {@const items = CONDS.filter((c) => c.group === g && (list === 'conds' || ['Who exactly', 'From where', 'When'].includes(g)))}
+      {@const items = CONDS.filter((c) => c.group === g && !(c.counted && (list === 'unless' || r.effect === 'only' || r.effect === 'log')) && (list === 'conds' || ['Who exactly', 'From where', 'When', 'On what'].includes(g)))}
       {#if items.length}
         <div class="mg"><div class="mh">{g}</div>
-          {#each items as c (c.kind)}<button role="menuitem" onclick={() => add(list, c.kind)}>{c.label}{#if !c.today}<span class="tag sample">not yet</span>{/if}</button>{/each}
+          {#each items as c (c.kind)}<button role="menuitem" onclick={() => add(list, c.kind)}>{c.label}{#if c.counted}<span class="tag">counted</span>{/if}</button>{/each}
         </div>
       {/if}
     {/each}
@@ -325,7 +327,9 @@
         {:else}<input class="tin sm" class:mono={prm.mono} bind:value={c.p[prm.k]} />{/if}
       </label>
     {:else}<span class="dim small">Nothing to set.</span>{/each}
-    {#if d && !d.today}<span class="dim small">A3T needs to pass {d.needs} for this.</span>{/if}
+    {#if c.kind === 'hours' || c.kind === 'dates'}<span class="dim small">in {org}'s time zone: {tzWord} (Settings)</span>{/if}
+    {#if c.kind === 'network'}<span class="dim small">{networks.length ? `${org}'s networks: ${networks.join(', ')}` : `${org} has no networks/ files yet: add one under Files`}</span>{/if}
+    {#if d?.counted}<span class="dim small">A3T counts this across every FlowR.</span>{/if}
   </div>
 {/snippet}
 

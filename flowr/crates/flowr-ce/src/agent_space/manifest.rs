@@ -108,7 +108,7 @@ pub fn diff(old: &Value, new: &Value) -> Value {
 }
 
 /// A stored version's manifest: its flows' reach plus its layers.
-pub(super) async fn of_version(s: &dyn StorageBackend, version: &Value) -> Value {
+pub(crate) async fn of_version(s: &dyn StorageBackend, version: &Value) -> Value {
     let flows = version.get("flows").and_then(|f| f.as_array()).cloned().unwrap_or_default();
     let mut m = of_flows(s, &flows).await;
     m["layers"] = version.get("layers").cloned().unwrap_or(json!([]));

@@ -223,6 +223,14 @@ async fn main() -> anyhow::Result<()> {
         flowr_ce::access::install(storage.clone());
         info!("namespace guard installed (projects enforced)");
     }
+    // Rule conditions: the org's time zone, deploys, personal data, and the
+    // counts counted rules read (rate, lockout, first use, tokens).
+    flowr_ce::conditions::install(storage.clone());
+    flowr_ce::conditions::spawn_sweep(storage.clone());
+    {
+        let s = storage.clone();
+        tokio::spawn(async move { flowr_ce::policy_changes::ensure(s.as_ref()).await });
+    }
 
     info!("FlowR initialized successfully");
 
@@ -274,6 +282,13 @@ async fn main() -> anyhow::Result<()> {
                     "JWT auth enabled (authorization via the AESOP policy hook)"
                 );
 
+                // EE IdP-admin surface: connect to Keycloak + create/list users.
+                let idp_admin = IdpAdminState {
+                    issuer: oidc_issuer.clone(),
+                    admin_user: oidc_admin_user.clone(),
+                    admin_password: oidc_admin_password.clone(),
+                    client: reqwest::Client::new(),
+                };
                 // Auth + OAuth discovery routes (public). Merged after the auth
                 // middleware layer below, so they bypass it.
                 let auth_routes = Router::new()
@@ -295,6 +310,8 @@ async fn main() -> anyhow::Result<()> {
                         "/.well-known/oauth-authorization-server",
                         get(oauth_authorization_server),
                     )
+                    // Login checks an account's authenticator (a code proves a second factor).
+                    .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
 
                 // E2 #4: choose the AuthN layer by `security.authn`. "oidc" (EE)
@@ -315,13 +332,6 @@ async fn main() -> anyhow::Result<()> {
                 if policy_admin.hook_setting == "cedar" && policy_admin.policies_dir.is_empty() {
                     flowr_ce::policy_gate::install(Arc::new(ServerPolicyGate(policy_admin.clone())));
                 }
-                // EE IdP-admin surface: connect to Keycloak + create/list users.
-                let idp_admin = IdpAdminState {
-                    issuer: oidc_issuer.clone(),
-                    admin_user: oidc_admin_user.clone(),
-                    admin_password: oidc_admin_password.clone(),
-                    client: reqwest::Client::new(),
-                };
                 // "Forgot password" (forgot.rs): public, like /auth/login.
                 let forgot_routes = Router::new()
                     .route("/auth/forgot", post(forgot::forgot_handler))
@@ -390,6 +400,9 @@ async fn main() -> anyhow::Result<()> {
                             .layer(Extension(storage.clone()))
                             .layer(Extension(idp_admin.clone())),
                     );
+                // Inside AuthN: where each request came from and through what,
+                // for rule conditions (auth.rs session_facts_middleware).
+                let base = base.layer(middleware::from_fn(auth::session_facts_middleware));
 
                 let secured;
                 #[cfg(feature = "ee")]
@@ -455,6 +468,8 @@ async fn main() -> anyhow::Result<()> {
                 .allow_headers([
                     axum::http::header::CONTENT_TYPE,
                     axum::http::header::AUTHORIZATION,
+                    // Which A3T client calls (the `via` rule condition).
+                    axum::http::HeaderName::from_static("x-a3t-client"),
                 ])
                 .allow_credentials(true);
 
@@ -737,7 +752,7 @@ async fn audit_handler(
     }
 
     let mut q = flowr_ce::decision_log::Query {
-        project: param("project"), agent: param("agent"), principal: param("principal"),
+        project: param("project"), agent: param("agent"), principal: param("principal"), on_behalf_of: param("on_behalf_of"),
         action: param("action"), decision: param("decision"),
         since_ms: num("since_ms"), before_ms: num("before_ms"), like: param("q"), limit,
         ..Default::default()

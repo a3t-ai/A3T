@@ -21,7 +21,7 @@
   import WizardHead from '$lib/components/shared/WizardHead.svelte';
   import { POLICY_STARTERS, type PolicyDir } from '$lib/studio-ui';
   import { openInStudio } from '$lib/stores/panels.svelte.ts';
-  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles } from '$lib/services/api';
+  import { orgsApi, orgPolicy, securityPolicies, securityCatalogue, type PolicyBroken, type PolicyChange, type ReplayResult, type AuditVerify, audit as auditApi, loadDirectory, people as peopleApi, type OrgInfo, type OrgRole, type OrgSso, type OrgIdp, type DirectoryUser, type AuditPeople, type OrgPolicyFiles, type OrgSettings, type OrgGovernance } from '$lib/services/api';
   import { isInfosec } from '$lib/stores/auth';
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
@@ -52,7 +52,9 @@
   let directory = $state<DirectoryUser[]>([]);
 
   const infosec = isInfosec();
-  const canAdmin = $derived(!!org?.can_admin);
+  // Members and sign-in: the org's admins and security admins, and InfoSec —
+  // admins not when the org lets only its security admins change identity.
+  const canAdmin = $derived(!!(org?.can_identity ?? org?.can_admin));
   // Policy files are the org's security: its admins and security admins, and InfoSec.
   const managesFiles = $derived(infosec || org?.my_role === 'admin' || org?.my_role === 'securityadmin');
   const say = (t: string, ok = false) => { msg = t; msgOk = ok; };
@@ -370,9 +372,11 @@
   let changes = $state<PolicyChange[]>([]);
   let changeNote = $state<Record<string, string>>({});
   let changeErr = $state<Record<string, string[]>>({});
+  let settings = $state<OrgSettings | null>(null);
   async function loadChanges() {
-    const [r, k] = await Promise.all([orgPolicy.changes(handle), orgPolicy.retention(handle)]);
+    const [r, k, st] = await Promise.all([orgPolicy.changes(handle), orgPolicy.retention(handle), orgPolicy.settings(handle)]);
     if (r.ok) { fourEyes = !!r.data?.four_eyes; changes = r.data?.changes ?? []; }
+    if (st.ok) settings = st.data ?? null;
     if (k.ok) { keepDays = k.data?.retention_days ?? 0; hold = !!k.data?.legal_hold; keepPick = keepDays; }
   }
   // ── AUD-6: how long its decisions are kept, and a legal hold ──
@@ -397,7 +401,13 @@
     say(r.data?.pending ? (r.data.message ?? 'Held for a second approver.') : 'Saved.', true);
     await loadChanges();
   }
-  $effect(() => { if ((tab === 'changes' || tab === 'settings') && org) untrack(() => void loadChanges()); });
+  $effect(() => { if ((tab === 'changes' || tab === 'settings' || tab === 'rules') && org) untrack(() => void loadChanges()); });
+  async function saveGovernance(g: Partial<OrgGovernance>) {
+    busy = 'gov'; const r = await orgPolicy.setGovernance(handle, g); busy = '';
+    if (!r.ok) { say(`Not changed: ${r.error ?? `HTTP ${r.status}`}.`); return; }
+    say('Saved: it applies at once.', true);
+    await loadChanges();
+  }
 
   // ── Rules (one row per rule) and the rule editor ──
   let ruleTarget = $state<{ path: string; index: number } | null | undefined>(undefined);
@@ -454,11 +464,11 @@
           <RulesList org={handle} {files} projects={files?.projects ?? []} {perms} canEdit={managesFiles} onopen={(t) => (ruleTarget = t)} />
         {:else}
           {#key ruleTarget ? `${ruleTarget.path}#${ruleTarget.index}` : 'new'}
-            <RuleEditor org={handle} {files} projects={files?.projects ?? []} roles={ruleRoles} {perms} canEdit={managesFiles} target={ruleTarget} onclose={() => (ruleTarget = undefined)} onsaved={ruleSaved} />
+            <RuleEditor org={handle} {files} projects={files?.projects ?? []} roles={ruleRoles} {perms} canEdit={managesFiles} target={ruleTarget} timezone={settings?.governance.timezone ?? null} onclose={() => (ruleTarget = undefined)} onsaved={ruleSaved} />
           {/key}
         {/if}
       {:else if tab === 'settings'}
-        <GovernSettings org={handle} myRole={org.my_role ?? ''} {infosec} {fourEyes} busy={busy === 'four'} onFourEyes={toggleFourEyes} />
+        <GovernSettings org={handle} {settings} busy={busy === 'four' || busy === 'gov' ? busy : ''} onFourEyes={toggleFourEyes} onSave={saveGovernance} />
       {:else if tab === 'overview'}
         <div class="card">
           <div class="card-head"><h3>1 · {org.display_name}</h3><span>you are {org.my_role ? ROLE_LABEL[org.my_role].toLowerCase() : infosec ? 'platform InfoSec' : '—'} here</span></div>

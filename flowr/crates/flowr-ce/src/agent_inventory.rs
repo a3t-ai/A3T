@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
+    extract::Path,
     extract::{Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -28,7 +29,144 @@ use flowr_storage::StorageBackend;
 use crate::handlers::call_lancedb::query_platform_table;
 
 pub fn routes(storage: Arc<dyn StorageBackend>) -> Router {
-    Router::new().route("/security/agents", get(inventory)).with_state(storage)
+    Router::new()
+        .route("/security/agents", get(inventory))
+        // One agent as security sees it: identity, keys, effective access, changes.
+        .route("/security/agents/:id", get(one_agent))
+        .route("/security/agents/:id/keys/revoke", axum::routing::post(revoke_keys))
+        .with_state(storage)
+}
+
+fn refuse(code: StatusCode, msg: impl Into<String>) -> Response {
+    (code, Json(json!({ "error": msg.into() }))).into_response()
+}
+
+/// The agent's row, if `p` manages the security of its org (or is platform InfoSec).
+async fn security_view(s: &dyn StorageBackend, p: &Principal, id: &str) -> Result<Value, Response> {
+    let row = query_platform_table(s, "agent_configs", Some(format!("id = {}", crate::handlers::call_lancedb::sql_quote(id))), 1).await
+        .ok().and_then(|r| r.into_iter().next())
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, format!("no agent {id:?}")))?;
+    let infosec = p.roles().iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN);
+    if !infosec && !crate::org_policy::manages_org_security(s, p, &col(&row, "org_id")).await {
+        // Same answer as a missing agent: ids can't be probed.
+        return Err(refuse(StatusCode::NOT_FOUND, format!("no agent {id:?}")));
+    }
+    Ok(row)
+}
+
+/// What a decision says, for a row of the access table.
+fn verdict(d: &flowr_policy::PolicyDecision) -> Value {
+    match d {
+        flowr_policy::PolicyDecision::Allow => json!({ "state": "allowed" }),
+        flowr_policy::PolicyDecision::Deny { reason, policy_ids } => json!({ "state": "blocked", "by": policy_ids, "why": reason }),
+        flowr_policy::PolicyDecision::Ask { reason, policy_ids, required, .. } => json!({
+            "state": "needs approval", "by": policy_ids, "why": reason,
+            "approver": required.as_ref().and_then(|r| r.approver.clone()) }),
+    }
+}
+
+/// `GET /security/agents/{id}`: the inventory row, its keys (never the
+/// secret), who it acts for is in the decision log; its effective access —
+/// each server, tool, model, host and memory it is bound to or reaches,
+/// decided by the policy hook as the agent acting for its owner (a what-if:
+/// nothing logged or counted); and what changed (its record and its policy).
+async fn one_agent(State(s): State<Arc<dyn StorageBackend>>, p: Option<Extension<Principal>>, Path(id): Path<String>) -> Response {
+    let Some(Extension(p)) = p else { return refuse(StatusCode::UNAUTHORIZED, "Sign in first.") };
+    let s = s.as_ref();
+    let row = match security_view(s, &p, &id).await { Ok(r) => r, Err(r) => return r };
+    let keys = crate::agent_keys::list(s, &id).await.unwrap_or_default();
+    let policy_row = crate::agent_space::security::policy_of(s, &id).await;
+    let policy = policy_row.as_ref().map(|r| col(r, "policy"));
+    let events = query_platform_table(s, "agent_events", Some(format!("agent_config_id = {}", crate::handlers::call_lancedb::sql_quote(&id))), 1000).await.unwrap_or_default();
+    let last = events.iter().map(|e| col(e, "created_at")).max();
+    let agent = row_of(&row, &keys.iter().map(|k| json!({ "revoked_at": k["revoked_at"], "expires_at": k["expires_at"] })).collect::<Vec<_>>(), policy.as_deref(), last.as_deref());
+    let project = col(&row, "namespace");
+    let owner = col(&row, "created_by");
+
+    // Effective access: as the agent, acting for its owner, in its project.
+    let own = policy.as_deref().and_then(|y| flowr_policy::policy_file::PolicyFile::parse(y).ok());
+    let ceiling = own.as_ref().and_then(|f| f.role_ceiling.clone());
+    let human = Principal::human(owner.clone(), vec![flowr_policy::roles::ADMIN.into(), flowr_policy::roles::OPERATOR.into(), flowr_policy::roles::VIEWER.into()]);
+    let as_agent = Principal::agent_for(flowr_policy::AgentId(id.clone()), &human, None, Some(owner.clone()), ceiling.as_deref());
+    let hook = flowr_policy::policy_hook();
+    let probe = |action: flowr_policy::Action, resource: flowr_policy::Resource| {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("_probe".into(), json!(true));
+        flowr_policy::ExecutionRequest { principal: as_agent.clone(), action, resource, context: Default::default(), attributes,
+            params: json!({ "namespace": project }) }
+    };
+    let mut access = Vec::new();
+    for srv in strings(&agent["mcp_servers"]) {
+        let d = hook.check(&probe(flowr_policy::actions::mcp_call(), flowr_policy::Resource::tool(format!("{srv}/*")).with_attr("server", srv.clone()))).await;
+        access.push(json!({ "kind": "MCP server", "what": srv, "decision": verdict(&d) }));
+    }
+    for t in strings(&agent["tools"]) {
+        let d = hook.check(&probe(flowr_policy::actions::mcp_call(), flowr_policy::Resource::tool(t.clone()))).await;
+        access.push(json!({ "kind": "Tool", "what": t, "decision": verdict(&d) }));
+    }
+    let model = agent["model"].as_str().map(str::to_string).or_else(|| agent["model"].get("name").and_then(|v| v.as_str()).map(str::to_string));
+    if let Some(m) = model.filter(|m| !m.is_empty()) {
+        let d = hook.check(&probe(flowr_policy::actions::llm_call(), flowr_policy::Resource::new("Llm", m.clone()).with_attr("name", m.clone()))).await;
+        access.push(json!({ "kind": "Model", "what": m, "decision": verdict(&d) }));
+    }
+    // What its latest version reaches (flows, layers): hosts, memory, subflows.
+    let reach = match crate::agent_space::version_rows(s, &id).await.ok().and_then(|r| r.last().map(crate::agent_space::version_json)) {
+        Some(v) => crate::agent_space::manifest::of_version(s, &v).await,
+        None => Value::Null,
+    };
+    for (k, kind) in [("hosts", "Outside service"), ("memory", "Memory"), ("subflows", "Flow it runs")] {
+        for x in strings(&reach[k]) {
+            access.push(json!({ "kind": kind, "what": x, "decision": { "state": "reached", "why": "its flows reach it; checked when called" } }));
+        }
+    }
+    if let Some(e) = own.as_ref().and_then(|f| f.egress.clone()) {
+        for h in e {
+            access.push(json!({ "kind": "Outside service", "what": h, "decision": { "state": "allowed", "why": "on its own egress list" } }));
+        }
+    }
+
+    // What changed: its record (agent_events) and its own policy (history).
+    let mut changes: Vec<Value> = events.iter().filter(|e| col(e, "event_type") != "turn").map(|e| {
+        let payload: Value = serde_json::from_str(&col(e, "payload")).unwrap_or(Value::Null);
+        json!({ "at": col(e, "created_at"), "what": col(e, "event_type"), "by": payload.get("by").cloned().unwrap_or(Value::Null),
+            "approved_by": payload.get("approved_by").cloned().unwrap_or(Value::Null), "changed": payload.get("changed").cloned().unwrap_or(Value::Null) })
+    }).collect();
+    for h in crate::agent_space::security::history_of(s, &id).await {
+        changes.push(json!({ "at": col(&h, "at"), "what": format!("policy {}", col(&h, "action")), "by": col(&h, "by"), "version": col(&h, "version") }));
+    }
+    for k in &keys {
+        changes.push(json!({ "at": k["created_at"], "what": "key created", "by": k["created_by"], "key": k["name"] }));
+        if k["revoked_at"].as_str().is_some_and(|r| !r.is_empty()) {
+            changes.push(json!({ "at": k["revoked_at"], "what": "key revoked", "key": k["name"] }));
+        }
+    }
+    changes.sort_by(|a, b| b["at"].as_str().unwrap_or("").cmp(a["at"].as_str().unwrap_or("")));
+    changes.truncate(200);
+
+    Json(json!({
+        "agent": agent, "keys": keys, "access": access, "changes": changes,
+        "acts_as": { "own_key": "its keys act as the person who made them, within its ceiling", "ceiling": ceiling,
+            "outside": "with its own key: the caller's identity isn't passed on to outside services" },
+        "policy": { "set": own.is_some(), "rules": own.as_ref().map(|f| f.rules.iter().map(flowr_policy::policy_file::describe_rule).collect::<Vec<_>>()).unwrap_or_default() },
+    })).into_response()
+}
+
+/// `POST /security/agents/{id}/keys/revoke`: revoke every live key of the agent.
+async fn revoke_keys(State(s): State<Arc<dyn StorageBackend>>, p: Option<Extension<Principal>>, Path(id): Path<String>) -> Response {
+    let Some(Extension(p)) = p else { return refuse(StatusCode::UNAUTHORIZED, "Sign in first.") };
+    let s = s.as_ref();
+    if let Err(r) = security_view(s, &p, &id).await { return r; }
+    let keys = crate::agent_keys::list(s, &id).await.unwrap_or_default();
+    let mut revoked = 0;
+    for k in keys.iter().filter(|k| k["revoked_at"].as_str().unwrap_or("").is_empty()) {
+        match crate::agent_keys::revoke(s, &id, k["id"].as_str().unwrap_or_default()).await {
+            Ok(true) => revoked += 1,
+            Ok(false) => {}
+            Err(e) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, e),
+        }
+    }
+    flowr_policy::audit::event(&p, "agent:keys_revoke", "Agent", &id, None, None, None, Some(&format!("{revoked} key(s) revoked from Security")));
+    Json(json!({ "agent_id": id, "revoked": revoked })).into_response()
 }
 
 fn col(row: &Value, k: &str) -> String {

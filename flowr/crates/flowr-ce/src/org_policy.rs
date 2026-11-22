@@ -326,7 +326,7 @@ fn valid_path(p: &str) -> Result<&'static str, Response> {
     let plain = !name.is_empty() && name.len() <= 80 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     match kind {
         Some(k) if plain => Ok(k),
-        _ => Err(err(StatusCode::BAD_REQUEST, format!("{p:?}: a file is policies/<name>.yaml, roles/<name>.yaml or access/<name>.yaml (letters, digits, - and _)"))),
+        _ => Err(err(StatusCode::BAD_REQUEST, format!("{p:?}: a file is policies/<name>.yaml, roles/<name>.yaml, access/<name>.yaml, egress/<name>.yaml or networks/<name>.yaml (letters, digits, - and _)"))),
     }
 }
 
@@ -388,12 +388,16 @@ async fn put_file(State(s): St, p: P, Path(org): Path<String>, Query(q): Query<P
     let Some(content) = b.get("content").and_then(|v| v.as_str()) else {
         return err(StatusCode::BAD_REQUEST, "content: the file's YAML");
     };
-    both(save_file(s.as_ref(), &principal, &org, &q.path, content, None).await)
+    let shadow = b.get("shadow").and_then(|v| v.as_bool()).unwrap_or(false);
+    both(save_file(s.as_ref(), &principal, &org, &q.path, content, shadow, None).await)
 }
 
 /// Save a file. `approved`: the author of a change a second admin approved
-/// (GOV-3); without it, an org with a second approver holds the change.
-pub(crate) async fn save_file(s: &dyn StorageBackend, principal: &Principal, org: &str, path: &str, content: &str, approved: Option<&str>) -> Reply {
+/// (GOV-3); without it, an org with a second approver (or one that lets only
+/// its security admins change policy, for an admin) holds the change.
+/// `shadow`: a new (or switched-off) rule file goes straight into shadow
+/// mode — never enforced on the way.
+pub(crate) async fn save_file(s: &dyn StorageBackend, principal: &Principal, org: &str, path: &str, content: &str, shadow: bool, approved: Option<&str>) -> Reply {
     let (org, principal) = (org.to_string(), principal.clone());
     let q = PathQ { path: path.to_string() };
     async {
@@ -414,9 +418,19 @@ pub(crate) async fn save_file(s: &dyn StorageBackend, principal: &Principal, org
         let off = off_of(s, &org).await;
         let set = enforced_with(&files, &off, &[(q.path.clone(), content.to_string())], &[]);
         let compiled = check(s, &org, &set).await.map_err(|e| refused(e, "the file doesn't work with the org's other files"))?;
-        if approved.is_none() && crate::policy_changes::four_eyes(s, &org).await {
-            let summary = format!("{} {}", if prev.is_some() { "save" } else { "create" }, q.path);
-            return crate::policy_changes::propose(s, &principal, &org, "file", "save", &q.path, json!({ "content": content }), &summary).await;
+        if shadow && kind != "policy" {
+            return Err(err(StatusCode::BAD_REQUEST, "only rule files (policies/) run in shadow mode"));
+        }
+        // Shadow mode for a file that is enforced now means switching it off: that
+        // is `files/enforced`, not a save.
+        if shadow && prev.is_some() && !off.contains(&q.path) {
+            return Err(err(StatusCode::CONFLICT, format!("{} is enforced: save it as it is, or switch it off first", q.path)));
+        }
+        let identity = kind == "org-access";
+        let held = approved.is_none() && (crate::policy_changes::four_eyes(s, &org).await || crate::policy_changes::held_by_lock(s, &principal, &org, identity).await);
+        if held {
+            let summary = format!("{} {}{}", if prev.is_some() { "save" } else { "create" }, q.path, if shadow { " (shadow mode)" } else { "" });
+            return crate::policy_changes::propose(s, &principal, &org, "file", "save", &q.path, json!({ "content": content, "shadow": shadow }), &summary).await;
         }
         // Numbering continues across a removal: a path's versions are never reused.
         let num = |v: &str| v.strip_prefix('v').and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
@@ -427,18 +441,27 @@ pub(crate) async fn save_file(s: &dyn StorageBackend, principal: &Principal, org
         let version = format!("v{n}");
         let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
         let db = db(s).await.map_err(internal)?;
+        // A shadow save is off and in shadow before the file exists, so it is
+        // never enforced, not even for a moment.
+        let mut off = off;
+        if shadow {
+            let row = json!({ "org": org, "path": q.path, "updated_by": by, "updated_at": chrono::Utc::now().to_rfc3339() });
+            db.upsert(OFF, &["org", "path"], &[row.clone()]).await.map_err(internal)?;
+            db.upsert(SHADOW, &["org", "path"], &[row]).await.map_err(internal)?;
+            off.insert(q.path.clone());
+        }
         db.upsert(FILES, &["org", "path"], &[json!({
             "org": org, "path": q.path, "kind": kind, "content": content, "commit": version, "updated_at": chrono::Utc::now().to_rfc3339(),
         })]).await.map_err(internal)?;
         note(db.as_ref(), &org, &q.path, &version, if prev.is_some() { "save" } else { "create" }, kind, content, &by).await.map_err(internal)?;
         flowr_policy::audit::event(&principal, "policy:write", "PolicyFile", &format!("{org}/{}", q.path), None, Some(&org), None,
             Some(&format!("{} {version}", if prev.is_some() { "saved" } else { "created" })));
-        if !off.contains(&q.path) {
+        if !off.contains(&q.path) || shadow {
             changed().await;
         }
-        info!(org, path = %q.path, %version, %by, "org policy file saved");
+        info!(org, path = %q.path, %version, %by, shadow, "org policy file saved");
         Ok(Json(json!({ "org": org, "path": q.path, "version": version, "changed": true, "enforced": !off.contains(&q.path),
-            "compiled": compiled })).into_response())
+            "shadow": shadow || shadow_of(s, &org).await.contains(&q.path), "compiled": compiled })).into_response())
     }.await
 }
 
@@ -461,7 +484,7 @@ pub(crate) async fn remove_file(s: &dyn StorageBackend, principal: &Principal, o
         let off = off_of(s, &org).await;
         let set = enforced_with(&files, &off, &[], &[q.path.clone()]);
         check(s, &org, &set).await.map_err(|e| refused(e, "the other files need it"))?;
-        if approved.is_none() && crate::policy_changes::four_eyes(s, &org).await {
+        if approved.is_none() && (crate::policy_changes::four_eyes(s, &org).await || crate::policy_changes::held_by_lock(s, &principal, &org, kind == "org-access").await) {
             return crate::policy_changes::propose(s, &principal, &org, "file", "delete", &q.path, json!({}), &format!("remove {}", q.path)).await;
         }
         let by = approved.map(str::to_string).unwrap_or_else(|| principal.id().to_string());
@@ -530,7 +553,8 @@ pub(crate) async fn enforce(s: &dyn StorageBackend, principal: &Principal, org: 
         if switching.is_empty() {
             return Ok(Json(json!({ "org": org, "enforced": on.len(), "off": files.len() - on.len(), "switched": 0 })).into_response());
         }
-        if approved.is_none() && crate::policy_changes::four_eyes(s, &org).await {
+        let identity = switching.iter().all(|p| flowr_policy::policy_file::kind_of_path(p) == Some("org-access"));
+        if approved.is_none() && (crate::policy_changes::four_eyes(s, &org).await || crate::policy_changes::held_by_lock(s, &principal, &org, identity).await) {
             return crate::policy_changes::propose(s, &principal, &org, "file", "enforce", "", json!({ "enforced": want }),
                 &format!("switch {}", switching.join(", "))).await;
         }

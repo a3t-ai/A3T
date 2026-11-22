@@ -227,6 +227,19 @@ fn log(principal: &Principal, action: &str, org_id: &str, subject: &str, note: &
 }
 
 /// `PUT /security/orgs/:org/idp`
+/// The org lets only its security admins change its identity: an org admin is
+/// refused (identity changes are not held for approval; they are made by a
+/// security admin).
+async fn identity_unlocked(s: &dyn StorageBackend, principal: &flowr_policy::Principal, org: &str) -> Result<(), Response> {
+    if flowr_ce::policy_changes::held_by_lock(s, principal, org, true).await {
+        return Err((StatusCode::FORBIDDEN, Json(json!({
+            "error": format!("{org} lets only its security admins change its sign-in, SCIM and members; ask one of them"),
+            "code": "identity_locked",
+        }))).into_response());
+    }
+    Ok(())
+}
+
 pub async fn put_idp(
     principal: Option<Extension<Principal>>,
     Extension(storage): Extension<Arc<dyn StorageBackend>>,
@@ -238,6 +251,7 @@ pub async fn put_idp(
         let principal = who(principal);
         let s = storage.as_ref();
         flowr_ce::org_policy::allowed(s, &principal, &org).await?;
+        identity_unlocked(s, &principal, &org).await?;
         let row = org_row(s, &org).await?;
         let bad = |m: String| err(StatusCode::BAD_REQUEST, m);
         if b.client_id.trim().is_empty() || b.client_id.len() > 200 {
@@ -352,6 +366,7 @@ pub async fn delete_idp(
         let principal = who(principal);
         let s = storage.as_ref();
         flowr_ce::org_policy::allowed(s, &principal, &org).await?;
+        identity_unlocked(s, &principal, &org).await?;
         let row = org_row(s, &org).await?;
         #[cfg(feature = "ee")]
         {
@@ -385,6 +400,7 @@ pub async fn new_token(
         let principal = who(principal);
         let s = storage.as_ref();
         flowr_ce::org_policy::allowed(s, &principal, &org).await?;
+        identity_unlocked(s, &principal, &org).await?;
         if principal.impersonated_by().is_some() {
             return Err(err(StatusCode::FORBIDDEN, "not while acting as someone else"));
         }
@@ -414,6 +430,7 @@ pub async fn drop_token(
         let principal = who(principal);
         let s = storage.as_ref();
         flowr_ce::org_policy::allowed(s, &principal, &org).await?;
+        identity_unlocked(s, &principal, &org).await?;
         let row = org_row(s, &org).await?;
         let db = ensure_tables(s).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         let mut v = Map::new();

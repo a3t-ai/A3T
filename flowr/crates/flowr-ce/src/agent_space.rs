@@ -851,7 +851,7 @@ pub const DEPLOYMENTS: &str = "agent_deployments";
 const VERSION_COLUMNS: [&str; 10] = ["agent_id", "version", "template", "flows", "memory", "layers", "lineage", "note", "created_by", "created_at"];
 const DEPLOYMENT_COLUMNS: [&str; 6] = ["agent_id", "environment", "version", "previous", "deployed_by", "deployed_at"];
 
-async fn version_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
+pub(crate) async fn version_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
     let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
     let schema: Map<String, Value> = VERSION_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
     db.create_table(VERSIONS, Some(&schema), "create_if_not_exists").await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -867,7 +867,7 @@ fn version_number(row: &Value) -> u64 {
 }
 
 /// A stored row as the API shows it: the JSON columns parsed.
-fn version_json(row: &Value) -> Value {
+pub(crate) fn version_json(row: &Value) -> Value {
     let mut v = row.clone();
     if let Some(m) = v.as_object_mut() {
         for k in ["template", "flows", "memory", "layers", "lineage"] {

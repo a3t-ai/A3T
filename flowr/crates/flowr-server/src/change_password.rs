@@ -84,7 +84,7 @@ pub async fn change_password_handler(
         return refuse(StatusCode::BAD_REQUEST, "This account has no email to sign in with.");
     }
     match keycloak_login(&config, &email, &body.current_password, body.otp.as_deref()).await {
-        KcLogin::Ok(_) | KcLogin::SetupRequired => {}
+        KcLogin::Ok(..) | KcLogin::SetupRequired => {}
         KcLogin::Failed => return refuse(StatusCode::UNAUTHORIZED, "Your current password is not right."),
     }
     #[cfg(feature = "ee")]

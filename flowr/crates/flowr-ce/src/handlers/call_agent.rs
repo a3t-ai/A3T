@@ -981,7 +981,7 @@ impl TaskHandler for AgentHandler {
                                         &config.session_id, &agent_principal, tool_server.get(tool_name).map(|s| s.as_str()), tool_name, &tool_input,
                                         "This turn read content from outside A3T; a call that deletes, sends or changes something needs your approval (prompt-injection guard).",
                                         &[flowr_policy::GrantScope::Once],
-                                        &crate::approval::Ask { rule: Some("prompt-guard".into()), timeout_secs: None, project: record.namespace.clone() },
+                                        &crate::approval::Ask { rule: Some("prompt-guard".into()), timeout_secs: None, project: record.namespace.clone(), approver: None },
                                     ).await;
                                     if let flowr_policy::PolicyDecision::Deny { reason, policy_ids } = asked {
                                         return Ok(json!({ "error": format!("denied: {tool_name} — {reason}"), "denied": true, "policies": policy_ids }));
@@ -991,13 +991,13 @@ impl TaskHandler for AgentHandler {
                                 // `needs_approval` rules are asked here — the
                                 // flow's own steps are checked as they run.
                                 if config.config.tool_flows.contains_key(tool_name) {
-                                    let attrs = build_ceiling_attributes(&config.config, &ctx.template_meta);
+                                    let attrs = with_turn_facts(build_ceiling_attributes(&config.config, &ctx.template_meta), untrusted_seen);
                                     let d = flowr_mcp_core::authorize_mcp_tool_call(&agent_principal, Some("tool-flows"), tool_name, &tool_input, attrs).await;
                                     if let flowr_policy::PolicyDecision::Ask { reason, required: Some(r), policy_ids, .. } = d {
                                         let asked = crate::approval::request_approval_with(
                                             &config.session_id, &agent_principal, Some("tool-flows"), tool_name, &tool_input, &reason,
                                             &[flowr_policy::GrantScope::Once],
-                                            &crate::approval::Ask { rule: Some(policy_ids.join(", ")), timeout_secs: r.timeout_secs, project: record.namespace.clone() },
+                                            &crate::approval::Ask { rule: Some(policy_ids.join(", ")), timeout_secs: r.timeout_secs, project: record.namespace.clone(), approver: r.approver.clone() },
                                         ).await;
                                         if let flowr_policy::PolicyDecision::Deny { reason, policy_ids } = asked {
                                             return Ok(json!({ "error": format!("denied: {tool_name} — {reason}"), "denied": true, "policies": policy_ids }));
@@ -1020,7 +1020,7 @@ impl TaskHandler for AgentHandler {
                                     // = the instance-enabled subset. Threaded to site A so the
                                     // hook gates this call as the agent (§6.5). Merges over any
                                     // flow-level metadata.a3t already on the context.
-                                    let ceiling_attrs = build_ceiling_attributes(&config.config, &ctx.template_meta);
+                                    let ceiling_attrs = with_turn_facts(build_ceiling_attributes(&config.config, &ctx.template_meta), untrusted_seen);
                                     call_mcp_tool(&http_client, &storage, &agent_principal, &config.session_id, mcp_resource, tool_name, &tool_input, ceiling_attrs, record.namespace.as_deref()).await
                                 }
                             },
@@ -2058,6 +2058,13 @@ fn callresult_to_value(result: flowr_mcp_core::CallToolResult) -> std::result::R
 /// = the instance-enabled subset (omitted when empty → no narrowing). Any
 /// `template.*` already present from the flow's `metadata.a3t` is preserved and
 /// the config-derived sets layer over it.
+/// What this turn adds for rule conditions (`context.*`): whether it has read
+/// content from outside A3T (the `untrusted` condition).
+fn with_turn_facts(mut attrs: serde_json::Map<String, Value>, untrusted_seen: bool) -> serde_json::Map<String, Value> {
+    attrs.insert("context".into(), json!({ "untrusted_seen": untrusted_seen }));
+    attrs
+}
+
 fn build_ceiling_attributes(
     settings: &AgentSettings,
     flow_meta: &serde_json::Map<String, Value>,
@@ -2276,8 +2283,9 @@ async fn call_mcp_tool(
             // it times out. A `needs_approval` rule sets how long (GOV-8).
             let ask = crate::approval::Ask {
                 rule: required.is_some().then(|| policy_ids.join(", ")),
-                timeout_secs: required.and_then(|r| r.timeout_secs),
+                timeout_secs: required.as_ref().and_then(|r| r.timeout_secs),
                 project: project.map(str::to_string),
+                approver: required.and_then(|r| r.approver),
             };
             crate::approval::request_approval_with(
                 session_id, caller, Some(resource_name), tool_name, arguments, &reason, &scopes, &ask,

@@ -3688,6 +3688,7 @@ dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
  "chrono",
+ "chrono-tz 0.10.4",
  "dirs",
  "flowr-ce-agents",
  "flowr-ce-storage",
