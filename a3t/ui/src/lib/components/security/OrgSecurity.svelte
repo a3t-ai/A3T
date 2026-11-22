@@ -303,7 +303,7 @@
     { id: 'changes', label: 'Changes', icon: '<circle cx="5" cy="8" r="2"/><circle cx="11" cy="8" r="2"/><path d="M7 8h2"/>', hint: 'A second approver for policy changes, and the changes waiting for one' },
   ];
   const IDENTITY_TABS = ['overview', 'signin', 'members', 'roles', 'reviews'];
-  const STEPS = $derived(section === 'policy' ? ['rules', 'changes', 'settings', 'files'].map((id) => ALL_STEPS.find((x) => x.id === id)!) : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
+  const STEPS = $derived(section === 'policy' ? ['rules', 'changes', 'settings', 'files'].map((id) => ALL_STEPS.find((x) => x.id === id)!) : IDENTITY_TABS.map((id) => ALL_STEPS.find((x) => x.id === id)!));
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
 

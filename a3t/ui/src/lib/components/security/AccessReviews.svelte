@@ -59,7 +59,7 @@
 <div class="card">
   <div class="card-head"><h3>1 · Reviews</h3><span>who holds what, confirmed or revoked by a person</span></div>
   {#if canReview}
-    <div class="acts"><input class="grow" bind:value={name} placeholder="Q4 access review" /><button class="btn2 primary" disabled={busy === 'new'} onclick={start}>{busy === 'new' ? 'Taking the snapshot…' : 'Start a review'}</button></div>
+    <div class="acts"><input class="tin grow" bind:value={name} placeholder="Q4 access review" aria-label="Review name" /><button class="btn2 primary" disabled={busy === 'new'} onclick={start}>{busy === 'new' ? 'Taking the snapshot…' : 'Start a review'}</button></div>
   {/if}
   {#if !list}<p class="dim">Reading…</p>
   {:else if !list.length}<p class="dim">No reviews yet.</p>
@@ -76,7 +76,7 @@
   <div class="card">
     <div class="card-head"><h3>2 · {open.review.name}</h3><span>{pending} to decide of {open.items.length}</span><span class="grow"></span>
       {#if canReview && open.review.status === 'open'}<button class="btn2" disabled={pending > 0 || busy === 'close'} title={pending ? 'Decide every item first' : ''} onclick={close}>Close the review</button>{/if}</div>
-    <div class="acts"><select bind:value={kind} aria-label="Kind"><option value="">Everything</option><option value="org_role">Org roles</option><option value="project_role">Project roles</option><option value="agent_key">Agent keys</option></select></div>
+    <div class="acts"><select class="tin" bind:value={kind} aria-label="Kind"><option value="">Everything</option><option value="org_role">Org roles</option><option value="project_role">Project roles</option><option value="agent_key">Agent keys</option></select></div>
     <table class="tbl">
       <thead><tr><th>What</th><th>Who</th><th>Holds</th><th>Decision</th><th></th></tr></thead>
       <tbody>
@@ -102,5 +102,8 @@
 
 <style>
   .grow { flex: 1 1 auto; }
+  .tin { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font: 13px var(--font-sans); min-width: 0; }
+  .tin::placeholder { color: var(--text-4); }
+  .tin:focus { outline: none; border-color: var(--accent, #5530a8); }
   .end { text-align: right; white-space: nowrap; }
 </style>
