@@ -1,8 +1,8 @@
 <script lang="ts">
   /// Security › an org: its identity and its policy files, in one place.
   ///   Overview — the org at a glance, and who looks after what;
-  ///   People — its members and everyone who reaches its projects, and how (audit);
-  ///   Members — who is in it, and as what (its admins change it);
+  ///   Members — its people and groups, the role each holds in it, and who
+  ///     else reaches its projects and how (its admins change roles);
   ///   Sign-in — its own identity provider and which groups get which role;
   ///   Policy files — its roles, rules and access, kept as files in A3T (edited in Studio).
   /// Its admins change members and sign-in; its security admins read them. Both
@@ -26,7 +26,7 @@
   import { loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
 
-  /// `project`: open People filtered to who reaches that project.
+  /// `project`: open Members filtered to who reaches that project.
   /// `section`: identity (who people are: sign-in, members, roles and groups)
   /// or policy (what is allowed: the org's policy files). Two pages, one org.
   let { org: handle, section = 'identity', project = '', tab = $bindable('overview') }: { org: string; section?: 'identity' | 'policy'; project?: string; tab?: string } = $props();
@@ -77,7 +77,7 @@
     aud = a.ok ? a.data ?? null : null; audErr = a.ok ? '' : (a.error ?? `HTTP ${a.status}`);
     files = f.ok ? f.data ?? null : null; filesErr = f.ok ? '' : (f.error ?? `HTTP ${f.status}`);
     pickFrom(files);
-    if (found.can_admin && !directory.length) directory = await loadDirectory();
+    if ((found.can_identity ?? found.can_admin) && !directory.length) directory = await loadDirectory();
   }
   // GOV-4: this org's files that no longer compile (its projects are closed).
   let healthAll = $state<PolicyBroken[]>([]);
@@ -92,28 +92,44 @@
     bumpItems();
   }
 
-  // ── People (audit) ──
+  // ── Members: the org's members and everyone else who reaches its projects ──
+  // One list. A member's role comes from the org (members table); projects
+  // reached come from the audit. People outside the org are listed so an
+  // admin sees who reaches its projects without being in it.
+  type Person = { id: string; name: string; email: string; account: boolean; member?: OrgInfo['members'][number]; orgRole: string; projects: AuditPeople['users'][number]['projects'] };
   let fQ = $state(''); let fRole = $state(''); let fProject = $state(''); let fCap = $state('');
   let openRow = $state('');
+  const everyone = $derived.by((): Person[] => {
+    const by = new Map<string, Person>();
+    const byEmail = new Map<string, Person>();
+    for (const m of org?.members ?? []) {
+      const x: Person = { id: m.user_id, name: m.name ?? '', email: m.email ?? '', account: true, member: m, orgRole: m.role, projects: [] };
+      by.set(m.user_id, x); if (x.email) byEmail.set(x.email.toLowerCase(), x);
+    }
+    for (const u of aud?.users ?? []) {
+      const x = by.get(u.id) ?? (u.email ? byEmail.get(u.email.toLowerCase()) : undefined);
+      if (x) { x.projects = u.projects; x.account = u.account; x.name ||= u.name; x.email ||= u.email; continue; }
+      by.set(u.id, { id: u.id, name: u.name, email: u.email, account: u.account, orgRole: u.orgs.find((o) => o.org === handle)?.role ?? '', projects: u.projects });
+    }
+    const rank = (r: string) => (r === 'securityadmin' ? 0 : r === 'admin' ? 1 : r ? 2 : 3);
+    return [...by.values()].sort((x, y) => rank(x.orgRole) - rank(y.orgRole) || (x.name || x.email).localeCompare(y.name || y.email));
+  });
   const rows = $derived.by(() => {
-    if (!aud) return [];
     const q = fQ.trim().toLowerCase();
-    return aud.users.filter((u) => {
+    return everyone.filter((u) => {
       if (q && ![u.email, u.name, u.id].some((x) => (x ?? '').toLowerCase().includes(q))) return false;
-      const mine = u.orgs.find((o) => o.org === handle)?.role ?? '';
-      if (fRole === '-' ? !!mine : fRole && mine !== fRole) return false;
+      if (fRole === '-' ? !!u.orgRole : fRole && u.orgRole !== fRole) return false;
       if (fProject) {
         const here = u.projects.find((p) => p.namespace === fProject);
         if (!here) return false;
         if (fCap && !here.capacities.includes(fCap as any)) return false;
       }
       return true;
-    }).map((u) => ({ ...u, orgRole: u.orgs.find((o) => o.org === handle)?.role ?? '', here: fProject ? u.projects.find((p) => p.namespace === fProject) : undefined }));
+    }).map((u) => ({ ...u, here: fProject ? u.projects.find((p) => p.namespace === fProject) : undefined }));
   });
   const fProjectInfo = $derived(aud?.projects.find((p) => p.namespace === fProject));
-  const outsiders = $derived(aud ? aud.users.filter((u) => !u.orgs.some((o) => o.org === handle)).length : 0);
+  const outsiders = $derived(everyone.filter((u) => !u.orgRole).length);
 
-  // ── Members ──
   let addWho = $state(''); let addRole = $state<OrgRole>('member');
   async function addMember() {
     if (!org) return;
@@ -127,7 +143,7 @@
     addWho = ''; say(`Added ${u.name || u.email} as ${ROLE_LABEL[addRole].toLowerCase()}.`, true);
     await refreshOrg(); void loadProjects(true);
   }
-  async function setRole(m: OrgInfo['members'][number], role: OrgRole) {
+  async function setRole(m: { user_id: string; email?: string; name?: string }, role: OrgRole) {
     if (!org) return;
     busy = 'member';
     const r = await orgsApi.setMember(org.handle, { user_id: m.user_id, email: m.email, name: m.name }, role);
@@ -135,7 +151,7 @@
     if (!r.ok) say(r.error ?? 'Could not change the role.'); else say(`${m.name || m.email || m.user_id} is now ${ROLE_LABEL[role].toLowerCase()}.`, true);
     await refreshOrg(); void loadProjects(true);
   }
-  async function removeMember(m: OrgInfo['members'][number]) {
+  async function removeMember(m: { user_id: string; email?: string; name?: string }) {
     if (!org || !confirm(`Remove ${m.name || m.email || m.user_id} from ${org.handle}?`)) return;
     busy = 'member';
     const r = await orgsApi.removeMember(org.handle, m.user_id);
@@ -291,17 +307,16 @@
 
   const ALL_STEPS = [
     { id: 'overview', label: 'Overview', icon: '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 6h6M5 9h4"/>', hint: "The org's people at a glance, and who looks after what" },
-    { id: 'people', label: 'People', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its members and everyone who reaches its projects, and how' },
-    { id: 'members', label: 'Members', icon: '<circle cx="8" cy="5" r="2.5"/><path d="M3 13a5 5 0 0110 0"/>', hint: 'Who is in the org, and as what' },
+    { id: 'members', label: 'Org members', icon: '<circle cx="6" cy="5" r="2.2"/><circle cx="11.5" cy="6" r="1.8"/><path d="M2 13a4 4 0 018 0M9.5 12.5a3 3 0 015 0"/>', hint: 'Its people and groups, the role each holds, and who else reaches its projects' },
     { id: 'signin', label: 'Sign-in', icon: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/>', hint: "The org's own identity provider, and which groups get which role" },
     { id: 'reviews', label: 'Access reviews', icon: '<path d="M3 2h10v12H3z"/><path d="M5.5 6l1.5 1.5L10.5 4M5.5 10.5h5"/>', hint: 'Confirm or revoke, item by item, who holds which role and key' },
-    { id: 'roles', label: 'Roles & groups', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has, and which groups and people hold them' },
+    { id: 'roles', label: 'Roles', icon: '<circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><path d="M1.5 13a3.5 3.5 0 017 0M7.5 13a3.5 3.5 0 017 0"/>', hint: 'The roles the org has and what each may do' },
     { id: 'rules', label: 'Rules', icon: '<path d="M3 4h10M3 8h10M3 12h6"/>', hint: 'Every rule of the org, one row each: open one to read, try or change it, or add a new one' },
     { id: 'settings', label: 'Settings', icon: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/>', hint: 'Who may change the org\'s policies and identity, and who approves a change' },
     { id: 'files', label: 'Files', icon: '<path d="M4 1.5h5l3 3v10H4z"/><path d="M9 1.5v3h3M6 8h4M6 10.5h4"/>', hint: 'Its roles, rules and access, as files: switch each on or off, edit in Studio' },
     { id: 'changes', label: 'Changes', icon: '<circle cx="5" cy="8" r="2"/><circle cx="11" cy="8" r="2"/><path d="M7 8h2"/>', hint: 'A second approver for policy changes, and the changes waiting for one' },
   ];
-  const IDENTITY_TABS = ['overview', 'people', 'members', 'signin', 'roles', 'reviews'];
+  const IDENTITY_TABS = ['overview', 'members', 'signin', 'roles', 'reviews'];
   const STEPS = $derived(section === 'policy' ? ['rules', 'changes', 'settings', 'files'].map((id) => ALL_STEPS.find((x) => x.id === id)!) : ALL_STEPS.filter((x) => IDENTITY_TABS.includes(x.id)));
   // A tab from the other page (an old link) lands on this page's first tab.
   $effect(() => { if (!STEPS.some((x) => x.id === tab)) tab = STEPS[0].id; });
@@ -479,10 +494,9 @@
             <div class="tile"><span class="v">{aud?.projects.length ?? '…'}</span><span class="k">projects</span></div>
           </div>
           <ul class="rows">
-            <li><span class="lbl">People</span><span class="val">{aud ? `${aud.count} can reach its projects or are in it${outsiders ? `, ${outsiders} from outside the org` : ''}` : audErr || '…'}</span><button class="btn2" onclick={() => (tab = 'people')}>Audit</button></li>
-            <li><span class="lbl">Members</span><span class="val">{org.members.length} · {memberCount('admin')} admin{memberCount('admin') === 1 ? '' : 's'}, {memberCount('securityadmin')} security admin{memberCount('securityadmin') === 1 ? '' : 's'}</span><button class="btn2" onclick={() => (tab = 'members')}>{canAdmin ? 'Manage' : 'See'}</button></li>
+            <li><span class="lbl">Members</span><span class="val">{org.members.length} · {memberCount('admin')} admin{memberCount('admin') === 1 ? '' : 's'}, {memberCount('securityadmin')} security admin{memberCount('securityadmin') === 1 ? '' : 's'}{outsiders ? ` · ${outsiders} from outside the org reach its projects` : ''}{pairs(orgAccess?.y.groups).length ? ` · ${pairs(orgAccess?.y.groups).length} group${pairs(orgAccess?.y.groups).length === 1 ? '' : 's'}` : ''}</span><button class="btn2" onclick={() => (tab = 'members')}>{canAdmin ? 'Manage' : 'See'}</button></li>
             <li><span class="lbl">Sign-in</span><span class="val">{org.sso?.idp_alias ? `through ${org.sso.idp_alias}${org.sso.domains?.length ? ` for ${org.sso.domains.join(', ')}` : ''}` : "A3T's own sign-in"}</span><button class="btn2" onclick={() => (tab = 'signin')}>{canAdmin ? 'Set up' : 'See'}</button></li>
-            <li><span class="lbl">Roles</span><span class="val">{BASELINE.length} baseline{orgRoles.length ? ` + ${orgRoles.length} of its own (${orgRoles.map((r) => r.y.name ?? r.f.path).join(', ')})` : ''} · {accessFiles.length} project{accessFiles.length === 1 ? '' : 's'} with group mappings</span><button class="btn2" onclick={() => (tab = 'roles')}>See</button></li>
+            <li><span class="lbl">Roles</span><span class="val">{BASELINE.length} baseline{orgRoles.length ? ` + ${orgRoles.length} of its own (${orgRoles.map((r) => r.y.name ?? r.f.path).join(', ')})` : ''}</span><button class="btn2" onclick={() => (tab = 'roles')}>See</button></li>
           </ul>
         </div>
         <div class="card">
@@ -495,64 +509,50 @@
           </ul>
         </div>
 
-      {:else if tab === 'people'}
-        <div class="card">
-          <div class="card-head"><h3>People</h3><span>members of {handle}, and everyone who reaches its projects</span></div>
-          {#if !aud}<p class="dim">{audErr ? `Could not read who reaches its projects: ${audErr}` : 'Reading…'}</p>
-          {:else}
-            <div class="uf">
-              <input class="tin grow" type="search" bind:value={fQ} placeholder="Find by name or email" aria-label="Find a person" />
-              <select class="tin" bind:value={fRole} aria-label="Role in the org">
-                <option value="">In the org or not</option>
-                {#each ROLES as r}<option value={r}>Org {ROLE_LABEL[r].toLowerCase()}</option>{/each}
-                <option value="-">Not in the org</option>
-              </select>
-              <select class="tin" bind:value={fProject} onchange={() => (fCap = '')} aria-label="Reaches project">
-                <option value="">Any project</option>{#each aud.projects as p (p.namespace)}<option value={p.namespace}>{p.namespace}</option>{/each}
-              </select>
-              {#if fProject}<select class="tin" bind:value={fCap} aria-label="Their capacity there"><option value="">Any capacity</option>{#each Object.keys(CAP_LABEL) as c}<option value={c}>{CAP_LABEL[c]}</option>{/each}</select>{/if}
-            </div>
-            <p class="dim small">{rows.length} of {aud.count} {aud.count === 1 ? 'person' : 'people'}{fProject ? ` can reach ${fProject}` : ''}{fProjectInfo?.everyone ? ', and everyone signed in can run it' : ''}{fProjectInfo?.private ? ' (private)' : ''}.</p>
-            <ul class="rows wide ul">
-              {#each rows as u (u.id)}
-                <li class="urow">
-                  <button class="uwho" onclick={() => (openRow = openRow === u.id ? '' : u.id)} aria-expanded={openRow === u.id}>
-                    <b>{u.name || u.email || u.id}</b><small>{[u.name ? u.email : '', !u.account ? 'no sign-in account' : ''].filter(Boolean).join(' · ')}</small>
-                  </button>
-                  <span class="uchips">
-                    {#if u.orgRole}<span class="chip" class:sec={u.orgRole !== 'member'}>Org {ROLE_LABEL[u.orgRole]?.toLowerCase() ?? u.orgRole}</span>{:else}<span class="chip out">outside the org</span>{/if}
-                    {#if u.here}<span class="dim small here-lbl">· in {fProject}:</span>{#each u.here.capacities as c}<span class="chip here">{CAP_LABEL[c] ?? c}</span>{/each}<span class="dim small">{ACCESS_WORD[u.here.access] ?? u.here.access}</span>
-                    {:else}<span class="dim small">{u.projects.length} project{u.projects.length === 1 ? '' : 's'}</span>{/if}
-                  </span>
-                  {#if openRow === u.id}
-                    <div class="udetail">
-                      <ul class="uprojects">{#each u.projects as p (p.namespace)}
-                        <li><button class="link" onclick={() => { fProject = p.namespace; fCap = ''; openRow = ''; }}>{p.namespace}</button>
-                          <span>{p.capacities.map((c) => CAP_LABEL[c] ?? c).join(', ')}</span><span class="dim">{ACCESS_WORD[p.access] ?? p.access}</span></li>
-                      {:else}<li class="dim">reaches none of its projects</li>{/each}</ul>
-                    </div>
-                  {/if}
-                </li>
-              {:else}<li><span class="dim">Nobody matches.</span><span></span><span></span></li>{/each}
-            </ul>
-          {/if}
-        </div>
-
       {:else if tab === 'members'}
         <div class="card">
-          <div class="card-head"><h3>Members</h3><span>{canAdmin ? 'you can change them' : 'read only: its admins change them'}</span></div>
+          <div class="card-head"><h3>1 · People</h3><span>{canAdmin ? 'you can change their roles' : 'read only: its admins change them'}</span></div>
+          <div class="uf">
+            <input class="tin grow" type="search" bind:value={fQ} placeholder="Find by name or email" aria-label="Find a person" />
+            <select class="tin" bind:value={fRole} aria-label="Role in the org">
+              <option value="">Everyone</option>
+              {#each ROLES as r}<option value={r}>{ROLE_LABEL[r]}s</option>{/each}
+              <option value="-">Not in the org</option>
+            </select>
+            {#if aud?.projects.length}<select class="tin" bind:value={fProject} onchange={() => (fCap = '')} aria-label="Reaches project">
+              <option value="">Any project</option>{#each aud.projects as p (p.namespace)}<option value={p.namespace}>{p.namespace}</option>{/each}
+            </select>{/if}
+            {#if fProject}<select class="tin" bind:value={fCap} aria-label="Their capacity there"><option value="">Any capacity</option>{#each Object.keys(CAP_LABEL) as c}<option value={c}>{CAP_LABEL[c]}</option>{/each}</select>{/if}
+          </div>
+          <p class="dim small">{rows.length} of {everyone.length}: {org.members.length} in the org{outsiders ? `, ${outsiders} outside it who reach its projects` : ''}{fProject ? ` · ${rows.length} reach ${fProject}` : ''}{fProjectInfo?.everyone ? ', and everyone signed in can run it' : ''}{fProjectInfo?.private ? ' (private)' : ''}.{audErr ? ` Projects reached could not be read: ${audErr}` : ''}</p>
           <ul class="olist">
-            {#each org.members as m (m.user_id)}
-              <li class="mrow">
-                <span class="mwho"><span class="mname"><b>{m.name || m.email || m.user_id}</b>{#if m.source === 'sso'}<span class="chip" title="From the org's sign-in: its groups set the role at every sign-in">SSO</span>{/if}</span><small>{m.email || m.user_id}</small></span>
-                {#if canAdmin}
-                  <select class="tin" value={m.role} disabled={!!busy} onchange={(e) => setRole(m, e.currentTarget.value as OrgRole)} aria-label="Role">
+            {#each rows as u (u.id)}
+              <li class="prow">
+                <button class="uwho" onclick={() => (openRow = openRow === u.id ? '' : u.id)} aria-expanded={openRow === u.id}>
+                  <span class="mname"><b>{u.name || u.email || 'Unnamed account'}</b>{#if u.member?.source === 'sso'}<span class="chip" title="From the org's sign-in: its groups set the role at every sign-in">SSO</span>{/if}</span>
+                  <small>{[u.name ? u.email : '', !u.name && !u.email ? u.id : '', !u.account ? 'no sign-in account' : ''].filter(Boolean).join(' · ')}</small>
+                </button>
+                <span class="uchips">
+                  {#if u.here}{#each u.here.capacities as c}<span class="chip here">{CAP_LABEL[c] ?? c}</span>{/each}<span class="dim small">{ACCESS_WORD[u.here.access] ?? u.here.access}</span>
+                  {:else}<span class="dim small">{u.projects.length} project{u.projects.length === 1 ? '' : 's'}</span>{/if}
+                </span>
+                {#if u.member && canAdmin}
+                  <select class="tin" value={u.orgRole} disabled={!!busy} onchange={(e) => setRole(u.member!, e.currentTarget.value as OrgRole)} aria-label="Role in the org">
                     {#each ROLES as r}<option value={r}>{ROLE_LABEL[r]}</option>{/each}
                   </select>
-                  <button class="btn2 quiet" disabled={!!busy} onclick={() => removeMember(m)}>Remove</button>
-                {:else}<span class="mrole">{ROLE_LABEL[m.role] ?? m.role}</span>{/if}
+                  <button class="btn2 quiet" disabled={!!busy} onclick={() => removeMember(u.member!)}>Remove</button>
+                {:else if u.orgRole}<span class="chip" class:sec={u.orgRole !== 'member'}>{ROLE_LABEL[u.orgRole] ?? u.orgRole}</span><span></span>
+                {:else}<span class="chip out">outside the org</span>{#if canAdmin && u.account}<button class="btn2 quiet" disabled={!!busy} onclick={() => setRole({ user_id: u.id, email: u.email, name: u.name }, 'member')}>Add</button>{:else}<span></span>{/if}{/if}
+                {#if openRow === u.id}
+                  <div class="udetail">
+                    <ul class="uprojects">{#each u.projects as p (p.namespace)}
+                      <li><button class="link" onclick={() => { fProject = p.namespace; fCap = ''; openRow = ''; }}>{p.namespace}</button>
+                        <span>{p.capacities.map((c) => CAP_LABEL[c] ?? c).join(', ')}</span><span class="dim">{ACCESS_WORD[p.access] ?? p.access}</span></li>
+                    {:else}<li class="dim">reaches none of its projects</li>{/each}</ul>
+                  </div>
+                {/if}
               </li>
-            {:else}<li class="dim">No members yet.</li>{/each}
+            {:else}<li class="dim">{everyone.length ? 'Nobody matches.' : 'No members yet.'}</li>{/each}
           </ul>
           {#if canAdmin}
             <div class="uf">
@@ -563,6 +563,26 @@
             </div>
             <p class="dim small">Members see the org's projects that aren't private; admins build in all of them; security admins read all of them and look after the org's security. People who sign in through the org's provider are added at sign-in.</p>
           {/if}
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>2 · Groups</h3><span>groups from the org's sign-in, and the role each gives</span></div>
+          <h4 class="sub">In the org, at sign-in</h4>
+          {#if org.sso?.idp_alias}
+            <ul class="olist">
+              {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r] ?? r}</span><span></span></li>{/each}
+              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default] ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in →</button></li>
+            </ul>
+          {:else}<p class="dim">No sign-in of its own, so no groups: people are added above.</p>{/if}
+          <h4 class="sub">On its projects</h4>
+          {#each accessFiles as a (a.f.path)}
+            <div class="proj"><span class="mono">{a.y.project ?? '?'}</span>{#if !a.f.enforced}<span class="dim"> · switched off</span>{/if}<button class="lnk2" onclick={() => openFileInStudio(a.f.path)}>Edit in Studio</button></div>
+            <ul class="olist">
+              {#each pairs(a.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{r}</span><span class="dim">group</span></li>{/each}
+              {#each pairs(a.y.users) as [u, r] (u)}<li class="rrow"><span class="mono">{u}</span><span>{r}</span><span class="dim">person</span></li>{/each}
+            </ul>
+          {:else}<p class="dim">No group mappings on its projects: people hold project roles as project members (Projects › Access).</p>{/each}
+          {#if managesFiles}<p class="dim small">Group mappings are access files: create one under Policies › Files.</p>{/if}
         </div>
 
       {:else if tab === 'signin'}
@@ -623,7 +643,7 @@
 
       {:else if tab === 'roles'}
         <div class="card">
-          <div class="card-head"><h3>1 · Roles</h3><span>what each role may do is in the policy files</span></div>
+          <div class="card-head"><h3>Roles</h3><span>what each role may do is in the policy files</span></div>
           <ul class="olist">
             {#each BASELINE as r (r.name)}<li class="rrow"><b>{r.name}</b><span class="dim">baseline · {r.what}</span><span></span></li>{/each}
             {#each orgRoles as r (r.f.path)}
@@ -631,25 +651,6 @@
                 <button class="lnk2" onclick={() => openFileInStudio(r.f.path)}>Edit in Studio</button></li>
             {/each}
           </ul>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>2 · Groups and people</h3><span>who holds which role</span></div>
-          <h4 class="sub">In the org, at sign-in</h4>
-          {#if org.sso?.idp_alias}
-            <ul class="olist">
-              {#each pairs(orgAccess?.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{ROLE_LABEL[r]?.toLowerCase() ?? r}</span><span></span></li>{/each}
-              <li class="rrow"><span class="dim">anyone else from {org.sso.idp_alias}</span><span>{orgAccess?.y.default ? `${ROLE_LABEL[orgAccess.y.default]?.toLowerCase() ?? orgAccess.y.default}` : 'no access'}</span><button class="lnk2" onclick={() => (tab = 'signin')}>Sign-in</button></li>
-            </ul>
-          {:else}<p class="dim">No sign-in of its own: people are added under Members.</p>{/if}
-          <h4 class="sub">On its projects</h4>
-          {#each accessFiles as a (a.f.path)}
-            <div class="proj"><span class="mono">{a.y.project ?? '?'}</span>{#if !a.f.enforced}<span class="dim"> · switched off</span>{/if}<button class="lnk2" onclick={() => openFileInStudio(a.f.path)}>Edit in Studio</button></div>
-            <ul class="olist">
-              {#each pairs(a.y.groups) as [g, r] (g)}<li class="rrow"><span class="mono">{g}</span><span>{r}</span><span class="dim">group</span></li>{/each}
-              {#each pairs(a.y.users) as [u, r] (u)}<li class="rrow"><span class="mono">{u}</span><span>{r}</span><span class="dim">person</span></li>{/each}
-            </ul>
-          {:else}<p class="dim">No access files: people hold project roles as project members (Projects › Access).</p>{/each}
-          {#if managesFiles}<p class="dim small">Group mappings are access files: create one under Policy files.</p>{/if}
         </div>
 
       {:else if tab === 'files'}
@@ -803,13 +804,13 @@
   .uf .grow { flex: 1 1 220px; width: auto !important; }
   .uf select { flex: 0 1 170px; width: auto !important; min-width: 0; }
   .small { font-size: 12.5px; margin: 0; }
-  .ul .urow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr); align-items: center; gap: 10px; }
-  .uwho, .mwho { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 0; border: 0; background: none; text-align: left; font: inherit; color: inherit; }
+  .uwho { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 0; border: 0; background: none; text-align: left; font: inherit; color: inherit; }
   .uwho { cursor: pointer; }
-  .uwho b, .mwho b { font-size: 13.5px; color: var(--text-1); }
-  .uwho small, .mwho small { font-size: 12px; color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-  .mrow { display: grid; grid-template-columns: minmax(0, 1fr) 170px auto; align-items: center; gap: 10px; }
-  .mrow select { width: 100%; }
+  .uwho b { font-size: 13.5px; color: var(--text-1); }
+  .uwho small { font-size: 12px; color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .prow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 170px 76px; align-items: center; gap: 10px; }
+  .prow select { width: 100%; }
+  .prow > .chip { justify-self: start; }
   .uchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
   .chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
   .chip.sec { border-color: color-mix(in srgb, #5530a8 40%, var(--border)); color: #5530a8; }
@@ -833,19 +834,23 @@
   .fkind { font-size: 12.5px; color: var(--text-3); white-space: nowrap; }
   .frow.off .link, .frow.off .fkind { opacity: 0.55; }
   .mname { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .mrole { font-size: 13px; color: var(--text-2); }
   .frow .fsrc { grid-column: 1 / -1; }
   .fpick input { width: 16px; height: 16px; margin: 0; }
   .fstate { font-size: 11.5px; color: var(--text-4); text-align: right; }
   .fstate.on { color: var(--ok, #1a7158); }
-  .rrow { display: grid; grid-template-columns: minmax(120px, 0.6fr) minmax(0, 1.4fr) auto; gap: 10px; align-items: baseline; }
+  .rrow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 110px; gap: 10px; align-items: baseline; }
+  .rrow > :last-child { justify-self: end; }
   .sub { margin: 6px 0 0; font: 600 12.5px var(--font-sans); color: var(--text-2); }
   .proj { display: flex; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 13px; }
   .proj .lnk2 { margin-left: auto; }
   .stop { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
   textarea.mono { font-family: var(--font-mono); font-size: 12.5px; }
   @container details (max-width: 560px) {
-    .ul .urow, .mrow, .rrow { grid-template-columns: 1fr; }
+    .rrow { grid-template-columns: 1fr; }
+    .prow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+    .prow > .uwho { grid-column: 1 / -1; }
+    .prow > .uchips { grid-column: 1 / -1; }
+    .prow select { width: auto; max-width: 100%; }
     .frow { grid-template-columns: 22px minmax(0, 1fr) 56px; }
     .frow .fkind { grid-column: 2 / -1; grid-row: 2; }
     .uprojects li { grid-template-columns: 1fr; }

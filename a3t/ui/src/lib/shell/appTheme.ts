@@ -92,9 +92,9 @@ export const BANNERS: Record<string, AppBanner> = {
     description: 'Read a project\'s rules, change them — they apply straight away — and test a decision before it matters.',
   },
   approvals: {
-    headline: 'Answer what waits on you.', highlight: 'waits', docsPath: '/console/approvals/',
-    subtitle: 'When an agent acting for you needs your OK — a rule asks for a person, or it reaches past its grants — the question waits here, from any chat, flow or trigger.',
-    description: 'Open one to see the agent, the tool and its arguments, then approve that one call or refuse it. Every question and answer goes into the decision log.',
+    headline: 'Agents waiting for your OK.', highlight: 'OK', docsPath: '/console/approvals/',
+    subtitle: 'Some agent actions need a person to say yes first: a rule names you as the approver, or the agent tries something you haven\'t given it. The agent pauses, and the request shows up here.',
+    description: 'Open a request to see which agent, which tool and with what inputs, then allow or refuse that one action. Your answer is recorded in the decision log.',
   },
   logs: {
     headline: 'See every access decision.', highlight: 'decision', docsPath: '/console/decision-log/',
