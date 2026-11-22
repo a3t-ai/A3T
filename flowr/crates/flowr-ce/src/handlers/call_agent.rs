@@ -173,16 +173,31 @@ pub fn session_key(session_id: &str) -> String {
 /// State-store key for one user's list of conversations. The transcripts are the
 /// source of truth; this is a pointer list so the sidebar can be built without
 /// scanning every key in the state table.
-/// Look up who owns the agent behind a session.
+/// What the registry says about the agent behind a session, read server-side:
+/// a flow's step config can't name its own owner, approval rules or ceiling.
+#[derive(Debug, Default, Clone)]
+struct AgentRecord {
+    owner: Option<String>,
+    /// The role ceiling in the agent's own policy (UI-3); intersected with the step's.
+    role_ceiling: Option<Vec<String>>,
+    /// The project the agent lives in.
+    namespace: Option<String>,
+    /// The org policies it runs under, from its own policy (`uses`, GOV-6).
+    uses: Vec<String>,
+    /// Its own policy says `pii: redact` (RT-10): what it stores is redacted.
+    redact_pii: bool,
+}
+
+/// Look up the agent behind a session.
 ///
 /// `session_id` is `<agent-id>:session-…` when a chat runs a configured agent,
-/// and a bare session id otherwise (no agent, so no owner). Prefers the stamped
-/// `owner`, falling back to `created_by` for records written before ownership was
-/// recorded.
-async fn resolve_agent_owner(
+/// and a bare session id otherwise (no agent, so no record). The owner prefers
+/// the stamped `owner`, falling back to `created_by` for records written before
+/// ownership was recorded.
+async fn resolve_agent_record(
     storage: &Arc<dyn StorageBackend>,
     session_id: &str,
-) -> Option<String> {
+) -> Option<AgentRecord> {
     let agent_id = session_id.split(':').next().filter(|s| !s.is_empty())?;
     if agent_id == session_id {
         return None; // no agent prefix — a plain chat session
@@ -199,13 +214,42 @@ async fn resolve_agent_owner(
     .await
     .ok()?;
     let row = rows.into_iter().next()?;
-    let cfg = row.get("config").and_then(|c| c.as_object());
-    row.get("owner")
+    let cfg_owned: Option<serde_json::Map<String, Value>> = match row.get("config") {
+        Some(Value::Object(m)) => Some(m.clone()),
+        Some(Value::String(t)) => serde_json::from_str(t).ok(),
+        _ => None,
+    };
+    let cfg = cfg_owned.as_ref();
+    let owner = row.get("owner")
         .and_then(|v| v.as_str())
         .or_else(|| row.get("created_by").and_then(|v| v.as_str()))
         .or_else(|| cfg.and_then(|c| c.get("owner")).and_then(|v| v.as_str()))
         .or_else(|| cfg.and_then(|c| c.get("created_by")).and_then(|v| v.as_str()))
-        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    // The ceiling set by the org's security admins, in the agent's own policy
+    // (UI-3) — not in its variables, which its project's writers can edit.
+    let own = crate::handlers::call_lancedb::query_platform_table(
+        storage.as_ref(), crate::agent_space::security::TABLE, Some(format!("agent_id = {q}")), 1,
+    ).await.ok()
+        .and_then(|r| r.into_iter().next())
+        .and_then(|r| r.get("policy").and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|y| flowr_policy::policy_file::PolicyFile::parse(&y).ok());
+    let (role_ceiling, uses, redact_pii) = match own {
+        Some(f) => (f.role_ceiling, f.uses, f.pii.as_deref() == Some("redact")),
+        None => (None, Vec::new(), false),
+    };
+    let namespace = row.get("namespace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+    Some(AgentRecord { owner, role_ceiling, namespace, uses, redact_pii })
+}
+
+/// The tighter of two role ceilings: both bind. `None` means "not narrowed".
+fn meet_ceilings(a: Option<&[String]>, b: Option<&[String]>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x.to_vec()),
+        (Some(x), Some(y)) => Some(x.iter().filter(|r| y.contains(r)).cloned().collect()),
+    }
 }
 
 pub fn session_index_key(owner: &str) -> String {
@@ -334,7 +378,7 @@ has re-enabled it, so just call it. Never tell the user a tool is still blocked 
 on the strength of an older message.";
 
     fn prompt_with_ui_context(config: &AgentConfig) -> String {
-        let base = format!("{}{}", config.config.system_prompt, Self::PERMISSION_NOTE);
+        let base = format!("{}{}\n\n{}", config.config.system_prompt, Self::PERMISSION_NOTE, crate::prompt_guard::SYSTEM_NOTE);
         let Some(ui) = config.ui_context.as_ref().and_then(|v| v.as_object()) else {
             return base;
         };
@@ -477,7 +521,18 @@ impl TaskHandler for AgentHandler {
         // worker's own check under their own name.
         if let Some(agent) = crate::ops::agent_of_session(&config.session_id) {
             if let Err(b) = crate::ops::admit(storage.as_ref(), None, Some(agent)).await {
-                return Err(RuntimeError::task_failed(&task.name, format!("refused: {b}")));
+                return Err(RuntimeError::Denied { task: task.name.clone(), reason: b.to_string(), policy_ids: vec!["paused".into()] });
+            }
+            // RT-4: over its budget for today, it doesn't run (and the alert is sent).
+            // A limit, said as one: the person sees why, not "something failed".
+            if let Err(b) = crate::budget::admit(storage.as_ref(), agent).await {
+                return Err(RuntimeError::Raised {
+                    error_type: "https://a3t.io/errors/budget".into(),
+                    title: "Over budget".into(),
+                    status: 429,
+                    detail: b,
+                    instance: None,
+                });
             }
         }
 
@@ -502,17 +557,21 @@ impl TaskHandler for AgentHandler {
         // do carry `created_by` — real provenance, not an invention — so that is
         // the fallback. Without it every pre-existing agent could never produce a
         // permission prompt, because the owner check would always fail.
+        let record = resolve_agent_record(&storage, &config.session_id).await.unwrap_or_default();
         let owner = match config.config.owner.clone() {
             Some(o) => Some(o),
-            None => resolve_agent_owner(&storage, &config.session_id).await,
+            None => record.owner.clone(),
         };
-        let role_ceiling = config.config.role_ceiling.as_deref();
+        // The ceiling is attenuate-only, so the step's and the registry's both
+        // bind: a flow can narrow its agent further, never lift what was set
+        // on the agent itself (UI-3).
+        let role_ceiling = meet_ceilings(config.config.role_ceiling.as_deref(), record.role_ceiling.as_deref());
         let agent_principal = flowr_mcp_core::Principal::agent_for(
             flowr_mcp_core::AgentId(format!("agent:{}", config.session_id)),
             &ctx.principal,
             Some(format!("{}/{}", ctx.namespace, ctx.name)),
             owner,
-            role_ceiling,
+            role_ceiling.as_deref(),
         );
 
         let mut state = AgentState::new(&config);
@@ -547,6 +606,15 @@ impl TaskHandler for AgentHandler {
             let t = ctx.template_meta.entry("template".to_string()).or_insert_with(|| json!({}));
             if let Some(obj) = t.as_object_mut() {
                 obj.insert("agent".to_string(), json!(agent));
+                // GOV-6: the org policies its own policy says it runs under,
+                // added to the flow's (never removing one).
+                if !record.uses.is_empty() {
+                    let mut refs: Vec<Value> = obj.get("policyRef").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    for u in &record.uses {
+                        if !refs.iter().any(|r| r.as_str() == Some(u)) { refs.push(json!(u)); }
+                    }
+                    obj.insert("policyRef".to_string(), Value::Array(refs));
+                }
             }
         }
         // Approvals given in this conversation on another process (L39).
@@ -602,6 +670,8 @@ impl TaskHandler for AgentHandler {
         };
         let turn_started = std::time::Instant::now();
         let mut turn_usage = (0u64, 0u64);
+        // RT-6: whether this turn has read output from outside A3T.
+        let mut untrusted_seen = false;
         // before_recall: what memory is searched with (`query`).
         let mut recall_query = config.message.clone();
         if memory.is_some() {
@@ -707,7 +777,7 @@ impl TaskHandler for AgentHandler {
             // call to the first server sent e.g. ADB's `recall` to FlowR ("Unknown tool").
             let mut tool_server: HashMap<String, String> = HashMap::new();
             for server in &config.config.mcp_servers {
-                match list_mcp_tools(&http_client, &storage, &agent_principal, server).await {
+                match list_mcp_tools(&http_client, &storage, &agent_principal, &config.session_id, record.namespace.as_deref(), server).await {
                     Ok(mcp_tools) => {
                         let count = mcp_tools.len();
                         for t in mcp_tools {
@@ -811,6 +881,18 @@ impl TaskHandler for AgentHandler {
                     turn_usage.0 += n("prompt_tokens");
                     turn_usage.1 += n("completion_tokens");
                 }
+                // RT-3: each model call is in the decision log, beside the
+                // agent's tool calls (allowed by authorize_model above).
+                {
+                    let n = |k: &str| llm_result.get("usage").and_then(|u| u.get(k)).and_then(|v| v.as_u64());
+                    let used = match (n("prompt_tokens"), n("completion_tokens")) {
+                        (Some(i), Some(o)) => format!("{i} tokens in, {o} out"),
+                        _ => "tokens not reported by the model".to_string(),
+                    };
+                    flowr_policy::audit::event_decision(&agent_principal, "gateway:model", "Model", llm_resource,
+                        record.namespace.as_deref(), None, &flowr_policy::PolicyDecision::Allow,
+                        Some(&format!("model call {} · {used}", state.iteration + 1)));
+                }
 
                 state.iteration += 1;
 
@@ -864,6 +946,10 @@ impl TaskHandler for AgentHandler {
                             Ok((_, Some(why))) => hook_refused = Some(why),
                             Err(e) => hook_refused = Some(e),
                         }
+                        // RT-10: what an agent with `pii: redact` gives its memory tools.
+                        if record.redact_pii && crate::pii::memory_write(tool_name) {
+                            tool_input = crate::pii::clean_value(&tool_input);
+                        }
 
                         // Recorded (fine mode): a resumed turn replays it, and a
                         // call that started but never finished is not repeated.
@@ -888,6 +974,36 @@ impl TaskHandler for AgentHandler {
                                         json!({"toolCallId": tool_id, "toolName": tool_name, "input": tool_input}).to_string());
                                 }
 
+                                // RT-6: after reading outside content, a destructive call
+                                // waits for a person — an injected instruction can't act alone.
+                                if untrusted_seen && crate::prompt_guard::destructive(tool_name) {
+                                    let asked = crate::approval::request_approval_with(
+                                        &config.session_id, &agent_principal, tool_server.get(tool_name).map(|s| s.as_str()), tool_name, &tool_input,
+                                        "This turn read content from outside A3T; a call that deletes, sends or changes something needs your approval (prompt-injection guard).",
+                                        &[flowr_policy::GrantScope::Once],
+                                        &crate::approval::Ask { rule: Some("prompt-guard".into()), timeout_secs: None, project: record.namespace.clone(), approver: None },
+                                    ).await;
+                                    if let flowr_policy::PolicyDecision::Deny { reason, policy_ids } = asked {
+                                        return Ok(json!({ "error": format!("denied: {tool_name} — {reason}"), "denied": true, "policies": policy_ids }));
+                                    }
+                                }
+                                // GOV-8: a tool flow is not an MCP call, so its
+                                // `needs_approval` rules are asked here — the
+                                // flow's own steps are checked as they run.
+                                if config.config.tool_flows.contains_key(tool_name) {
+                                    let attrs = with_turn_facts(build_ceiling_attributes(&config.config, &ctx.template_meta), untrusted_seen);
+                                    let d = flowr_mcp_core::authorize_mcp_tool_call(&agent_principal, Some("tool-flows"), tool_name, &tool_input, attrs).await;
+                                    if let flowr_policy::PolicyDecision::Ask { reason, required: Some(r), policy_ids, .. } = d {
+                                        let asked = crate::approval::request_approval_with(
+                                            &config.session_id, &agent_principal, Some("tool-flows"), tool_name, &tool_input, &reason,
+                                            &[flowr_policy::GrantScope::Once],
+                                            &crate::approval::Ask { rule: Some(policy_ids.join(", ")), timeout_secs: r.timeout_secs, project: record.namespace.clone(), approver: r.approver.clone() },
+                                        ).await;
+                                        if let flowr_policy::PolicyDecision::Deny { reason, policy_ids } = asked {
+                                            return Ok(json!({ "error": format!("denied: {tool_name} — {reason}"), "denied": true, "policies": policy_ids }));
+                                        }
+                                    }
+                                }
                                 // Check if tool maps to a workflow
                                 if let Some(flow_ref) = config.config.tool_flows.get(tool_name) {
                                     // Execute as nested workflow
@@ -904,8 +1020,8 @@ impl TaskHandler for AgentHandler {
                                     // = the instance-enabled subset. Threaded to site A so the
                                     // hook gates this call as the agent (§6.5). Merges over any
                                     // flow-level metadata.a3t already on the context.
-                                    let ceiling_attrs = build_ceiling_attributes(&config.config, &ctx.template_meta);
-                                    call_mcp_tool(&http_client, &storage, &agent_principal, &config.session_id, mcp_resource, tool_name, &tool_input, ceiling_attrs).await
+                                    let ceiling_attrs = with_turn_facts(build_ceiling_attributes(&config.config, &ctx.template_meta), untrusted_seen);
+                                    call_mcp_tool(&http_client, &storage, &agent_principal, &config.session_id, mcp_resource, tool_name, &tool_input, ceiling_attrs, record.namespace.as_deref()).await
                                 }
                             },
                         ).await? };
@@ -939,7 +1055,7 @@ impl TaskHandler for AgentHandler {
                         // Structured results (list_flows) need the value, not its text.
                         let tool_value: Option<Value> = tool_result.as_ref().ok().cloned();
                         let result_str = match tool_result {
-                            Ok(v) => { info!(tool = %tool_name, result = %v.to_string().chars().take(200).collect::<String>(), "tool result"); v.to_string() },
+                            Ok(v) => { info!(tool = %tool_name, result = %crate::pii::clean(&v.to_string().chars().take(200).collect::<String>()), "tool result"); v.to_string() },
                             Err(e) => {
                                 warn!(tool = %tool_name, error = %e, "tool call failed");
                                 json!({"error": e.to_string()}).to_string()
@@ -1136,9 +1252,17 @@ impl TaskHandler for AgentHandler {
                         }
 
                         state.tool_calls_made += 1;
+                        // RT-6: output from outside A3T reaches the model as data.
+                        let from_outside = crate::prompt_guard::untrusted(tool_server.get(tool_name).map(|s| s.as_str()), tool_name);
+                        let content = if from_outside {
+                            untrusted_seen = true;
+                            crate::prompt_guard::wrap(tool_name, &result_str)
+                        } else {
+                            result_str
+                        };
                         state.messages.push(Message {
                             role: "tool".to_string(),
-                            content: result_str,
+                            content,
                             tool_call_id: Some(tool_id.to_string()),
                             tool_calls: None,
                         });
@@ -1254,12 +1378,18 @@ impl TaskHandler for AgentHandler {
         if let Some(m) = memory.as_ref().filter(|_| !skip_store) {
             // Journaled (L39): a turn that runs again after a crash doesn't
             // write its episode twice (an interrupted write is not repeated).
+            // RT-10: an agent whose policy says `pii: redact` keeps none in memory.
+            let (said_in, said_out) = if record.redact_pii {
+                (crate::pii::clean(&config.message), crate::pii::clean(&remembered))
+            } else {
+                (config.message.clone(), remembered.clone())
+            };
             let (stored, _) = swf_runtime::effects::effect("memory/turn", swf_runtime::effects::EffectKind::Effect, || async {
                 m.store_turn(
                     &config.config.memory_config,
                     config.config.ttl,
-                    &config.message,
-                    &remembered,
+                    &said_in,
+                    &said_out,
                     state.tool_calls_made,
                     state.iteration,
                 )
@@ -1285,6 +1415,7 @@ impl TaskHandler for AgentHandler {
                 let context = &said[before.saturating_sub(REFLECT_CONTEXT)..before];
                 let known = recalled.as_ref().map(|r| r.known_keys()).unwrap_or_default();
                 let input = reflection_input(context, &config.message, &reply, &known);
+                let input = if record.redact_pii { crate::pii::clean(&input) } else { input };
                 let (m, client, storage) = (m.clone(), http_client.clone(), storage.clone());
                 let llm = config.config.llm_resource.clone().unwrap_or_else(|| "default-llm".to_string());
                 // Started once per turn (L39): a turn run again doesn't reflect
@@ -1315,8 +1446,16 @@ impl TaskHandler for AgentHandler {
         // id, so signing in on another device showed an empty sidebar even though
         // the history was sitting in LanceDB.
         let owner = ctx.principal.id().to_string();
+        // RT-10: the transcript of an agent whose policy says `pii: redact`.
+        let kept: Vec<Value> = state.messages.iter().map(|m| {
+            let mut v = serde_json::to_value(m).unwrap_or(Value::Null);
+            if record.redact_pii {
+                if let Some(c) = v.get("content").and_then(|c| c.as_str()).map(crate::pii::clean) { v["content"] = json!(c); }
+            }
+            v
+        }).collect();
         let session_value = json!({
-            "messages": state.messages,
+            "messages": kept,
             "last_response": state.agent_response,
             "iteration_count": state.iteration,
             "tool_calls_made": state.tool_calls_made,
@@ -1530,19 +1669,12 @@ fn get_storage(ctx: &ExecutionContext) -> Result<Arc<dyn StorageBackend>> {
 }
 
 /// Resolve a secret resource reference (namespace/name) to its value
-async fn resolve_secret_ref(storage: &Arc<dyn StorageBackend>, secret_ref: &str) -> Option<String> {
-    let (ns, name) = if secret_ref.contains('/') {
-        let parts: Vec<&str> = secret_ref.splitn(2, '/').collect();
-        (parts[0], parts[1])
-    } else {
-        ("default", secret_ref)
-    };
-    let secret = storage.resources().get(ns, name).await.ok()?;
-    secret.config.get("value")
-        .or_else(|| secret.config.get("token"))
-        .or_else(|| secret.config.get("api_key"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+/// A secret for a resource of namespace `from` (RT-7: in scope, opened).
+async fn resolve_secret_ref(storage: &Arc<dyn StorageBackend>, secret_ref: &str, from: &str) -> Option<String> {
+    match flowr_mcp_core::vault::resolve(storage.as_ref(), secret_ref, from).await {
+        Ok(v) => Some(v),
+        Err(e) => { warn!(secret = %secret_ref, error = %e, "secret not given"); None }
+    }
 }
 
 /// Call LLM via OpenAI-compatible API
@@ -1615,7 +1747,7 @@ async fn call_llm(
 
     // Resolve API key: prefer api_key_ref (secret resource reference) over embedded api_key
     let resolved_key = if let Some(secret_ref) = resource.config.get("api_key_ref").and_then(|v| v.as_str()) {
-        resolve_secret_ref(storage, secret_ref).await.unwrap_or_default()
+        resolve_secret_ref(storage, secret_ref, &resource.namespace).await.unwrap_or_default()
     } else {
         resource.config.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string()
     };
@@ -1926,6 +2058,13 @@ fn callresult_to_value(result: flowr_mcp_core::CallToolResult) -> std::result::R
 /// = the instance-enabled subset (omitted when empty → no narrowing). Any
 /// `template.*` already present from the flow's `metadata.a3t` is preserved and
 /// the config-derived sets layer over it.
+/// What this turn adds for rule conditions (`context.*`): whether it has read
+/// content from outside A3T (the `untrusted` condition).
+fn with_turn_facts(mut attrs: serde_json::Map<String, Value>, untrusted_seen: bool) -> serde_json::Map<String, Value> {
+    attrs.insert("context".into(), json!({ "untrusted_seen": untrusted_seen }));
+    attrs
+}
+
 fn build_ceiling_attributes(
     settings: &AgentSettings,
     flow_meta: &serde_json::Map<String, Value>,
@@ -1969,6 +2108,7 @@ async fn call_mcp_tool(
     tool_name: &str,
     arguments: &Value,
     attributes: serde_json::Map<String, Value>,
+    project: Option<&str>,
 ) -> std::result::Result<Value, String> {
     // ── Permission introspection ──
     //
@@ -2138,11 +2278,17 @@ async fn call_mcp_tool(
         session_id, decision, flowr_policy::actions::MCP_CALL, "Tool", &decision_id,
     );
     let decision = match decision {
-        flowr_policy::PolicyDecision::Ask { reason, scopes, .. } => {
+        flowr_policy::PolicyDecision::Ask { reason, scopes, required, policy_ids } => {
             // Stop the turn and put it to the human. Blocks until they answer or
-            // it times out.
-            crate::approval::request_approval(
-                session_id, caller, Some(resource_name), tool_name, arguments, &reason, &scopes,
+            // it times out. A `needs_approval` rule sets how long (GOV-8).
+            let ask = crate::approval::Ask {
+                rule: required.is_some().then(|| policy_ids.join(", ")),
+                timeout_secs: required.as_ref().and_then(|r| r.timeout_secs),
+                project: project.map(str::to_string),
+                approver: required.and_then(|r| r.approver),
+            };
+            crate::approval::request_approval_with(
+                session_id, caller, Some(resource_name), tool_name, arguments, &reason, &scopes, &ask,
             ).await
         }
         settled => settled,
@@ -2161,6 +2307,12 @@ async fn call_mcp_tool(
     // AC-7: outside production nothing leaves A3T. In-process tools stay inside.
     if !is_local_mcp_url(&server_url) {
         crate::gateway::refuse_outbound(storage.as_ref(), caller, session_id, "call:mcp", &format!("mcp:{resource_name}/{tool_name}")).await?;
+        // RT-1: and only where egress allows (a tool server on the platform is not a call out).
+        let platform_server = resource_name.split_once('/').is_some_and(|(ns, _)| flowr_policy::egress::PLATFORM.contains(&ns));
+        if let (false, Some(p)) = (platform_server, project) {
+            let agent = session_id.split(':').next().filter(|a| !a.is_empty() && *a != session_id);
+            crate::egress_rules::guard(caller, p, agent, "call:mcp", &server_url).await?;
+        }
     }
 
     // E0.4c: local tools → in-process, authorized as the agent principal.
@@ -2204,8 +2356,16 @@ async fn call_mcp_tool(
         }
     });
 
-    let resp = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
-        .header("Content-Type", "application/json")
+    let mut req = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
+        .header("Content-Type", "application/json");
+    // ID-4: the call names the agent and the person it acts for, signed.
+    if let Some((agent, person)) = crate::agent_token::of_principal(caller) {
+        match crate::agent_token::mint(&agent, person.as_deref(), project, &server_url) {
+            Ok(t) => req = req.header(crate::agent_token::HEADER, t),
+            Err(e) => warn!(error = %e, "agent identity token not made"),
+        }
+    }
+    let resp = req
         .json(&payload)
         .send()
         .await
@@ -2236,10 +2396,21 @@ async fn call_mcp_tool(
 async fn list_mcp_tools(
     client: &reqwest::Client,
     storage: &Arc<dyn StorageBackend>,
-    _caller: &flowr_mcp_core::Principal,
+    caller: &flowr_mcp_core::Principal,
+    session_id: &str,
+    project: Option<&str>,
     resource_name: &str,
 ) -> std::result::Result<Vec<Value>, String> {
     let server_url = resolve_agent_mcp_url(storage, resource_name).await?;
+    // Listing a server's tools is a call out too: the same checks as calling one.
+    if !is_local_mcp_url(&server_url) {
+        crate::gateway::refuse_outbound(storage.as_ref(), caller, session_id, "call:mcp", &format!("mcp:{resource_name}/tools/list")).await?;
+        let platform_server = resource_name.split_once('/').is_some_and(|(ns, _)| flowr_policy::egress::PLATFORM.contains(&ns));
+        if let (false, Some(p)) = (platform_server, project) {
+            let agent = session_id.split(':').next().filter(|a| !a.is_empty() && *a != session_id);
+            crate::egress_rules::guard(caller, p, agent, "call:mcp", &server_url).await?;
+        }
+    }
 
     // E0.4c: local tool discovery is in-process (no loopback HTTP / re-auth).
     if is_local_mcp_url(&server_url) {
@@ -2251,8 +2422,15 @@ async fn list_mcp_tools(
 
     let payload = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 1});
 
-    let resp = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
-        .header("Content-Type", "application/json")
+    let mut req = flowr_mcp_core::with_adb_auth(client.post(&server_url), &server_url)
+        .header("Content-Type", "application/json");
+    // ID-4: a server may show an agent only the tools it allows it.
+    if let Some((agent, person)) = crate::agent_token::of_principal(caller) {
+        if let Ok(t) = crate::agent_token::mint(&agent, person.as_deref(), project, &server_url) {
+            req = req.header(crate::agent_token::HEADER, t);
+        }
+    }
+    let resp = req
         .json(&payload)
         .send()
         .await

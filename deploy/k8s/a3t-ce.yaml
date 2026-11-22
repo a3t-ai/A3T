@@ -1,6 +1,7 @@
 # A3T CE on vc-dev: FlowR CE with ADB embedded in the process (runs, registry
 # and state in /data/clawdflow/adb; FlowR CE's default since flowr 5bb84bc).
-# No ADB server, no runtimes, no Cedar (policy hook allow_all).
+# No ADB server, no runtimes. Policy enforced (RT-11: one edition; a FlowR
+# without policy listens on loopback only).
 #
 # Before applying, the namespace needs two secrets (copy them from a3t):
 #   registry-credentials  (image pull from ghcr.io)
@@ -44,7 +45,7 @@ spec:
           env:
             - { name: CLAWDFLOW_DATA_DIR, value: /data/clawdflow }
             - { name: A3T_DB_PATH, value: /data/a3t/a3t-platform.lance }
-            - { name: FLOWR_SECURITY_POLICY_HOOK, value: allow_all }
+            - { name: FLOWR_SECURITY_POLICY_HOOK, value: cedar }
             - { name: RUST_LOG, value: "info,lance=warn,datafusion=warn" }
             - name: FLOWR_CORS_ORIGINS
               value: "http://localhost:5173,https://dash.dev.a3t.io,https://console.dev.a3t.io,https://dash.a3t.io,https://a3t-console.b-cdn.net"

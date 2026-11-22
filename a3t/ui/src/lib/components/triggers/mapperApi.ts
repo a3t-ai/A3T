@@ -40,15 +40,16 @@ export function wrapJq(s: string): string {
   return /^\$\{[\s\S]*\}$/.test(t) ? t : `\${ ${t} }`;
 }
 
-/// Ask agent_a3t_mapper, on its data plane as the signed-in user, for a mapping.
-export async function askMapper(ask: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: true; proposal: Proposal } | { ok: false; error: string }> {
+/// Ask a design-time A3T agent (on its data plane, as the signed-in user) and
+/// read the JSON object it answers with.
+export async function askAgentJson(agent: string, ask: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: true; json: any } | { ok: false; error: string }> {
   try {
     const res = await fetch(`${API_BASE}/chat`, {
       method: 'POST', signal,
       headers: { ...auth(), accept: 'text/event-stream' },
-      body: JSON.stringify({ session_id: `${MAPPER}:map-${Date.now().toString(36)}`, message: JSON.stringify(ask, null, 1) }),
+      body: JSON.stringify({ session_id: `${agent}:ask-${Date.now().toString(36)}`, message: JSON.stringify(ask, null, 1) }),
     });
-    if (!res.ok) return { ok: false, error: `${MAPPER} answered ${res.status}` };
+    if (!res.ok) return { ok: false, error: `${agent} answered ${res.status}` };
     const raw = await res.text();
     let text = '', err = '';
     for (const line of raw.split('\n')) {
@@ -56,14 +57,23 @@ export async function askMapper(ask: Record<string, unknown>, signal?: AbortSign
       try { const e = JSON.parse(line.slice(5)); if (e.type === 'text-delta') text += e.delta; if (e.type === 'error') err = e.errorText ?? e.message ?? 'error'; } catch { /* keep-alive */ }
     }
     if (!text && err) return { ok: false, error: err };
-    // Its answer is a JSON object, sometimes in a code fence.
-    const body = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-    const p = JSON.parse(body);
-    if (typeof p.jq !== 'string' || !p.jq.trim()) return { ok: false, error: 'It answered without a jq expression.' };
-    return { ok: true, proposal: { jq: wrapJq(p.jq), explanation: String(p.explanation ?? ''), assumptions: (p.assumptions ?? []).map(String), drops: (p.drops ?? []).map(String) } };
+    // Its answer is JSON (an object, or a list), sometimes in a code fence.
+    const starts = [text.indexOf('{'), text.indexOf('[')].filter((i) => i >= 0);
+    const start = starts.length ? Math.min(...starts) : 0;
+    const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']')) + 1;
+    return { ok: true, json: JSON.parse(text.slice(start, end)) };
   } catch (e) {
     return { ok: false, error: (e as Error).name === 'AbortError' ? 'Stopped.' : `Could not read its answer: ${(e as Error).message}` };
   }
+}
+
+/// Ask agent_a3t_mapper for a mapping.
+export async function askMapper(ask: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: true; proposal: Proposal } | { ok: false; error: string }> {
+  const r = await askAgentJson(MAPPER, ask, signal);
+  if (!r.ok) return r;
+  const p = r.json;
+  if (typeof p.jq !== 'string' || !p.jq.trim()) return { ok: false, error: 'It answered without a jq expression.' };
+  return { ok: true, proposal: { jq: wrapJq(p.jq), explanation: String(p.explanation ?? ''), assumptions: (p.assumptions ?? []).map(String), drops: (p.drops ?? []).map(String) } };
 }
 
 /// Run a mapping on sample bodies as the trigger would (FlowR, nothing runs).

@@ -23,6 +23,10 @@ use crate::auth::{
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    /// ID-9: the authenticator code, for accounts whose sign-in needs one
+    /// (SuperAdmin and SecurityAdmin).
+    #[serde(default)]
+    pub otp: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +57,7 @@ pub struct UserInfo {
 /// POST /auth/login
 pub async fn login_handler(
     Extension(config): Extension<Arc<AuthConfig>>,
+    Extension(idp): Extension<crate::IdpAdminState>,
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
     if body.email.is_empty() || body.password.is_empty() {
@@ -66,9 +71,23 @@ pub async fn login_handler(
     // signups); on failure fall back to Keycloak (EE) so SSO-provisioned users can
     // sign in through the same email/password form. `(user_id, org, role, email, name)`.
     let resolved = match authenticate_user(config.platform.get().await.as_ref(), &body.email, &body.password).await {
-        Ok(t) => Some(t),
-        Err(local_err) => match keycloak_login(&config, &body.email, &body.password).await {
-            KcLogin::Ok(t) => Some(t),
+        // ID-9: SuperAdmin and SecurityAdmin sign in through the realm, which asks
+        // for their second factor; a local password alone never makes one.
+        Ok(t) if mfa_role(&t.2) && !config.oidc_issuer.is_empty() => {
+            warn!(email = %body.email, role = %t.2, "Login: a local password for a role that needs a second factor was refused");
+            return (StatusCode::FORBIDDEN, Json(json!({
+                "error": "This account signs in through A3T's sign-in, with its authenticator code.",
+                "code": "mfa_required",
+            }))).into_response();
+        }
+        Ok(t) => Some((t, crate::auth::SignIn::now())),
+        Err(local_err) => match keycloak_login(&config, &body.email, &body.password, body.otp.as_deref()).await {
+            KcLogin::Ok(t, mut si) => {
+                // A code proves a second factor only for an account that has
+                // an authenticator: the realm ignores a code from anyone else.
+                si.mfa = si.mfa || (body.otp.as_deref().is_some_and(|o| !o.trim().is_empty()) && has_otp(&idp, &t.0).await);
+                Some((t, si))
+            }
             // The password was right; the account still has a temporary password.
             // The console asks for a new one and posts it to /auth/first-password.
             KcLogin::SetupRequired => {
@@ -85,15 +104,42 @@ pub async fn login_handler(
         },
     };
 
-    let Some(identity) = resolved else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response();
+    let Some((identity, si)) = resolved else {
+        // The realm answers a wrong password and a missing or wrong code alike.
+        return (StatusCode::UNAUTHORIZED, Json(json!({
+            "error": "Invalid credentials",
+            "hint": "SuperAdmin and SecurityAdmin accounts also give their authenticator code.",
+        }))).into_response();
     };
-    issue_session(&config, identity).await
+    issue_session(&config, identity, si).await
+}
+
+/// Whether Keycloak user `sub` has an authenticator set up (false when it
+/// can't be read: no second factor is claimed on a guess).
+async fn has_otp(idp: &crate::IdpAdminState, sub: &str) -> bool {
+    #[cfg(feature = "ee")]
+    {
+        use a3t_security::oidc_admin as kc;
+        let Some(cfg) = kc::IdpAdminConfig::from_issuer(&idp.issuer, idp.admin_user.clone(), idp.admin_password.clone()) else { return false };
+        let Ok(token) = kc::admin_token(&idp.client, &cfg).await else { return false };
+        match kc::has_otp(&idp.client, &cfg, &token, sub).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, user = %sub, "login: authenticator not readable; no second factor recorded");
+                false
+            }
+        }
+    }
+    #[cfg(not(feature = "ee"))]
+    {
+        let _ = (idp, sub);
+        false
+    }
 }
 
 /// Sign in a verified identity `(user_id, org, role, email, name)`: a new
 /// session (sessions.rs) and its tokens.
-pub(crate) async fn issue_session(config: &AuthConfig, identity: (String, String, String, String, String)) -> axum::response::Response {
+pub(crate) async fn issue_session(config: &AuthConfig, identity: (String, String, String, String, String), si: crate::auth::SignIn) -> axum::response::Response {
     let (sid, jti, ends) = match crate::sessions::open(config, &identity.0, "signin", config.refresh_expiry_secs).await {
         Ok(s) => s,
         Err(e) => {
@@ -102,19 +148,19 @@ pub(crate) async fn issue_session(config: &AuthConfig, identity: (String, String
         }
     };
     info!(user = %identity.0, email = %identity.3, role = %identity.2, "Login successful");
-    session_tokens(config, identity, &sid, &jti, ends)
+    session_tokens(config, identity, &sid, &jti, ends, Some(&si))
 }
 
 /// The tokens and user for session `sid` with refresh token `jti`.
-pub(crate) fn session_tokens(config: &AuthConfig, (user_id, org_id, role, email, name): (String, String, String, String, String), sid: &str, jti: &str, ends: i64) -> axum::response::Response {
-    let access_token = match create_token(config, sid, &user_id, &org_id, &role, &email, &name) {
+pub(crate) fn session_tokens(config: &AuthConfig, (user_id, org_id, role, email, name): (String, String, String, String, String), sid: &str, jti: &str, ends: i64, si: Option<&crate::auth::SignIn>) -> axum::response::Response {
+    let access_token = match create_token(config, sid, &user_id, &org_id, &role, &email, &name, si) {
         Ok(t) => t,
         Err(e) => {
             warn!(error = %e, "Failed to create token");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response();
         }
     };
-    let refresh_token = match create_refresh_token(config, &user_id, sid, jti, ends) {
+    let refresh_token = match create_refresh_token(config, &user_id, sid, jti, ends, si) {
         Ok(t) => t,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
     };
@@ -142,14 +188,14 @@ pub(crate) fn pick_role(roles: &[String]) -> String {
     if has("superadmin") { "superadmin" }
     else if has("securityadmin") { "securityadmin" }
     else if has("admin") { "admin" }
-    else if has("operator") || has("developer") { "operator" }
+    else if has("operator") { "operator" }
     else { "viewer" }.to_string()
 }
 
 /// What a Keycloak password sign-in came to.
 pub(crate) enum KcLogin {
-    /// Signed in: `(user_id, org, role, email, name)`.
-    Ok((String, String, String, String, String)),
+    /// Signed in: `(user_id, org, role, email, name)`, and how.
+    Ok((String, String, String, String, String), crate::auth::SignIn),
     /// The password was right, but the account must set a new one first.
     SetupRequired,
     /// Wrong password, unknown user, or no Keycloak here.
@@ -158,24 +204,40 @@ pub(crate) enum KcLogin {
 
 /// EE login fallback: authenticate against Keycloak (password grant) and return an
 /// A3T identity tuple.
+/// GET /auth/account — the sign-in realm's own account page (set up an
+/// authenticator, ID-9; see your sessions), when FlowR signs in through one.
+pub async fn account_handler(Extension(config): Extension<Arc<AuthConfig>>) -> axum::response::Response {
+    if config.oidc_issuer.is_empty() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "This FlowR has no sign-in realm." }))).into_response();
+    }
+    let url = format!("{}/account/#/security/signingin", config.oidc_issuer.trim_end_matches('/'));
+    axum::response::Redirect::temporary(&url).into_response()
+}
+
+/// Roles whose sign-in needs a second factor (ID-9).
+pub(crate) fn mfa_role(role: &str) -> bool {
+    matches!(role, "superadmin" | "securityadmin")
+}
+
 pub(crate) async fn keycloak_login(
     config: &AuthConfig,
     email: &str,
     password: &str,
+    otp: Option<&str>,
 ) -> KcLogin {
     #[cfg(feature = "ee")]
     {
         if config.oidc_issuer.is_empty() { return KcLogin::Failed; }
         let Some((base, realm)) = split_issuer(&config.oidc_issuer) else { return KcLogin::Failed };
         let client = reqwest::Client::new();
-        match a3t_security::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password).await {
+        match a3t_security::oidc_admin::password_login(&client, &base, &realm, &config.oidc_client_id, email, password, otp).await {
             Ok(id) => {
                 let role = pick_role(&id.roles);
                 let user_id = if id.sub.is_empty() { format!("kc-{email}") } else { id.sub.clone() };
                 let out_email = id.email.clone().unwrap_or_else(|| email.to_string());
                 let name = id.name.clone().unwrap_or_else(|| id.username.clone());
                 info!(user = %user_id, email = %out_email, role = %role, "Login successful (oidc)");
-                KcLogin::Ok((user_id, "org-default".to_string(), role, out_email, name))
+                KcLogin::Ok((user_id, "org-default".to_string(), role, out_email, name), crate::auth::SignIn { mfa: id.second_factor, ..crate::auth::SignIn::now() })
             }
             Err(a3t_security::oidc_admin::IdpAdminError::SetupRequired) => KcLogin::SetupRequired,
             Err(e) => { warn!(email = %email, error = %e, "OIDC login failed"); KcLogin::Failed }
@@ -183,7 +245,7 @@ pub(crate) async fn keycloak_login(
     }
     #[cfg(not(feature = "ee"))]
     {
-        let _ = (config, email, password);
+        let _ = (config, email, password, otp);
         KcLogin::Failed
     }
 }
@@ -244,7 +306,7 @@ pub async fn signup_handler(
     }
 
     info!(user = %user_id, email = %body.email, "Signup successful");
-    let mut res = issue_session(&config, (user_id, org_id, role, body.email, body.name)).await;
+    let mut res = issue_session(&config, (user_id, org_id, role, body.email, body.name), crate::auth::SignIn::now()).await;
     if res.status() == StatusCode::OK {
         *res.status_mut() = StatusCode::CREATED;
     }

@@ -176,10 +176,11 @@ impl Snapshot {
             let org = PLATFORM_ORGS.iter().find(|(ns, _)| *ns == namespace).map(|(_, id)| *id).unwrap_or_default();
             return if super_ || self.org_role(org, user) == Some("admin") { NsAccess::Write } else { NsAccess::Run };
         }
-        let by_role = |role: &str| match role {
-            "owner" | "developer" => NsAccess::Write,
-            "operator" => NsAccess::Run,
-            "viewer" => NsAccess::Read,
+        // The project roles of the role table (ID-1).
+        let by_role = |role: &str| match flowr_policy::roles::project_access(role) {
+            Some("write") => NsAccess::Write,
+            Some("run") => NsAccess::Run,
+            Some("read") => NsAccess::Read,
             _ => NsAccess::None,
         };
         let Some(p) = self.projects.get(namespace) else {
@@ -270,13 +271,9 @@ impl Snapshot {
             return ProjectRoutes { namespace: namespace.into(), kind: "legacy", owner: "a3t".into(), private: false, people, groups };
         };
         let by_role = |role: &str| -> Option<(&'static str, NsAccess)> {
-            match role {
-                "owner" => Some(("owner", Write)),
-                "developer" => Some(("developer", Write)),
-                "operator" => Some(("operator", Run)),
-                "viewer" => Some(("viewer", Read)),
-                _ => None,
-            }
+            let r = flowr_policy::roles::role("project", role)?;
+            let a = match r.access.as_deref()? { "write" => Write, "run" => Run, "read" => Read, _ => return None };
+            Some((r.id.as_str(), a))
         };
         let is_member = |u: &str| p.members.iter().any(|(id, _)| id == u);
         for (id, role) in &p.members {
@@ -425,6 +422,10 @@ pub const SECURITY_ADMIN_CAPACITY: &str = "security-admin";
 /// How far up a capacity sits: 1 reads, 2 runs, 3 builds, 4 manages; 5 audits
 /// (security, beside the line rather than above it).
 pub fn capacity_rank(capacity: &str) -> u8 {
+    // A project role ranks as the role table says (ID-1).
+    if let Some(n) = flowr_policy::roles::role("project", capacity).and_then(|r| r.rank) {
+        return n;
+    }
     match capacity {
         "viewer" | "org-member" | "exposed" | "everyone" => 1,
         "operator" => 2,
@@ -605,6 +606,23 @@ pub struct ProjectGuard {
 pub const GUARD_TABLES: [&str; 3] = ["projects", "org_members", "orgs"];
 const UNKNOWN_RETRY: Duration = Duration::from_secs(2);
 
+/// RT-12: whether `namespace` belongs to an org (or is a project) that runs on
+/// its own runtimes only, by this pod's last snapshot. Read synchronously (the
+/// router can't wait); a project the snapshot doesn't know yet reads as not.
+pub fn isolated(namespace: &str) -> bool {
+    if PLATFORM.contains(&namespace) {
+        return false;
+    }
+    let Some(g) = PROJECT_GUARD.get() else { return false };
+    let snap = g.snapshot.read().unwrap().1.clone();
+    let policy = match snap.projects.get(namespace) {
+        Some(p) if p.owner_kind == "org" && p.runtime.is_empty() => snap.org_runtime.get(&p.owner).cloned().unwrap_or_default(),
+        Some(p) => p.runtime.clone(),
+        None => return false,
+    };
+    policy == "isolated"
+}
+
 /// Forget this pod's access snapshot; the next decision reads the tables again.
 pub fn invalidate() {
     if let Some(g) = PROJECT_GUARD.get() {
@@ -760,6 +778,10 @@ pub fn effective_namespace(_kind: ItemKind, namespace: &str, _name: &str, _type_
 /// platform's own namespaces, always are. A failed count admits: the quota protects
 /// neighbours, and it must not stop an org because the count couldn't be read.
 pub async fn admit(storage: &dyn StorageBackend, namespace: &str) -> Result<(), String> {
+    // RT-12: a fresh snapshot before the run is queued (the router reads it as is).
+    if let Some(g) = PROJECT_GUARD.get() {
+        let _ = g.snapshot_for(Some(namespace)).await;
+    }
     if PLATFORM.contains(&namespace) || namespace == crate::router::GATEWAY_NAMESPACE {
         return Ok(());
     }
@@ -791,7 +813,14 @@ pub fn install(storage: Arc<dyn StorageBackend>) {
     }));
     let guard = Arc::new(ProjectGuard::new(storage));
     let _ = PROJECT_GUARD.set(Arc::clone(&guard));
-    flowr_policy::namespace::set_namespace_guard(guard);
+    flowr_policy::namespace::set_namespace_guard(guard.clone());
+    // RT-12: the router reads the snapshot without waiting, so keep it fresh.
+    tokio::spawn(async move {
+        loop {
+            let _ = guard.snapshot().await;
+            tokio::time::sleep(REFRESH).await;
+        }
+    });
 }
 
 #[cfg(test)]

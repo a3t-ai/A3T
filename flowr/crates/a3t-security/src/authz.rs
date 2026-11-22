@@ -96,6 +96,9 @@ pub struct Resource {
     /// Attributes the schema declares (e.g. `destructive: true`).
     #[serde(default)]
     pub attributes: serde_json::Map<String, serde_json::Value>,
+    /// Entity tags (a Tool's whole-number call arguments, for `getTag`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tags: std::collections::BTreeMap<String, i64>,
 }
 
 /// Ambient security context threaded from the edge (authn layer) to the
@@ -105,6 +108,11 @@ pub struct SecurityContext {
     pub principal: Principal,
     #[serde(default)]
     pub attributes: serde_json::Map<String, serde_json::Value>,
+    /// The Cedar request context (`context.*`): Cedar JSON, extension values as
+    /// `{"__extn": {"fn": "ip", "arg": "10.0.0.1"}}`. Checked against the
+    /// action's declared context; empty for an action that declares none.
+    #[serde(default)]
+    pub context: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The outcome of an authorization decision.
@@ -215,12 +223,14 @@ mod tests {
                 owner: None,
             },
             attributes: Default::default(),
+            context: Default::default(),
         };
         let action = Action::new("tool:invoke").unwrap();
         let resource = Resource {
             type_name: "Tool".into(),
             id: "http_fetch".into(),
             attributes: Default::default(),
+            tags: Default::default(),
         };
         let err = DenyAllEngine.enforce(&ctx, &action, &resource).unwrap_err();
         match err {

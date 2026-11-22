@@ -51,9 +51,9 @@ pub async fn first_password_handler(
         return refuse(StatusCode::BAD_REQUEST, "Choose a password different from the temporary one.");
     }
     // Prove the temporary password: Keycloak says "not fully set up" only when it is right.
-    match keycloak_login(&config, &email, &body.password).await {
+    match keycloak_login(&config, &email, &body.password, None).await {
         KcLogin::SetupRequired => {}
-        KcLogin::Ok(_) => return refuse(StatusCode::CONFLICT, "Your account is already set up. Sign in with your password."),
+        KcLogin::Ok(..) => return refuse(StatusCode::CONFLICT, "Your account is already set up. Sign in with your password."),
         KcLogin::Failed => return refuse(StatusCode::UNAUTHORIZED, "Invalid credentials"),
     }
     #[cfg(feature = "ee")]
@@ -62,8 +62,8 @@ pub async fn first_password_handler(
             return resp;
         }
         info!("first-password: new password set");
-        return match keycloak_login(&config, &email, &body.new_password).await {
-            KcLogin::Ok(identity) => issue_session(&config, identity).await,
+        return match keycloak_login(&config, &email, &body.new_password, None).await {
+            KcLogin::Ok(identity, si) => issue_session(&config, identity, si).await,
             KcLogin::SetupRequired => refuse(StatusCode::FORBIDDEN, "Your password is set, but your account needs more setup. Ask your administrator."),
             KcLogin::Failed => refuse(StatusCode::SERVICE_UNAVAILABLE, "Your password is set. Sign in with it."),
         };

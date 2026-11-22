@@ -190,11 +190,13 @@ do:
 
   /// A template row from the registry, as the page shows it.
   function toTemplate(r: any) {
+    // A built-in template's row points at its flow: its version is the flow's.
+    const version = r.spec_version || r.version || 'v1.0';
     return ({
       name: r.name,
-      version: r.version ?? 'v1.0',
-      activeVersion: r.version ?? 'v1.0',
-      versions: [r.version ?? 'v1.0'],
+      version,
+      activeVersion: version,
+      versions: [version],
       description: r.spec_yaml ? `Template: ${r.name}` : '',
       icon: r.name.slice(0, 2).toUpperCase(),
       color: '#' + Math.floor(Math.abs(Math.sin(r.name.length) * 0xffffff)).toString(16).padStart(6, '0'),

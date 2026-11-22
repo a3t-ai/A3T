@@ -1,6 +1,6 @@
 ---
 title: Settings
-description: Set up the platform. Organisations and their members, an organisation's own sign-in (SSO), and the platform's settings.
+description: Set up the platform. Organisations and their members, where an organisation's own sign-in is managed, and the platform's settings.
 sidebar:
   order: 16
 ---
@@ -27,18 +27,13 @@ Each row shows its members, your role in it, and **Runtime**: **Shared** (its pr
 
 ## An organisation's own sign-in (SSO)
 
-![An organisation's members and its sign-in: identity provider, email domains, groups to role](../../../assets/screens/settings-org.png)
+An organisation's sign-in is managed under [Security](../security/) › *org* › Identity › **Sign-in** (**Members** here opens the same page). There its admins:
 
-An organisation can sign its people in with **its own identity provider**: Entra ID, Okta, Google, its own Keycloak. A3T's Keycloak brokers it. People who sign in that way land in that organisation only, with the role their groups give them, checked at every sign-in.
+- **connect their own identity provider** (any OpenID Connect provider: Entra ID, Okta, Google, their own Keycloak) with its issuer, client id and secret, groups claim and email domains; A3T checks it and connects it, with no platform staff involved;
+- say **which groups get which org role** in the policy file `access/org.yaml`;
+- turn on **Provisioning (SCIM)**, so people deactivated in their provider lose the organisation at once.
 
-| Field | What it means | Example |
-|---|---|---|
-| **Identity provider** | The name its provider is connected to A3T's Keycloak under | `acme` |
-| **Email domains** | People who start single sign-on with a work email at one of these domains go to this organisation's provider | `acme.com` |
-| **Groups → role** | Which group in their provider gives which role here | `a3t-admins` → admin |
-| **Anyone else** | The role for people with none of those groups: **member**, or **no access** | member |
-
-**Save sign-in** applies it from the next sign-in. On the sign-in page, people choose single sign-on and enter their work email (or the organisation's name); A3T sends them to their organisation's provider and back.
+On the sign-in page, people choose **Sign in with single sign-on** and enter their work email (or the organisation's name); A3T sends them to their organisation's provider and back. See [Identity and roles](../../governance/identity-and-roles/#your-orgs-own-identity-provider).
 
 <Aside type="note">
 Memberships made by sign-in are rewritten at every sign-in, from the person's groups. People added by hand on **Members** are not changed by sign-in. An organisation's people can still be given access to another organisation's projects, by that project's owner, by name.

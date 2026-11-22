@@ -1,0 +1,96 @@
+---
+title: Identity and roles
+description: How people and agents sign in, the roles they hold on the platform, in an org and in a project, and how an org brings its own identity provider and SCIM.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Who can act
+
+| Who | How they prove it | What they carry |
+|---|---|---|
+| **A person** | A3T's sign-in (Keycloak realm `a3t`), or their **org's own identity provider** through it | Their platform role, their org role and their role in each project |
+| **An agent** | Runs for a person (a chat, a flow they started), or is called with one of its **keys** | At most the roles in its own policy (its role ceiling), never more than its person |
+| **An app calling an agent** | The agent's key (`Authorization: Bearer a3tk_…`) | Acts as the person who made the key, while that person and the agent are active |
+
+Access tokens last an hour and name their sign-in **session**. Signing out ends the session on every A3T server within seconds, and a refresh token that is used twice ends it too.
+
+## Roles
+
+There is one role table (`a3t/policies/roles.yaml`), served at `GET /security/roles`; the console takes its names and descriptions from it.
+
+### Platform roles
+
+| Role | Does |
+|---|---|
+| **SuperAdmin** | Runs the platform: every org, every project, Security and the Decision log. Can [act as](#act-as) another user. |
+| **SecurityAdmin** | Platform InfoSec: Security, policies and the Decision log for every org. No project work. |
+| **Admin**, **Operator** | Build in the projects they belong to, and in their own. Never security. |
+| **Viewer** | Reads what they are shown. |
+
+SuperAdmin and SecurityAdmin always sign in with **a password and an authenticator code** (TOTP). A local password alone is refused for them.
+
+### Org roles
+
+| Role | Does |
+|---|---|
+| **Org admin** | Manages the org: its members, projects, sign-in and policy files |
+| **Org security admin** | The org's security: its policy files, its agents' rules and its decisions; reads its projects |
+| **Org member** | Belongs to the org; reads its open projects |
+
+### Project roles
+
+| Role | Access | Does |
+|---|---|---|
+| **Owner** | write | Everything in the project, including its people and rules |
+| **Developer** | write | Builds and runs: agents, templates, flows, triggers, resources, canvases |
+| **Operator** | run | Deploys and runs; no authoring |
+| **Viewer** | read | Reads |
+
+An org can define its **own roles** as files (`roles/<name>.yaml`): a baseline role (`Admin`, `Operator`, `Viewer`) minus permissions, for example a *support lead* who builds like an Admin but can't delete flows. See [Policy files](../policy-files/).
+
+## Your org's own identity provider
+
+An org's admins connect their identity provider themselves, under **Security → *org* → Identity → Sign-in**. A3T supports any OpenID Connect provider (Entra ID, Okta, Google Workspace, Ping, your own Keycloak).
+
+1. Register A3T as an app at your provider, with the **redirect URI** the page shows (the A3T realm's broker endpoint for `org-<your org>`). Allow the `openid email profile` scopes and include a **groups** claim.
+2. On the Sign-in page, enter the **issuer**, **client id** and **client secret**, the name of the **groups claim**, and your **email domains**.
+3. A3T reads the provider's discovery document (https only, never an address on A3T's own network) and connects it. From then on, your people choose **Sign in with single sign-on** and enter their work email (or the org's name).
+
+What an org can't change: its people land **only in that org** (whatever their token says), their groups are re-read at every sign-in, PKCE is used, and no provider tokens are stored.
+
+**Which groups get which org role** is the policy file `access/org.yaml`:
+
+```yaml
+kind: a3t/org-access
+description: Who in our provider gets which role in acme.
+groups:
+  a3t-admins: admin
+  engineering: member
+# default: member   # anyone else from our provider; leave it out for no role
+```
+
+Roles are `admin`, `securityadmin` or `member`; someone in several groups gets the highest.
+
+A person's sign-in membership is rewritten at every sign-in from their groups; members an admin added by hand are never changed by sign-in.
+
+### SCIM provisioning
+
+Turn on **Provisioning (SCIM)** on the same page to get a token (shown once) and the base URL `/scim/v2/orgs/<org>`. Give both to your provider's SCIM app. A3T supports `/Users` (create, replace, patch, delete; filter by `userName` or `externalId`).
+
+When your provider **deactivates or removes** someone, they lose your org at once: their org membership and their roles on its projects go, their A3T sessions end, and sign-in through your provider refuses them until they are active again. Each change is in the decision log (`org:scim_provision`, `org:scim_deprovision`).
+
+<Aside type="note">
+Roles still come from the groups claim at sign-in; SCIM `/Groups` is not supported yet. Ending a deprovisioned person's sessions signs them out of every org they belong to; they sign in again for the others.
+</Aside>
+
+## Act as
+
+A SuperAdmin can act as a user or a role to see what they see (**Profile → Act as**, with a reason). Every decision made meanwhile records who was really acting (`impersonated_by`). While acting, nobody can make agent keys or SCIM tokens.
+
+## Agent keys and agent identity
+
+- **Keys** (Agent → Keys): each key can expire, can be **rotated** (a new key, the old one stops), and is revoked when the agent is deleted or blocked, or when its maker can no longer sign in. The agent's budget can limit calls a minute through each key, counted across every A3T server.
+- **Agent identity on outbound calls.** When an agent calls a tool server outside A3T, the request carries an `A3T-Agent-Identity` header: a five-minute token (EdDSA) naming the agent (`sub: agent:<id>`), the person it acts for (`act.sub`), the project, and the server it is for (`aud`). Verify it with the keys at `/.well-known/agent-jwks.json`.

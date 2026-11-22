@@ -69,6 +69,8 @@ export const APP_CONTEXT: Record<string, { label: string; source: string; focuse
   security: { label: 'Security', source: 'security-sections', focuses: true },
   // Views of the decision log; the selected project scopes them.
   logs: { label: 'Decisions', source: 'decision-views', focuses: true },
+  // What waits on a person to approve; the one picked opens in Details (GOV-7).
+  approvals: { label: 'Approvals', source: 'approvals', focuses: true },
   // Every Settings page is an item; the form opens in Details.
   settings: { label: 'Settings', source: 'settings-sections', focuses: true },
 };

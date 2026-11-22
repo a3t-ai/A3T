@@ -120,6 +120,18 @@ impl TaskHandler for LanceDbHandler {
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "update requires 'filter'"))?;
                 let values = with.get("values").and_then(|v| v.as_object())
                     .ok_or_else(|| RuntimeError::task_failed(&task.name, "update requires 'values' object"))?;
+                // GOV-9: a change to an agent's record waits for a second admin when
+                // its org asks for one (four_eyes), as policy changes do.
+                if table_name == "agent_configs" && !matches!(ctx.principal, flowr_policy::Principal::Service { .. }) {
+                    if let Some(storage) = ctx.storage.as_ref().and_then(|s| s.downcast_ref::<std::sync::Arc<dyn flowr_storage::StorageBackend>>()) {
+                        let rows = db.query(table_name, Some(filter), 2).await.map(|b| batches_to_json(&b)).unwrap_or_default();
+                        if let [row] = rows.as_slice() {
+                            if let Some(held) = crate::policy_changes::hold_agent_update(storage.as_ref(), &ctx.principal, row, filter, values).await {
+                                return Ok(TaskResult::new(held));
+                            }
+                        }
+                    }
+                }
                 // Say what was changed: an update that matches no row changed nothing.
                 let rows = db.query(table_name, Some(filter), 100_000).await.map(|b| batches_to_json(&b).len()).map_err(comm)?;
                 if rows == 0 {
@@ -206,7 +218,7 @@ pub fn batches_to_json(batches: &[arrow_array::RecordBatch]) -> Vec<Value> {
 /// `a3t-*` CRUD flows are how the console reads it. The MCP agent tools used to scan
 /// a state key instead, which nothing writes — so they reported "no agents" while the
 /// console listed several. This is the one reader they now share.
-pub(crate) async fn query_platform_table(
+pub async fn query_platform_table(
     storage: &dyn flowr_storage::StorageBackend,
     table: &str,
     filter: Option<String>,
@@ -224,6 +236,6 @@ pub(crate) async fn query_platform_table(
 /// Quote a value for a platform filter expression. Doubling the quote is what the
 /// update path already does; without it a name containing an apostrophe would
 /// break the expression (or worse, change which rows match).
-pub(crate) fn sql_quote(v: &str) -> String {
+pub fn sql_quote(v: &str) -> String {
     format!("'{}'", v.replace('\'', "''"))
 }

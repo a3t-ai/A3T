@@ -272,6 +272,9 @@ pub fn router(storage: Arc<dyn StorageBackend>) -> Router {
         // Keys for its data plane (crate::agent_keys): list, make (shown once), revoke.
         .route("/agents/:agent_id/keys", get(list_keys).post(create_key))
         .route("/agents/:agent_id/keys/:key_id", delete(revoke_key))
+        .route("/agents/:agent_id/keys/:key_id/rotate", post(rotate_key))
+        // RT-5: the kill switch — blocked, its runs cancelled on every pod.
+        .route("/agents/:agent_id/kill", post(kill_agent))
         .route("/agents/:agent_id/policy", get(security::get_policy).put(security::put_policy).delete(security::delete_policy))
         .route("/agents/:agent_id/security", get(security::get_security))
         .route("/agents/:agent_id/tools", get(list_agent_tools))
@@ -578,13 +581,116 @@ async fn create_key(State(s): St, p: P, Path(id): Path<String>, body: Option<Jso
     both(async {
         let principal = who(p);
         let row = key_owner(s.as_ref(), &principal, &id).await?;
+        // ID-5: a key acts as its maker; while acting as someone (Act as) it
+        // would act as them, so none is made.
+        if let Some(by) = principal.impersonated_by() {
+            return Err(err(StatusCode::FORBIDDEN, format!("no key is made while {by} acts as {}: sign in as yourself", principal.id())));
+        }
         let name = body.as_ref().map(|Json(b)| col(b, "name")).unwrap_or_default();
-        let k = crate::agent_keys::create(s.as_ref(), &row, &name, principal.id(), principal.roles())
-            .await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let days = body.as_ref().and_then(|Json(b)| b.get("expires_in_days").and_then(|v| v.as_i64())).unwrap_or(crate::agent_keys::DEFAULT_DAYS);
+        let k = crate::agent_keys::create_for(s.as_ref(), &row, &name, principal.id(), principal.roles(), days, "")
+            .await.map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
         flowr_policy::audit::event(&principal, "key:create", "AgentKey", &format!("{id}/{}", col(&k, "id")),
             Some(&project_of(&row)), None, None, Some(&format!("key {:?} for agent {id}", name)));
         Ok((StatusCode::CREATED, Json(k)).into_response())
     }.await)
+}
+
+/// `{grace_hours?}` (default 24) → the new key, shown this once; the old one
+/// keeps working until `old_expires_at` (ID-5).
+async fn rotate_key(State(s): St, p: P, Path((id, key_id)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let row = key_owner(s.as_ref(), &principal, &id).await?;
+        if let Some(by) = principal.impersonated_by() {
+            return Err(err(StatusCode::FORBIDDEN, format!("no key is made while {by} acts as {}: sign in as yourself", principal.id())));
+        }
+        let grace = body.as_ref().and_then(|Json(b)| b.get("grace_hours").and_then(|v| v.as_i64())).unwrap_or(24);
+        match crate::agent_keys::rotate(s.as_ref(), &row, &key_id, principal.id(), principal.roles(), grace).await.map_err(|e| err(StatusCode::BAD_REQUEST, e))? {
+            Some((mut k, ends)) => {
+                flowr_policy::audit::event(&principal, "key:rotate", "AgentKey", &format!("{id}/{key_id}"),
+                    Some(&project_of(&row)), None, None, Some(&format!("new key {}; the old one stops at {ends}", col(&k, "id"))));
+                k["old_expires_at"] = json!(ends);
+                Ok((StatusCode::CREATED, Json(k)).into_response())
+            }
+            None => Err(err(StatusCode::NOT_FOUND, format!("agent {id:?} has no key {key_id:?}"))),
+        }
+    }.await)
+}
+
+/// RT-5, the kill switch: `{reason}`. The agent is blocked (every call to it,
+/// its keys and its triggers' turns are refused), and its runs in flight are
+/// cancelled on every pod through the engine store — within seconds, wherever
+/// they run. Its owner's project writers, its org's security managers and
+/// platform InfoSec may pull it. Unblocking is its Controls › Unblock.
+async fn kill_agent(State(s): St, p: P, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
+    both(async {
+        let principal = who(p);
+        let s = s.as_ref();
+        let row = agent_row(s, &id).await?;
+        let project = project_of(&row);
+        if crate::access::rest_write(&principal, &project).await.is_err()
+            && !crate::org_policy::manages_org_security(s, &principal, &col(&row, "org_id")).await
+        {
+            return Err(err(StatusCode::FORBIDDEN, "the kill switch is for its project's writers, its org's security admins and platform InfoSec"));
+        }
+        let reason: String = body.as_ref().map(|Json(b)| col(b, "reason")).unwrap_or_default().chars().take(500).collect();
+        if reason.trim().len() < 4 {
+            return Err(err(StatusCode::BAD_REQUEST, "reason: say why it is stopped (kept in the decision log)"));
+        }
+        let prev = col(&row, "status");
+        let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+        if prev != "blocked" {
+            let mut v = Map::new();
+            v.insert("status".into(), json!("blocked"));
+            v.insert("updated_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+            db.update("agent_configs", &format!("id = {}", sql_quote(&id)), &v).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            // As the block action records it, so Unblock gives back the status it had.
+            let _ = db.insert("agent_events", &[json!({
+                "id": uuid::Uuid::now_v7().to_string(), "agent_config_id": id, "event_type": "blocked",
+                "payload": json!({ "prev": prev, "reason": reason, "by": principal.id(), "kill": true }).to_string(),
+                "created_at": chrono::Utc::now().to_rfc3339(),
+            })]).await;
+        }
+        let cancelled = cancel_agent_runs(s, &id, principal.id(), &reason).await;
+        flowr_policy::audit::event(&principal, "agent:kill", "Agent", &id, Some(&project), None, None,
+            Some(&format!("{reason} · {} run(s) cancelled", cancelled.len())));
+        tracing::warn!(agent = %id, by = %principal.id(), runs = cancelled.len(), "agent killed: blocked and its runs cancelled");
+        ok(json!({ "agent_id": id, "blocked": true, "was": prev, "cancelled_runs": cancelled }))
+    }.await)
+}
+
+/// Every run of `agent` still in flight, on any pod: its conversations'
+/// sessions are `<agent>:…`. Cancelled through the engine store (each owning
+/// worker stops its run when the request reaches it) and on this pod at once.
+async fn cancel_agent_runs(s: &dyn StorageBackend, agent: &str, by: &str, reason: &str) -> Vec<String> {
+    use flowr_storage::engine::{RunPhase, RunQuery, RunRequest};
+    let mut out = Vec::new();
+    let Some(engine) = s.engine() else { return out };
+    let prefix = format!("{agent}:");
+    let mut cursor = None;
+    for _ in 0..20 {
+        let q = RunQuery {
+            phases: vec![RunPhase::Pending, RunPhase::Running, RunPhase::Waiting, RunPhase::Suspended],
+            cursor: cursor.clone(), limit: 200, ..Default::default()
+        };
+        let Ok(page) = engine.list(q).await else { break };
+        for r in &page.items {
+            let session = r.input.get("session_id").and_then(|v| v.as_str()).unwrap_or_default();
+            let principal_agent = r.principal.get("agent_id").and_then(|v| v.as_str()).unwrap_or_default();
+            if session.starts_with(&prefix) || principal_agent.starts_with(&format!("agent:{prefix}")) {
+                if engine.request(r.run_id, RunRequest::Cancel { by: by.to_string(), reason: format!("agent stopped: {reason}") }).await.is_ok() {
+                    crate::ops::stop_run(r.run_id, &format!("agent stopped: {reason}"));
+                    out.push(r.run_id.to_string());
+                }
+            }
+        }
+        match page.next {
+            Some(n) => cursor = Some(n),
+            None => break,
+        }
+    }
+    out
 }
 
 async fn revoke_key(State(s): St, p: P, Path((id, key_id)): Path<(String, String)>) -> Response {
@@ -745,7 +851,7 @@ pub const DEPLOYMENTS: &str = "agent_deployments";
 const VERSION_COLUMNS: [&str; 10] = ["agent_id", "version", "template", "flows", "memory", "layers", "lineage", "note", "created_by", "created_at"];
 const DEPLOYMENT_COLUMNS: [&str; 6] = ["agent_id", "environment", "version", "previous", "deployed_by", "deployed_at"];
 
-async fn version_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
+pub(crate) async fn version_rows(s: &dyn StorageBackend, id: &str) -> Result<Vec<Value>, Response> {
     let db = open_platform_db(s, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
     let schema: Map<String, Value> = VERSION_COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
     db.create_table(VERSIONS, Some(&schema), "create_if_not_exists").await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -761,7 +867,7 @@ fn version_number(row: &Value) -> u64 {
 }
 
 /// A stored row as the API shows it: the JSON columns parsed.
-fn version_json(row: &Value) -> Value {
+pub(crate) fn version_json(row: &Value) -> Value {
     let mut v = row.clone();
     if let Some(m) = v.as_object_mut() {
         for k in ["template", "flows", "memory", "layers", "lineage"] {

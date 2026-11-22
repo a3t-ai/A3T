@@ -61,7 +61,9 @@ pub async fn impersonate_handler(
     if !my_roles.iter().any(|r| r == roles::SUPER_ADMIN) {
         return refuse(StatusCode::FORBIDDEN, "Only a SuperAdmin can act as another user or role.");
     }
-    let my_email = claims.map(|c| c.0.email.clone()).unwrap_or_default();
+    let my_email = claims.as_ref().map(|c| c.0.email.clone()).unwrap_or_default();
+    // Acting as someone keeps the SuperAdmin's own sign-in (their second factor).
+    let my_signin = claims.as_ref().and_then(|c| c.0.si.clone());
     let reason = body.reason.as_deref().map(str::trim).unwrap_or_default().to_string();
     if reason.chars().count() < MIN_REASON {
         return refuse(StatusCode::BAD_REQUEST, "Say why you are acting as them (at least 8 characters). It goes in the decision log.");
@@ -116,6 +118,7 @@ pub async fn impersonate_handler(
         aud: config.resource_uri.clone(), iss: config.resource_uri.clone(), sid,
         exp: now + secs as usize, iat: now,
         act: Some(Actor { sub: my_id.clone(), email: my_email.clone() }),
+        si: my_signin,
     };
     let token = match crate::auth::sign(&config, &token_claims) {
         Ok(t) => t,

@@ -205,16 +205,16 @@ mod tests {
     #[test]
     fn access_tokens_need_this_issuer_audience_and_a_session() {
         let c = config();
-        let t = create_token(&c, "s1", "u1", "org", "viewer", "e", "n").unwrap();
+        let t = create_token(&c, "s1", "u1", "org", "viewer", "e", "n", None).unwrap();
         assert_eq!(validate_token(&t, &c).unwrap().sid, "s1");
         // Another issuer (same secret, same audience) is refused.
         let mut other = config();
         other.jwt_secret = c.jwt_secret.clone();
         other.resource_uri = "https://elsewhere.test".into();
-        let foreign = create_token(&other, "s1", "u1", "org", "viewer", "e", "n").unwrap();
+        let foreign = create_token(&other, "s1", "u1", "org", "viewer", "e", "n", None).unwrap();
         assert!(validate_token(&foreign, &c).is_err());
         // No session named: refused.
-        let none = create_token(&c, "", "u1", "org", "viewer", "e", "n").unwrap();
+        let none = create_token(&c, "", "u1", "org", "viewer", "e", "n", None).unwrap();
         assert!(validate_token(&none, &c).is_err());
         // A revoked session: refused.
         c.revoked.insert("s1");
@@ -225,13 +225,13 @@ mod tests {
     #[test]
     fn a_refresh_token_is_not_an_access_token_nor_the_reverse() {
         let c = config();
-        let r = create_refresh_token(&c, "u1", "s1", "j1", now() + 60).unwrap();
+        let r = create_refresh_token(&c, "u1", "s1", "j1", now() + 60, None).unwrap();
         assert!(validate_token(&r, &c).is_err());
         assert_eq!(validate_refresh(&r, &c, false).unwrap().jti, "j1");
-        let a = create_token(&c, "s1", "u1", "org", "viewer", "e", "n").unwrap();
+        let a = create_token(&c, "s1", "u1", "org", "viewer", "e", "n", None).unwrap();
         assert!(validate_refresh(&a, &c, false).is_err());
         // Expired: refused for refresh, still names its session for sign-out.
-        let old = create_refresh_token(&c, "u1", "s1", "j1", now() - 120).unwrap();
+        let old = create_refresh_token(&c, "u1", "s1", "j1", now() - 120, None).unwrap();
         assert!(validate_refresh(&old, &c, false).is_err());
         assert!(validate_refresh(&old, &c, true).is_ok());
     }

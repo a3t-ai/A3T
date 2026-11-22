@@ -44,7 +44,7 @@ impl TaskHandler for HttpHandler {
         &self,
         task: &NamedTask,
         _input: Value,
-        _ctx: &mut ExecutionContext,
+        ctx: &mut ExecutionContext,
     ) -> Result<TaskResult> {
         let call_task = match &task.task {
             Task::Call(c) => c,
@@ -76,6 +76,15 @@ impl TaskHandler for HttpHandler {
         };
 
         info!(task = %task.name, method = %method, uri = %uri, "executing HTTP call");
+
+        // RT-1: where it may go (no private or metadata address; the org's and
+        // the agent's allowlists), decided on the URL it will really call.
+        let agent = ctx.template_meta.get("template").and_then(|t| t.get("agent")).and_then(|a| a.as_str());
+        if let Err(why) = flowr_policy::egress::check(&uri, &ctx.namespace, agent).await {
+            flowr_policy::audit::event_decision(&ctx.principal, "egress:call", "Url", &uri, Some(&ctx.namespace), None,
+                &flowr_policy::PolicyDecision::Deny { reason: why.clone(), policy_ids: vec!["egress".into()] }, Some("call:http"));
+            return Err(RuntimeError::task_failed(&task.name, format!("refused: {why}")));
+        }
 
         let mut req = match method.to_uppercase().as_str() {
             "GET" => self.client.get(&uri),

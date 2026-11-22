@@ -111,9 +111,10 @@ function signedIn(data: api.LoginResponse) {
 
 /// `code: 'password_change_required'` — the password was right but temporary:
 /// ask for a new one and call `setFirstPassword`.
-export async function login(email: string, password: string): Promise<LoginResult> {
+/// `otp`: the authenticator code — SuperAdmin and SecurityAdmin sign-ins need one (ID-9).
+export async function login(email: string, password: string, otp?: string): Promise<LoginResult> {
   if (!email || !password) return { ok: false, error: 'Email and password required' };
-  const res = await api.login(email, password);
+  const res = await api.login(email, password, otp?.trim() || undefined);
   if (res.ok && res.data) { signedIn(res.data); return { ok: true }; }
   return { ok: false, error: res.error || 'Login failed', code: res.detail?.code };
 }

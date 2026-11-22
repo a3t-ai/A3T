@@ -14,17 +14,20 @@
   import '$lib/components/agent/agent.css';
   import '$lib/components/triggers/triggers.css';
   import OrgSecurity from '$lib/components/security/OrgSecurity.svelte';
+  import AgentInventory from '$lib/components/security/AgentInventory.svelte';
   import { securityPolicies, idp, audit, getEdition, people as peopleApi, type PolicyTestBody, type AuditPeople, type AuditPerson } from '$lib/services/api';
   import { getActivePanel, navigateTo, navigateToDetail } from '$lib/stores/panels.svelte.ts';
   import { getProject, namespacesFor, allProjectNamespaces, loadProjects } from '$lib/stores/context.svelte.ts';
   import { bumpItems } from '$lib/stores/apps.svelte.ts';
   import { isInfosec, opensSecurity, userRole } from '$lib/stores/auth';
+  import { roles, roleLabel } from '$lib/core/auth/roles.svelte.ts';
 
   type Policy = { namespace: string; name: string; cedar: string; description?: string | null; readOnly?: boolean };
   const BASELINE: Policy = { namespace: 'system', name: 'baseline', cedar: '', readOnly: true,
     description: 'Deny-by-default guardrails compiled into the EE runtime. Always applies beneath every project policy; forbid overrides permit.' };
 
-  let view = $state<'policy' | 'identity' | 'org' | 'new' | null>(null);
+  let view = $state<'policy' | 'identity' | 'org' | 'new' | 'agents' | null>(null);
+  let invOrg = $state('');
   let orgH = $state('');
   let orgProject = $state('');
   let orgSection = $state<'identity' | 'policy'>('identity');
@@ -55,10 +58,12 @@
     denied = ''; tab = 'overview'; msg = ''; testRes = null; decisions = null;
     // Say who it is for, and ask the server nothing it would refuse.
     if (!opensSecurity()) { denied = NO_SECURITY; view = 'policy'; pol = null; return; }
+    // agents:<org id|all> — the agent inventory (GOV-10).
+    if (id.startsWith('agents:')) { view = 'agents'; pol = null; invOrg = id.slice('agents:'.length); return; }
     // org:<handle>[:<tab>] — the org's identity; orgfiles:<handle> — its policy files.
     if (id.startsWith('org:') || id.startsWith('orgfiles:')) {
       const [kind, h, t, ns] = id.split(':');
-      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; orgSection = kind === 'orgfiles' ? 'policy' : 'identity'; tab = t || (kind === 'orgfiles' ? 'files' : 'overview'); return;
+      view = 'org'; pol = null; orgH = h; orgProject = ns ?? ''; orgSection = kind === 'orgfiles' ? 'policy' : 'identity'; tab = t || (kind === 'orgfiles' ? 'rules' : 'overview'); return;
     }
     const platformOnly = id === 'identity' || id === 'policies' || id.startsWith('identity:') || id === 'baseline';
     if (platformOnly && !infosec) { denied = "The platform's sign-in realm and baseline are for SuperAdmin and SecurityAdmin."; view = 'policy'; pol = null; return; }
@@ -202,10 +207,11 @@
   // Filters: who, platform role, org, project (and their capacity in it).
   let fQ = $state(''); let fRole = $state(''); let fOrg = $state(''); let fProject = $state(''); let fCap = $state('');
   let openRow = $state('');
-  const CAP_LABEL: Record<string, string> = {
-    owner: 'Owner', developer: 'Developer', operator: 'Operator', viewer: 'Viewer', 'org-admin': 'Org admin',
-    'org-securityadmin': 'Org security admin', 'org-member': 'Org member', superadmin: 'SuperAdmin', exposed: 'Shared with them',
-  };
+  const CAP_LABEL: Record<string, string> = $derived({
+    ...Object.fromEntries(roles('project').map((r) => [r.id, r.label])),
+    'org-admin': roleLabel('org', 'admin', 'Org admin'), 'org-securityadmin': roleLabel('org', 'securityadmin', 'Org security admin'),
+    'org-member': roleLabel('org', 'member', 'Org member'), superadmin: 'SuperAdmin', exposed: 'Shared with them',
+  });
   const ACCESS_WORD: Record<string, string> = { write: 'builds and changes', run: 'runs', read: 'reads' };
   const audRows = $derived.by(() => {
     if (!aud) return [] as (AuditPerson & { here?: AuditPerson['projects'][number] })[];
@@ -226,13 +232,10 @@
   const realmUser = (id: string) => users.find((u) => u.id === id);
   // The realm roles a person can hold. Only a SuperAdmin gives SuperAdmin or
   // SecurityAdmin (the server enforces it too).
-  const REALM_ROLES = [
-    { id: 'viewer', label: 'Viewer', what: 'reads what is in their projects' },
-    { id: 'operator', label: 'Operator', what: 'today the same as Admin in their projects (A3T maps it to Admin)' },
-    { id: 'admin', label: 'Admin', what: 'creates and changes flows, agents and resources in their projects' },
-    { id: 'securityadmin', label: 'SecurityAdmin', what: 'Security and the Decision log; no project work', infosec: true },
-    { id: 'superadmin', label: 'SuperAdmin', what: 'everything, every org', infosec: true },
-  ];
+  // From the role table (ID-1), lowest first.
+  const REALM_ORDER = ['viewer', 'operator', 'admin', 'securityadmin', 'superadmin'];
+  const REALM_ROLES = $derived(roles('platform').slice().sort((a, b) => REALM_ORDER.indexOf(a.id) - REALM_ORDER.indexOf(b.id))
+    .map((r) => ({ id: r.id, label: r.label, what: r.what, infosec: r.id === 'superadmin' || r.id === 'securityadmin' })));
   type UserEdit = { id: string | null; email: string; name: string; password: string; temporary: boolean; roles: string[]; rolesLoaded: boolean; rolesBefore: string };
   let uEdit = $state<UserEdit | null>(null);
   let uMsg = $state('');
@@ -422,6 +425,9 @@
 
   {:else if view === 'org'}
     <OrgSecurity org={orgH} section={orgSection} project={orgProject} bind:tab />
+
+  {:else if view === 'agents'}
+    <AgentInventory org={invOrg} />
 
   {:else if view === 'identity'}
     <div class="panel-layout">

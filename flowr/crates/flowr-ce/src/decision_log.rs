@@ -34,6 +34,9 @@ const QUEUE: usize = 200_000;
 const FLUSH: Duration = Duration::from_secs(1);
 const BATCH: usize = 2_000;
 const PARALLEL: usize = 8;
+/// How often each process writes its chains' heads as an anchor (AUD-4).
+const ANCHOR_EVERY: Duration = Duration::from_secs(3600);
+pub const ANCHORS: &str = "audit_anchors";
 /// How long an agent's running version is remembered.
 const VERSION_TTL: Duration = Duration::from_secs(30);
 
@@ -92,11 +95,17 @@ pub fn store_statement(r: &AuditRecord) -> String {
     opt("session", &r.session);
     opt("flow", &r.flow);
     opt("policy_version", &r.policy_version);
+    opt("chain", &r.chain);
+    opt("prev_hash", &r.prev_hash);
+    opt("hash", &r.hash);
     if !r.policy_ids.is_empty() {
         f.push(format!("policy_ids = {}", aql_str(&r.policy_ids.join(","))));
     }
     if !r.roles.is_empty() {
         f.push(format!("roles = {}", aql_str(&r.roles.join(","))));
+    }
+    if let Some(n) = r.seq {
+        f.push(format!("seq = {n}"));
     }
     let org = r.org.as_deref().unwrap_or("platform");
     format!("STORE INTO EPISODIC ({}) NAMESPACE {}", f.join(", "), aql_str(&namespace(org)))
@@ -130,6 +139,36 @@ pub fn from_row(row: &Value) -> Value {
         "project": s("project"), "org": s("org"), "roles": list("roles"),
         "agent": s("agent"), "agent_version": s("agent_version"), "agent_owner": s("agent_owner"),
         "session": s("session"), "flow": s("flow"), "policy_version": s("policy_version"),
+        "chain": s("chain"), "seq": d.get("seq").and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))),
+        "prev_hash": s("prev_hash"), "hash": s("hash"),
+    })
+}
+
+/// AUD-4: what a record's hash covers, in one string — the same from a record
+/// about to be written and from one read back.
+pub fn canonical(v: &Value) -> String {
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let list = |k: &str| v.get(k).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default();
+    let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    [s("id"), n("ts_ms").to_string(), s("principal_kind"), s("principal_id"), s("on_behalf_of"), s("impersonated_by"),
+     s("action"), s("resource_type"), s("resource_id"), s("decision"), s("reason"), s("project"), s("org"),
+     list("policy_ids"), list("roles"), s("agent"), s("policy_version"), s("chain"), n("seq").to_string(), s("prev_hash")]
+        .join("\u{1f}")
+}
+
+pub fn hash_of(v: &Value) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(canonical(v).as_bytes()))
+}
+
+/// A record as `from_row` would read it back (to hash it the same way).
+fn as_read(r: &AuditRecord) -> Value {
+    json!({
+        "id": r.id, "ts_ms": r.ts_ms, "principal_kind": r.principal_kind, "principal_id": r.principal_id,
+        "on_behalf_of": r.on_behalf_of, "impersonated_by": r.impersonated_by, "action": r.action,
+        "resource_type": r.resource_type, "resource_id": r.resource_id, "decision": r.decision, "reason": r.reason,
+        "project": r.project, "org": r.org, "policy_ids": r.policy_ids, "roles": r.roles, "agent": r.agent,
+        "policy_version": r.policy_version, "chain": r.chain, "seq": r.seq, "prev_hash": r.prev_hash,
     })
 }
 
@@ -137,6 +176,22 @@ struct Writer {
     storage: Arc<dyn StorageBackend>,
     endpoint: Option<(AdbEndpoint, Instant)>,
     versions: HashMap<String, (String, Instant)>,
+    /// AUD-4: per org, this process's chain: (last seq, last hash).
+    chains: HashMap<String, (u64, String)>,
+    /// This process's chain name: `<pod>@<start ms>`.
+    me: String,
+}
+
+impl Writer {
+    /// Put `r` on its org's chain in this process (once: a retry keeps it).
+    fn chain(&mut self, r: &mut AuditRecord) {
+        link(&mut self.chains, &self.me, r);
+    }
+
+    /// The heads of this process's chains, for an anchor.
+    fn heads(&self) -> Vec<(String, u64, String)> {
+        self.chains.iter().map(|(org, (n, h))| (format!("{}/{org}", self.me), *n, h.clone())).collect()
+    }
 }
 
 impl Writer {
@@ -170,6 +225,14 @@ impl Writer {
         if r.org.is_none() {
             r.org = Some(crate::access::audit_org(r.project.as_deref()).await);
         }
+        // Events name an org by its handle or its id; the log is kept by id.
+        if let Some(o) = r.org.clone().filter(|o| o != "platform" && !o.starts_with("org-")) {
+            if let Some(storage) = STORAGE.get() {
+                if let Some(id) = crate::org_policy::org_id(storage.as_ref(), &o).await {
+                    r.org = Some(id);
+                }
+            }
+        }
         if r.agent_version.is_none() {
             if let Some(a) = r.agent.clone() {
                 r.agent_version = self.agent_version(&a).await;
@@ -179,7 +242,10 @@ impl Writer {
 }
 
 async fn writer(storage: Arc<dyn StorageBackend>, mut rx: mpsc::Receiver<AuditRecord>) {
-    let mut w = Writer { storage, endpoint: None, versions: HashMap::new() };
+    let pod = std::env::var("HOSTNAME").unwrap_or_else(|_| "pod".into());
+    let mut w = Writer { storage, endpoint: None, versions: HashMap::new(), chains: HashMap::new(),
+        me: format!("{pod}@{}", chrono::Utc::now().timestamp_millis()) };
+    let mut last_anchor = Instant::now();
     let mut pending: Vec<AuditRecord> = Vec::new();
     let mut last_warn = Instant::now() - Duration::from_secs(3600);
     loop {
@@ -222,6 +288,16 @@ async fn writer(storage: Arc<dyn StorageBackend>, mut rx: mpsc::Receiver<AuditRe
         let mut batch = std::mem::take(&mut pending);
         for r in batch.iter_mut() {
             w.complete(r).await;
+            // RT-10: the log keeps no personal data or secrets in its free text.
+            if let Some(reason) = r.reason.as_mut() {
+                *reason = crate::pii::clean(reason);
+            }
+            w.chain(r);
+        }
+        // AUD-4: the heads of this process's chains, kept apart every hour.
+        if last_anchor.elapsed() > ANCHOR_EVERY {
+            anchor(w.storage.as_ref(), &w.heads()).await;
+            last_anchor = Instant::now();
         }
         let results: Vec<(AuditRecord, Result<Value, String>)> = futures::stream::iter(batch.into_iter().map(|r| {
             let ep = ep.clone();
@@ -234,16 +310,22 @@ async fn writer(storage: Arc<dyn StorageBackend>, mut rx: mpsc::Receiver<AuditRe
         .collect()
         .await;
         let mut failed = 0usize;
+        let mut written = Vec::new();
         for (r, res) in results {
-            if let Err(e) = res {
-                failed += 1;
-                if last_warn.elapsed() > Duration::from_secs(60) {
-                    warn!(error = %e, "decision log: a write failed; it is retried");
-                    last_warn = Instant::now();
+            match res {
+                Ok(_) => written.push(r),
+                Err(e) => {
+                    failed += 1;
+                    if last_warn.elapsed() > Duration::from_secs(60) {
+                        warn!(error = %e, "decision log: a write failed; it is retried");
+                        last_warn = Instant::now();
+                    }
+                    pending.push(r);
                 }
-                pending.push(r);
             }
         }
+        // AUD-7: what was written goes on to the SIEM sinks, beside the log.
+        crate::audit_export::send(written);
         if failed > 0 {
             tokio::time::sleep(FLUSH).await;
         }
@@ -258,6 +340,8 @@ pub struct Query {
     pub agent: Option<String>,
     pub agent_owner: Option<String>,
     pub principal: Option<String>,
+    /// The person an agent acted for.
+    pub on_behalf_of: Option<String>,
     pub action: Option<String>,
     pub decision: Option<String>,
     pub since_ms: Option<u64>,
@@ -279,6 +363,7 @@ pub fn recall_statement(q: &Query) -> (String, Option<Value>) {
     eq("agent", &q.agent);
     eq("agent_owner", &q.agent_owner);
     eq("principal_id", &q.principal);
+    eq("on_behalf_of", &q.on_behalf_of);
     eq("action", &q.action);
     eq("decision", &q.decision);
     if let Some(t) = q.since_ms {
@@ -303,7 +388,7 @@ pub fn matches(q: &Query, v: &Value) -> bool {
     let is = |k: &str, want: &Option<String>| want.as_deref().filter(|w| !w.is_empty()).is_none_or(|w| v.get(k).and_then(|x| x.as_str()) == Some(w));
     let ts = v.get("ts_ms").and_then(|t| t.as_u64()).unwrap_or(0);
     is("project", &q.project) && is("agent", &q.agent) && is("agent_owner", &q.agent_owner)
-        && is("principal_id", &q.principal) && is("action", &q.action) && is("decision", &q.decision)
+        && is("principal_id", &q.principal) && is("on_behalf_of", &q.on_behalf_of) && is("action", &q.action) && is("decision", &q.decision)
         && q.since_ms.is_none_or(|t| ts >= t) && q.before_ms.is_none_or(|t| ts < t)
 }
 
@@ -325,6 +410,130 @@ pub async fn recall(q: &Query) -> Result<(Vec<Value>, String), String> {
         out.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
     }
     Ok((out, aql))
+}
+
+/// Put `r` on its org's chain `me/<org>` (once: a retry keeps it).
+fn link(chains: &mut HashMap<String, (u64, String)>, me: &str, r: &mut AuditRecord) {
+    if r.hash.is_some() {
+        return;
+    }
+    let org = r.org.clone().unwrap_or_else(|| "platform".into());
+    let (seq, prev) = chains.get(&org).cloned().unwrap_or((0, String::new()));
+    r.chain = Some(format!("{me}/{org}"));
+    r.seq = Some(seq + 1);
+    r.prev_hash = Some(prev);
+    let h = hash_of(&as_read(r));
+    r.hash = Some(h.clone());
+    chains.insert(org, (seq + 1, h));
+}
+
+/// AUD-4: the heads of a process's chains, kept outside the log (a platform
+/// table; an object-locked bucket when one is configured) so an edit or a
+/// removal inside the log can't hide.
+async fn anchor(s: &dyn StorageBackend, heads: &[(String, u64, String)]) {
+    if heads.is_empty() {
+        return;
+    }
+    let db = crate::platform_db::open_platform_db(s, Some(crate::handlers::call_lancedb::PLATFORM_DB_RESOURCE), crate::handlers::call_lancedb::DEFAULT_PLATFORM_DB_PATH).await;
+    let schema: serde_json::Map<String, Value> = ["chain", "seq", "hash", "at"].iter().map(|c| (c.to_string(), json!("string"))).collect();
+    if let Err(e) = db.create_table(ANCHORS, Some(&schema), "create_if_not_exists").await {
+        warn!(error = %e, "decision log: anchors table unavailable");
+        return;
+    }
+    let at = chrono::Utc::now().to_rfc3339();
+    let rows: Vec<Value> = heads.iter().map(|(c, n, h)| json!({ "chain": c, "seq": n.to_string(), "hash": h, "at": at })).collect();
+    if let Err(e) = db.insert(ANCHORS, &rows).await {
+        warn!(error = %e, "decision log: anchor not written");
+    }
+}
+
+/// AUD-4: check an org's chains. Every record read back is hashed again and
+/// linked to the one before it; a missing sequence number is a gap, a hash
+/// that doesn't match is an edit, and each anchor must match its record.
+pub async fn verify(org: &str, since_ms: u64, max: usize) -> Result<Value, String> {
+    let mut q = Query { orgs: vec![org.to_string()], since_ms: Some(since_ms), limit: 500, ..Default::default() };
+    let mut rows: Vec<Value> = Vec::new();
+    loop {
+        let (page, _) = recall(&q).await?;
+        let last = page.last().and_then(|r| r["ts_ms"].as_u64());
+        let n = page.len();
+        rows.extend(page);
+        if n < 500 || rows.len() >= max || last.is_none() {
+            break;
+        }
+        q.before_ms = last;
+    }
+    let mut chains: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+    let mut unchained = 0usize;
+    for r in rows.iter() {
+        match r["chain"].as_str() {
+            Some(c) if r["seq"].as_u64().is_some() => chains.entry(c.to_string()).or_default().push(r.clone()),
+            _ => unchained += 1,
+        }
+    }
+    let (mut gaps, mut edits, mut broken_links) = (Vec::new(), Vec::new(), Vec::new());
+    let mut heads: HashMap<String, (u64, String)> = HashMap::new();
+    for (c, list) in chains.iter_mut() {
+        list.sort_by_key(|r| r["seq"].as_u64().unwrap_or(0));
+        let mut prev: Option<&Value> = None;
+        for r in list.iter() {
+            let seq = r["seq"].as_u64().unwrap_or(0);
+            if r["hash"].as_str() != Some(hash_of(r).as_str()) {
+                edits.push(json!({ "chain": c, "seq": seq, "id": r["id"] }));
+            }
+            if let Some(p) = prev {
+                let pseq = p["seq"].as_u64().unwrap_or(0);
+                if seq != pseq + 1 {
+                    gaps.push(json!({ "chain": c, "after": pseq, "before": seq, "missing": seq.saturating_sub(pseq + 1) }));
+                } else if r["prev_hash"] != p["hash"] {
+                    broken_links.push(json!({ "chain": c, "seq": seq }));
+                }
+            }
+            prev = Some(r);
+        }
+        if let Some(l) = list.last() {
+            heads.insert(c.clone(), (l["seq"].as_u64().unwrap_or(0), l["hash"].as_str().unwrap_or_default().to_string()));
+        }
+    }
+    // Anchors: each one for a chain read here must match the record at its seq.
+    let mut anchors_checked = 0usize;
+    let mut anchor_mismatch = Vec::new();
+    if let Some(storage) = STORAGE.get() {
+        let all = crate::handlers::call_lancedb::query_platform_table(storage.as_ref(), ANCHORS, None, 100_000).await.unwrap_or_default();
+        for a in all {
+            let c = a.get("chain").and_then(|v| v.as_str()).unwrap_or_default();
+            let Some(list) = chains.get(c) else { continue };
+            let seq: u64 = a.get("seq").and_then(|v| v.as_str()).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let want = a.get("hash").and_then(|v| v.as_str()).unwrap_or_default();
+            let first = list.first().and_then(|r| r["seq"].as_u64()).unwrap_or(0);
+            match list.iter().find(|r| r["seq"].as_u64() == Some(seq)) {
+                Some(r) => {
+                    anchors_checked += 1;
+                    if r["hash"].as_str() != Some(want) { anchor_mismatch.push(json!({ "chain": c, "seq": seq })); }
+                }
+                // Before what was read (older, or forgotten by retention): not checkable here.
+                None if seq < first => {}
+                None => anchor_mismatch.push(json!({ "chain": c, "seq": seq, "missing": true })),
+            }
+        }
+    }
+    let ok = gaps.is_empty() && edits.is_empty() && broken_links.is_empty() && anchor_mismatch.is_empty();
+    Ok(json!({
+        "org": org, "ok": ok, "records": rows.len(), "chains": chains.len(), "unchained": unchained,
+        "gaps": gaps, "edits": edits, "broken_links": broken_links,
+        "anchors_checked": anchors_checked, "anchor_mismatch": anchor_mismatch,
+        "note": "Records written before chaining began are counted as unchained. A chain's first record read here starts its check: anything older was forgotten by retention (logged as audit:purge) or is outside the window.",
+    }))
+}
+
+/// Run one statement against the log's ADB (AUD-6 retention): the count it
+/// reports, when it reports one.
+pub async fn run(aql: &str) -> Result<u64, String> {
+    let storage = STORAGE.get().ok_or("the durable decision log is not installed on this server")?;
+    let ep = resolve_adb(storage.as_ref(), &crate::agent_space::org_adb("")).await?;
+    let res = adb_query(&ep, aql, None).await?;
+    let data = res.get("data").unwrap_or(&res);
+    Ok(data.get("count").and_then(|c| c.as_u64()).unwrap_or(0))
 }
 
 /// Whether the durable log is on in this process.
@@ -386,5 +595,39 @@ mod tests {
         assert_eq!(v["ts_ms"], 5);
         assert_eq!(v["roles"], json!(["A", "B"]));
         assert_eq!(v["agent"], "agt-1");
+    }
+
+    /// AUD-4: a record hashed before it is written hashes the same when read back,
+    /// and any edit changes the hash.
+    #[test]
+    fn a_chained_record_hashes_the_same_read_back() {
+        let mut r = rec();
+        r.org = Some("org-acme".into());
+        let mut chains = HashMap::new();
+        link(&mut chains, "pod@1", &mut r);
+        let mut r2 = rec();
+        r2.id = "pod-2".into();
+        r2.org = Some("org-acme".into());
+        link(&mut chains, "pod@1", &mut r2);
+        assert_eq!((r.seq, r2.seq), (Some(1), Some(2)));
+        assert_eq!(r2.prev_hash, r.hash);
+        // As ADB holds it: the STORE fields, read back through from_row.
+        let stored = |r: &AuditRecord| {
+            let mut d = serde_json::Map::new();
+            for (k, v) in [("key", json!(r.id)), ("ts_ms", json!(r.ts_ms)), ("pod", json!(r.pod)), ("principal_kind", json!(r.principal_kind)),
+                ("principal_id", json!(r.principal_id)), ("on_behalf_of", json!(r.on_behalf_of)), ("action", json!(r.action)),
+                ("resource_type", json!(r.resource_type)), ("resource_id", json!(r.resource_id)), ("decision", json!(r.decision)),
+                ("reason", json!(r.reason)), ("project", json!(r.project)), ("org", json!(r.org)), ("policy_ids", json!(r.policy_ids.join(","))),
+                ("roles", json!(r.roles.join(","))), ("agent", json!(r.agent)), ("policy_version", json!(r.policy_version)),
+                ("chain", json!(r.chain)), ("seq", json!(r.seq)), ("prev_hash", json!(r.prev_hash)), ("hash", json!(r.hash))] {
+                if !v.is_null() && v != json!("") { d.insert(k.into(), v); }
+            }
+            from_row(&json!({ "data": d }))
+        };
+        let back = stored(&r2);
+        assert_eq!(back["hash"].as_str(), Some(hash_of(&back).as_str()), "read back, it checks");
+        let mut edited = back.clone();
+        edited["decision"] = json!("allow");
+        assert_ne!(edited["hash"].as_str(), Some(hash_of(&edited).as_str()), "an edit shows");
     }
 }

@@ -48,9 +48,11 @@ spec:
               valueFrom: { secretKeyRef: { name: adb-auth, key: token } }
             # Its HTTP port is not exposed, but still requires a user token, as runtimes do.
             - { name: FLOWR_SECURITY_AUTHN, value: oidc }
+            - { name: FLOWR_SECURITY_OIDC_AUDIENCE, value: a3t-ee }
             - { name: FLOWR_SECURITY_OIDC_ISSUER, value: "https://keycloak.dev.a3t.io/realms/a3t" }
-            # Decisions are the gateway step's (placeholder); no Cedar hook on top for now.
-            - { name: FLOWR_SECURITY_POLICY_HOOK, value: allow_all }
+            # RT-11: one edition — every FlowR enforces policy (a FlowR without it
+            # listens on loopback only). OIDC tokens only, so the audience is checked.
+            - { name: FLOWR_SECURITY_POLICY_HOOK, value: cedar }
           readinessProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 5

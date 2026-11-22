@@ -1,0 +1,46 @@
+---
+title: Governance overview
+description: How A3T decides who and what may act, how those rules are written and changed, and how every decision is kept.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Governance in A3T answers three questions for every call a person or an agent makes: **may it happen**, **who said so**, and **can we prove it later**. The answers come from four parts that work together.
+
+| Part | What it does | Where you manage it |
+|---|---|---|
+| **Identity and roles** | Who someone is (sign-in, their org's own provider, keys for agents) and the roles they hold on the platform, in an org and in each project | [Identity and roles](../identity-and-roles/) |
+| **Policy files** | The org's rules, roles and access as YAML files: versioned, checked before they apply, optionally approved by a second admin | [Policy files](../policy-files/), [Writing a rule](../writing-a-rule/) |
+| **Agents and approvals** | What each agent may do (its own policy, budget, hosts, keys), which calls wait for a person, and how to stop it | [Agents and approvals](../agents-and-approvals/) |
+| **The decision log** | Every decision, with who, what, why and the policy version, chained so edits show; kept per org, exported to your SIEM | [Decision log](../../console/decision-log/) |
+
+## How a decision is made
+
+Every call (a tool, a model, a flow start, a deploy, a change to a resource) is checked at its **choke point** against **Cedar**, as the person it is for, with their role where the call lands.
+
+1. **Who.** A person, or an agent acting for one. An agent carries at most the roles its own policy allows (its *role ceiling*), and never more than the person it acts for.
+2. **The baseline**, compiled into A3T, denies by default.
+3. **The org's enforced policy files** that apply to the project, the flow or the agent add `forbid` rules on top. A `forbid` always wins.
+4. **Allow, deny, or ask.** A rule can say a call needs a person's approval first: the run waits, the person answers in the console, and the run carries on (or stops).
+5. **Logged.** The decision goes to the decision log with the ids and versions of the policies that made it.
+
+<Aside type="tip">
+A refusal names the policy that refused it, for example `Refused by policy acme/no-deletes-in-prod`. Open that file in Studio to see the rule and its reason.
+</Aside>
+
+## Changing the rules safely
+
+- **Check before it applies.** Saving a file compiles the org's whole enforced set with it; a file that would break the set is refused, and nothing changes.
+- **Shadow mode.** Switch a file to *shadow*: it is evaluated on real traffic and logs what it *would* have refused, without refusing anything.
+- **Replay.** Before you switch a change on, replay it against the org's recent decisions to see which would change.
+- **Four eyes.** With the org's *second approver* on, a change to policy files, an agent's own policy, retention or an agent's record waits until another admin approves it. Authors can't approve their own changes.
+- **Broken files fail closed.** If a file that is in force stops compiling (for example after a project is renamed), what it guarded is closed and the console flags it, rather than silently opening up.
+
+## Proving it later
+
+- **Tamper evidence.** Each org's decisions form a hash chain whose heads are anchored hourly; [Verify](../../console/decision-log/) shows gaps or edits.
+- **Retention and legal hold** per org; lifting a hold needs the second approver when four eyes is on.
+- **Export** to a SIEM over OpenTelemetry logs, syslog or HTTP (Splunk HEC, Sentinel); an OpenTelemetry collector forwards to S3 or anywhere else.
+- **Personal data** is redacted from the log's free text (emails, phone numbers, cards, IBANs, keys), and, for agents whose policy asks for it, from their transcripts and memory.

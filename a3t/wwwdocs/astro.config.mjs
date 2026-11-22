@@ -40,6 +40,17 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Governance',
+					items: [
+						{ label: 'Overview', slug: 'governance/overview' },
+						{ label: 'Identity and roles', slug: 'governance/identity-and-roles' },
+						{ label: 'Policy files', slug: 'governance/policy-files' },
+						{ label: 'Permission catalogue', slug: 'governance/permissions' },
+						{ label: 'Writing a rule', slug: 'governance/writing-a-rule' },
+						{ label: 'Agents and approvals', slug: 'governance/agents-and-approvals' },
+					],
+				},
+				{
 					label: 'A3T Console',
 					items: [
 						{ label: 'Get access and sign in', slug: 'console/access' },

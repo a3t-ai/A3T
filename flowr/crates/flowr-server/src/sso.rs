@@ -13,11 +13,20 @@
 //!     signed in through (`identity_provider`) — nothing the enterprise's token
 //!     says can name another org (R2);
 //!   * the role there comes from their groups (`a3t_groups`) through the org's
-//!     `role_map`, else `default_role` (R3);
+//!     policy file `access/org.yaml` (GOV-5; no file, or switched off: no
+//!     membership) (R3);
 //!   * the membership row made at sign-in (`added_by = "sso"`) is rewritten every
 //!     time; rows an admin made (invites) are never touched (R4, R5);
 //!   * the A3T token carries that org, and the browser returns to the console
 //!     with it in the URL fragment (never sent to a server).
+//!
+//! Editors (the VS Code extension) sign in the same way, as a native app (RFC
+//! 8252): `start` with `redirect_uri` (the editor's own URI, allow-listed) and
+//! the editor's `code_challenge` (S256); no org is needed (the realm's sign-in
+//! page offers every provider). The callback then sends the browser to the
+//! editor with a short-lived signed *handoff code*, not tokens; the editor
+//! trades it at `POST /auth/sso/token` with its verifier, which opens the
+//! session. A code caught on the way is useless without the verifier.
 
 use std::sync::Arc;
 
@@ -38,6 +47,11 @@ use crate::auth::{create_refresh_token, create_token, AuthConfig};
 
 const STATE_AUD: &str = "a3t-sso-state";
 const STATE_TTL_SECS: usize = 600;
+const HANDOFF_AUD: &str = "a3t-sso-handoff";
+const HANDOFF_TTL_SECS: usize = 120;
+/// URI schemes of the editors the A3T extension runs in.
+const EDITOR_SCHEMES: &[&str] = &["vscode", "vscode-insiders", "vscodium", "cursor", "windsurf"];
+const EDITOR_EXTENSION: &str = "a3t-ai.a3t";
 const SSO_ADDED_BY: &str = "sso";
 
 /// An org as sign-in needs it.
@@ -47,8 +61,6 @@ pub struct OrgSso {
     pub handle: String,
     pub idp_alias: String,
     pub domains: Vec<String>,
-    pub role_map: Vec<(String, String)>,
-    pub default_role: String,
 }
 
 /// Orgs with sign-in configured, from `orgs` rows (`settings.sso`).
@@ -69,10 +81,6 @@ pub fn orgs_with_sso(rows: &[Value]) -> Vec<OrgSso> {
             domains: sso.get("domains").and_then(|d| d.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(|d| d.to_ascii_lowercase())).collect())
                 .unwrap_or_default(),
-            role_map: sso.get("role_map").and_then(|m| m.as_object())
-                .map(|m| m.iter().filter_map(|(g, r)| r.as_str().map(|r| (g.clone(), r.to_string()))).collect())
-                .unwrap_or_default(),
-            default_role: sso.get("default_role").and_then(|d| d.as_str()).unwrap_or("member").to_string(),
         });
     }
     out
@@ -87,20 +95,30 @@ pub fn find_org<'a>(orgs: &'a [OrgSso], org: Option<&str>, email: Option<&str>) 
     orgs.iter().find(|o| o.domains.iter().any(|d| *d == domain))
 }
 
-/// The role a user's groups give them in `org` (the highest mapped role), else
-/// the org's default; `None` = no membership.
-pub fn role_for(org: &OrgSso, groups: &[String]) -> Option<String> {
-    let rank = |r: &str| match r { "admin" => 3, "securityadmin" => 2, "member" => 1, _ => 0 };
-    let mapped = org.role_map.iter()
-        .filter(|(g, _)| groups.iter().any(|x| x == g || x.trim_start_matches('/') == g))
-        .map(|(_, r)| r.as_str())
-        .filter(|r| rank(r) > 0)
-        .max_by_key(|r| rank(r));
-    match mapped {
-        Some(r) => Some(r.to_string()),
-        None if rank(&org.default_role) > 0 => Some(org.default_role.clone()),
-        None => None,
+/// The org's sign-in mapping, `access/org.yaml` (GOV-5), when it is enforced.
+async fn org_access(config: &AuthConfig, org: &OrgSso) -> Option<flowr_policy::policy_file::OrgAccessFile> {
+    let q = flowr_ce::handlers::call_lancedb::sql_quote;
+    let filter = format!("org = {} AND (path = 'access/org.yaml' OR path = 'access/org.yml')", q(&org.handle));
+    let row = platform_rows(config, flowr_ce::org_policy::FILES, Some(&filter)).await.ok()?.into_iter().next()?;
+    let path = row.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let off = platform_rows(config, flowr_ce::org_policy::OFF, Some(&format!("org = {} AND path = {}", q(&org.handle), q(&path)))).await
+        .map(|r| !r.is_empty()).unwrap_or(false);
+    if off {
+        return None;
     }
+    match flowr_policy::policy_file::OrgAccessFile::parse(row.get("content").and_then(|v| v.as_str()).unwrap_or_default()) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            warn!(org = %org.handle, error = %e, "sso: access/org.yaml doesn't parse; no org role is given");
+            None
+        }
+    }
+}
+
+/// The role a user's groups give them in `org`: from its `access/org.yaml`
+/// (the highest mapped role, else its `default`); `None` = no membership.
+pub fn role_for(file: Option<&flowr_policy::policy_file::OrgAccessFile>, groups: &[String]) -> Option<String> {
+    file?.role_for(groups)
 }
 
 /// A claim that may be a string or a list of strings.
@@ -124,6 +142,29 @@ struct SsoState {
     idp: String,
     /// Where the console is (validated origin).
     ret: String,
+    /// An editor's sign-in: where to hand the code back (validated) and the
+    /// editor's PKCE challenge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_redirect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_challenge: Option<String>,
+}
+
+/// What an editor's handoff code says: who signed in, as the callback decided,
+/// bound to the editor's challenge.
+#[derive(Serialize, Deserialize)]
+struct Handoff {
+    aud: String,
+    exp: usize,
+    cc: String,
+    sub: String,
+    org: String,
+    role: String,
+    email: String,
+    name: String,
+    /// How they signed in.
+    #[serde(default)]
+    si: crate::auth::SignIn,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +173,15 @@ pub struct StartQuery {
     pub email: Option<String>,
     #[serde(rename = "return")]
     pub ret: Option<String>,
+    /// An editor's sign-in: its URI to come back to, and its PKCE challenge.
+    pub redirect_uri: Option<String>,
+    pub code_challenge: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct TokenBody {
+    pub code: String,
+    pub code_verifier: String,
 }
 
 #[derive(Deserialize)]
@@ -162,6 +212,34 @@ pub(crate) fn return_origin(config: &AuthConfig, asked: Option<&str>) -> String 
         .unwrap_or(own)
 }
 
+/// An editor URI the sign-in may hand a code to: `vscode://a3t-ai.a3t/auth`
+/// (and the same in VS Code's forks), or `https://` under an allowed return
+/// origin (a browser-hosted VS Code, `FLOWR_SSO_RETURN_ORIGINS`). Anything else
+/// would let a link send someone's sign-in to a stranger.
+pub(crate) fn editor_redirect_ok(config: &AuthConfig, uri: &str) -> bool {
+    editor_redirect_with(uri, |origin| return_origin(config, Some(origin)) == origin)
+}
+
+fn editor_redirect_with(uri: &str, origin_allowed: impl Fn(&str) -> bool) -> bool {
+    let Ok(u) = reqwest::Url::parse(uri) else { return false };
+    if EDITOR_SCHEMES.contains(&u.scheme()) {
+        return u.host_str() == Some(EDITOR_EXTENSION) && u.path() == "/auth";
+    }
+    if u.scheme() != "https" {
+        return false;
+    }
+    origin_allowed(&u.origin().ascii_serialization())
+}
+
+/// S256 of a PKCE verifier, as sent in `code_challenge`.
+fn s256(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn with_query(uri: &str, k: &str, v: &str) -> String {
+    format!("{uri}{}{k}={}", if uri.contains('?') { '&' } else { '?' }, urlenc(v))
+}
+
 fn callback_uri(config: &AuthConfig) -> String {
     format!("{}/auth/sso/callback", config.resource_uri.trim_end_matches('/'))
 }
@@ -181,12 +259,25 @@ pub async fn start_handler(Extension(config): Extension<Arc<AuthConfig>>, Query(
     let Some(authorize) = realm_endpoint(&config, "auth") else {
         return error(StatusCode::NOT_FOUND, "Single sign-on is not configured.");
     };
-    let orgs = match platform_rows(&config, "orgs", None).await {
-        Ok(rows) => orgs_with_sso(&rows),
-        Err(e) => { warn!(error = %e, "sso: orgs unreadable"); return error(StatusCode::SERVICE_UNAVAILABLE, "Organisations are unavailable; try again."); }
+    let editor = match (q.redirect_uri.as_deref(), q.code_challenge.as_deref()) {
+        (None, None) => None,
+        (Some(r), Some(c)) if editor_redirect_ok(&config, r) && c.len() == 43 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') => Some((r.to_string(), c.to_string())),
+        (Some(r), _) if !editor_redirect_ok(&config, r) => return error(StatusCode::BAD_REQUEST, "This editor cannot sign in here (redirect_uri not allowed)."),
+        _ => return error(StatusCode::BAD_REQUEST, "An editor's sign-in needs redirect_uri and an S256 code_challenge."),
     };
-    let Some(org) = find_org(&orgs, q.org.as_deref(), q.email.as_deref()) else {
-        return error(StatusCode::NOT_FOUND, "No organisation signs in that way. Check the organisation name or your work email.");
+    // An editor without an org or email: the realm's own sign-in page, which
+    // offers every provider.
+    let org = if editor.is_some() && q.org.is_none() && q.email.is_none() {
+        None
+    } else {
+        let orgs = match platform_rows(&config, "orgs", None).await {
+            Ok(rows) => orgs_with_sso(&rows),
+            Err(e) => { warn!(error = %e, "sso: orgs unreadable"); return error(StatusCode::SERVICE_UNAVAILABLE, "Organisations are unavailable; try again."); }
+        };
+        match find_org(&orgs, q.org.as_deref(), q.email.as_deref()) {
+            Some(o) => Some(o.clone()),
+            None => return error(StatusCode::NOT_FOUND, "No organisation signs in that way. Check the organisation name or your work email."),
+        }
     };
     let pkce = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(pkce.as_bytes()));
@@ -194,8 +285,10 @@ pub async fn start_handler(Extension(config): Extension<Arc<AuthConfig>>, Query(
         aud: STATE_AUD.into(),
         exp: chrono::Utc::now().timestamp() as usize + STATE_TTL_SECS,
         pkce,
-        idp: org.idp_alias.clone(),
+        idp: org.as_ref().map(|o| o.idp_alias.clone()).unwrap_or_default(),
         ret: return_origin(&config, q.ret.as_deref()),
+        client_redirect: editor.as_ref().map(|e| e.0.clone()),
+        client_challenge: editor.as_ref().map(|e| e.1.clone()),
     };
     let state = match encode(&Header::default(), &state, &EncodingKey::from_secret(config.jwt_secret.as_bytes())) {
         Ok(s) => s,
@@ -209,12 +302,14 @@ pub async fn start_handler(Extension(config): Extension<Arc<AuthConfig>>, Query(
         .append_pair("redirect_uri", &callback_uri(&config))
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("kc_idp_hint", &org.idp_alias);
+        .append_pair("code_challenge_method", "S256");
+    if let Some(org) = &org {
+        url.query_pairs_mut().append_pair("kc_idp_hint", &org.idp_alias);
+    }
     if let Some(e) = q.email.as_deref().filter(|e| e.contains('@')) {
         url.query_pairs_mut().append_pair("login_hint", e);
     }
-    info!(org = %org.handle, idp = %org.idp_alias, "sso: sign-in started");
+    info!(org = %org.as_ref().map(|o| o.handle.as_str()).unwrap_or("-"), editor = editor.is_some(), "sso: sign-in started");
     redirect(url.as_str())
 }
 
@@ -226,7 +321,10 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
         Some(Ok(s)) => s.claims,
         _ => return error(StatusCode::BAD_REQUEST, "This sign-in link is invalid or has expired. Start again."),
     };
-    let back = |msg: &str| redirect(&format!("{}/#sso_error={}", state.ret, urlenc(msg)));
+    let back = |msg: &str| match &state.client_redirect {
+        Some(r) => redirect(&with_query(r, "error", msg)),
+        None => redirect(&format!("{}/#sso_error={}", state.ret, urlenc(msg))),
+    };
     if let Some(e) = q.error.as_deref() {
         return back(q.error_description.as_deref().unwrap_or(e));
     }
@@ -265,13 +363,19 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
     let orgs = platform_rows(&config, "orgs", None).await.map(|r| orgs_with_sso(&r)).unwrap_or_default();
     // R2: the org is the one whose provider the user signed in through.
     let home = orgs.iter().find(|o| !via.is_empty() && o.idp_alias == via);
-    if via != state.idp {
+    if !state.idp.is_empty() && via != state.idp {
         warn!(started = %state.idp, via = %via, user = %sub, "sso: signed in through a different provider than the one asked for");
     }
     let mut org_id = "org-default".to_string();
     if let Some(org) = home {
+        // ID-10: someone the org's provider deactivated over SCIM stays out.
+        if crate::org_idp::refused(&config, &org.handle, &email).await {
+            warn!(org = %org.handle, user = %sub, "sso: refused, deactivated by the org's provisioning");
+            return back("Your organisation has turned off your access to A3T.");
+        }
         org_id = org.id.clone();
-        let role = role_for(org, &groups);
+        let file = org_access(&config, org).await;
+        let role = role_for(file.as_ref(), &groups);
         if let Err(e) = sync_membership(&config, org, &sub, &email, &name, role.as_deref()).await {
             warn!(error = %e, org = %org.handle, user = %sub, "sso: membership not updated");
             return back("Your organisation membership could not be updated. Try again.");
@@ -282,6 +386,27 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
     }
 
     let role = crate::auth_routes::pick_role(&realm_roles);
+    // How they signed in: through the org's own provider (if it is one), with
+    // a second factor when the token's `amr` says so, and their groups.
+    let amr = strings(claims.get("amr"));
+    let si = crate::auth::SignIn {
+        mfa: amr.iter().any(|m| matches!(m.as_str(), "otp" | "mfa" | "hwk" | "swk" | "totp" | "webauthn")),
+        org_idp: home.is_some(),
+        at: chrono::Utc::now().timestamp(),
+        groups: groups.clone(),
+    };
+    // An editor: hand it a code for its verifier; the session opens when it trades it.
+    if let (Some(to), Some(cc)) = (&state.client_redirect, &state.client_challenge) {
+        let h = Handoff {
+            aud: HANDOFF_AUD.into(),
+            exp: chrono::Utc::now().timestamp() as usize + HANDOFF_TTL_SECS,
+            cc: cc.clone(), sub, org: org_id, role, email, name, si,
+        };
+        return match encode(&Header::default(), &h, &EncodingKey::from_secret(config.jwt_secret.as_bytes())) {
+            Ok(code) => redirect(&with_query(to, "code", &code)),
+            Err(e) => back(&format!("handoff: {e}")),
+        };
+    }
     let (sid, jti, ends) = match crate::sessions::open(&config, &sub, "signin", config.refresh_expiry_secs).await {
         Ok(s) => s,
         Err(e) => {
@@ -289,15 +414,31 @@ pub async fn callback_handler(Extension(config): Extension<Arc<AuthConfig>>, Que
             return back("Sign-in could not be completed. Try again.");
         }
     };
-    let access = match create_token(&config, &sid, &sub, &org_id, &role, &email, &name) {
+    let access = match create_token(&config, &sid, &sub, &org_id, &role, &email, &name, Some(&si)) {
         Ok(t) => t,
         Err(e) => return back(&e),
     };
-    let refresh = match create_refresh_token(&config, &sub, &sid, &jti, ends) {
+    let refresh = match create_refresh_token(&config, &sub, &sid, &jti, ends, Some(&si)) {
         Ok(t) => t,
         Err(e) => return back(&e),
     };
     redirect(&format!("{}/#sso={}&sso_refresh={}&expires_in={}", state.ret, access, refresh, config.token_expiry_secs))
+}
+
+/// `POST /auth/sso/token` `{ code, code_verifier }`: an editor trades its
+/// handoff code for a session (the same tokens as `/auth/login`).
+pub async fn token_handler(Extension(config): Extension<Arc<AuthConfig>>, Json(b): Json<TokenBody>) -> Response {
+    let mut v = Validation::default();
+    v.set_audience(&[HANDOFF_AUD]);
+    let Ok(h) = decode::<Handoff>(&b.code, &DecodingKey::from_secret(config.jwt_secret.as_bytes()), &v).map(|d| d.claims) else {
+        return error(StatusCode::BAD_REQUEST, "This sign-in code is invalid or has expired. Sign in again.");
+    };
+    if s256(&b.code_verifier) != h.cc {
+        warn!(user = %h.sub, "sso: handoff code traded with the wrong verifier");
+        return error(StatusCode::BAD_REQUEST, "This sign-in code was not issued to this editor.");
+    }
+    info!(user = %h.sub, email = %h.email, "sso: editor signed in");
+    crate::auth_routes::issue_session(&config, (h.sub, h.org, h.role, h.email, h.name), h.si).await
 }
 
 /// Rewrite the membership made at sign-in; an invite (any row not made by
@@ -353,6 +494,27 @@ mod tests {
     }
 
     #[test]
+    fn editors_get_codes_only_at_their_own_uri() {
+        let allowed = |o: &str| o == "https://code.example.test";
+        for ok in ["vscode://a3t-ai.a3t/auth", "cursor://a3t-ai.a3t/auth", "vscode-insiders://a3t-ai.a3t/auth?windowId=3",
+                   "https://code.example.test/callback?vscode-scheme=vscode&vscode-authority=a3t-ai.a3t"] {
+            assert!(editor_redirect_with(ok, allowed), "{ok}");
+        }
+        for bad in ["vscode://evil.ext/auth", "vscode://a3t-ai.a3t/other", "https://evil.test/a3t-ai.a3t/auth",
+                    "http://code.example.test/x", "javascript:alert(1)", "not a uri"] {
+            assert!(!editor_redirect_with(bad, allowed), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_verifier_must_match_the_challenge() {
+        // Base64url (no padding) of SHA-256, as computed by Python's hashlib.
+        assert_eq!(s256("a3t-editor-verifier-0123456789-abcdefghijklmnopqrs"), "ddJxNpng3Wg9_hzPtkNDUNrYyl1nMaf8iZ_GjpTcoAU");
+        assert_eq!(with_query("vscode://a3t-ai.a3t/auth", "code", "a b"), "vscode://a3t-ai.a3t/auth?code=a+b");
+        assert_eq!(with_query("https://x.test/cb?s=1", "error", "no"), "https://x.test/cb?s=1&error=no");
+    }
+
+    #[test]
     fn only_orgs_with_a_provider_sign_in() {
         let o = orgs_with_sso(&rows());
         assert_eq!(o.iter().map(|x| x.handle.as_str()).collect::<Vec<_>>(), ["acme", "gamma"]);
@@ -363,12 +525,11 @@ mod tests {
     }
 
     #[test]
-    fn groups_map_to_the_highest_role_else_the_default() {
-        let o = orgs_with_sso(&rows());
-        let acme = &o[0];
-        assert_eq!(role_for(acme, &["a3t-admins".into(), "staff".into()]).as_deref(), Some("admin"));
-        assert_eq!(role_for(acme, &["/a3t-sec".into()]).as_deref(), Some("securityadmin"));
-        assert_eq!(role_for(acme, &["staff".into()]).as_deref(), Some("member"));
-        assert_eq!(role_for(&o[1], &["staff".into()]), None, "default '' = no membership");
+    fn groups_map_through_the_org_access_file() {
+        let f = flowr_policy::policy_file::OrgAccessFile::parse("kind: a3t/org-access\ngroups: { a3t-admins: admin, a3t-sec: securityadmin }\ndefault: member\n").unwrap();
+        assert_eq!(role_for(Some(&f), &["a3t-admins".into(), "staff".into()]).as_deref(), Some("admin"));
+        assert_eq!(role_for(Some(&f), &["/a3t-sec".into()]).as_deref(), Some("securityadmin"));
+        assert_eq!(role_for(Some(&f), &["staff".into()]).as_deref(), Some("member"));
+        assert_eq!(role_for(None, &["a3t-admins".into()]), None, "no file: no membership");
     }
 }

@@ -392,10 +392,20 @@ impl TaskHandler for GatewayStep {
             flow: caller.get("flow").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
             principal: caller.get("principal").cloned().unwrap_or(Value::Null),
         };
+        // Verify (RT-2): who the caller says it is must be what the engine store
+        // recorded for the caller's run — a runtime can't name another principal,
+        // project or flow, nor call for a run that isn't in flight.
+        let verified = match storage_of(ctx) {
+            Some(st) => verify_caller(st.as_ref(), &call).await,
+            None => Err("the gateway has no engine store to check the caller against".to_string()),
+        };
         // Resolve.
         let via = resolve(&call);
         // Decide.
-        let mut decision = PlaceholderPolicy.decide(&call);
+        let mut decision = match &verified {
+            Ok(()) => PlaceholderPolicy.decide(&call),
+            Err(why) => Decision { allow: false, reason: format!("caller not verified: {why}") },
+        };
         // AC-15: then the policy, on the real target, as the caller.
         if decision.allow {
             if let Some(h) = real_handler(&task_type) {
@@ -427,11 +437,54 @@ impl TaskHandler for GatewayStep {
             via, allow = decision.allow, reason = %decision.reason, ok = outcome.is_ok(), took_ms = took.as_millis() as u64,
             "gateway decision"
         );
-        // Record.
+        // Record: the gateway's own table, and the decision log (AUD-3).
         if let Some(storage) = storage_of(ctx) {
             record(storage.as_ref(), &ctx.instance_id, &call, via, &decision, &outcome, took).await;
         }
+        // Every call is in the decision log, refusals included. A verified call
+        // is the caller's; an unverified one is whoever started this gateway
+        // run, with the identity it claimed in the note — never taken on trust.
+        let claimed = serde_json::from_value::<flowr_policy::Principal>(call.principal.clone()).ok();
+        let (actor, forged) = match (&verified, claimed) {
+            (Ok(()), Some(p)) => (p, String::new()),
+            (_, _) => (ctx.principal.clone(), format!(" · claimed caller {}", call.principal.get("id").and_then(|v| v.as_str()).unwrap_or("(unreadable)"))),
+        };
+        let d = if decision.allow { flowr_policy::PolicyDecision::Allow } else {
+            flowr_policy::PolicyDecision::Deny { reason: decision.reason.clone(), policy_ids: vec!["gateway".into()] }
+        };
+        flowr_policy::audit::event_decision(&actor, "gateway:call", "Outbound", &call.target, Some(&call.namespace), None, &d,
+            Some(&format!("{} via {via} · caller run {}{}{forged}", call.task_type, call.caller_run, if outcome.is_err() && decision.allow { " · the call failed" } else { "" })));
         outcome.map(TaskResult::new).map_err(fail)
+    }
+}
+
+/// RT-2 Verify: the claimed caller against the engine store's record of its run.
+pub async fn verify_caller(storage: &dyn StorageBackend, call: &Call) -> std::result::Result<(), String> {
+    let Some(engine) = storage.engine() else { return Err("no engine store".into()) };
+    let run_id = uuid::Uuid::parse_str(&call.caller_run).map_err(|_| format!("caller run {:?} is not a run id", call.caller_run))?;
+    let run = engine.get(run_id).await.map_err(|e| e.to_string())?.ok_or_else(|| format!("caller run {} doesn't exist", call.caller_run))?;
+    if !matches!(run.phase, RunPhase::Pending | RunPhase::Running | RunPhase::Waiting | RunPhase::Suspended) {
+        return Err(format!("caller run {} is not in flight ({:?})", call.caller_run, run.phase));
+    }
+    if run.namespace != call.namespace {
+        return Err(format!("caller run {} is in {:?}, not {:?}", call.caller_run, run.namespace, call.namespace));
+    }
+    // The principal: the one the run was started with (an agent turn inside it
+    // acts as the agent for that same person, so its kind may differ; the person
+    // it acts for may not).
+    let recorded: Option<flowr_policy::Principal> = serde_json::from_value(run.principal.clone()).ok();
+    let claimed: Option<flowr_policy::Principal> = serde_json::from_value(call.principal.clone()).ok();
+    match (recorded, claimed) {
+        (_, None) => Err("the caller names no principal".into()),
+        (None, Some(_)) => Ok(()),
+        (Some(r), Some(c)) => {
+            let person = |p: &flowr_policy::Principal| p.on_behalf_of().map(str::to_string).unwrap_or_else(|| p.id().to_string());
+            if person(&r) == person(&c) || c.on_behalf_of() == Some(r.id()) {
+                Ok(())
+            } else {
+                Err(format!("the run was started by {} but the call claims {}", person(&r), person(&c)))
+            }
+        }
     }
 }
 

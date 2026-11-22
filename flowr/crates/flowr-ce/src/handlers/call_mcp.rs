@@ -116,8 +116,28 @@ impl TaskHandler for McpHandler {
             })
         };
 
-        let resp = flowr_mcp_core::with_adb_auth(self.client.post(&server_url), &server_url)
-            .header("Content-Type", "application/json")
+        // RT-1: a remote tool server is a call out of A3T. FlowR's own tools
+        // and a tool server registered on the platform (a3t/…, system/…) are not.
+        let platform_server = with.get("_resource").and_then(|v| v.as_str())
+            .and_then(|r| r.split_once('/')).is_some_and(|(ns, _)| flowr_policy::egress::PLATFORM.contains(&ns));
+        if !flowr_mcp_core::is_self_mcp_url(&server_url) && !platform_server {
+            let agent = crate::egress_rules::agent_of(ctx);
+            if let Err(why) = crate::egress_rules::guard(&ctx.principal, &ctx.namespace, agent.as_deref(), "call:mcp", &server_url).await {
+                return Err(RuntimeError::task_failed(&task.name, why));
+            }
+        }
+
+        let mut req = flowr_mcp_core::with_adb_auth(self.client.post(&server_url), &server_url)
+            .header("Content-Type", "application/json");
+        // ID-4: a flow step acting as an agent names it, and its person, signed.
+        if !flowr_mcp_core::is_self_mcp_url(&server_url) {
+            if let Some((agent, person)) = crate::agent_token::of_principal(&ctx.principal) {
+                if let Ok(t) = crate::agent_token::mint(&agent, person.as_deref(), Some(&ctx.namespace), &server_url) {
+                    req = req.header(crate::agent_token::HEADER, t);
+                }
+            }
+        }
+        let resp = req
             .json(&mcp_request)
             .send()
             .await

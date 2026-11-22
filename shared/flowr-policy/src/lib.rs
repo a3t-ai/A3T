@@ -20,10 +20,12 @@ pub mod grants;
 pub mod namespace;
 pub mod actions;
 pub mod catalogue;
+pub mod conditions;
 pub mod policy_file;
 pub mod audit;
 pub mod op_policy;
 pub mod roles;
+pub mod egress;
 pub mod telemetry;
 
 use serde::{Deserialize, Serialize};
@@ -95,6 +97,10 @@ pub enum Principal {
         /// is decided as this user; the decision log records both.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         impersonated_by: Option<String>,
+        /// How and from where this person signed in (rule conditions). Travels
+        /// with the principal like `memory_branch`, so an agent's calls carry it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<Box<SessionFacts>>,
     },
     Agent {
         agent_id: AgentId,
@@ -122,6 +128,9 @@ pub enum Principal {
         /// with the principal, so subflows, agents and gateway calls can't lose it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         memory_branch: Option<String>,
+        /// The session of the person it acts for (or its key's call), see `Human`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<Box<SessionFacts>>,
     },
     Service {
         service_id: String,
@@ -131,7 +140,51 @@ pub enum Principal {
     },
 }
 
+/// Facts about the sign-in and the request a principal came through, for rule
+/// conditions (from where, through what, how signed in). Set at the edge (the
+/// auth middleware, an agent key); none of it is taken from the caller's word.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFacts {
+    /// The client's address (the first X-Forwarded-For hop, else the peer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    /// `console`, `vscode`, `mcp`, `api-key` or `trigger`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Signed in with a second factor (one-time code).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub second_factor: bool,
+    /// Signed in through the org's own identity provider.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub org_idp: bool,
+    /// When the person signed in (unix seconds; kept across refreshes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_time: Option<i64>,
+    /// The groups the identity provider gave at sign-in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
 impl Principal {
+    /// How this principal signed in, if known.
+    pub fn session(&self) -> Option<&SessionFacts> {
+        match self {
+            Principal::Human { session, .. } | Principal::Agent { session, .. } => session.as_deref(),
+            Principal::Service { .. } => None,
+        }
+    }
+
+    /// This principal with these session facts (a service has none).
+    pub fn with_session(mut self, facts: SessionFacts) -> Self {
+        match &mut self {
+            Principal::Human { session, .. } | Principal::Agent { session, .. } => *session = Some(Box::new(facts)),
+            Principal::Service { .. } => {}
+        }
+        self
+    }
+
     /// AC-6: the memory branch this principal's run is on, if any.
     pub fn memory_branch(&self) -> Option<&str> {
         match self {
@@ -156,7 +209,7 @@ impl Principal {
     /// the AuthN layer). `roles` come from the token; the policy — not this
     /// crate — decides what they grant.
     pub fn human(user_id: impl Into<String>, roles: Vec<String>) -> Self {
-        Principal::Human { user_id: user_id.into(), roles, memory_branch: None, impersonated_by: None }
+        Principal::Human { user_id: user_id.into(), roles, memory_branch: None, impersonated_by: None, session: None }
     }
 
     /// The SuperAdmin acting as this principal, if any (a human's, or the human
@@ -259,6 +312,8 @@ impl Principal {
             owner,
             // An agent works on the branch its caller is on.
             memory_branch: caller.memory_branch().map(String::from),
+            // It acts within its caller's session: same address, channel and sign-in.
+            session: caller.session().cloned().map(Box::new),
         }
     }
 }
@@ -471,7 +526,24 @@ pub enum PolicyDecision {
         policy_ids: Vec<String>,
         /// Which scopes this approver may choose from, narrowest first.
         scopes: Vec<GrantScope>,
+        /// Set when a `needs_approval` rule asked (GOV-8): the call waits for a
+        /// person every time — an earlier answer in the conversation never
+        /// covers it, and only `Once` is offered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required: Option<RequiredApproval>,
     },
+}
+
+/// A `needs_approval` rule's terms (GOV-8).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredApproval {
+    /// How long the question may wait; `None`: the server's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Who answers it (a rule's `approver`: a role, an org role or
+    /// `group:<name>`); `None`: the person the agent acts for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<String>,
 }
 
 impl PolicyDecision {
@@ -559,7 +631,7 @@ mod tests {
 
     fn agent_req(action: &str, destructive: bool) -> ExecutionRequest {
         ExecutionRequest {
-            principal: Principal::Agent {
+            principal: Principal::Agent { session: None,
                 memory_branch: None,
                 agent_id: AgentId("agt-1".into()),
                 on_behalf_of: Some("user::sriram".into()),
@@ -604,7 +676,7 @@ mod tests {
 
     #[test]
     fn principal_telemetry_accessors() {
-        let p = Principal::Agent {
+        let p = Principal::Agent { session: None,
             memory_branch: None,
             agent_id: AgentId("agt-1".into()),
             on_behalf_of: Some("user::x".into()),
@@ -694,6 +766,7 @@ mod tests {
             reason: "needs approval".into(),
             policy_ids: vec!["p1".into()],
             scopes: vec![GrantScope::Once, GrantScope::Session],
+            required: None,
         };
         // The fail-closed contract: anything that has not learned to prompt
         // must treat Ask as "no".
@@ -708,6 +781,7 @@ mod tests {
             reason: "needs approval".into(),
             policy_ids: vec!["p1".into()],
             scopes: vec![GrantScope::Session],
+            required: None,
         };
         match ask.non_interactive() {
             PolicyDecision::Deny { reason, policy_ids } => {

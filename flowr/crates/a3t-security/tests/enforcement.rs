@@ -20,11 +20,11 @@ fn req(principal: Principal, destructive: bool) -> ExecutionRequest {
 }
 
 fn human() -> Principal {
-    Principal::Human { memory_branch: None, impersonated_by: None, user_id: "sriram".into(), roles: vec!["admin".into()] }
+    Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "sriram".into(), roles: vec!["admin".into()] }
 }
 
 fn agent_for_user() -> Principal {
-    Principal::Agent {
+    Principal::Agent { session: None,
         memory_branch: None,
         agent_id: AgentId("pc-crawler-7".into()),
         on_behalf_of: Some("user::sriram".into()),
@@ -39,7 +39,7 @@ fn agent_for_user() -> Principal {
 
 fn agent_ambient() -> Principal {
     // No on_behalf_of — ambient trust, which the baseline refuses.
-    Principal::Agent { memory_branch: None, agent_id: AgentId("rogue".into()), on_behalf_of: None, flow_id: None, roles: vec![], owner: None }
+    Principal::Agent { session: None, memory_branch: None, agent_id: AgentId("rogue".into()), on_behalf_of: None, flow_id: None, roles: vec![], owner: None }
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ fn write_resource(principal: Principal, type_ref: &str) -> ExecutionRequest {
 }
 
 fn user_with_roles(roles: &[&str]) -> Principal {
-    Principal::Human {
+    Principal::Human { session: None,
         memory_branch: None, impersonated_by: None,
         user_id: "u1".into(),
         roles: roles.iter().map(|s| s.to_string()).collect(),
@@ -204,7 +204,7 @@ async fn platform_superadmin_may_write_cedar_policy() {
     // canonical roles (`SuperAdmin` + `SecurityAdmin`); the guardrail honors those.
     let hook = CedarHook::baseline().unwrap();
     let roles = flowr_policy::roles::canonicalize("superadmin");
-    let principal = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles };
+    let principal = Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles };
     let req = write_resource(principal, "cedar");
     assert!(matches!(hook.check(&req).await, PolicyDecision::Allow));
 }
@@ -430,7 +430,7 @@ async fn flow_ceiling_binds_any_principal_not_just_agents() {
     // the flow's declared surface is denied regardless of who runs it.
     let hook = CedarHook::baseline().unwrap();
     let tmpl = serde_json::json!({ "exposedTools": ["search_docs"] });
-    let human_flow = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "alice".into(), roles: vec![] };
+    let human_flow = Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "alice".into(), roles: vec![] };
     assert!(matches!(
         hook.check(&tool_req_as(human_flow.clone(), "search_docs", tmpl.clone())).await,
         PolicyDecision::Allow
@@ -473,7 +473,7 @@ async fn template_ceiling_enforces_exposed_intersect_enabled() {
     // Same agent, same tools, run by SOMEONE ELSE → denied. A user who did not
     // configure the agent cannot talk it out of its limits, so the ceiling is
     // still a real boundary for everyone but its owner.
-    let not_the_owner = Principal::Agent {
+    let not_the_owner = Principal::Agent { session: None,
         memory_branch: None,
         agent_id: AgentId("pc-crawler-7".into()),
         on_behalf_of: Some("user::someone-else".into()),
@@ -665,7 +665,7 @@ fn session_req(principal: Principal, action: flowr_policy::Action, owner: &str, 
 }
 
 fn viewer(id: &str) -> Principal {
-    Principal::Human { memory_branch: None, impersonated_by: None, user_id: id.into(), roles: vec!["Viewer".into()] }
+    Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: id.into(), roles: vec!["Viewer".into()] }
 }
 
 #[tokio::test]
@@ -694,7 +694,7 @@ async fn a_different_user_may_not_read_or_delete_someone_elses_session() {
 async fn infosec_may_read_any_session_for_audit() {
     let hook = CedarHook::baseline().unwrap();
     for role in ["SuperAdmin", "SecurityAdmin"] {
-        let p = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "auditor".into(), roles: vec![role.into()] };
+        let p = Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "auditor".into(), roles: vec![role.into()] };
         assert!(matches!(
             hook.check(&session_req(p, actions::session_read(), "alice", false)).await,
             PolicyDecision::Allow
@@ -707,7 +707,7 @@ async fn infosec_read_access_does_not_extend_to_deleting_someone_elses_session()
     // The audit exception is read-only on purpose: an auditor reviewing a
     // transcript must not be able to destroy the evidence.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "auditor".into(), roles: vec!["SuperAdmin".into()] };
+    let p = Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "auditor".into(), roles: vec!["SuperAdmin".into()] };
     assert!(matches!(
         hook.check(&session_req(p, actions::session_delete(), "alice", false)).await,
         PolicyDecision::Deny { .. }
@@ -718,7 +718,7 @@ async fn infosec_read_access_does_not_extend_to_deleting_someone_elses_session()
 async fn plain_admin_is_not_an_auditor() {
     // Admin governs the registry, not other people's conversations.
     let hook = CedarHook::baseline().unwrap();
-    let p = Principal::Human { memory_branch: None, impersonated_by: None, user_id: "ops".into(), roles: vec!["Admin".into()] };
+    let p = Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "ops".into(), roles: vec!["Admin".into()] };
     assert!(matches!(
         hook.check(&session_req(p, actions::session_read(), "alice", false)).await,
         PolicyDecision::Deny { .. }
@@ -745,7 +745,7 @@ async fn an_agent_may_not_read_a_users_session_even_on_their_behalf() {
 // getting it wrong turns the chat approval card into a privilege-escalation path.
 
 fn agent_with_roles(roles: &[&str]) -> Principal {
-    Principal::Agent {
+    Principal::Agent { session: None,
         memory_branch: None,
         agent_id: AgentId("dev-agent".into()),
         on_behalf_of: Some("usr-sriram".into()),
@@ -807,7 +807,7 @@ async fn a_triggered_run_is_never_asked() {
 // fact about the human, and the owner is the authority over it.
 
 fn agent_with_ceiling(roles: &[&str], exposed: &[&str]) -> (Principal, serde_json::Map<String, serde_json::Value>) {
-    let p = Principal::Agent {
+    let p = Principal::Agent { session: None,
         memory_branch: None,
         agent_id: AgentId("mytestagent".into()),
         on_behalf_of: Some("usr-sriram".into()),
@@ -895,7 +895,7 @@ async fn dropping_the_ceiling_does_not_loosen_org_policy() {
 // into any pool, production included.
 
 fn deployer(roles: &[&str]) -> Principal {
-    Principal::Human {
+    Principal::Human { session: None,
         memory_branch: None, impersonated_by: None,
         user_id: "usr-sriram".into(),
         roles: roles.iter().map(|r| r.to_string()).collect(),

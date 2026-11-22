@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_templates
-  version: 1.1.1
+  version: 1.2.0
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -41,7 +41,9 @@ do:
           op: read
           resource:
             type: Template
-    then: end
+    export:
+      as: '${ $context + {_rows: (if type == "array" then . else (.rows // []) end)} }'
+    then: with-specs
 - get:
     call: lancedb
     with:
@@ -57,6 +59,19 @@ do:
           resource:
             type: Template
             id: ${ .input.id }
+    export:
+      as: '${ $context + {_rows: (if type == "array" then . else (.rows // []) end)} }'
+    then: with-specs
+# A built-in template's row points at its flow (spec_yaml "<namespace>/<tmpl_name>",
+# written by flow_system_install): answer with the flow's code, so every reader
+# (Templates, Agents, Studio) gets YAML. spec_ref keeps the pointer.
+- with-specs:
+    call: registry
+    with:
+      operation: template_specs
+      refs: '${ [ $context._rows[] | (.spec_yaml // "") | select(test("^[A-Za-z0-9_.-]+/tmpl_[A-Za-z0-9_.-]+$")) ] }'
+    output:
+      as: '${ (.specs // {}) as $s | [ $context._rows[] | ((.spec_yaml // "") as $r | if $s[$r] then . + {spec_yaml: $s[$r].yaml, spec_ref: $r, spec_version: $s[$r].version} else . end) ] }'
     then: end
 - create:
     set:

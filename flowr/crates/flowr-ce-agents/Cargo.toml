@@ -12,6 +12,7 @@ default = []
 # Core
 flowr-storage.workspace = true
 flowr-types.workspace = true
+flowr-policy.workspace = true
 
 # Async
 tokio = { workspace = true, features = ["sync", "time", "rt"] }

@@ -30,6 +30,7 @@ export const APP_COLOR: Record<string, string> = {
   knowledge: '#a21caf',
   security: '#b42318',
   logs: '#475569',
+  approvals: '#b45309',
   runtime: '#0369a1',
   executions: '#4d7c0f',
   'flow-editor': '#5530a8',
@@ -90,9 +91,14 @@ export const BANNERS: Record<string, AppBanner> = {
     subtitle: 'Access rules for each project, on top of the platform\'s defaults, for the people in your company\'s sign-in. For security admins.',
     description: 'Read a project\'s rules, change them — they apply straight away — and test a decision before it matters.',
   },
+  approvals: {
+    headline: 'Agents waiting for your OK.', highlight: 'OK', docsPath: '/console/approvals/',
+    subtitle: 'Some agent actions need a person to say yes first: a rule names you as the approver, or the agent tries something you haven\'t given it. The agent pauses, and the request shows up here.',
+    description: 'Open a request to see which agent, which tool and with what inputs, then allow or refuse that one action. Your answer is recorded in the decision log.',
+  },
   logs: {
     headline: 'See every access decision.', highlight: 'decision', docsPath: '/console/decision-log/',
-    subtitle: 'Each time a person or an agent tried to do something: who, what, whether it was allowed, and which rule decided. For security admins.',
+    subtitle: 'Each time a person or an agent tried to do something: who, what, whether it was allowed, and which rule decided. Security admins see their orgs; everyone sees their own agents.',
     description: 'It shows the project picked in the top bar; pick All projects to see everything.',
   },
   runtime: {

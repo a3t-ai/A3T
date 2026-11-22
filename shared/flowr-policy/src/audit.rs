@@ -65,6 +65,16 @@ pub struct AuditRecord {
     /// The version (hash) of the policy set that decided (AUD-2).
     #[serde(default)]
     pub policy_version: Option<String>,
+    /// AUD-4: the hash chain this record is in (`<pod>@<start>/<org>`), its
+    /// place in it, the hash before it and its own. Set by the durable log.
+    #[serde(default)]
+    pub chain: Option<String>,
+    #[serde(default)]
+    pub seq: Option<u64>,
+    #[serde(default)]
+    pub prev_hash: Option<String>,
+    #[serde(default)]
+    pub hash: Option<String>,
 }
 
 /// The resource attribute naming the org an event belongs to (see [`event`]).
@@ -159,6 +169,7 @@ pub fn record_noted(req: &ExecutionRequest, decision: &PolicyDecision, note: Opt
         session,
         flow,
         policy_version: crate::policy_hook().version_for(req),
+        chain: None, seq: None, prev_hash: None, hash: None,
         ts_ms,
         principal_kind: req.principal.kind().to_string(),
         principal_id: req.principal.id().to_string(),
@@ -217,7 +228,7 @@ mod tests {
     #[test]
     fn records_allow_and_deny() {
         let req = ExecutionRequest {
-            principal: Principal::Agent {
+            principal: Principal::Agent { session: None,
                 memory_branch: None,
                 agent_id: AgentId("agt-1".into()),
                 on_behalf_of: Some("user::sriram".into()),
@@ -284,6 +295,25 @@ pub fn event(
     denied: Option<&str>,
     note: Option<&str>,
 ) {
+    let decision = match denied {
+        Some(reason) => PolicyDecision::Deny { reason: reason.to_string(), policy_ids: vec!["project-isolation".into()] },
+        None => PolicyDecision::Allow,
+    };
+    event_decision(principal, action, resource_type, resource_id, project, org, &decision, note);
+}
+
+/// [`event`] with any decision, e.g. an `Ask` an agent approval rule raised.
+#[allow(clippy::too_many_arguments)]
+pub fn event_decision(
+    principal: &crate::Principal,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+    project: Option<&str>,
+    org: Option<&str>,
+    decision: &PolicyDecision,
+    note: Option<&str>,
+) {
     let Ok(action) = crate::Action::new(action) else { return };
     let mut resource = crate::Resource::new(resource_type, resource_id.to_string());
     if let Some(p) = project.filter(|p| !p.is_empty()) {
@@ -300,9 +330,5 @@ pub fn event(
         attributes: Default::default(),
         params: serde_json::Value::Null,
     };
-    let decision = match denied {
-        Some(reason) => PolicyDecision::Deny { reason: reason.to_string(), policy_ids: vec!["project-isolation".into()] },
-        None => PolicyDecision::Allow,
-    };
-    record_noted(&req, &decision, note);
+    record_noted(&req, decision, note);
 }

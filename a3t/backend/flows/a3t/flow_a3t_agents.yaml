@@ -2,7 +2,7 @@ document:
   dsl: 1.0.3
   namespace: a3t
   name: flow_a3t_agents
-  version: 1.1.7
+  version: 1.1.8
 # Request/response for the dash: a run that is interrupted is retried by the
 # caller, so it keeps no step journal (spec §5.15).
 metadata:
@@ -169,7 +169,19 @@ do:
           resource:
             type: Agent
             id: ${ .input.id }
-    then: update-diff
+    then: update-held-check
+# GOV-9: the org wants a second approver for changes to its agents: nothing changed yet.
+- update-held-check:
+    switch:
+      - held: { when: '${ .held == true }', then: update-held }
+      - default: { then: update-diff }
+- update-held:
+    set:
+      ok: false
+      held: true
+      change: ${ .change }
+      error: ${ .message }
+    then: end
 - update-diff:
     set:
       _diff: >-
@@ -179,11 +191,13 @@ do:
           | (($context._u.data // {}) + {status: $st}) as $n
           | (($o.variables // "{}") | if type == "string" then (try fromjson catch {}) else . end // {}) as $vo
           | (($n.variables // "{}") | if type == "string" then (try fromjson catch {}) else . end // {}) as $vn
-          | {by: ((($context._principal // {}).user) // $context._u.user_id // ""),
-             changed: (
-               (["name", "template_id", "template_version", "mode", "namespace", "status", "resource_bindings"]
+          | ((["name", "template_id", "template_version", "mode", "namespace", "status", "resource_bindings"]
                 | map(select(($n[.] // null) != null and (($n[.] | tostring) != (($o[.] // "") | tostring)))))
-               + ((($vo | keys) + ($vn | keys)) | unique | map(select(($vo[.] // null) != ($vn[.] // null))) | map("values." + .))),
+               + ((($vo | keys) + ($vn | keys)) | unique | map(select(($vo[.] // null) != ($vn[.] // null))) | map("values." + .))) as $ch
+          | {by: ((($context._principal // {}).user) // $context._u.user_id // ""),
+             changed: $ch,
+             before: ($ch | map(if startswith("values.") then {key: ., value: $vo[ltrimstr("values.")]} else {key: ., value: $o[.]} end) | from_entries),
+             after: ($ch | map(if startswith("values.") then {key: ., value: $vn[ltrimstr("values.")]} else {key: ., value: $n[.]} end) | from_entries),
              status: {from: ($o.status // null), to: ($n.status // null)}}
           }
     export:

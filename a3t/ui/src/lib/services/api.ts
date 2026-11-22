@@ -103,6 +103,8 @@ async function send<T = any>(
   requireAuth = true,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = {
+    // Which A3T client is calling (the `via` rule condition).
+    'X-A3T-Client': 'console',
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
   };
@@ -215,10 +217,10 @@ export interface LoginResponse {
   };
 }
 
-export async function login(email: string, password: string): Promise<ApiResponse<LoginResponse>> {
+export async function login(email: string, password: string, otp?: string): Promise<ApiResponse<LoginResponse>> {
   return request<LoginResponse>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(otp ? { otp } : {}) }),
   }, false);
 }
 
@@ -400,6 +402,9 @@ export type OrgRole = 'member' | 'admin' | 'securityadmin';
 export type OrgInfo = {
   id: string; handle: string; display_name: string; created_at?: string;
   my_role: OrgRole | null; can_admin: boolean;
+  /// May change its members and sign-in (flow_a3t_orgs 1.4.2): SuperAdmin,
+  /// SecurityAdmin, its security admins, and its admins unless identity is locked.
+  can_identity?: boolean;
   /// Sees its members and sign-in without changing them: SuperAdmin,
   /// SecurityAdmin, the org's admins and security admins.
   can_audit?: boolean;
@@ -411,7 +416,8 @@ export type OrgInfo = {
   /// `invite`: added here by an admin.
   members: { user_id: string; email?: string; name?: string; role: OrgRole; source?: 'sso' | 'invite' }[];
 };
-export type OrgSso = { idp_alias: string; domains: string[]; role_map: Record<string, OrgRole>; default_role: 'member' | '' };
+/// The org's own identity provider; which groups get which role is its access/org.yaml (GOV-5).
+export type OrgSso = { idp_alias: string; domains: string[] };
 export type ProfileInfo = { handle: string; user_id: string; email?: string; name?: string };
 
 /// Run one of the project flows; a flow's own refusal ({ ok: false, error })
@@ -472,7 +478,6 @@ export const orgsApi = {
   removeMember: (org: string, user_id: string) => projectFlow('flow_a3t_orgs', { action: 'remove_member', org, user_id }),
   setRuntime: (org: string, runtime: 'isolated' | 'shared') => projectFlow('flow_a3t_orgs', { action: 'set_runtime', org, runtime }),
   /** Sign-in per org (.ai/A3T_ORG_SSO_SPEC.md); an empty idp_alias turns it off. */
-  setSso: (org: string, sso: OrgSso) => projectFlow('flow_a3t_orgs', { action: 'set_sso', org, ...sso }),
 };
 
 /// Everyone who can be added to an org or project: local users and, in EE, the
@@ -535,9 +540,53 @@ export type DebugCommand = 'continue' | 'step_over' | 'step_into' | 'step_out' |
 // ── Audit / decision log (EE — durable in ADB EPISODIC, AUD-1) ──
 /// Server-side filters (exact values) and paging: pass the answer's
 /// `next_before_ms` as `before_ms` for the next page. `q` ranks by meaning.
+/// GOV-10: the agent inventory (an org's, or every org's for platform InfoSec).
+export type InventoryRow = {
+  id: string; name: string; project: string; org: string; owner: string; status: string; template: string;
+  model: any; mcp_servers: string[]; tools: any; keys_live: number; keys_total: number; own_policy: boolean; rules: number;
+  role_ceiling: string[] | null; egress: string[] | null; last_activity: string | null; created_at: string; risk: 'high' | 'medium' | 'low'; why: string;
+};
+/// One agent as Security sees it: keys, effective access (decided by policy, as
+/// the agent acting for its owner), and what changed.
+export type AgentAccess = { kind: string; what: string; decision: { state: 'allowed' | 'blocked' | 'needs approval' | 'reached'; by?: string[]; why?: string; approver?: string | null } };
+export type AgentSecurityView = {
+  agent: InventoryRow; keys: AgentKey[]; access: AgentAccess[];
+  changes: { at: string; what: string; by?: any; approved_by?: any; changed?: string[] | null; version?: string; key?: string }[];
+  acts_as: { own_key: string; ceiling: string[] | null; outside: string };
+  policy: { set: boolean; rules: string[] };
+};
+export const agentSecurity = {
+  get: (id: string) => request<AgentSecurityView>(`/security/agents/${encodeURIComponent(id)}`, { method: 'GET' }),
+  revokeKeys: (id: string) => request<{ agent_id: string; revoked: number }>(`/security/agents/${encodeURIComponent(id)}/keys/revoke`, { method: 'POST' }),
+};
+export const agentInventory = (org?: string) =>
+  request<{ count: number; high: number; medium: number; low: number; agents: InventoryRow[] }>(`/security/agents${org ? `?org=${encodeURIComponent(org)}` : ''}`, { method: 'GET' });
+
+/// Every role, in one table (ID-1): a3t/policies/roles.yaml.
+export const securityRoles = () => request<{ version: number; roles: any[] }>('/security/roles', { method: 'GET' });
+
+/// A policy file set that stopped compiling: what is wrong and what it closed.
+export type PolicyBroken = { kind: 'org' | 'agent'; owner: string; org?: string | null; errors: string[]; closed: string[]; since: string };
+
 export type AuditQuery = { org?: string; project?: string; agent?: string; principal?: string; action?: string; decision?: string; since_ms?: number; before_ms?: number; q?: string; limit?: number };
 export interface AuditPage { count: number; records: any[]; scope: string; orgs?: string[]; next_before_ms?: number | null; aql?: string; source?: string }
+/// GOV-11: access reviews of an org.
+export type AccessReview = { id: string; name: string; status: 'open' | 'closed'; created_by: string; created_at: string; closed_at?: string; items: number; pending: number; revoked: number };
+export type AccessReviewItem = { id: string; kind: 'org_role' | 'project_role' | 'agent_key'; subject: string; detail: string; target: any; decision: 'pending' | 'keep' | 'revoke'; decided_by?: string; decided_at?: string };
+export const accessReviews = {
+  list: (org: string) => request<{ reviews: AccessReview[] }>(`/security/orgs/${encodeURIComponent(org)}/reviews`, { method: 'GET' }),
+  create: (org: string, name: string) => request<{ id: string }>(`/security/orgs/${encodeURIComponent(org)}/reviews`, { method: 'POST', body: JSON.stringify({ name }) }),
+  get: (org: string, id: string) => request<{ review: AccessReview; items: AccessReviewItem[] }>(`/security/orgs/${encodeURIComponent(org)}/reviews/${encodeURIComponent(id)}`, { method: 'GET' }),
+  decide: (org: string, id: string, item: string, decision: 'keep' | 'revoke', note = '') =>
+    request(`/security/orgs/${encodeURIComponent(org)}/reviews/${encodeURIComponent(id)}/items/${encodeURIComponent(item)}`, { method: 'POST', body: JSON.stringify({ decision, note }) }),
+  close: (org: string, id: string) => request(`/security/orgs/${encodeURIComponent(org)}/reviews/${encodeURIComponent(id)}/close`, { method: 'POST' }),
+};
+
+/// AUD-4: an org's decision chains, checked (gaps, edits, anchors).
+export type AuditVerify = { ok: boolean; records: number; chains: number; unchained: number; gaps: any[]; edits: any[]; broken_links: any[]; anchors_checked: number; anchor_mismatch: any[]; note: string };
+
 export const audit = {
+  verify: (org: string, days = 7) => request<AuditVerify>(`/security/audit/verify?${new URLSearchParams({ org, days: String(days) })}`, { method: 'GET' }),
   query: (q: AuditQuery = {}) => {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v));
@@ -578,6 +627,8 @@ export const getEdition = () => request('/edition', { method: 'GET' }, false);
 export const securityPolicies = {
   /** The baseline policy pack the server enforces, and its version. */
   baseline: () => request<{ cedar: string; version: string }>('/security/baseline', { method: 'GET' }),
+  /** Policy files that no longer compile and what they closed (GOV-4). */
+  health: () => request<{ broken: PolicyBroken[]; count: number }>('/security/policy-health', { method: 'GET' }),
   /** List saved Cedar policy resources with their source. */
   list: () => request('/security/policies', { method: 'GET' }),
   /** Hot-reload the active policy set — no pod restart. Validate-before-swap. */
@@ -721,6 +772,13 @@ export const people = {
 /// A3T's database: every save is a version; each file is switched on or off.
 export interface OrgPolicyFile { path: string; kind: string; content: string; version: string; updated_at: string; enforced: boolean }
 export interface OrgPolicyFiles { org: string; projects: string[]; files: OrgPolicyFile[] }
+/// Who may change an org's policies and identity, who approves, its time zone.
+export interface OrgGovernance { policy_lock: 'both' | 'security'; identity_lock: 'both' | 'security'; approver: 'securityadmin' | 'admin'; timezone: string | null }
+export interface OrgSettings {
+  org: string; four_eyes: boolean; pending: number; governance: OrgGovernance;
+  /// The caller: platform | securityadmin | admin | member | ''.
+  my_role: string; can_govern: boolean; can_approve: boolean;
+}
 export interface OrgPolicyFileDetail {
   org: string; path: string;
   file: { kind: string; content: string; version: string; updated_at: string; enforced: boolean } | null;
@@ -729,19 +787,69 @@ export interface OrgPolicyFileDetail {
 /// A check of the org's enforced files with drafts in place: nothing is saved.
 export interface OrgPolicyCheck { ok: boolean; checked: string[]; errors?: string[]; compiled?: any }
 const orgBase = (org: string) => `/security/orgs/${encodeURIComponent(org)}`;
+export type OrgIdp = {
+  org: string;
+  redirect_uri?: string;
+  sso: { idp_alias?: string; domains?: string[]; issuer?: string; client_id?: string; groups_claim?: string; connected_by?: string; connected_at?: string } | null;
+  scim: { on: boolean; since?: string | null; base_url: string; users: number; deactivated: number };
+};
 export const orgPolicy = {
   files: (org: string) => request<OrgPolicyFiles>(`${orgBase(org)}/files`, { method: 'GET' }),
   file: (org: string, path: string) => request<OrgPolicyFileDetail>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'GET' }),
   /// Saved only if the org's enforced files still work with it (422 + `errors` otherwise).
-  save: (org: string, path: string, content: string) =>
-    request<{ path: string; version: string; changed: boolean; enforced: boolean }>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  /// `shadow`: a new (or switched-off) rule file goes straight into shadow mode, never enforced.
+  save: (org: string, path: string, content: string, opts: { shadow?: boolean } = {}) =>
+    request<{ path: string; version: string; changed: boolean; enforced: boolean; shadow?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'PUT', body: JSON.stringify({ content, ...(opts.shadow ? { shadow: true } : {}) }) }),
   remove: (org: string, path: string) => request(`${orgBase(org)}/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
   validate: (org: string, files: { path: string; content: string }[] = [], removed: string[] = []) =>
     request<OrgPolicyCheck>(`${orgBase(org)}/validate`, { method: 'POST', body: JSON.stringify({ files, removed }) }),
   /// Which files are enforced (the rest stay kept, switched off). Refused
   /// (422, `errors`) if those files don't work on their own.
   setEnforced: (org: string, enforced: string[]) =>
-    request<{ org: string; enforced: number; off: number; switched: number; errors?: string[] }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+    request<{ org: string; enforced: number; off: number; switched: number; errors?: string[]; pending?: boolean; message?: string }>(`${orgBase(org)}/files/enforced`, { method: 'PUT', body: JSON.stringify({ enforced }) }),
+  /// GOV-2: run a switched-off rule file in shadow mode (evaluated and logged, not enforced).
+  setShadow: (org: string, path: string, shadow: boolean) =>
+    request<{ shadow: boolean }>(`${orgBase(org)}/files/shadow`, { method: 'PUT', body: JSON.stringify({ path, shadow }) }),
+  /// GOV-2: replay a change against the org's last `days` of decisions.
+  replay: (org: string, change: { files?: { path: string; content: string }[]; removed?: string[]; switch_on?: string[]; days?: number }) =>
+    request<ReplayResult>(`${orgBase(org)}/replay`, { method: 'POST', body: JSON.stringify(change) }),
+  /// AUD-6: how long its decisions are kept (0: forever), and its legal hold.
+  /// ID-10: the org's own identity provider (connected by its admins) and SCIM.
+  idp: (org: string) => request<OrgIdp>(`${orgBase(org)}/idp`, { method: 'GET' }),
+  connectIdp: (org: string, body: { issuer: string; client_id: string; client_secret?: string; groups_claim?: string; domains?: string[]; display_name?: string }) =>
+    request<{ ok: boolean; idp_alias: string; issuer: string; domains: string[]; groups_claim: string }>(`${orgBase(org)}/idp`, { method: 'PUT', body: JSON.stringify(body) }),
+  disconnectIdp: (org: string) => request(`${orgBase(org)}/idp`, { method: 'DELETE' }),
+  newScimToken: (org: string) => request<{ token: string; base_url: string; note: string }>(`${orgBase(org)}/scim/token`, { method: 'POST' }),
+  scimOff: (org: string) => request(`${orgBase(org)}/scim/token`, { method: 'DELETE' }),
+  retention: (org: string) => request<{ retention_days: number; legal_hold: boolean }>(`${orgBase(org)}/retention`, { method: 'GET' }),
+  setRetention: (org: string, body: { retention_days?: number; legal_hold?: boolean }) =>
+    request<{ retention_days?: number; legal_hold?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/retention`, { method: 'PUT', body: JSON.stringify(body) }),
+  /// GOV-3: the org's second approver for policy changes.
+  settings: (org: string) => request<OrgSettings>(`${orgBase(org)}/settings`, { method: 'GET' }),
+  /// Who governs the org (its security admins and the platform's change it).
+  setGovernance: (org: string, g: Partial<OrgGovernance>) =>
+    request<{ org: string; governance: OrgGovernance }>(`${orgBase(org)}/settings`, { method: 'PUT', body: JSON.stringify(g) }),
+  setFourEyes: (org: string, four_eyes: boolean) =>
+    request<{ four_eyes?: boolean; changed?: boolean; pending?: boolean; message?: string }>(`${orgBase(org)}/settings`, { method: 'PUT', body: JSON.stringify({ four_eyes }) }),
+  changes: (org: string) => request<{ org: string; four_eyes: boolean; changes: PolicyChange[] }>(`${orgBase(org)}/changes`, { method: 'GET' }),
+  approve: (org: string, id: string, note = '') =>
+    request<{ approved: boolean; errors?: string[] }>(`${orgBase(org)}/changes/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
+  reject: (org: string, id: string, note = '') =>
+    request(`${orgBase(org)}/changes/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
+};
+
+/// What a replay found (GOV-2): the decisions that would flip.
+export type ReplayResult = {
+  days: number; read: number; replayed: number; skipped: number; flipped: number; unchanged: number; note: string;
+  flips: { ts_ms: number; principal: string; on_behalf_of?: string; agent?: string; action: string; resource: string; project?: string;
+    before: string; after: string; policy_ids: string[]; reason?: string }[];
+};
+
+/// A policy change held for a second approver (GOV-3).
+export type PolicyChange = {
+  id: string; target: 'file' | 'agent' | 'settings'; op: string; subject: string; summary: string;
+  by: string; at: string; status: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+  decided_by?: string; decided_at?: string; note?: string; payload?: any; can_decide?: boolean;
 };
 
 export const idp = {
@@ -857,8 +965,14 @@ export const agentSpaceApi = {
   merge: (id: string, name: string, body: Record<string, unknown>) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/merge`), { method: 'POST', body: JSON.stringify(body) }),
   /// Its keys: tokens for its data plane. A new key is returned once (`key`).
   keys: (id: string) => request<{ keys: AgentKey[] }>(ag(id, '/keys')),
-  makeKey: (id: string, name: string) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name }) }),
+  /// ID-5: a key expires (`expires_in_days`, default 90, at most 365).
+  makeKey: (id: string, name: string, expires_in_days = 90) => request<AgentKey & { key: string }>(ag(id, '/keys'), { method: 'POST', body: JSON.stringify({ name, expires_in_days }) }),
+  /// ID-5: a new key in its place; the old one keeps working for `grace_hours` (default 24), then expires.
+  rotateKey: (id: string, keyId: string, grace_hours = 24) =>
+    request<AgentKey & { key: string; old_expires_at: string }>(ag(id, `/keys/${encodeURIComponent(keyId)}/rotate`), { method: 'POST', body: JSON.stringify({ grace_hours }) }),
   revokeKey: (id: string, keyId: string) => request(ag(id, `/keys/${encodeURIComponent(keyId)}`), { method: 'DELETE' }),
+  /// RT-5, the kill switch: blocked, and its runs in flight cancelled on every pod.
+  kill: (id: string, reason: string) => request<{ blocked: boolean; was: string; cancelled_runs: string[] }>(ag(id, '/kill'), { method: 'POST', body: JSON.stringify({ reason }) }),
   /** The agent's security profile: what it reaches, what it is bound to, its own rules. */
   security: (id: string) => request<AgentSecurity>(ag(id, '/security')),
   /** Save the agent's own policy (a kind: a3t/policy file); checked before it is saved. */
@@ -867,7 +981,7 @@ export const agentSpaceApi = {
   promote: (id: string, name: string, newAgent: { id: string; name: string }) => request<any>(ag(id, `/branches/${encodeURIComponent(name)}/promote`), { method: 'POST', body: JSON.stringify({ new_agent: newAgent }) }),
 };
 export interface AgentVersion { version: string; template: { id: string; version: string }; memory: { namespace: string; tag: string } | null; note: string; created_by: string; created_at: string }
-export interface AgentKey { id: string; name: string; prefix: string; created_by: string; created_at: string; last_used_at: string; revoked_at: string }
+export interface AgentKey { id: string; name: string; prefix: string; created_by: string; created_at: string; last_used_at: string; revoked_at: string; expires_at?: string; rotated_from?: string }
 export interface MemoryBranch { id: string; name: string; parent: string; created_by: string; point_ts: number }
 
 export async function agentTool(agent: string, tool: string, args: Record<string, any> = {}): Promise<ApiResponse> {
@@ -1199,6 +1313,64 @@ export async function answerApproval(
   });
   return res.ok;
 }
+
+/// The approvals inbox (GOV-7): every question waiting on a person — from a
+/// chat, a flow's agent, a trigger or an API call — with what it would do.
+export interface InboxItem {
+  id: string;
+  title: string;
+  tool: string;
+  server?: string | null;
+  arguments?: any;
+  reason: string;
+  agent: string;
+  approver?: string | null;
+  onBehalfOf?: string | null;
+  owner?: string | null;
+  project?: string | null;
+  rule?: string | null;
+  session?: string | null;
+  scopes: string[];
+  createdAt?: string | null;
+  expiresAt?: string | null;
+  /** Durable (journaled run, survives restarts) or in this FlowR only. */
+  durable: boolean;
+}
+
+export const approvalsApi = {
+  async pending(): Promise<{ ok: boolean; items: InboxItem[]; error?: string }> {
+    const res = await request<{ inputs: any[] }>('/inputs');
+    if (!res.ok) return { ok: false, items: [], error: res.error };
+    const items = (res.data?.inputs ?? []).filter((i: any) => i?.request_type === 'authz').map((i: any): InboxItem => ({
+      id: i.id ?? i.request_id,
+      title: i.title ?? `Allow ${i.context?.tool ?? 'a tool'}?`,
+      tool: i.context?.tool ?? 'a tool',
+      server: i.context?.server ?? null,
+      arguments: i.context?.arguments,
+      reason: i.context?.reason ?? i.message ?? '',
+      agent: String(i.agent_id ?? '').replace(/^agent:/, ''),
+      approver: i.context?.approver ?? null,
+      onBehalfOf: i.context?.on_behalf_of ?? null,
+      owner: i.context?.agent_owner ?? null,
+      project: i.context?.namespace ?? null,
+      rule: i.context?.rule ?? null,
+      session: i.context?.session_id ?? null,
+      scopes: Array.isArray(i.options) ? i.options : ['once'],
+      createdAt: i.created_at ?? null,
+      expiresAt: i.expires_at ?? null,
+      durable: !!i.run_id,
+    }));
+    items.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    return { ok: true, items };
+  },
+  /// Answer one. Only its approver may; anyone else is told it does not exist.
+  answer(id: string, allow: boolean, scope: 'once' | 'session', reason?: string) {
+    return request(`/inputs/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify({ allow, scope, ...(reason ? { reason } : {}) }),
+    });
+  },
+};
 
 // ── Pins (per user, server-side so they follow you across devices) ──
 

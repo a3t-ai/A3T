@@ -142,12 +142,130 @@ impl Labels {
     }
 }
 
+/// A policy whose name starts with this runs in shadow mode (GOV-2): it is
+/// evaluated after the deciding set, and what it would refuse is logged as
+/// `policy:shadow`, never enforced.
+pub const SHADOW_PREFIX: &str = "shadow:";
+
 /// One compiled policy set and who its policies are.
 struct Pack {
     engine: AuthzEngine,
     labels: Labels,
+    /// The `needs_approval` rules (`@approval` forbids), kept out of the
+    /// deciding set: after an allow, a match asks a person (GOV-8).
+    approvals: Option<Approvals>,
+    /// Shadow-mode files (GOV-2) and rules that only log: a permit-all plus
+    /// their forbids.
+    shadow: Option<Approvals>,
+    /// Rules with a counted condition (`@count`: rate, lockout, first use,
+    /// tokens): a permit-all plus their forbids without the count; a match
+    /// asks the condition source whether the count is met.
+    counted: Option<Approvals>,
+    /// Positional ids (`policyN`) of `@firm` statements (org rules): their
+    /// refusal of an agent stands; it never becomes a delegation prompt.
+    firm: std::collections::HashSet<String>,
     /// sha256 of the policy and schema source, first 16 hex (AUD-2).
     version: String,
+}
+
+/// The approval set: a permit-all plus the `@approval` forbids, so it denies
+/// exactly when an approval rule matches.
+struct Approvals {
+    engine: AuthzEngine,
+    labels: Labels,
+    /// Each policy's terms, by Cedar position.
+    meta: Vec<Meta>,
+}
+
+/// A statement's annotations the hook acts on.
+#[derive(Debug, Clone, Default)]
+struct Meta {
+    /// `@approval`: asks a person; the timeout in seconds.
+    approval: Option<Option<u64>>,
+    /// `@approver`: who answers.
+    approver: Option<String>,
+    /// `@count`: the counted conditions (all must be met).
+    count: Vec<serde_json::Value>,
+}
+
+impl Meta {
+    fn of(p: &cedar_policy::Policy) -> Self {
+        Meta {
+            approval: p.annotation("approval").map(|v| v.parse::<u64>().ok()),
+            approver: p.annotation("approver").map(str::to_string),
+            count: p.annotation("count").and_then(|v| serde_json::from_str::<Vec<serde_json::Value>>(v).ok()).unwrap_or_default(),
+        }
+    }
+}
+
+/// Each statement's terms, by Cedar position (`policy0`, `policy1`, …).
+fn metas(full: &str) -> Result<Vec<Meta>, String> {
+    use std::str::FromStr;
+    let set = cedar_policy::PolicySet::from_str(full).map_err(|e| e.to_string())?;
+    let mut t: Vec<(usize, Meta)> = set.policies()
+        .map(|p| (p.id().to_string().trim_start_matches("policy").parse::<usize>().unwrap_or(usize::MAX), Meta::of(p)))
+        .collect();
+    t.sort_by_key(|(n, _)| *n);
+    Ok(t.into_iter().map(|(_, m)| m).collect())
+}
+
+/// A permit-all plus `src`'s forbids: it denies exactly when one of them matches.
+fn side_set(base_id: &str, src: &str, labels: Vec<(String, Option<String>)>, schema: &str) -> Result<Option<Approvals>, String> {
+    if src.trim().is_empty() {
+        return Ok(None);
+    }
+    let base = format!("@id(\"{base_id}\")\npermit(principal, action, resource);\n\n");
+    let full = format!("{base}{src}");
+    let mut l = Labels::of(&base, base_id)?;
+    l.extend(labels);
+    let labels = Labels(l);
+    let engine = AuthzEngine::new(&full, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
+    Ok(Some(Approvals { engine, labels, meta: metas(&full)? }))
+}
+
+/// A policy source sorted by what the hook does with each statement.
+#[derive(Default)]
+struct Split {
+    /// Decide (refuse).
+    main: String,
+    /// `@approval` (no count): ask a person.
+    approval: String,
+    /// `@count`: checked against A3T's counts.
+    counted: String,
+    /// `@log`: logged as what would be refused, never enforced.
+    log: String,
+}
+
+fn split(src: &str, origin: &str) -> Result<Split, String> {
+    if !["@approval", "@count", "@log"].iter().any(|a| src.contains(a)) {
+        return Ok(Split { main: src.to_string(), ..Default::default() });
+    }
+    use std::str::FromStr;
+    let set = cedar_policy::PolicySet::from_str(src).map_err(|e| format!("{origin}: {e}"))?;
+    let mut ps: Vec<(usize, &cedar_policy::Policy)> = set
+        .policies()
+        .map(|p| (p.id().to_string().trim_start_matches("policy").parse::<usize>().unwrap_or(usize::MAX), p))
+        .collect();
+    ps.sort_by_key(|(n, _)| *n);
+    let mut out = Split::default();
+    for (_, p) in ps {
+        let special = ["approval", "count", "log"].iter().any(|a| p.annotation(a).is_some());
+        if special && p.effect() != cedar_policy::Effect::Forbid {
+            return Err(format!("{origin}: an @approval, @count or @log statement must be a forbid"));
+        }
+        let to = if p.annotation("log").is_some() {
+            &mut out.log
+        } else if p.annotation("count").is_some() {
+            &mut out.counted
+        } else if p.annotation("approval").is_some() {
+            &mut out.approval
+        } else {
+            &mut out.main
+        };
+        to.push_str(&p.to_string());
+        to.push_str("\n\n");
+    }
+    Ok(out)
 }
 
 impl Pack {
@@ -155,23 +273,114 @@ impl Pack {
     fn build(baseline: &str, extra: &[(String, String)], schema: &str) -> Result<Self, String> {
         let mut text = String::from(baseline);
         let mut labels = Labels::of(baseline, "baseline")?;
+        let (mut appr_text, mut appr_labels) = (String::new(), Vec::new());
+        let (mut shadow_text, mut shadow_labels) = (String::new(), Vec::new());
+        let (mut count_text, mut count_labels) = (String::new(), Vec::new());
         for (label, src) in extra {
-            labels.extend(Labels::of(src, label)?);
-            text.push_str("\n// ── ");
-            text.push_str(label);
-            text.push_str(" ──\n");
-            text.push_str(src);
-            text.push('\n');
+            if label.split_once('/').is_some_and(|(_, n)| n.starts_with(SHADOW_PREFIX)) {
+                shadow_labels.extend(Labels::of(src, label)?);
+                shadow_text.push_str(src);
+                shadow_text.push('\n');
+                continue;
+            }
+            let sp = split(src, label)?;
+            if !sp.main.trim().is_empty() {
+                labels.extend(Labels::of(&sp.main, label)?);
+                text.push_str("\n// ── ");
+                text.push_str(label);
+                text.push_str(" ──\n");
+                text.push_str(&sp.main);
+                text.push('\n');
+            }
+            for (part, t, l) in [(&sp.approval, &mut appr_text, &mut appr_labels), (&sp.log, &mut shadow_text, &mut shadow_labels), (&sp.counted, &mut count_text, &mut count_labels)] {
+                if !part.trim().is_empty() {
+                    l.extend(Labels::of(part, label)?);
+                    t.push_str(part);
+                }
+            }
         }
         let labels = Labels(labels);
         let engine = AuthzEngine::new(&text, Some(schema)).map_err(|e| labels.rename(&e.to_string()))?;
+        let firm = {
+            use std::str::FromStr;
+            cedar_policy::PolicySet::from_str(&text).map_err(|e| e.to_string())?
+                .policies().filter(|p| p.annotation("firm").is_some()).map(|p| p.id().to_string()).collect()
+        };
+        let approvals = side_set("approval-base", &appr_text, appr_labels, schema)?;
+        let shadow = side_set("shadow-base", &shadow_text, shadow_labels, schema)?;
+        let counted = side_set("count-base", &count_text, count_labels, schema)?;
+        // The version covers every statement, wherever it is evaluated.
+        for (name, t) in [("approvals", &appr_text), ("counted", &count_text)] {
+            if !t.trim().is_empty() {
+                text.push_str(&format!("\n// ── {name} ──\n"));
+                text.push_str(t);
+            }
+        }
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
         h.update(text.as_bytes());
         h.update(b"\0");
         h.update(schema.as_bytes());
         let version = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
-        Ok(Self { engine, labels, version })
+        Ok(Self { engine, labels, approvals, shadow, counted, firm, version })
+    }
+
+    /// GOV-2: what the shadow files would refuse that the enforced set allowed —
+    /// their ids and reasons. Never changes the decision.
+    fn shadow_refusal(&self, ctx: &SecurityContext, action: &AesopAction, resource: &AesopResource) -> Option<(Vec<String>, Vec<String>)> {
+        let a = self.shadow.as_ref()?;
+        match a.engine.enforce(ctx, action, resource) {
+            Err(AesopError::Denied { policy_ids, .. }) if !policy_ids.is_empty() => Some((
+                policy_ids.iter().map(|i| a.labels.label(i).replace(SHADOW_PREFIX, "")).collect(),
+                policy_ids.iter().filter_map(|i| a.labels.reason(i)).collect(),
+            )),
+            _ => None,
+        }
+    }
+
+    /// After an allow: does a `needs_approval` rule cover this call? Its ids,
+    /// reasons, the shortest timeout among them and who answers.
+    fn approval_needed(&self, ctx: &SecurityContext, action: &AesopAction, resource: &AesopResource) -> Option<(Vec<String>, Vec<String>, flowr_policy::RequiredApproval)> {
+        let a = self.approvals.as_ref()?;
+        match a.engine.enforce(ctx, action, resource) {
+            Ok(_) => None,
+            Err(AesopError::Denied { policy_ids, .. }) if !policy_ids.is_empty() => {
+                let ids = policy_ids.iter().map(|i| a.labels.label(i)).collect();
+                let why = policy_ids.iter().filter_map(|i| a.labels.reason(i)).collect();
+                let metas: Vec<&Meta> = policy_ids.iter().filter_map(|i| a.meta_of(i)).collect();
+                Some((ids, why, terms(&metas)))
+            }
+            // A fault in the approval set asks rather than letting it through.
+            Err(_) => Some((vec!["approval-set".into()], Vec::new(), Default::default())),
+        }
+    }
+
+    /// After an allow: the counted rules this call matches (their count aside),
+    /// as `(id, reason, terms)`. A fault refuses (`Err`).
+    fn counted_matches(&self, ctx: &SecurityContext, action: &AesopAction, resource: &AesopResource) -> Result<Vec<(String, Option<String>, Meta)>, String> {
+        let Some(a) = self.counted.as_ref() else { return Ok(Vec::new()) };
+        match a.engine.enforce(ctx, action, resource) {
+            Ok(_) => Ok(Vec::new()),
+            Err(AesopError::Denied { policy_ids, .. }) => Ok(policy_ids.iter()
+                .filter_map(|i| a.meta_of(i).map(|m| (a.labels.label(i), a.labels.reason(i), m.clone())))
+                .collect()),
+            Err(e) => Err(format!("the counted rules could not be checked: {e}")),
+        }
+    }
+}
+
+impl Approvals {
+    fn meta_of(&self, id: &str) -> Option<&Meta> {
+        id.strip_prefix("policy").and_then(|n| n.parse::<usize>().ok()).and_then(|n| self.meta.get(n))
+    }
+}
+
+/// The approval terms of the rules that asked: the shortest timeout, and the
+/// first named approver.
+fn terms(metas: &[&Meta]) -> flowr_policy::RequiredApproval {
+    flowr_policy::RequiredApproval {
+        timeout_secs: metas.iter().filter_map(|m| m.approval.flatten()).min(),
+        approver: metas.iter().find_map(|m| m.approver.clone()),
     }
 }
 
@@ -192,12 +401,14 @@ enum ProjectPack {
 pub struct CedarHook {
     global: Pack,
     projects: std::collections::HashMap<String, ProjectPack>,
+    /// Don't log shadow refusals (a replay re-evaluates past decisions).
+    quiet: bool,
 }
 
 impl CedarHook {
     /// Build from explicit Cedar policy + schema source.
     pub fn new(policies_src: &str, schema_src: &str) -> Result<Self, String> {
-        Ok(Self { global: Pack::build(policies_src, &[], schema_src)?, projects: Default::default() })
+        Ok(Self { global: Pack::build(policies_src, &[], schema_src)?, projects: Default::default(), quiet: false })
     }
 
     /// Build from the embedded A3T baseline pack (schema + policies).
@@ -264,7 +475,7 @@ impl CedarHook {
             };
             projects.insert(ns.to_string(), pack);
         }
-        Ok(Self { global, projects })
+        Ok(Self { global, projects, quiet: false })
     }
 
     /// Check that `policies` load: the platform set, and every project's set.
@@ -278,6 +489,12 @@ impl CedarHook {
             }
         }
         Ok(())
+    }
+
+    /// The same hook, logging nothing of its own (for a replay, GOV-2).
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
     }
 
     /// The projects with policies of their own.
@@ -303,13 +520,15 @@ impl CedarHook {
             PolicyDecision::Deny { policy_ids, .. } | PolicyDecision::Ask { policy_ids, .. } => policy_ids.clone(),
             PolicyDecision::Allow => {
                 let scoped = flowr_policy::namespace::scoped_principal(req).await;
-                let ctx = SecurityContext { principal: to_aesop_principal(&scoped), attributes: req.attributes.clone() };
+                let (attributes, context) = facts(req, &scoped, &req.attributes).await;
+                let ctx = SecurityContext { principal: to_aesop_principal(&scoped), attributes, context };
                 match (self.pack_for(req), AesopAction::new(req.action.as_str())) {
                     (Ok(pack), Ok(action)) => {
                         let resource = AesopResource {
                             type_name: req.resource.type_name.clone(),
                             id: req.resource.id.clone(),
                             attributes: req.resource.attributes.clone(),
+                            tags: numeric_args(&req.params),
                         };
                         pack.engine.enforce(&ctx, &action, &resource).map(|a| a.policy_ids.iter().map(|i| pack.labels.label(i)).collect()).unwrap_or_default()
                     }
@@ -402,6 +621,41 @@ impl CedarHook {
     }
 }
 
+/// Log what a shadow file would have refused (GOV-2), as `policy:shadow` on
+/// the same resource; the call itself goes ahead.
+fn log_shadow(req: &ExecutionRequest, ids: &[String], why: &[String]) {
+    let project = flowr_policy::namespace::request_namespace(req);
+    let reason = format!("shadow: would refuse {} on {}::{} ({}). {}", req.action.as_str(), req.resource.type_name, req.resource.id, ids.join(", "), why.join(" "));
+    flowr_policy::audit::event_decision(
+        &req.principal, "policy:shadow", &req.resource.type_name, &req.resource.id, project.as_deref(), None,
+        &PolicyDecision::Deny { reason: reason.trim_end().to_string(), policy_ids: ids.to_vec() },
+        Some(&format!("not enforced; the call was allowed ({})", req.action.as_str())),
+    );
+}
+
+/// What a `needs_approval` rule makes of an allowed call: a question for the
+/// person behind the agent (or its owner), asked every time; with nobody to
+/// ask, a refusal.
+fn required_ask(p: &Principal, action: &AesopAction, resource: &AesopResource, policy_ids: Vec<String>, why: Vec<String>, terms: flowr_policy::RequiredApproval) -> PolicyDecision {
+    let what = format!("{} on {}::{}", action.as_str(), resource.type_name, resource.id);
+    let because = if why.is_empty() { String::new() } else { format!(" {}", why.join(" ")) };
+    // A named approver (a role or group) can answer for any agent; otherwise
+    // it is the person behind the agent (or its owner).
+    let someone = matches!(p, Principal::Agent { .. }) && (terms.approver.is_some() || p.on_behalf_of().is_some() || p.owner().is_some());
+    if !someone {
+        return PolicyDecision::Deny {
+            reason: format!("{what} needs a person's approval (policy {}), and nobody stands behind this call to give it.{because}", policy_ids.join(", ")),
+            policy_ids,
+        };
+    }
+    PolicyDecision::Ask {
+        reason: format!("{what} needs a person's approval (policy {}).{because}", policy_ids.join(", ")),
+        policy_ids,
+        scopes: vec![flowr_policy::GrantScope::Once],
+        required: Some(terms),
+    }
+}
+
 /// A refusal in words: what was refused, which policy refused it and what access
 /// it needs (the rule's `@reason`), or that nothing permits it for these roles.
 fn deny_reason(p: &Principal, action: &str, rtype: &str, rid: &str, ids: &[String], why: &[String]) -> String {
@@ -454,6 +708,189 @@ fn as_approver_attributes(
     out
 }
 
+/// A what-if check (`attributes._probe: true`, e.g. an agent's effective
+/// access in Security): decided as usual, but nothing is logged or counted.
+pub const PROBE: &str = "_probe";
+
+fn is_probe(req: &ExecutionRequest) -> bool {
+    req.attributes.get(PROBE).and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// The call's number arguments, as the Tool's tags (`getTag`, whole numbers).
+/// MCP calls carry them under `arguments`. A fraction rounds up, so "over 1000"
+/// reads 1000.50 as over and 999.50 as not.
+fn numeric_args(params: &serde_json::Value) -> std::collections::BTreeMap<String, i64> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut take = |m: &serde_json::Map<String, serde_json::Value>| {
+        for (k, v) in m {
+            let n = match v {
+                serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f.ceil().clamp(i64::MIN as f64, i64::MAX as f64) as i64)),
+                serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+                _ => None,
+            };
+            if let Some(n) = n {
+                out.insert(k.clone(), n);
+            }
+        }
+    };
+    if let Some(m) = params.as_object() {
+        take(m);
+        if let Some(a) = m.get("arguments").and_then(|v| v.as_object()) {
+            take(a);
+        }
+    }
+    out
+}
+
+/// The one tenant role held where the call lands: the highest of Admin,
+/// Operator, Viewer (roles stack, so a rule naming one level matches on this).
+pub fn level_of(roles: &[String]) -> Option<&'static str> {
+    ["Admin", "Operator", "Viewer"].into_iter().find(|l| roles.iter().any(|r| r == l))
+}
+
+/// What a rule may read about this call besides who and what: the principal's
+/// facts (merged into `principal.*`) and the request context (`context.*`).
+async fn facts(req: &ExecutionRequest, scoped: &Principal, attributes: &serde_json::Map<String, serde_json::Value>)
+    -> (serde_json::Map<String, serde_json::Value>, serde_json::Map<String, serde_json::Value>) {
+    use serde_json::{json, Value};
+    let mut attrs = attributes.clone();
+    // Facts a choke point supplies for this call (e.g. `untrusted_seen` from an
+    // agent turn) arrive under `context`; they are context, not principal data.
+    attrs.remove(PROBE);
+    let supplied = match attrs.remove("context") {
+        Some(Value::Object(m)) => m,
+        _ => Default::default(),
+    };
+    if let Some(l) = level_of(scoped.roles()) {
+        attrs.insert("level".into(), json!(l));
+    }
+    if let Some(by) = scoped.impersonated_by() {
+        attrs.insert("impersonated_by".into(), json!(by));
+    }
+    let session = scoped.session();
+    if let Some(sf) = session {
+        if !sf.groups.is_empty() {
+            attrs.insert("groups".into(), json!(sf.groups));
+        }
+        if let Some(e) = &sf.email {
+            attrs.insert("email".into(), json!(e.to_lowercase()));
+        }
+    }
+    let mut ctx = serde_json::Map::new();
+    for k in ["untrusted_seen", "args_pii"] {
+        if let Some(b) = supplied.get(k).and_then(|v| v.as_bool()) {
+            ctx.insert(k.into(), json!(b));
+        }
+    }
+    let src = flowr_policy::conditions::condition_source();
+    let ns = flowr_policy::namespace::request_namespace(req);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let offset = src.utc_offset_minutes(ns.as_deref()).await as i64;
+    let (day, weekday, minute) = flowr_policy::conditions::civil(now + offset * 60);
+    ctx.insert("local".into(), json!({ "day": day, "weekday": weekday, "minute": minute }));
+    if let Some(s) = src.since_deploy_s(ns.as_deref()).await {
+        ctx.insert("since_deploy_s".into(), json!(s));
+    }
+    if !ctx.contains_key("args_pii") && !req.params.is_null() {
+        ctx.insert("args_pii".into(), json!(src.args_pii(&req.params)));
+    }
+    if let Some(sf) = session {
+        if let Some(ip) = sf.ip.as_deref().filter(|ip| ip.parse::<std::net::IpAddr>().is_ok()) {
+            ctx.insert("ip".into(), json!({ "__extn": { "fn": "ip", "arg": ip } }));
+        }
+        if let Some(c) = &sf.channel {
+            ctx.insert("channel".into(), json!(c));
+        }
+        let mut auth = json!({ "second_factor": sf.second_factor, "org_idp": sf.org_idp });
+        if let Some(t) = sf.auth_time {
+            auth["age_s"] = json!((now - t).max(0));
+        }
+        ctx.insert("auth".into(), auth);
+    }
+    (attrs, ctx)
+}
+
+impl CedarHook {
+    /// The counted rules this (allowed) call matches: each one whose counted
+    /// conditions are all met refuses it, or asks. Otherwise the call is
+    /// counted. A count that can't be read refuses (fail closed). A replay
+    /// (`quiet`) neither reads nor writes counts.
+    async fn counted(&self, pack: &Pack, req: &ExecutionRequest, scoped: &Principal, ctx: &SecurityContext, action: &AesopAction, resource: &AesopResource) -> Option<PolicyDecision> {
+        if self.quiet {
+            return None;
+        }
+        let probe = is_probe(req);
+        let matches = match pack.counted_matches(ctx, action, resource) {
+            Ok(m) if m.is_empty() => return None,
+            Ok(m) => m,
+            Err(e) => return Some(PolicyDecision::Deny { reason: format!("Refused: {e}"), policy_ids: vec!["count-set".into()] }),
+        };
+        let src = flowr_policy::conditions::condition_source();
+        let key = |rule: &str| flowr_policy::conditions::CountKey {
+            rule: rule.to_string(),
+            person: flowr_policy::namespace::acting_user(scoped).map(str::to_string),
+            agent: match scoped { Principal::Agent { agent_id, .. } => Some(agent_id.0.clone()), _ => None },
+            namespace: flowr_policy::namespace::request_namespace(req),
+            resource: format!("{}::{}", resource.type_name, resource.id),
+            action: action.as_str().to_string(),
+        };
+        let mut met: Vec<(String, Option<String>, Meta)> = Vec::new();
+        let mut not_met: Vec<(String, Meta)> = Vec::new();
+        for (id, why, meta) in matches {
+            let k = key(&rule_of(&id));
+            let mut all = !meta.count.is_empty();
+            for spec in &meta.count {
+                match src.over(spec, &k).await {
+                    Ok(true) => {}
+                    Ok(false) => { all = false; break; }
+                    Err(e) => return Some(PolicyDecision::Deny {
+                        reason: format!("Refused: rule {id} needs a count A3T could not read ({e})."),
+                        policy_ids: vec![id],
+                    }),
+                }
+            }
+            if all { met.push((id, why, meta)); } else { not_met.push((id, meta)); }
+        }
+        // This call goes on (or waits) under the rules whose count was not met:
+        // it counts towards them.
+        if !probe && met.iter().all(|(_, _, m)| m.approval.is_some()) {
+            for (id, meta) in &not_met {
+                let k = key(&rule_of(id));
+                for spec in &meta.count {
+                    src.record(spec, &k).await;
+                }
+            }
+        }
+        if met.is_empty() {
+            return None;
+        }
+        let ids: Vec<String> = met.iter().map(|(i, _, _)| i.clone()).collect();
+        let why: Vec<String> = met.iter().filter_map(|(_, w, _)| w.clone()).collect();
+        if met.iter().all(|(_, _, m)| m.approval.is_some()) {
+            let metas: Vec<&Meta> = met.iter().map(|(_, _, m)| m).collect();
+            // A first use that waits is counted: the next one doesn't ask again.
+            for (id, _, meta) in met.iter().filter(|_| !probe) {
+                for spec in meta.count.iter().filter(|s| s.get("kind").and_then(|k| k.as_str()) == Some("first_use")) {
+                    src.record(spec, &key(&rule_of(id))).await;
+                }
+            }
+            return Some(required_ask(&req.principal, action, resource, ids, why, terms(&metas)));
+        }
+        Some(PolicyDecision::Deny {
+            reason: deny_reason(scoped, action.as_str(), &resource.type_name, &resource.id, &ids, &why),
+            policy_ids: ids,
+        })
+    }
+}
+
+/// `<org>/<policy>/r3.1.2p` → `<org>/<policy>/r3`: counts are kept per rule.
+fn rule_of(id: &str) -> String {
+    match id.rsplit_once("/r") {
+        Some((head, tail)) => format!("{head}/r{}", tail.split('.').next().unwrap_or(tail)),
+        None => id.to_string(),
+    }
+}
+
 #[async_trait::async_trait]
 impl PolicyHook for CedarHook {
     fn version_for(&self, req: &ExecutionRequest) -> Option<String> {
@@ -465,11 +902,14 @@ impl PolicyHook for CedarHook {
         // global ones (.ai/A3T_ORG_SSO_SPEC.md R6/R7): admin in their own org,
         // viewer in another, whatever their Keycloak realm role says.
         let scoped = flowr_policy::namespace::scoped_principal(req).await;
+        let (attributes, context) = facts(req, &scoped, &req.attributes).await;
         let ctx = SecurityContext {
             principal: to_aesop_principal(&scoped),
             // E2 #2a: the flow/agent template data (`principal.template.*`) rides
-            // here so InfoSec-owned policy resources can gate on it.
-            attributes: req.attributes.clone(),
+            // here so InfoSec-owned policy resources can gate on it — with the
+            // rule facts (level, groups, email) and the request context.
+            attributes,
+            context: context.clone(),
         };
 
         // The action shape was already validated at the CE edge; re-validate to
@@ -488,6 +928,7 @@ impl PolicyHook for CedarHook {
             type_name: req.resource.type_name.clone(),
             id: req.resource.id.clone(),
             attributes: req.resource.attributes.clone(),
+            tags: numeric_args(&req.params),
         };
 
         let pack = match self.pack_for(req) {
@@ -500,7 +941,19 @@ impl PolicyHook for CedarHook {
             }
         };
         match pack.engine.enforce(&ctx, &action, &resource) {
-            Ok(_allowed) => PolicyDecision::Allow,
+            Ok(_allowed) => {
+                if let Some((ids, why)) = pack.shadow_refusal(&ctx, &action, &resource).filter(|_| !self.quiet && !is_probe(req)) {
+                    log_shadow(req, &ids, &why);
+                }
+                // Counted rules (rate, lockout, first use, tokens): those this
+                // call matches, if their count is met, refuse or ask.
+                if let Some(d) = self.counted(pack, req, &scoped, &ctx, &action, &resource).await {
+                    return d;
+                }
+                match pack.approval_needed(&ctx, &action, &resource) {
+                None => PolicyDecision::Allow,
+                Some((policy_ids, why, terms)) => required_ask(&req.principal, &action, &resource, policy_ids, why, terms),
+            }},
             Err(AesopError::Denied { policy_ids: raw_ids, action: denied_action, resource_type, resource_id }) => {
                 let policy_ids: Vec<String> = raw_ids.iter().map(|i| pack.labels.label(i)).collect();
                 let why: Vec<String> = raw_ids.iter().filter_map(|i| pack.labels.reason(i)).collect();
@@ -517,7 +970,10 @@ impl PolicyHook for CedarHook {
                 // nobody is ever asked to grant authority they do not already
                 // hold, so the worst a prompt can do is re-delegate what the
                 // approver could have done by hand.
-                if let Some(approver) = self.approver_of(&req.principal) {
+                // An org rule's refusal stands: it is the org's decision, not a
+                // limit of this agent that the person behind it may widen.
+                let firm = raw_ids.iter().any(|i| pack.firm.contains(i));
+                if let Some(approver) = self.approver_of(&req.principal).filter(|_| !firm) {
                     // Only the agent's OWNER may be asked to widen its ceiling.
                     // For anyone else the ceiling binds exactly as it binds the
                     // agent, so the denial stands — otherwise any user who could
@@ -541,20 +997,35 @@ impl PolicyHook for CedarHook {
                         // `policyRef` and `runtimePolicy` are how InfoSec policies
                         // attach to a flow, so they stay — otherwise an approver could
                         // wave away a rule like "no external HTTP from PII flows".
-                        attributes: as_approver_attributes(&req.attributes, is_owner),
+                        attributes: as_approver_attributes(&ctx.attributes, is_owner),
+                        context: ctx.context.clone(),
                     };
                     if pack.engine.enforce(&approver_ctx, &action, &resource).is_ok() {
+                        let reason = format!(
+                            "{denied_action} on {resource_type}::{resource_id} is outside this agent's \
+                             grants, but you can authorize it"
+                        );
+                        // An approval rule covers it too: one question, asked
+                        // every time, as the rule says.
+                        if let Some((ids, why, terms)) = pack.approval_needed(&ctx, &action, &resource) {
+                            let mut all = policy_ids;
+                            all.extend(ids);
+                            return PolicyDecision::Ask {
+                                reason: format!("{reason}; a rule also asks a person every time. {}", why.join(" ")).trim_end().to_string(),
+                                policy_ids: all,
+                                scopes: vec![flowr_policy::GrantScope::Once],
+                                required: Some(terms),
+                            };
+                        }
                         return PolicyDecision::Ask {
-                            reason: format!(
-                                "{denied_action} on {resource_type}::{resource_id} is outside this agent's \
-                                 grants, but you can authorize it"
-                            ),
+                            reason,
                             policy_ids,
                             scopes: vec![
                                 flowr_policy::GrantScope::Once,
                                 flowr_policy::GrantScope::Session,
                                 flowr_policy::GrantScope::Agent,
                             ],
+                            required: None,
                         };
                     }
                 }

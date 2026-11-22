@@ -91,7 +91,14 @@ export function describeEvent(e: AgentEvent): string {
   const p = e.payload ?? {};
   switch (e.type) {
     case 'created': return p.from?.kind === 'agent' ? `made from ${p.from.id} (${p.relation ?? 'copy'})` : `created from ${p.from?.id ?? p.template ?? 'its template'}`;
-    case 'updated': return (p.changed ?? []).length ? `changed ${(p.changed as string[]).map((c) => c.replace(/^values\./, '')).join(', ')}` : 'saved, no change';
+    // GOV-9: what each field was and became, and who approved it when a second admin had to.
+    case 'updated': {
+      const ch = (p.changed ?? []) as string[];
+      if (!ch.length) return 'saved, no change';
+      const short = (v: unknown) => { const t = typeof v === 'string' ? v : JSON.stringify(v ?? null); return t.length > 40 ? `${t.slice(0, 40)}…` : t; };
+      const parts = ch.map((c) => p.before && p.after && c in p.before ? `${c.replace(/^values\./, '')}: ${short(p.before[c])} → ${short(p.after[c])}` : c.replace(/^values\./, ''));
+      return `changed ${parts.join('; ')}${p.approved_by ? ` (approved by ${p.approved_by})` : ''}`;
+    }
     case 'blocked': return `blocked${p.reason ? `: ${p.reason}` : ''}`;
     case 'unblocked': return 'unblocked';
     case 'shared': return `shared with ${p.target === '*' ? 'everyone (public)' : p.target}`;

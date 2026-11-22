@@ -101,7 +101,7 @@ pub async fn refresh_handler(
 /// The person still holds the account: swap the refresh token and issue new tokens.
 async fn renew(config: &AuthConfig, rt: &crate::auth::RefreshClaims, identity: (String, String, String, String, String)) -> Response {
     match sessions::rotate(config, &rt.sid, &rt.sub, &rt.jti).await {
-        Ok(Turn::Rotated(jti, ends)) => session_tokens(config, identity, &rt.sid, &jti, ends),
+        Ok(Turn::Rotated(jti, ends)) => session_tokens(config, identity, &rt.sid, &jti, ends, rt.si.as_ref()),
         // Another tab (or a retried request) renewed it a moment ago: the newer
         // tokens are in the browser's storage. Nothing is revoked.
         Ok(Turn::Stale) => (StatusCode::CONFLICT, axum::Json(serde_json::json!({

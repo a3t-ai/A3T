@@ -1,23 +1,29 @@
 ---
 title: Security
-description: Who can do what. Cedar policies per project on top of the platform baseline, a dry run before you rely on them, and the sign-in provider and its roles.
+description: Who can do what. The platform baseline, each org's identity, policy files and agents, Cedar policies per project, and a dry run before you rely on them.
 sidebar:
   order: 11
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-**Open it:** [Security](https://dash.a3t.io/security) · under **Security & audit** in the console menu. For **SuperAdmin** and **SecurityAdmin** only; anyone else sees a note saying so.
+**Open it:** [Security](https://dash.a3t.io/security) · under **Security & audit** in the console menu. **SuperAdmin** and **SecurityAdmin** see every org; an **org admin** or **org security admin** sees their own org; anyone else sees a note saying so.
 
-Every call A3T makes on someone's behalf (a tool, a model, a flow start, a deploy, a change to a resource) is checked at its **choke point** against **Cedar** policies, as the person it is for, with their role in the project the call touches. Anything not permitted is denied, and a `forbid` beats any `permit`. Security is where those policies are written, tested and read.
+Every call A3T makes on someone's behalf (a tool, a model, a flow start, a deploy, a change to a resource) is checked at its **choke point** against **Cedar** policies, as the person it is for, with their role in the project the call touches. Anything not permitted is denied, and a `forbid` beats any `permit`. Security is where those rules are written, tested and read. For the concepts, see [Governance](../../governance/overview/).
+
+![Security: the platform group, then one group per org](../../../assets/screens/security-items.png)
 
 Items lists:
 
-| Item | What it is |
-|---|---|
-| **Identity** | The sign-in provider and its users, platform-wide |
-| A policy per project | `<project>/<name>`: rules that apply to that project's calls only |
-| **baseline** | The deny-by-default rules compiled into A3T, read from the server you are connected to (with its version). Read only; they apply everywhere, beneath every project policy |
+| Group | Item | What it is |
+|---|---|---|
+| **platform · all orgs** | **Identity** | The sign-in realm, every user and their platform roles |
+| | **baseline** | The deny-by-default rules compiled into A3T, read from the server you are connected to (with its version). Read only |
+| | **All agents** | Every org's agents, by risk |
+| ***org*** (one per org) | **Identity** | The org's members, its sign-in (its own identity provider and SCIM), access reviews, roles and groups |
+| | **Policy files** | The org's rules, roles, access and egress files, its pending changes, and the decision log's integrity |
+| | **Agents** | Every agent in the org: owner, reach, keys, risk |
+| A policy per project | `<project>/<name>` | Cedar rules that apply to that project's calls only (below) |
 
 ## How a decision is made
 
@@ -108,13 +114,29 @@ An agent's own **Audit › Policies** has the same test, for that agent and its 
 
 | A3T role | What it may do |
 |---|---|
-| **SuperAdmin** | Everything, in every organisation, including Security and the Decision log |
+| **SuperAdmin** | Everything, every org, including Security and the Decision log |
 | **SecurityAdmin** | Security and the Decision log: policies, identity, every decision |
-| **Admin** | Runs projects; does not see Security or the Decision log |
+| **Admin** | Runs projects; sees Security only for an org they are an admin or security admin of |
 | **Operator** | Works in their projects |
-| **Viewer** | Reads only, everywhere |
+| **Viewer** | Reads what is in their projects |
 
-An organisation can sign its people in with its own identity provider; see [Settings](../settings/).
+SuperAdmin and SecurityAdmin sign in with a password **and an authenticator code**. See [Identity and roles](../../governance/identity-and-roles/).
+
+## An org
+
+Each org's group has three items.
+
+**Identity** has tabs: **Overview** (members, sign-in, runtime policy), **People** (who reaches each project, and how), **Members**, **Sign-in**, **Access reviews**, **Roles & groups** and **Audit**.
+
+![An org's Sign-in: its own identity provider, groups to org roles, and SCIM provisioning](../../../assets/screens/security-org-signin.png)
+
+On **Sign-in**, the org's admins connect their own identity provider (issuer, client id and secret, groups claim, email domains) and turn on **Provisioning (SCIM)**. Which groups get which org role is the policy file `access/org.yaml`. See [Your org's own identity provider](../../governance/identity-and-roles/#your-orgs-own-identity-provider).
+
+**Policy files** lists the org's files with their state (on, off, shadow, broken). Its **Changes** tab holds the second-approver setting (*four eyes*), changes waiting for approval, decision-log retention and legal hold, and **Check the log** (the tamper-evidence check). *Describe a rule* drafts files from a sentence. See [Policy files](../../governance/policy-files/).
+
+![An org's Policy files: each file, its state, and the changes waiting for a second approver](../../../assets/screens/security-org-files.png)
+
+**Agents** lists every agent in the org with its owner, project, tools, keys, last activity and risk, with **Download CSV**. See [Agents and approvals](../../governance/agents-and-approvals/).
 
 <Aside type="note">
 **Act as.** A SuperAdmin can see the console exactly as a given user or role sees it: **Profile › Act as**. They give a reason, which goes in the [Decision log](../decision-log/); acting as another SuperAdmin is refused. The session is short, can't be extended, and every decision made during it records the SuperAdmin who acted.

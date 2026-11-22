@@ -55,6 +55,12 @@ rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+# ID-4: agent identity tokens (EdDSA).
+base64 = "0.22"
+ring = "0.17"
+jsonwebtoken = "9"
+# RT-10: personal data found in text.
+regex = "1"
 
 # Inline script runtimes
 mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }
@@ -82,6 +88,8 @@ tracing-subscriber.workspace = true
 # Utilities
 uuid.workspace = true
 chrono.workspace = true
+# Rule conditions: an org's time zone (conditions.rs).
+chrono-tz = "0.10"
 
 # HTTP client
 reqwest = { workspace = true, features = ["stream"] }

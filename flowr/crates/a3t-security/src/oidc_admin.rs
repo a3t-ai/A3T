@@ -245,6 +245,8 @@ pub struct UserIdentity {
     pub email: Option<String>,
     pub name: Option<String>,
     pub roles: Vec<String>,
+    /// The realm says (`amr`) a second factor was used.
+    pub second_factor: bool,
 }
 
 /// Authenticate an END USER by username/password against Keycloak (direct grant,
@@ -259,17 +261,23 @@ pub async fn password_login(
     client_id: &str,
     username: &str,
     password: &str,
+    otp: Option<&str>,
 ) -> Result<UserIdentity, IdpAdminError> {
     let url = format!("{}/realms/{}/protocol/openid-connect/token", base_url.trim_end_matches('/'), realm);
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "password"),
+        ("client_id", client_id),
+        ("username", username),
+        ("password", password),
+        ("scope", "openid"),
+    ];
+    // ID-9: the authenticator code, for accounts whose sign-in needs one.
+    if let Some(code) = otp.map(str::trim).filter(|c| !c.is_empty()) {
+        form.push(("otp", code));
+    }
     let resp = client
         .post(&url)
-        .form(&[
-            ("grant_type", "password"),
-            ("client_id", client_id),
-            ("username", username),
-            ("password", password),
-            ("scope", "openid"),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|e| IdpAdminError::Http(e.to_string()))?;
@@ -303,7 +311,22 @@ pub async fn password_login(
         email: claims.get("email").and_then(|v| v.as_str()).map(String::from),
         name: claims.get("name").and_then(|v| v.as_str()).map(String::from),
         roles,
+        second_factor: claims.get("amr").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|m| matches!(m.as_str(), Some("otp" | "mfa" | "totp" | "hwk" | "swk")))),
     })
+}
+
+/// Whether a user has an authenticator (one-time code) set up. A password
+/// grant that carried a code proves a second factor only for such a user: the
+/// realm ignores a code from anyone without one.
+pub async fn has_otp(client: &reqwest::Client, cfg: &IdpAdminConfig, token: &str, user_id: &str) -> Result<bool, IdpAdminError> {
+    let url = format!("{}/admin/realms/{}/users/{}/credentials", cfg.base_url, cfg.realm, user_id);
+    let resp = client.get(&url).bearer_auth(token).send().await.map_err(|e| IdpAdminError::Http(e.to_string()))?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        return Err(IdpAdminError::Api { status, body: resp.text().await.unwrap_or_default() });
+    }
+    let v: Value = resp.json().await.map_err(|e| IdpAdminError::Http(e.to_string()))?;
+    Ok(v.as_array().is_some_and(|a| a.iter().any(|c| c.get("type").and_then(|t| t.as_str()) == Some("otp"))))
 }
 
 /// Fetch a single user's representation.

@@ -6,7 +6,7 @@ use a3t_security::CedarHook;
 use flowr_policy::{actions, ExecutionRequest, PolicyDecision, PolicyHook, Principal, Resource};
 
 fn human(roles: &[&str]) -> Principal {
-    Principal::Human { memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles: roles.iter().map(|r| r.to_string()).collect() }
+    Principal::Human { session: None, memory_branch: None, impersonated_by: None, user_id: "u1".into(), roles: roles.iter().map(|r| r.to_string()).collect() }
 }
 
 fn llm_call(p: Principal, model: &str) -> ExecutionRequest {
@@ -162,7 +162,7 @@ async fn an_agents_model_rule_holds_on_its_chat_turns() {
     let yaml = "kind: a3t/policy\nname: profile\nrules:\n  - cannot: [models.use]\n    on: { models: { not_in: [a3t/approved] } }\n    reason: It runs only on the approved model.\n";
     let h = hook(&[compile_agent_policy("acme-crm", "agt-1", yaml).unwrap().cedar]);
     let turn = |agent: &str, model: &str| {
-        let mut r = llm_call(Principal::Agent {
+        let mut r = llm_call(Principal::Agent { session: None,
             memory_branch: None, agent_id: flowr_policy::AgentId(format!("agent:{agent}:s1")),
             on_behalf_of: Some("u1".into()), flow_id: None, roles: vec!["Operator".into()], owner: None,
         }, model);
@@ -257,4 +257,94 @@ fn the_test_policy_repo_compiles() {
     let p1: Vec<&str> = set.policies.iter().filter(|(p, _, _)| p == "acme-p1").map(|(_, n, _)| n.as_str()).collect();
     assert!(p1.contains(&"org.acme.policy.no-flow-deletes-p1") && p1.contains(&"org.acme.policy.approved-models"), "{p1:?}");
     assert!(!set.policies.iter().any(|(p, n, _)| p == "acme-sam1" && n.contains("no-flow-deletes")), "p1's rule stays in p1");
+}
+
+/// GOV-8: a `needs_approval` rule turns an allowed agent call into a question
+/// asked every time; a person calling the tool themselves is not asked.
+#[tokio::test]
+async fn needs_approval_asks_a_person_every_time() {
+    let yaml = "kind: a3t/policy\nname: profile\nrules:\n  - needs_approval: [tools.delete_*]\n    timeout: 30m\n    reason: A person checks every delete.\n";
+    let c = compile_agent_policy("acme-crm", "agt-1", yaml).unwrap();
+    assert!(c.cedar.contains("@approval(\"1800\")"), "{}", c.cedar);
+    let h = hook(&[c.cedar]);
+    let agent = |id: &str, on_behalf_of: Option<&str>, owner: Option<&str>| {
+        let p = Principal::Agent { session: None,
+            memory_branch: None, agent_id: flowr_policy::AgentId(format!("agent:{id}:s1")),
+            on_behalf_of: on_behalf_of.map(str::to_string), flow_id: None, roles: vec!["Admin".into()], owner: owner.map(str::to_string),
+        };
+        tool_call(p, "delete_flow", serde_json::json!({ "agent": id }))
+    };
+    match h.check(&agent("agt-1", Some("u1"), Some("u1"))).await {
+        PolicyDecision::Ask { scopes, required: Some(r), policy_ids, reason } => {
+            assert_eq!(scopes, vec![flowr_policy::GrantScope::Once]);
+            assert_eq!(r.timeout_secs, Some(1800));
+            assert!(policy_ids.iter().any(|i| i.starts_with("acme-crm/profile/r1")), "{policy_ids:?}");
+            assert!(reason.contains("every delete"), "{reason}");
+        }
+        other => panic!("expected a required ask, got {other:?}"),
+    }
+    // An agent with nobody behind it is refused by the baseline before any rule.
+    assert!(!h.check(&agent("agt-1", None, Some("u1"))).await.is_allow());
+    // Other tools and other agents are not touched.
+    let mut list = agent("agt-1", Some("u1"), None);
+    list.resource = flowr_policy::Resource::tool("list_flows");
+    assert_eq!(h.check(&list).await, PolicyDecision::Allow);
+    // Another agent: only the baseline's own question (destructive tools), no rule.
+    assert!(matches!(h.check(&agent("agt-2", Some("u1"), None)).await, PolicyDecision::Ask { required: None, .. }));
+    // A person calling it directly is the approver: allowed.
+    assert_eq!(h.check(&tool_call(human(&["Admin"]), "delete_flow", serde_json::json!({ "agent": "agt-1" }))).await, PolicyDecision::Allow);
+}
+
+#[test]
+fn needs_approval_mistakes_are_refused() {
+    let bad = |rule: &str| compile_policy("acme", &format!("kind: a3t/policy\nname: x\napplies_to: {{ org: true }}\nrules:\n  - {rule}\n    reason: r\n")).unwrap_err();
+    assert!(bad("cannot: [flows.run]\n    needs_approval: [tools.x]").contains("one of"));
+    assert!(bad("cannot: [flows.run]\n    timeout: 4h").contains("timeout"));
+    assert!(bad("needs_approval: [tools.x]\n    timeout: 10s").contains("between"));
+    assert!(bad("needs_approval: [apps.security]").contains("console app"));
+}
+
+/// An org-wide approval rule binds every agent in the org, by role too.
+#[tokio::test]
+async fn an_org_approval_rule_binds_agents_carrying_a_role() {
+    let c = compile_policy("acme", "kind: a3t/policy\nname: merges\napplies_to: { org: true }\nrules:\n  - who: { roles: [Operator] }\n    needs_approval: [tools.merge_*]\n    reason: Merges are checked.\n").unwrap();
+    let h = hook(&[c.cedar]);
+    let agent = |roles: &[&str]| tool_call(Principal::Agent { session: None,
+        memory_branch: None, agent_id: flowr_policy::AgentId("agent:a:s".into()), on_behalf_of: Some("u1".into()),
+        flow_id: None, roles: roles.iter().map(|r| r.to_string()).collect(), owner: None,
+    }, "merge_pr", serde_json::json!({}));
+    assert!(matches!(h.check(&agent(&["Operator"])).await, PolicyDecision::Ask { required: Some(_), .. }));
+    assert_eq!(h.check(&agent(&["Admin"])).await, PolicyDecision::Allow);
+    assert_eq!(h.check(&tool_call(human(&["Operator"]), "merge_pr", serde_json::json!({}))).await, PolicyDecision::Allow);
+}
+
+/// GOV-2: a file in shadow mode is evaluated but never decides.
+#[tokio::test]
+async fn a_shadow_file_never_decides() {
+    let c = compile_policy("acme", "kind: a3t/policy\nname: no-deletes\napplies_to: { org: true }\nrules:\n  - cannot: [flows.delete]\n    reason: Never.\n").unwrap();
+    let enforced = CedarHook::with_named_policies(&[a3t_security::NamedPolicy::new("default", "no-deletes", c.cedar.clone())], None, &[]).unwrap();
+    let shadow = CedarHook::with_named_policies(&[a3t_security::NamedPolicy::new("default", format!("{}no-deletes", a3t_security::SHADOW_PREFIX), c.cedar)], None, &[]).unwrap();
+    let call = || tool_call(human(&["Admin"]), "delete_flow", serde_json::json!({}));
+    assert!(denied(&enforced.check(&call()).await).is_some(), "enforced, it refuses");
+    assert_eq!(shadow.check(&call()).await, PolicyDecision::Allow, "in shadow mode, the call goes ahead");
+}
+
+/// UI-3: a role ceiling lives in an agent's own policy, and only there.
+#[test]
+fn a_role_ceiling_is_an_agents_own() {
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nrole_ceiling: [Viewer]\n").is_ok(), "a ceiling alone is a policy");
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nrole_ceiling: [Root]\n").unwrap_err().contains("role_ceiling"));
+    assert!(compile_policy("acme", "kind: a3t/policy\nname: x\napplies_to: { org: true }\nrole_ceiling: [Viewer]\nrules:\n  - cannot: [flows.run]\n    reason: r\n").unwrap_err().contains("agent's own policy"));
+}
+
+/// GOV-6: a policy with no applies_to binds only a flow or agent that names it.
+#[tokio::test]
+async fn a_referenced_policy_binds_only_where_named() {
+    let c = compile_policy("acme", "kind: a3t/policy\nname: no-deletes\nrules:\n  - cannot: [flows.delete]\n    reason: Not from here.\n").unwrap();
+    let h = hook(&[c.cedar]);
+    let call = |refs: serde_json::Value| tool_call(human(&["Admin"]), "delete_flow", serde_json::json!({ "policyRef": refs }));
+    assert!(denied(&h.check(&call(serde_json::json!(["acme/no-deletes"]))).await).is_some(), "named: bound");
+    assert!(denied(&h.check(&call(serde_json::json!(["acme/other"]))).await).is_none(), "not named: free");
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nuses: [acme/no-deletes]\n").is_ok());
+    assert!(compile_agent_policy("p", "agt-1", "kind: a3t/policy\nname: profile\nuses: [no-org]\n").unwrap_err().contains("uses"));
 }

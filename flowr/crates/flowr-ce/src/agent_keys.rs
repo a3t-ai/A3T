@@ -9,7 +9,14 @@
 //!   (`agent_keys`, platform DB), with its first characters to recognise it.
 //! - A key calls that agent's data plane only: `POST /chat` with a session of
 //!   that agent, and `GET /chat/stream/<that agent>:…`. Anything else is 403.
-//! - It runs as the user who made it, with the roles they had then — never more.
+//! - It runs as the user who made it, with the roles they had then — never more,
+//!   and only while they still reach its project (their memberships are checked
+//!   on every call, as for any person); a user marked disabled takes their keys
+//!   with them. A key can't be made while acting as someone (Act as).
+//! - It expires (ID-5): 90 days unless asked (at most 365). Rotating makes its
+//!   successor and lets the old key run out after a grace period, so two keys
+//!   work while an app switches over.
+//! - A blocked agent's keys are refused (RT-5), like any call to it.
 //! - Revoking takes effect on the next call: every call reads the table.
 
 use std::sync::{Arc, OnceLock};
@@ -22,7 +29,10 @@ use crate::handlers::call_lancedb::{query_platform_table, sql_quote, DEFAULT_PLA
 use crate::platform_db::open_platform_db;
 
 pub const TABLE: &str = "agent_keys";
-const COLUMNS: [&str; 11] = ["id", "agent_id", "org_id", "name", "prefix", "hash", "roles", "created_by", "created_at", "last_used_at", "revoked_at"];
+const COLUMNS: [&str; 13] = ["id", "agent_id", "org_id", "name", "prefix", "hash", "roles", "created_by", "created_at", "last_used_at", "revoked_at", "expires_at", "rotated_from"];
+/// A key's life unless asked, and the longest it may have (ID-5).
+pub const DEFAULT_DAYS: i64 = 90;
+pub const MAX_DAYS: i64 = 365;
 pub const KEY_PREFIX: &str = "a3tk_";
 /// How long a key's `last_used_at` may lag: one write per key per window.
 const LAST_USED_EVERY_SECS: i64 = 300;
@@ -76,7 +86,41 @@ fn col(row: &Value, k: &str) -> String {
 async fn ensure_table(storage: &dyn StorageBackend) -> Result<(), String> {
     let db = open_platform_db(storage, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
     let schema: Map<String, Value> = COLUMNS.iter().map(|c| (c.to_string(), json!("string"))).collect();
-    db.create_table(TABLE, Some(&schema), "create_if_not_exists").await.map(|_| ())
+    db.create_table(TABLE, Some(&schema), "create_if_not_exists").await?;
+    // ID-5: a table made before keys expired gains the columns; its keys get
+    // the default life from now, so nothing stops at once. Asked of the backend
+    // when it can say (LanceDB), else read from a row (ADB); an empty old table
+    // is simply made again with the columns.
+    // Once per process: a table seen with the columns stays that way.
+    static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let current = match db.columns(TABLE).await {
+        Ok(Some(cols)) => Some(cols.iter().any(|c| c == "expires_at")),
+        _ => match query_platform_table(storage, TABLE, None, 1).await {
+            Ok(rows) => rows.first().map(|r| r.get("expires_at").is_some()),
+            Err(_) => Some(true),
+        },
+    };
+    if current != Some(true) {
+        {
+            let rows = query_platform_table(storage, TABLE, None, 100_000).await.unwrap_or_default();
+            let until = (chrono::Utc::now() + chrono::Duration::days(DEFAULT_DAYS)).to_rfc3339();
+            let rows: Vec<Value> = rows.into_iter().map(|mut r| {
+                if let Some(m) = r.as_object_mut() {
+                    m.insert("expires_at".into(), json!(until));
+                    m.insert("rotated_from".into(), json!(""));
+                }
+                r
+            }).collect();
+            let columns: Vec<String> = COLUMNS.iter().map(|c| c.to_string()).collect();
+            db.replace_table(TABLE, &columns, &rows).await?;
+            tracing::info!(keys = rows.len(), "agent keys: expiry added; existing keys expire in {DEFAULT_DAYS} days");
+        }
+    }
+    CHECKED.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
 /// The principal and scope of a key, or why it is refused.
@@ -89,11 +133,31 @@ pub async fn verify(token: &str) -> Result<(flowr_policy::Principal, KeyScope), 
     if !col(&row, "revoked_at").is_empty() {
         return Err("this key was revoked".into());
     }
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(&col(&row, "expires_at")) {
+        if t <= chrono::Utc::now() {
+            return Err(format!("this key expired on {}", t.format("%Y-%m-%d %H:%M UTC")));
+        }
+    }
     // A key is its agent's: an agent that no longer exists takes every key with
-    // it, however it was removed (deleting one revokes them too).
+    // it, however it was removed (deleting one revokes them too); a blocked
+    // agent refuses them (RT-5).
     let agent = col(&row, "agent_id");
-    if query_platform_table(storage.as_ref(), "agent_configs", Some(format!("id = {}", sql_quote(&agent))), 1).await.map(|r| r.is_empty()).unwrap_or(false) {
-        return Err(format!("this key's agent ({agent}) was deleted"));
+    let agents = query_platform_table(storage.as_ref(), "agent_configs", Some(format!("id = {}", sql_quote(&agent))), 1).await.unwrap_or_default();
+    match agents.first() {
+        None => return Err(format!("this key's agent ({agent}) was deleted")),
+        Some(a) if col(a, "status") == "blocked" => return Err(format!("this key's agent ({agent}) is blocked")),
+        _ => {}
+    }
+    // Its maker, as they are now: a disabled account takes its keys with it.
+    let maker = col(&row, "created_by");
+    if let Some(u) = query_platform_table(storage.as_ref(), "users", Some(format!("id = {}", sql_quote(&maker))), 1).await.ok().and_then(|r| r.into_iter().next()) {
+        if matches!(col(&u, "status").as_str(), "disabled" | "deleted" | "suspended") {
+            return Err("the person who made this key can no longer sign in".into());
+        }
+    }
+    // RT-4: its agent's budget may limit calls a minute through each key.
+    if let Some(n) = crate::budget::of(storage.as_ref(), &agent).await.and_then(|b| b.key_calls_per_minute) {
+        crate::budget::key_call(storage.as_ref(), &col(&row, "id"), n).await?;
     }
     let roles: Vec<String> = col(&row, "roles").split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect();
     let scope = KeyScope { key_id: col(&row, "id"), agent_id: col(&row, "agent_id") };
@@ -124,11 +188,20 @@ pub async fn list(storage: &dyn StorageBackend, agent_id: &str) -> Result<Vec<Va
         "id": col(r, "id"), "name": col(r, "name"), "prefix": col(r, "prefix"),
         "created_by": col(r, "created_by"), "created_at": col(r, "created_at"),
         "last_used_at": col(r, "last_used_at"), "revoked_at": col(r, "revoked_at"),
+        "expires_at": col(r, "expires_at"), "rotated_from": col(r, "rotated_from"),
     })).collect())
 }
 
 /// A new key for an agent: `{id, name, prefix, …, key}` — the only time the key is shown.
 pub async fn create(storage: &dyn StorageBackend, agent: &Value, name: &str, by: &str, roles: &[String]) -> Result<Value, String> {
+    create_for(storage, agent, name, by, roles, DEFAULT_DAYS, "").await
+}
+
+/// A new key that expires in `days` (1 to [`MAX_DAYS`]); `rotated_from`: the key it replaces.
+pub async fn create_for(storage: &dyn StorageBackend, agent: &Value, name: &str, by: &str, roles: &[String], days: i64, rotated_from: &str) -> Result<Value, String> {
+    if !(1..=MAX_DAYS).contains(&days) {
+        return Err(format!("a key lives 1 to {MAX_DAYS} days"));
+    }
     ensure_table(storage).await?;
     let secret = format!("{}{}{}", KEY_PREFIX, uuid::Uuid::new_v4().simple(), &uuid::Uuid::new_v4().simple().to_string()[..16]);
     let id = format!("ak_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
@@ -138,6 +211,7 @@ pub async fn create(storage: &dyn StorageBackend, agent: &Value, name: &str, by:
         "name": if name.trim().is_empty() { "key".to_string() } else { name.trim().chars().take(80).collect() },
         "prefix": secret[..12].to_string(), "hash": digest(&secret), "roles": roles.join(","),
         "created_by": by, "created_at": now, "last_used_at": "", "revoked_at": "",
+        "expires_at": (chrono::Utc::now() + chrono::Duration::days(days)).to_rfc3339(), "rotated_from": rotated_from,
     });
     let db = open_platform_db(storage, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
     db.insert(TABLE, &[row.clone()]).await?;
@@ -148,6 +222,32 @@ pub async fn create(storage: &dyn StorageBackend, agent: &Value, name: &str, by:
         m.insert("key".into(), json!(secret));
     }
     Ok(out)
+}
+
+/// Rotate a key (ID-5): a new key with its name and life, and the old one
+/// runs out after `grace_hours` (or when it would have, if sooner). Returns the
+/// new key (shown once) and when the old one stops.
+pub async fn rotate(storage: &dyn StorageBackend, agent: &Value, key_id: &str, by: &str, roles: &[String], grace_hours: i64) -> Result<Option<(Value, String)>, String> {
+    ensure_table(storage).await?;
+    let filter = format!("id = {} AND agent_id = {}", sql_quote(key_id), sql_quote(&col(agent, "id")));
+    let Some(old) = query_platform_table(storage, TABLE, Some(filter.clone()), 1).await?.into_iter().next() else { return Ok(None) };
+    if !col(&old, "revoked_at").is_empty() {
+        return Err("a revoked key isn't rotated; make a new one".into());
+    }
+    let days = chrono::DateTime::parse_from_rfc3339(&col(&old, "expires_at")).ok()
+        .and_then(|e| chrono::DateTime::parse_from_rfc3339(&col(&old, "created_at")).ok().map(|c| (e - c).num_days()))
+        .filter(|d| (1..=MAX_DAYS).contains(d)).unwrap_or(DEFAULT_DAYS);
+    let new = create_for(storage, agent, &col(&old, "name"), by, roles, days, key_id).await?;
+    let grace = chrono::Utc::now() + chrono::Duration::hours(grace_hours.clamp(0, 24 * 30));
+    let ends = match chrono::DateTime::parse_from_rfc3339(&col(&old, "expires_at")) {
+        Ok(t) if t.with_timezone(&chrono::Utc) < grace => t.with_timezone(&chrono::Utc),
+        _ => grace,
+    };
+    let db = open_platform_db(storage, Some(PLATFORM_DB_RESOURCE), DEFAULT_PLATFORM_DB_PATH).await;
+    let mut v = Map::new();
+    v.insert("expires_at".into(), json!(ends.to_rfc3339()));
+    db.update(TABLE, &filter, &v).await?;
+    Ok(Some((new, ends.to_rfc3339())))
 }
 
 /// Revoke one of an agent's keys. Its row stays, to show when and that it was revoked.

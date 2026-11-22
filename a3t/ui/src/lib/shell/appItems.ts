@@ -362,7 +362,7 @@ async function loadAll(source: string): Promise<AppItem[]> {
     return rows(res.data, 'templates').map((r: any) => ({
       ...named(r),
       namespace: projectOf(r.namespace || specNamespace(r.spec_yaml), r.created_by),
-      sub: [r.version ? `v${r.version}` : '', r.source === 'system' ? 'built-in' : r.source === 'my' ? 'yours' : r.source ?? '']
+      sub: [(r.spec_version || r.version) ? `v${r.spec_version || r.version}` : '', r.source === 'system' ? 'built-in' : r.source === 'my' ? 'yours' : r.source ?? '']
         .filter(Boolean).join(' · '),
     }));
   }
@@ -373,15 +373,27 @@ async function loadAll(source: string): Promise<AppItem[]> {
       id: it.key, label: it.label, namespace: g.label, sub: it.ee ? 'Enterprise' : '',
     })));
   }
+  if (source === 'approvals') {
+    // What waits on a person (GOV-7): yours to answer, and for InfoSec everyone's.
+    const { approvalsApi } = await import('$lib/services/api');
+    const r = await approvalsApi.pending();
+    if (!r.ok) throw new Error(r.error ?? 'The approvals could not be read.');
+    const out: AppItem[] = r.items.map((a) => ({
+      id: a.id, label: a.tool, namespace: a.project || 'Waiting',
+      sub: `${a.agent || 'an agent'}${a.onBehalfOf ? ` for ${a.onBehalfOf}` : ''}${a.createdAt ? ` · ${relTime(a.createdAt)}` : ''}`,
+      status: 'waiting',
+    }));
+    out.push({ id: 'answered', label: 'Answered', namespace: 'History', sub: 'your answers, from the decision log' });
+    return out;
+  }
   if (source === 'decision-views') {
-    // SuperAdmin and SecurityAdmin only (the server refuses anyone else): say so
-    // here, as Security does, rather than list views that can only fail.
-    const { isInfosec } = await import('$lib/stores/auth');
-    if (!isInfosec()) throw new Error('The decision log is for SuperAdmin and SecurityAdmin.');
+    // Everyone: the server scopes what each person sees (AUD-8) — InfoSec every
+    // org, an org's admins their org, anyone else the agents they own.
     return [
       { id: 'all', label: 'All decisions', sub: 'every allow, deny and approval asked' },
       { id: 'deny', label: 'Denials', sub: 'what was refused, and why' },
       { id: 'ask', label: 'Approvals asked', sub: 'what waited for a person' },
+      { id: 'shadow', label: 'Shadow', sub: 'what rules in shadow mode would have refused' },
     ];
   }
   if (source === 'security-sections') {
@@ -407,13 +419,15 @@ async function loadAll(source: string): Promise<AppItem[]> {
       const n = (org.members ?? []).length;
       out.push({ id: `org:${org.handle}`, label: 'Identity', namespace: org.handle,
         sub: `${n} member${n === 1 ? '' : 's'}${org.sso?.idp_alias ? ` · signs in through ${org.sso.idp_alias}` : ''} · who reaches its projects` });
-      out.push({ id: `orgfiles:${org.handle}`, label: 'Policy files', namespace: org.handle, sub: 'its roles, rules and access, as files' });
+      out.push({ id: `orgfiles:${org.handle}`, label: 'Policies', namespace: org.handle, sub: 'its rules: who may do what, where and when' });
+      out.push({ id: `agents:${org.id}`, label: 'Agents', namespace: org.handle, sub: 'every agent: owner, reach, keys, risk' });
     }
     for (const p of (r.ok ? r.data?.policies ?? [] : []) as any[]) {
       if (!inContext(p.namespace, 'shared')) continue;
       out.push({ id: `policy:${p.namespace}/${p.name}`, label: p.name, namespace: p.namespace, sub: p.description || 'Cedar policy' });
     }
     if (infosec) out.push({ id: 'baseline', label: 'baseline', namespace: PLATFORM_GROUP, sub: 'compiled deny-by-default guardrails · read only' });
+    if (infosec) out.push({ id: 'agents:all', label: 'All agents', namespace: PLATFORM_GROUP, sub: 'every org\'s agents, by risk' });
     return out;
   }
   if (source === 'canvases') {

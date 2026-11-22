@@ -1,6 +1,7 @@
 //! call:registry — registry operations a flow can't do through other tasks.
 //!
 //! `versions` / `activate` list a flow's releases and roll back or forward.
+//! `template_specs` reads agent templates' code for rows that point at their flow.
 //! `copy` publishes or clones a flow, resource or trigger (read the source, write the target).
 //! `move_resources` moves some resources (secrets intact) and repoints references to them.
 //! `visible` keeps the items the caller may see. `usage` counts what a namespace holds. `move_namespace` moves every flow, resource and trigger
@@ -434,6 +435,35 @@ impl TaskHandler for RegistryHandler {
                 };
                 let items = with.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
                 Ok(TaskResult::new(Value::Array(crate::access::filter_items(&ctx.principal, kind, items).await)))
+            }
+            // The code of agent templates whose catalogue row points at their flow
+            // (`spec_yaml: "<namespace>/<tmpl_name>"`): `{refs: [..]}` →
+            // `{specs: {ref: {yaml, version}}}`. A built-in template (in the `a3t`
+            // or `system` project) is readable by everyone signed in, as the
+            // Templates page promises; any other needs read access to its project.
+            // Only `tmpl_*` flows; a ref that is missing or not readable is left out.
+            "template_specs" => {
+                let store = storage(ctx)?;
+                let g = flowr_policy::namespace::namespace_guard();
+                let refs = with.get("refs").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let mut specs = serde_json::Map::new();
+                for r in refs.iter().filter_map(|v| v.as_str()).take(200) {
+                    let Some((ns, name)) = r.split_once('/') else { continue };
+                    if !name.starts_with("tmpl_") || specs.contains_key(r) {
+                        continue;
+                    }
+                    let built_in = matches!(ns, "a3t" | "system");
+                    if !built_in && g.enforcing() && g.access(&ctx.principal, ns).await < flowr_policy::namespace::NsAccess::Read {
+                        continue;
+                    }
+                    if let Ok(rec) = store.workflows().get(ns, name).await {
+                        let version = serde_yaml::from_str::<Value>(&rec.raw_yaml).ok()
+                            .and_then(|d| d.get("document").and_then(|x| x.get("version")).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+                            .unwrap_or_default();
+                        specs.insert(r.to_string(), json!({ "yaml": rec.raw_yaml, "version": version }));
+                    }
+                }
+                Ok(TaskResult::new(json!({ "specs": specs })))
             }
             // How much a namespace holds; the delete-project flow refuses a non-empty one.
             "usage" => {

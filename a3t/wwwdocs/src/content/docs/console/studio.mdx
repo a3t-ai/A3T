@@ -80,6 +80,12 @@ and `{"order_id": "A-1042", "days_late": 3}` gives `"action": "wait"`.
 | A released version never changes | Saving the same version with other content is refused (`version_exists`); give it the next version. Runs and agents can stay on the version they use |
 | Every step is checked as it runs | A call is a policy decision, as the person the run is for; see [Security](../security/) |
 
+## Policy files
+
+Each project in the Explorer has **Policies**, with the org's files that apply there: **Rules** (`policies/`), **Roles** (`roles/`), **Access** (`access/`) and **Calls out** (`egress/`). Labels show a file that is **(off)** or **(broken)**. A file that names no project you can see, or doesn't parse, is listed under ***org* · Unplaced policy files**, so nothing in force is hidden. **+** on a folder starts a new file from a starter.
+
+Open a file and the panel on the right **checks** it: the org's enforced files are compiled with your text in place, again a moment after each edit, and nothing is saved. **Replay** runs your draft against the org's recent decisions and says how many would change. Saving checks it the same way and, with the org's second approver on, waits for another admin. Switch files on, off or to shadow under [Security](../security/) › *org* › Policy files. See [Policy files](../../governance/policy-files/).
+
 ## Hook a flow into an agent
 
 A **hook** is a flow of yours that runs at a fixed point in every turn of an agent, as the caller. Attach hooks on the agent's **Build › Hooks**: pick a flow for a phase and click **Attach** (or **New hook flow** to start one from a ready-made skeleton), then **Save**. Several hooks on one phase run in the order listed; **↑** and **↓** reorder them.

@@ -225,6 +225,7 @@ impl TriggerManager {
                 let result = self.deliver_to_targets(
                     &trigger.id,
                     &trigger.name,
+                    &trigger.namespace,
                     &trigger.targets,
                     &content,
                     Some(body.clone()),
@@ -268,6 +269,7 @@ impl TriggerManager {
             self.deliver_to_targets(
                 &trigger.id,
                 &trigger.name,
+                &trigger.namespace,
                 &trigger.targets,
                 &content,
                 Some(input),
@@ -329,6 +331,7 @@ impl TriggerManager {
                 let result = self.deliver_to_targets(
                     &trigger.id,
                     &trigger.name,
+                    &trigger.namespace,
                     &trigger.targets,
                     &content,
                     Some(payload.clone()),
@@ -380,6 +383,7 @@ impl TriggerManager {
                 self.deliver_to_targets(
                     &trigger.id,
                     &trigger.name,
+                    &trigger.namespace,
                     &trigger.targets,
                     &content,
                     Some(event.clone()),
@@ -425,6 +429,7 @@ impl TriggerManager {
         &self,
         trigger_id: &str,
         trigger_name: &str,
+        namespace: &str,
         targets: &[TriggerTarget],
         content: &str,
         context: Option<Value>,
@@ -526,6 +531,15 @@ impl TriggerManager {
                     }
                 }
                 TriggerTarget::Webhook { url, headers } => {
+                    // RT-1: an outgoing webhook is a call out of A3T: only where egress allows.
+                    if let Err(why) = flowr_policy::egress::check(url, namespace, None).await {
+                        let who = flowr_policy::Principal::service(format!("trigger:{trigger_id}"));
+                        flowr_policy::audit::event_decision(&who, "egress:call", "Url", url, Some(namespace), None,
+                            &flowr_policy::PolicyDecision::Deny { reason: why.clone(), policy_ids: vec!["egress".into()] }, Some("outgoing webhook"));
+                        warn!(trigger = %trigger_id, %url, reason = %why, "outgoing webhook refused (egress)");
+                        failed.push(format!("webhook:{url} (refused: {why})"));
+                        continue;
+                    }
                     let client = reqwest::Client::new();
                     let mut req = client.post(url)
                         .header("Content-Type", "application/json")
@@ -607,6 +621,7 @@ impl TriggerManager {
                     manager.deliver_to_targets(
                         &trigger.id,
                         &trigger.name,
+                        &trigger.namespace,
                         &trigger.targets,
                         &message,
                         Some(context),

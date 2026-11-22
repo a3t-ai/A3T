@@ -11,6 +11,18 @@ pub mod tool_flows;
 pub mod agent_keys;
 pub mod agent_space;
 pub mod approval;
+pub mod policy_health;
+pub mod policy_changes;
+pub mod audit_retention;
+pub mod agent_inventory;
+pub mod budget;
+pub mod audit_export;
+pub mod agent_token;
+pub mod pii;
+pub mod conditions;
+pub mod prompt_guard;
+pub mod access_reviews;
+pub mod egress_rules;
 pub mod token_stream;
 pub mod mcp_stream;
 pub mod canvas;
@@ -382,6 +394,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
     let storage_routes = storage_browse::router(storage.clone());
     let agent_space_routes = agent_space::router(storage.clone());
     let org_policy_routes = org_policy::router(storage.clone());
+    let inventory_routes = agent_inventory::routes(storage.clone());
 
     let state = Arc::new(AppState { storage });
 
@@ -453,6 +466,7 @@ pub fn build_ce_router(storage: Arc<dyn StorageBackend>) -> Router {
         // Agents as repos: an agent's memory space, branches, tags, layers, fork, promote
         .merge(agent_space_routes)
         .merge(org_policy_routes)
+        .merge(inventory_routes)
         // AO-1: this process's metrics (with an embedded ADB's in CE).
         .route("/metrics", get(metrics_text))
         .route("/admin/stats/metrics", get(metrics_json))
@@ -519,7 +533,13 @@ pub fn spawn_pool_worker(storage: Arc<dyn StorageBackend>, pools: Vec<String>) {
 
 /// Run the HTTP server with the given router
 pub async fn serve(router: Router, port: u16) -> anyhow::Result<()> {
-    let addr = format!("0.0.0.0:{}", port);
+    serve_on(router, "0.0.0.0", port).await
+}
+
+/// Serve on `host:port` (RT-11: a FlowR that enforces no policy listens on
+/// loopback unless told otherwise).
+pub async fn serve_on(router: Router, host: &str, port: u16) -> anyhow::Result<()> {
+    let addr = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     info!(addr = %addr, "HTTP/SSE server listening");
@@ -608,14 +628,13 @@ async fn durable_approvals(storage: &dyn StorageBackend) -> Vec<Value> {
 /// it (`context.approver`); it also carries the tool's arguments, so it is
 /// shown to that person and to platform InfoSec only. With no policy enforced
 /// (CE `allow_all`) everyone may.
-fn may_see_input(principal: Option<&Principal>, req: &Value) -> bool {
+async fn may_see_input(storage: &dyn StorageBackend, principal: Option<&Principal>, req: &Value) -> bool {
     if !flowr_policy::namespace::namespace_guard().enforcing() {
         return true;
     }
     let Some(p) = principal else { return false };
-    let approver = req.pointer("/context/approver").and_then(|v| v.as_str());
-    approver == Some(p.id())
-        || p.roles().iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN)
+    p.roles().iter().any(|r| r == flowr_policy::roles::SUPER_ADMIN || r == flowr_policy::roles::SECURITY_ADMIN)
+        || crate::approval::may_answer(storage, p, req).await
 }
 
 /// List the pending input requests the caller may answer (InfoSec: all).
@@ -626,7 +645,13 @@ async fn list_inputs_handler(
     let who = principal.as_ref().map(|Extension(p)| p);
     let mut pending: Vec<Value> = flowr_ce_agents::input_manager().list_pending().await.into_iter().map(|r| json!(r)).collect();
     pending.extend(durable_approvals(state.storage.as_ref()).await);
-    pending.retain(|r| may_see_input(who, r));
+    let mut mine = Vec::new();
+    for r in pending {
+        if may_see_input(state.storage.as_ref(), who, &r).await {
+            mine.push(r);
+        }
+    }
+    let pending = mine;
     let count = pending.len();
     Json(json!({ "inputs": pending, "count": count }))
 }
@@ -643,7 +668,11 @@ async fn get_input_handler(
         None => durable_approvals(state.storage.as_ref()).await.into_iter().find(|r| r["id"] == request_id),
     };
     // Someone else's request is reported as missing, so ids cannot be probed.
-    match found.filter(|r| may_see_input(who, r)) {
+    let found = match found {
+        Some(r) if may_see_input(state.storage.as_ref(), who, &r).await => Some(r),
+        _ => None,
+    };
+    match found {
         Some(req) => (StatusCode::OK, Json(req)),
         None => (StatusCode::NOT_FOUND, Json(json!({"error": format!("Input request '{}' not found or expired", request_id)}))),
     }
@@ -667,9 +696,12 @@ async fn submit_input_handler(
     // journaled and wakes the run, wherever it runs.
     if pending.is_none() {
         if let Some(req) = durable_approvals(state.storage.as_ref()).await.into_iter().find(|r| r["id"] == request_id) {
-            let expected = req.pointer("/context/approver").and_then(|v| v.as_str());
             let caller = principal.as_ref().map(|Extension(p)| p.id().to_string());
-            if expected.is_none() || expected != caller.as_deref() {
+            let ok = match &principal {
+                Some(Extension(p)) => crate::approval::may_answer(state.storage.as_ref(), p, &req).await,
+                None => false,
+            };
+            if !ok {
                 warn!(request_id = %request_id, "rejected approval answer from a principal that is not the approver");
                 return (StatusCode::NOT_FOUND, Json(json!({"error": "input request not found"}))).into_response();
             }
@@ -691,15 +723,14 @@ async fn submit_input_handler(
     }
     if let Some(req) = &pending {
         if req.request_type == "authz" {
-            let expected = req
-                .context
-                .as_ref()
-                .and_then(|c| c.get("approver"))
-                .and_then(|v| v.as_str());
-            let caller = principal.as_ref().map(|Extension(p)| p.id());
-            match (expected, caller) {
-                (Some(want), Some(got)) if want == got => {}
-                _ => {
+            let as_json = json!({ "context": req.context.clone().unwrap_or(Value::Null) });
+            let ok = match &principal {
+                Some(Extension(p)) => crate::approval::may_answer(state.storage.as_ref(), p, &as_json).await,
+                None => false,
+            };
+            match ok {
+                true => {}
+                false => {
                     warn!(request_id = %request_id,
                           "rejected approval answer from a principal that is not the approver");
                     return (StatusCode::NOT_FOUND,
@@ -738,7 +769,7 @@ async fn submit_input_handler(
 /// What an approval answer said, for the decision log (AUD-3): the decision
 /// fields, never free text the approver typed beyond 200 characters.
 fn answer_note(body: &Value) -> String {
-    let pick = ["approved", "decision", "approve", "scope", "action", "reason"];
+    let pick = ["allow", "approved", "decision", "approve", "scope", "action", "reason"];
     let parts: Vec<String> = pick.iter().filter_map(|k| body.get(*k).map(|v| format!("{k}={}", v))).collect();
     let s = if parts.is_empty() { body.to_string() } else { parts.join(" ") };
     s.chars().take(200).collect()

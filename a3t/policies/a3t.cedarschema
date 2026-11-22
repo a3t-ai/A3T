@@ -25,14 +25,50 @@ type A3tTemplate = {
   agent?: String,
 };
 
-entity User { roles?: Set<String>, template?: A3tTemplate };
+// What a rule may know about the call besides who and what (rule conditions):
+// the time in the org's time zone, where the call came from and through what,
+// how the person signed in, and what the call carries. Every attribute is
+// optional: a fact A3T doesn't have is absent, never guessed — a condition on
+// it is then false (so "allowed only when …" refuses, and "… unless" doesn't
+// exempt).
+type A3tLocal = {
+  // The date as YYYYMMDD, the ISO weekday (1 = Monday) and the minute of the day.
+  day: Long,
+  weekday: Long,
+  minute: Long,
+};
+type A3tAuth = {
+  second_factor: Bool,
+  org_idp: Bool,
+  // Seconds since the person signed in.
+  age_s?: Long,
+};
+type A3tContext = {
+  local?: A3tLocal,
+  ip?: ipaddr,
+  // console, vscode, mcp, api-key or trigger.
+  channel?: String,
+  auth?: A3tAuth,
+  // This agent turn has read content from outside A3T.
+  untrusted_seen?: Bool,
+  // The call's arguments carry personal data.
+  args_pii?: Bool,
+  // Seconds since the project's last deploy.
+  since_deploy_s?: Long,
+};
+
+// `level` is the one tenant role held where the call lands (Admin, Operator or
+// Viewer — roles stack, so a rule naming "Viewer" matches on `level`, not on
+// `roles`). `groups` and `email` come from the sign-in (an agent carries those
+// of the person it acts for); `impersonated_by` is the SuperAdmin acting as them.
+entity User { roles?: Set<String>, template?: A3tTemplate, level?: String, groups?: Set<String>, email?: String, impersonated_by?: String };
 // `roles` is authority INHERITED from the invoking principal and already
 // attenuated by the runtime (caller's roles ∩ the agent's declared ceiling), so
 // a rule may trust it as an upper bound — an agent can never present a role its
 // invoker did not hold. Declared under the same name as User.roles so one rule
 // covers both. `owner` is the principal that created the agent: the default
 // authority over what it may be granted, and the bound on self-service grants.
-entity Agent { on_behalf_of?: String, roles?: Set<String>, owner?: String, template?: A3tTemplate };
+entity Agent { on_behalf_of?: String, roles?: Set<String>, owner?: String, template?: A3tTemplate, level?: String, groups?: Set<String>, email?: String, impersonated_by?: String };
 entity Service { template?: A3tTemplate };
 
 // A tool/task. `destructive` and `name` are attached by the choke point from
@@ -42,7 +78,8 @@ entity Service { template?: A3tTemplate };
 // read/write/delete/execute bucket derived from the step's `with.operation`,
 // letting policy distinguish operations within a single handler/task_type
 // (e.g. call:lancedb's list vs delete) without a dedicated Cedar action per verb.
-entity Tool { destructive?: Bool, name?: String, operation?: String, object_type?: String, object_id?: String };
+// Its tags are the call's whole-number arguments (`resource.getTag("amount")`).
+entity Tool { destructive?: Bool, name?: String, operation?: String, object_type?: String, object_id?: String } tags Long;
 
 // A registry resource (LLM, MCP, cedar policy, …). `type` mirrors the
 // resource's `type_ref`; the SoD guardrail gates writes to `type == "cedar"`.
@@ -75,36 +112,36 @@ entity Runtime {
   label_zone?: String,
 };
 
-action "tool:invoke" appliesTo { principal: [User, Agent, Service], resource: [Tool] };
-action "mcp:call"    appliesTo { principal: [User, Agent, Service], resource: [Tool] };
-action "llm:call"    appliesTo { principal: [User, Agent, Service], resource: [Llm] };
-action "flow:start"  appliesTo { principal: [User, Agent, Service], resource: [Flow] };
-action "flow:deploy" appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
+action "tool:invoke" appliesTo { principal: [User, Agent, Service], resource: [Tool], context: A3tContext };
+action "mcp:call"    appliesTo { principal: [User, Agent, Service], resource: [Tool], context: A3tContext };
+action "llm:call"    appliesTo { principal: [User, Agent, Service], resource: [Llm], context: A3tContext };
+action "flow:start"  appliesTo { principal: [User, Agent, Service], resource: [Flow], context: A3tContext };
+action "flow:deploy" appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
 // Operating a deployment, gated on the Runtime it lives in.
-action "flow:pause"    appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
-action "flow:resume"   appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
-action "flow:undeploy" appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
-action "flow:terminate" appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
+action "flow:pause"    appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
+action "flow:resume"   appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
+action "flow:undeploy" appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
+action "flow:terminate" appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
 // Changing a runtime's own state — operator (Admin) territory.
-action "runtime:hibernate" appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
-action "runtime:pause"     appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
-action "runtime:resume"    appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
-action "runtime:terminate" appliesTo { principal: [User, Agent, Service], resource: [Runtime] };
+action "runtime:hibernate" appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
+action "runtime:pause"     appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
+action "runtime:resume"    appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
+action "runtime:terminate" appliesTo { principal: [User, Agent, Service], resource: [Runtime], context: A3tContext };
 
 // Registry resource governance — the separation-of-duties seam (§6.4).
 // Chat transcript access (§ session persistence). Reading somebody's conversation
 // is a policy decision, not a hardcoded if: owners always, InfoSec by exception.
-action "session:read"   appliesTo { principal: [User, Agent, Service], resource: [Session] };
-action "session:delete" appliesTo { principal: [User, Agent, Service], resource: [Session] };
+action "session:read"   appliesTo { principal: [User, Agent, Service], resource: [Session], context: A3tContext };
+action "session:delete" appliesTo { principal: [User, Agent, Service], resource: [Session], context: A3tContext };
 
 // An agent's memory lifecycle and going to production (AC-14), on the agent itself.
-action "memory:branch" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
-action "memory:merge" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
-action "memory:promote" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
-action "memory:fork" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
-action "memory:layers" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
-action "deploy:prod" appliesTo { principal: [User, Agent, Service], resource: [Agent] };
+action "memory:branch" appliesTo { principal: [User, Agent, Service], resource: [Agent], context: A3tContext };
+action "memory:merge" appliesTo { principal: [User, Agent, Service], resource: [Agent], context: A3tContext };
+action "memory:promote" appliesTo { principal: [User, Agent, Service], resource: [Agent], context: A3tContext };
+action "memory:fork" appliesTo { principal: [User, Agent, Service], resource: [Agent], context: A3tContext };
+action "memory:layers" appliesTo { principal: [User, Agent, Service], resource: [Agent], context: A3tContext };
+action "deploy:prod" appliesTo { principal: [User, Agent, Service], resource: [Agent], context: A3tContext };
 
-action "resource:create" appliesTo { principal: [User, Agent, Service], resource: [Resource] };
-action "resource:update" appliesTo { principal: [User, Agent, Service], resource: [Resource] };
-action "resource:delete" appliesTo { principal: [User, Agent, Service], resource: [Resource] };
+action "resource:create" appliesTo { principal: [User, Agent, Service], resource: [Resource], context: A3tContext };
+action "resource:update" appliesTo { principal: [User, Agent, Service], resource: [Resource], context: A3tContext };
+action "resource:delete" appliesTo { principal: [User, Agent, Service], resource: [Resource], context: A3tContext };

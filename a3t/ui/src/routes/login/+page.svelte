@@ -7,6 +7,9 @@
 
   let email = $state('');
   let password = $state('');
+  /// ID-9: SuperAdmin and SecurityAdmin also give their authenticator code.
+  let otp = $state('');
+  let wantOtp = $state(false);
   let error = $state('');
   let loading = $state(false);
 
@@ -83,15 +86,19 @@
     e.preventDefault();
     error = '';
     loading = true;
-    const result = await login(email, password);
+    const result = await login(email, password, otp);
     loading = false;
     if (result.ok) {
       goto('/');
     } else if (result.code === 'password_change_required') {
       // The password was right but temporary: choose your own before going in.
       choosing = true; newPassword = ''; confirmPassword = ''; chooseError = '';
+    } else if (result.code === 'mfa_required') {
+      error = result.error || 'This account signs in with its authenticator code.';
     } else {
       error = result.error || 'Login failed';
+      // A wrong password and a missing code look the same: offer the code field.
+      if (!wantOtp) wantOtp = true;
     }
   }
 
@@ -264,6 +271,17 @@
           </div>
           <input id="password" type="password" bind:value={password} placeholder="Password" required autocomplete="current-password" />
         </div>
+        {#if wantOtp}
+          <div class="field">
+            <div class="label-row">
+              <label for="otp">Authenticator code</label>
+              <a class="link-btn small" href={`${API_BASE}/auth/account`} target="_blank" rel="noopener">Set up an authenticator</a>
+            </div>
+            <input id="otp" inputmode="numeric" pattern="[0-9]*" maxlength="8" bind:value={otp} placeholder="SuperAdmin and SecurityAdmin: the 6-digit code" autocomplete="one-time-code" />
+          </div>
+        {:else}
+          <button type="button" class="link-btn small" onclick={() => (wantOtp = true)}>I use an authenticator code</button>
+        {/if}
         <button type="submit" class="auth-submit" disabled={loading}>
           {#if loading}
             <span class="spinner"></span> Signing in...

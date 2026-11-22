@@ -13,7 +13,7 @@
   import ResourcesList from '$lib/components/pages/ResourcesList.svelte';
   import TriggersList from '$lib/components/pages/TriggersList.svelte';
   import CanvasList from '$lib/components/pages/CanvasList.svelte';
-  import InputsList from '$lib/components/pages/InputsList.svelte';
+  import ApprovalsPage from '$lib/components/pages/ApprovalsPage.svelte';
   import FlowEditor from '$lib/components/pages/FlowEditor.svelte';
   import ConsoleEditor from '$lib/components/pages/ConsoleEditor.svelte';
   import DbConsole from '$lib/components/pages/DbConsole.svelte';
@@ -65,8 +65,8 @@
       <TriggersList />
     {:else if activePanel.type === 'canvas' || activePanel.type === 'canvas-detail'}
       <CanvasList />
-    {:else if activePanel.type === 'inputs'}
-      <InputsList />
+    {:else if activePanel.type === 'approvals' || activePanel.type === 'inputs'}
+      <ApprovalsPage />
     {:else if activePanel.type === 'flow-editor'}
       <FlowEditor />
     {:else if activePanel.type === 'console-editor'}

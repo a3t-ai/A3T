@@ -17,6 +17,8 @@ mod first_password;
 mod change_password;
 mod refresh;
 mod sessions;
+mod replay;
+mod org_idp;
 mod directory;
 mod people;
 mod config;
@@ -30,7 +32,7 @@ use axum::{
     response::IntoResponse,
 };
 use flowr_ce::{
-    build_ce_router, init_storage, restore_triggers, run_stdio, serve, spawn_worker, ServerConfig,
+    build_ce_router, init_storage, restore_triggers, run_stdio, spawn_worker, ServerConfig,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -173,6 +175,18 @@ async fn main() -> anyhow::Result<()> {
         }
         warn!(authn = %authn, enforcing, "{why}; tolerated only because this server enforces no policy or accepts OIDC tokens only");
     }
+    // RT-11: one edition. A FlowR that enforces no policy lets anyone who reaches
+    // it do anything, so it listens on loopback; listening anywhere else without
+    // policy is refused unless the network is declared sealed (FLOWR_ALLOW_OPEN=1).
+    let bind = std::env::var("FLOWR_BIND").ok().filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| if enforcing { "0.0.0.0".to_string() } else { "127.0.0.1".to_string() });
+    let loopback = bind == "localhost" || bind.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    if !enforcing && !loopback && std::env::var("FLOWR_ALLOW_OPEN").as_deref() != Ok("1") {
+        anyhow::bail!("this FlowR enforces no policy (security.policy_hook = {effective_hook}), so anyone who reaches it could do anything: it listens on 127.0.0.1 unless policy is on (security.policy_hook = cedar). To listen on {bind} without policy, on a network nobody else reaches, set FLOWR_ALLOW_OPEN=1");
+    }
+    if !enforcing && !loopback {
+        warn!(%bind, "FLOWR_ALLOW_OPEN=1: listening without policy on a non-loopback address");
+    }
     // ID-6: an OIDC token must be minted for A3T. Without an audience to check,
     // any token the realm issues to any client would do.
     if enforcing && authn != "hs256" && oidc_audience.trim().is_empty() {
@@ -186,11 +200,36 @@ async fn main() -> anyhow::Result<()> {
     // AUD-1: every decision this pod makes goes to the durable log in ADB.
     #[cfg(feature = "ee")]
     flowr_ce::decision_log::install(storage.clone());
+    // AUD-6: each org's decisions past its retention are forgotten once a day (not on legal hold).
+    #[cfg(feature = "ee")]
+    flowr_ce::audit_retention::spawn(storage.clone());
+    // ID-4: this FlowR's key for agent identity tokens, published for verifiers.
+    flowr_ce::agent_token::install(storage.clone());
+    // RT-1: where project flows and agents may call out to (each org's egress files).
+    flowr_ce::egress_rules::install(storage.clone());
+    // GOV-5: sign-in role maps live in each org's access/org.yaml.
+    tokio::spawn({
+        let s = storage.clone();
+        async move { flowr_ce::org_policy::move_sso_maps(s.as_ref()).await }
+    });
+    // RT-7: secrets saved before the key was set are sealed now.
+    tokio::spawn({
+        let s = storage.clone();
+        async move { flowr_mcp_core::vault::seal_existing(s.as_ref()).await }
+    });
     // RT-01: every FlowR reports itself, so the console sees all of them.
     flowr_ce::ops::start_host_heartbeat(storage.clone());
     if enforcing {
         flowr_ce::access::install(storage.clone());
         info!("namespace guard installed (projects enforced)");
+    }
+    // Rule conditions: the org's time zone, deploys, personal data, and the
+    // counts counted rules read (rate, lockout, first use, tokens).
+    flowr_ce::conditions::install(storage.clone());
+    flowr_ce::conditions::spawn_sweep(storage.clone());
+    {
+        let s = storage.clone();
+        tokio::spawn(async move { flowr_ce::policy_changes::ensure(s.as_ref()).await });
     }
 
     info!("FlowR initialized successfully");
@@ -243,6 +282,13 @@ async fn main() -> anyhow::Result<()> {
                     "JWT auth enabled (authorization via the AESOP policy hook)"
                 );
 
+                // EE IdP-admin surface: connect to Keycloak + create/list users.
+                let idp_admin = IdpAdminState {
+                    issuer: oidc_issuer.clone(),
+                    admin_user: oidc_admin_user.clone(),
+                    admin_password: oidc_admin_password.clone(),
+                    client: reqwest::Client::new(),
+                };
                 // Auth + OAuth discovery routes (public). Merged after the auth
                 // middleware layer below, so they bypass it.
                 let auth_routes = Router::new()
@@ -252,6 +298,8 @@ async fn main() -> anyhow::Result<()> {
                     // Sign-in per organisation (.ai/A3T_ORG_SSO_SPEC.md).
                     .route("/auth/sso/start", get(sso::start_handler))
                     .route("/auth/sso/callback", get(sso::callback_handler))
+                    // An editor trades its handoff code for a session (sso.rs).
+                    .route("/auth/sso/token", post(sso::token_handler))
                     // E0.6: report active edition + policy hook (public).
                     .route("/edition", get(edition_handler))
                     .route(
@@ -262,6 +310,8 @@ async fn main() -> anyhow::Result<()> {
                         "/.well-known/oauth-authorization-server",
                         get(oauth_authorization_server),
                     )
+                    // Login checks an account's authenticator (a code proves a second factor).
+                    .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
 
                 // E2 #4: choose the AuthN layer by `security.authn`. "oidc" (EE)
@@ -282,13 +332,6 @@ async fn main() -> anyhow::Result<()> {
                 if policy_admin.hook_setting == "cedar" && policy_admin.policies_dir.is_empty() {
                     flowr_ce::policy_gate::install(Arc::new(ServerPolicyGate(policy_admin.clone())));
                 }
-                // EE IdP-admin surface: connect to Keycloak + create/list users.
-                let idp_admin = IdpAdminState {
-                    issuer: oidc_issuer.clone(),
-                    admin_user: oidc_admin_user.clone(),
-                    admin_password: oidc_admin_password.clone(),
-                    client: reqwest::Client::new(),
-                };
                 // "Forgot password" (forgot.rs): public, like /auth/login.
                 let forgot_routes = Router::new()
                     .route("/auth/forgot", post(forgot::forgot_handler))
@@ -297,14 +340,38 @@ async fn main() -> anyhow::Result<()> {
                     // A new session from a refresh token, with roles read again (refresh.rs).
                     .route("/auth/refresh", post(refresh::refresh_handler))
                     .route("/auth/logout", post(auth_routes::logout_handler))
+                    .route("/auth/account", get(auth_routes::account_handler))
+                    // ID-10: SCIM 2.0 from an org's provider, with the org's own token (org_idp.rs).
+                    .route("/scim/v2/orgs/:org/ServiceProviderConfig", get(org_idp::scim_config))
+                    .route("/scim/v2/orgs/:org/Users", get(org_idp::list_users).post(org_idp::create_user))
+                    .route("/scim/v2/orgs/:org/Users/:id", get(org_idp::get_user).put(org_idp::replace_user)
+                        .patch(org_idp::patch_user).delete(org_idp::delete_user))
+                    .layer(Extension(storage.clone()))
                     .layer(Extension(idp_admin.clone()))
                     .layer(Extension(auth_config.clone()));
                 let base = ce_router
                     .merge(Router::new().route("/security/audit", get(audit_handler)).layer(Extension(storage.clone())))
+                    // AUD-4: check an org's decision chains for gaps and edits.
+                    .merge(Router::new().route("/security/audit/verify", get(audit_verify_handler)).layer(Extension(storage.clone())))
                     // The permission catalogue roles and rules are built from (a3t/policies/catalogue.yaml).
                     .merge(Router::new().route("/security/catalogue", get(catalogue_handler)))
+                    // Every role, in one table (ID-1): a3t/policies/roles.yaml.
+                    .merge(Router::new().route("/security/roles", get(|| async { axum::Json(flowr_policy::roles::table().clone()) })))
                     // The baseline pack this build enforces (UI-5: the console shows this, not a copy).
                     .merge(Router::new().route("/security/baseline", get(baseline_handler)))
+                    // ID-4: the keys agent identity tokens are signed with (public).
+                    .merge(Router::new().route("/.well-known/agent-jwks.json", get(|axum::Extension(s): axum::Extension<Arc<dyn StorageBackend>>| async move {
+                        axum::Json(flowr_ce::agent_token::jwks(s.as_ref()).await)
+                    })).layer(Extension(storage.clone())))
+                    // Policy files that no longer compile, and what they closed (GOV-4).
+                    .merge(Router::new().route("/security/policy-health", get(policy_health_handler)).layer(Extension(storage.clone())))
+                    // Replay an org's policy change against its last days of decisions (GOV-2).
+                    .merge({
+                        #[cfg(feature = "ee")]
+                        { Router::new().route("/security/orgs/:org/replay", post(replay::replay_handler)).layer(Extension(storage.clone())) }
+                        #[cfg(not(feature = "ee"))]
+                        { Router::new() }
+                    })
                     .merge(
                         Router::new()
                             .route("/security/policies", get(policies_list_handler))
@@ -327,8 +394,15 @@ async fn main() -> anyhow::Result<()> {
                             // Who can reach a project, and how; everyone's access for an audit (people.rs).
                             .route("/projects/:project/people", get(people::project_people_handler))
                             .route("/security/people", get(people::security_people_handler))
-                            .layer(Extension(idp_admin)),
+                            // ID-10: an org connects its own provider and turns on SCIM (org_idp.rs).
+                            .route("/security/orgs/:org/idp", get(org_idp::get_idp).put(org_idp::put_idp).delete(org_idp::delete_idp))
+                            .route("/security/orgs/:org/scim/token", post(org_idp::new_token).delete(org_idp::drop_token))
+                            .layer(Extension(storage.clone()))
+                            .layer(Extension(idp_admin.clone())),
                     );
+                // Inside AuthN: where each request came from and through what,
+                // for rule conditions (auth.rs session_facts_middleware).
+                let base = base.layer(middleware::from_fn(auth::session_facts_middleware));
 
                 let secured;
                 #[cfg(feature = "ee")]
@@ -394,12 +468,14 @@ async fn main() -> anyhow::Result<()> {
                 .allow_headers([
                     axum::http::header::CONTENT_TYPE,
                     axum::http::header::AUTHORIZATION,
+                    // Which A3T client calls (the `via` rule condition).
+                    axum::http::HeaderName::from_static("x-a3t-client"),
                 ])
                 .allow_credentials(true);
 
             router = router.layer(cors);
 
-            serve(router, port).await?;
+            flowr_ce::serve_on(router, &bind, port).await?;
         }
         _ => {
             run_stdio(storage).await?;
@@ -437,7 +513,7 @@ static EDITION_INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLoc
 /// system / a3t / default are the platform's; any other is its project's
 /// (a3t_security::NamedPolicy). What is stored compiles: the policy gate checks
 /// each one before it is saved.
-async fn collect_registry_cedar_policies(
+pub(crate) async fn collect_registry_cedar_policies(
     storage: &Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
 ) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
@@ -457,31 +533,89 @@ async fn collect_registry_cedar_policies(
     // statement names the agent, so it binds that agent only. It was checked
     // when saved; one that no longer compiles (the catalogue changed) is
     // reported and left out, and the rest of the set still loads.
+    // GOV-4: one that no longer compiles is never quietly left out — what it
+    // guarded is closed, naming the file, until a security admin fixes it.
+    #[cfg(feature = "ee")]
+    let mut broken: Vec<flowr_ce::policy_health::Broken> = Vec::new();
+    #[cfg(feature = "ee")]
+    let now = chrono::Utc::now().to_rfc3339();
     #[cfg(feature = "ee")]
     for (id, project, yaml) in flowr_ce::agent_space::security::all_policies(storage.as_ref()).await {
         match a3t_security::policy_files::compile_agent_policy(&project, &id, &yaml) {
             Ok(c) => out.push(("a3t".to_string(), format!("agent-{id}"), c.cedar)),
-            Err(e) => warn!(agent = %id, error = %e, "an agent's own policy no longer compiles; it is not enforced"),
+            Err(e) => {
+                let why = format!("Agent {id}'s own policy no longer compiles, so the agent is stopped until an org admin or security admin fixes it (Security › the agent › Security). {e}");
+                out.push(("a3t".to_string(), format!("agent-{id}-broken"),
+                    flowr_ce::policy_health::closing_agent_statement(&format!("agent.{id}.broken"), &id, &why)));
+                broken.push(flowr_ce::policy_health::Broken { kind: "agent".into(), owner: id.clone(), org: None,
+                    errors: vec![e], closed: vec![format!("agent {id}")], since: now.clone() });
+            }
         }
     }
-    // Each org's files, kept from its own GitHub repo: placed in the policy set
-    // of every project they apply to, never outside the org. They were checked
-    // when they were synced; a set that no longer compiles (the catalogue
-    // changed) is reported loudly and left out.
+    // Each org's files, kept in A3T: placed in the policy set of every project
+    // they apply to, never outside the org. They were checked when saved; a set
+    // that no longer compiles (the catalogue changed) closes the org's projects.
     #[cfg(feature = "ee")]
-    for (org, projects, files) in flowr_ce::org_policy::all_org_files(storage.as_ref()).await {
+    let shadows = flowr_ce::org_policy::all_shadow_files(storage.as_ref()).await;
+    // Every org with enforced files, and every org with shadow files only.
+    #[cfg(feature = "ee")]
+    let mut orgs = flowr_ce::org_policy::all_org_files(storage.as_ref()).await;
+    #[cfg(feature = "ee")]
+    for org in shadows.keys() {
+        if !orgs.iter().any(|(o, _, _)| o == org) {
+            orgs.push((org.clone(), flowr_ce::org_policy::org_projects(storage.as_ref(), org).await, Vec::new()));
+        }
+    }
+    #[cfg(feature = "ee")]
+    for (org, projects, files) in orgs {
         let files: Vec<a3t_security::policy_files::OrgFile> = files.into_iter()
             .map(|(path, content)| a3t_security::policy_files::OrgFile { path, content }).collect();
+        // GOV-2: its shadow files, compiled with the enforced ones (they may name
+        // the org's roles), placed under `shadow:` names: evaluated, not enforced.
+        if let Some(sh) = shadows.get(&org) {
+            let mut all = files.clone();
+            all.extend(sh.iter().map(|(path, content)| a3t_security::policy_files::OrgFile { path: path.clone(), content: content.clone() }));
+            match a3t_security::policy_files::compile_org_set(&org, &projects, &all) {
+                Ok(set) => {
+                    let shadow_labels: std::collections::BTreeSet<String> = set.files.iter()
+                        .filter(|f| sh.iter().any(|(p, _)| f["path"].as_str() == Some(p)))
+                        .filter_map(|f| Some(format!("org.{org}.{}.{}", f["kind"].as_str()?, f["name"].as_str()?.rsplit('/').next()?)))
+                        .collect();
+                    for (p, label, cedar) in set.policies {
+                        if shadow_labels.contains(&label) {
+                            out.push((p, format!("{}{label}", a3t_security::SHADOW_PREFIX), cedar));
+                        }
+                    }
+                }
+                Err(errors) => warn!(org = %org, errors = ?errors, "an org's shadow files don't compile with its enforced ones; they are not evaluated"),
+            }
+        }
+        if files.is_empty() {
+            continue; // shadow files only: placed above
+        }
         match a3t_security::policy_files::compile_org_set(&org, &projects, &files) {
             Ok(set) => out.extend(set.policies),
-            Err(errors) => tracing::error!(org = %org, errors = ?errors, "an org's kept policy files no longer compile; they are NOT enforced"),
+            Err(errors) => {
+                let why = format!("{org}'s policy files no longer compile, so its projects refuse every call until an org admin or security admin fixes them (Security › {org} › Policy files): {}", errors.join("; "));
+                for p in &projects {
+                    out.push((p.clone(), format!("org-{org}-broken"),
+                        flowr_ce::policy_health::closing_statement(&format!("org.{org}.broken"), &why)));
+                }
+                broken.push(flowr_ce::policy_health::Broken { kind: "org".into(), owner: org.clone(), org: Some(org.clone()),
+                    errors, closed: projects.clone(), since: now.clone() });
+            }
         }
+    }
+    #[cfg(feature = "ee")]
+    {
+        let (fresh, healed) = flowr_ce::policy_health::set(broken);
+        flowr_ce::policy_health::log(&fresh, &healed);
     }
     out
 }
 
 #[cfg(feature = "ee")]
-fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy> {
+pub(crate) fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy> {
     policies.iter().map(|(ns, n, s)| a3t_security::NamedPolicy::new(ns.clone(), n.clone(), s.clone())).collect()
 }
 
@@ -489,7 +623,7 @@ fn named(policies: &[(String, String, String)]) -> Vec<a3t_security::NamedPolicy
 /// (`type_ref: cedarschema`, name `base-schema`) plus per-resource fragments
 /// (a `type_ref: cedarschema` resource's `config.schema`, or any resource's
 /// inline `config.cedar_schema`). Values may be a JSON object or a JSON string.
-async fn collect_registry_schema(
+pub(crate) async fn collect_registry_schema(
     storage: &Arc<dyn flowr_ce::flowr_storage::StorageBackend>,
 ) -> (Option<String>, Vec<String>) {
     let as_str = |v: &serde_json::Value| -> String {
@@ -618,7 +752,7 @@ async fn audit_handler(
     }
 
     let mut q = flowr_ce::decision_log::Query {
-        project: param("project"), agent: param("agent"), principal: param("principal"),
+        project: param("project"), agent: param("agent"), principal: param("principal"), on_behalf_of: param("on_behalf_of"),
         action: param("action"), decision: param("decision"),
         since_ms: num("since_ms"), before_ms: num("before_ms"), like: param("q"), limit,
         ..Default::default()
@@ -643,9 +777,14 @@ async fn audit_handler(
                 let Some(me) = flowr_policy::namespace::acting_user(&p) else {
                     return refuse(StatusCode::FORBIDDEN, "The decision log is read by people, not agents.");
                 };
-                q.agent_owner = Some(me.to_string());
                 q.orgs = every_org().await;
-                "own agents"
+                // Or what they did themselves (their approval answers, GOV-7).
+                if q.principal.as_deref() == Some(me) {
+                    "yours"
+                } else {
+                    q.agent_owner = Some(me.to_string());
+                    "own agents"
+                }
             }
         }
     };
@@ -661,6 +800,36 @@ async fn audit_handler(
             warn!(error = %e, "decision log: read failed");
             refuse(StatusCode::SERVICE_UNAVAILABLE, "The decision log can't be read right now. Try again in a moment.")
         }
+    }
+}
+
+/// `GET /security/audit/verify?org=<org id>&days=7` — AUD-4: recompute the
+/// org's decision chains (each record's hash, its link to the one before, no
+/// missing sequence numbers) and check them against the anchors.
+async fn audit_verify_handler(
+    principal: Option<axum::Extension<flowr_policy::Principal>>,
+    storage: Option<axum::Extension<Arc<dyn StorageBackend>>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    let refuse = |code: StatusCode, msg: &str| (code, axum::Json(serde_json::json!({ "error": msg }))).into_response();
+    let Some(axum::Extension(p)) = principal else { return refuse(StatusCode::UNAUTHORIZED, "Sign in first.") };
+    let Some(org) = params.get("org").filter(|o| !o.is_empty()).cloned() else { return refuse(StatusCode::BAD_REQUEST, "org: the org id (or platform)") };
+    let allowed = is_infosec(Some(&p)) || match storage.as_ref() {
+        Some(axum::Extension(s)) if org != "platform" => flowr_ce::org_policy::manages_org_security(s.as_ref(), &p, &org).await,
+        _ => false,
+    };
+    if !allowed {
+        return refuse(StatusCode::FORBIDDEN, "An org's decision log is checked by its admins and security admins, and platform InfoSec.");
+    }
+    if !flowr_ce::decision_log::installed() {
+        return refuse(StatusCode::NOT_IMPLEMENTED, "This server keeps no durable decision log.");
+    }
+    let days: u64 = params.get("days").and_then(|d| d.parse().ok()).unwrap_or(7).clamp(1, 366);
+    let since = (chrono::Utc::now() - chrono::Duration::days(days as i64)).timestamp_millis() as u64;
+    match flowr_ce::decision_log::verify(&org, since, 20_000).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &format!("The log can't be read right now: {e}")),
     }
 }
 
@@ -703,6 +872,29 @@ async fn baseline_handler() -> axum::response::Response {
     {
         (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "A Community runtime has no baseline: it enforces nothing." }))).into_response()
     }
+}
+
+/// `GET /security/policy-health` — policy files that no longer compile and
+/// what they closed (GOV-4). InfoSec sees all; an org's admins and security
+/// admins see their org's.
+async fn policy_health_handler(
+    principal: Option<axum::Extension<flowr_policy::Principal>>,
+    storage: Option<axum::Extension<Arc<dyn StorageBackend>>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    let Some(axum::Extension(p)) = principal else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "Sign in first." }))).into_response();
+    };
+    let infosec = is_infosec(Some(&p));
+    let mut shown = Vec::new();
+    for b in flowr_ce::policy_health::list() {
+        let ok = infosec || match (b.org.as_deref(), storage.as_ref()) {
+            (Some(org), Some(axum::Extension(s))) => flowr_ce::org_policy::manages_org_security(s.as_ref(), &p, org).await,
+            _ => false,
+        };
+        if ok { shown.push(b); }
+    }
+    axum::Json(serde_json::json!({ "broken": shown, "count": shown.len() })).into_response()
 }
 
 /// `GET /security/catalogue` — every permission a role or rule can name, with
@@ -1045,7 +1237,7 @@ async fn policies_test_handler(
             flowr_policy::PolicyDecision::Allow => (true, None, deciding.clone(), Vec::new()),
             flowr_policy::PolicyDecision::Deny { reason, policy_ids } =>
                 (false, Some(reason.clone()), policy_ids.clone(), Vec::new()),
-            flowr_policy::PolicyDecision::Ask { reason, policy_ids, scopes } => (
+            flowr_policy::PolicyDecision::Ask { reason, policy_ids, scopes, .. } => (
                 false,
                 Some(reason.clone()),
                 policy_ids.clone(),
@@ -1104,9 +1296,10 @@ struct IdpNewUser {
     roles: Vec<String>,
 }
 
-/// Realm roles a person may hold, as Keycloak names them (the spellings
-/// `roles::canonicalize` understands).
-const IDP_ROLE_NAMES: &[&str] = &["superadmin", "securityadmin", "admin", "operator", "developer", "viewer"];
+/// Realm roles a person may hold: the platform roles of the role table (ID-1).
+fn idp_role_names() -> Vec<&'static str> {
+    flowr_policy::roles::table().roles.iter().filter(|r| r.scope == "platform").map(|r| r.id.as_str()).collect()
+}
 
 fn is_super_admin(principal: Option<&flowr_policy::Principal>) -> bool {
     matches!(principal, Some(flowr_policy::Principal::Human { roles: r, .. })
@@ -1124,8 +1317,9 @@ fn grants_infosec(roles: &[String]) -> bool {
 /// gives SuperAdmin or SecurityAdmin, so a SecurityAdmin can't raise anyone
 /// (themselves included) above their own role.
 fn check_role_grant(principal: Option<&flowr_policy::Principal>, roles: &[String]) -> Result<(), String> {
-    if let Some(bad) = roles.iter().find(|r| !IDP_ROLE_NAMES.contains(&r.trim().to_ascii_lowercase().as_str())) {
-        return Err(format!("Unknown role '{bad}'. Roles are: {}.", IDP_ROLE_NAMES.join(", ")));
+    let names = idp_role_names();
+    if let Some(bad) = roles.iter().find(|r| !names.contains(&r.trim().to_ascii_lowercase().as_str())) {
+        return Err(format!("Unknown role '{bad}'. Roles are: {}.", names.join(", ")));
     }
     if grants_infosec(roles) && !is_super_admin(principal) {
         return Err("Only a SuperAdmin can give the SuperAdmin or SecurityAdmin role.".into());

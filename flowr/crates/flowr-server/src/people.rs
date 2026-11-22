@@ -232,7 +232,7 @@ pub async fn project_people_handler(
     let Some(snap) = access::current_snapshot().await else {
         return refuse(StatusCode::NOT_IMPLEMENTED, "Who can reach a project is known when project access is enforced (FlowR EE).");
     };
-    let principal = Principal::Human { user_id: me.clone(), roles: my_roles.clone(), memory_branch: None, impersonated_by: None };
+    let principal = Principal::Human { user_id: me.clone(), roles: my_roles.clone(), memory_branch: None, impersonated_by: None, session: None };
     let mine = flowr_policy::namespace::namespace_guard().access(&principal, &ns).await;
     if mine == NsAccess::None && !is_infosec {
         return refuse(StatusCode::NOT_FOUND, &format!("No project {ns}."));

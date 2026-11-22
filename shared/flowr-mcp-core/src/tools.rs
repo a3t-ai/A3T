@@ -1208,6 +1208,10 @@ pub fn apply_session_decisions(
     if !decision.is_ask() {
         return decision;
     }
+    // A `needs_approval` rule asks every time: no earlier answer covers it.
+    if matches!(&decision, flowr_policy::PolicyDecision::Ask { required: Some(_), .. }) {
+        return decision;
+    }
     let key = decision_key(action, resource_type, resource_id);
     match consult(session_id, &key) {
         Some(d) if d.verdict == Verdict::Granted => flowr_policy::PolicyDecision::Allow,
@@ -2620,7 +2624,7 @@ async fn create_resource(storage: &dyn StorageBackend, args: &Value) -> CallTool
     };
     let description = args.get("description").and_then(|v| v.as_str());
 
-    let mut resource = Resource::new(name, type_ref, config)
+    let mut resource = Resource::new(name, type_ref, crate::vault::seal_for(type_ref, config))
         .with_namespace(namespace);
 
     if let Some(desc) = description {
