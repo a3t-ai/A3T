@@ -181,7 +181,8 @@
         <select class="tin sm" bind:value={r.callers} aria-label="People or agents">
           <option value="both">people and agents</option><option value="agents">agents only</option><option value="people">people only</option>
         </select>
-        {#if !r.roles.length}<span class="dim small">no role picked: anyone</span>{/if}
+        {#each r.agents as a (a)}<span class="pick">agent {a}<button aria-label="Remove" onclick={() => (r.agents = r.agents.filter((x) => x !== a))}>×</button></span>{/each}
+        {#if !r.roles.length && !r.agents.length}<span class="dim small">no role picked: anyone</span>{/if}
       </div>
 
       <span class="pl">Doing</span>
