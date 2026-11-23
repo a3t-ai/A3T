@@ -28,21 +28,34 @@ const CLIENT_ID = (import.meta.env.VITE_KC_EA_CLIENT as string) || 'a3t-early-ac
 const REALM = (import.meta.env.VITE_KC_EA_REALM as string) || 'a3t-early-access';
 const STORE = 'a3t.ea.pkce';
 
-/// The early-access realm on the same Keycloak as the API: console.<x> →
-/// keycloak.<x>/realms/a3t-early-access. Deliberately NOT the realm FlowR trusts.
-export function realmUrl(): string {
+/// The early-access realm, on the Keycloak that A3T signs in with: FlowR names
+/// it in its protected-resource metadata (`authorization_servers`), so
+/// `…/realms/a3t` there becomes `…/realms/a3t-early-access`. Deliberately NOT
+/// the realm FlowR trusts. VITE_KC_EA_REALM_URL pins it for a build; without
+/// FlowR's answer, keycloak.<x> beside console.<x> is the guess.
+let realm: Promise<string> | null = null;
+export function realmUrl(): Promise<string> {
   const pin = import.meta.env.VITE_KC_EA_REALM_URL as string | undefined;
-  if (pin) return pin.replace(/\/$/, '');
-  const base = API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-  return base.replace('://console.', '://keycloak.').replace(/\/$/, '') + `/realms/${REALM}`;
+  if (pin) return Promise.resolve(pin.replace(/\/$/, ''));
+  const base = (API_BASE || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '');
+  const guess = base.replace('://console.', '://keycloak.') + `/realms/${REALM}`;
+  realm ??= fetch(`${base}/.well-known/oauth-protected-resource`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((m) => {
+      const issuer = Array.isArray(m?.authorization_servers) ? String(m.authorization_servers[0] ?? '') : '';
+      const at = issuer.indexOf('/realms/');
+      return at > 0 ? `${issuer.slice(0, at)}/realms/${REALM}` : guess;
+    })
+    .catch(() => guess);
+  return realm;
 }
 
-/// Is sign-in with a provider set up here? The realm's discovery document is
-/// public and CORS-enabled; until the realm exists it is a 404, and sending a
-/// visitor there would strand them on Keycloak's "Page not found".
+/// Whether the early-access realm answers here (until it exists, the buttons
+/// would send visitors to Keycloak's 'Page not found').
 let available: Promise<boolean> | null = null;
 export function providersAvailable(): Promise<boolean> {
-  available ??= fetch(`${realmUrl()}/.well-known/openid-configuration`)
+  available ??= realmUrl()
+    .then((u) => fetch(`${u}/.well-known/openid-configuration`))
     .then((r) => r.ok)
     .catch(() => false);
   return available;
@@ -74,7 +87,7 @@ export async function startEarlyAccess(provider: Provider): Promise<void> {
     code_challenge_method: 'S256',
     kc_idp_hint: IDP_ALIAS[provider],
   });
-  window.location.assign(`${realmUrl()}/protocol/openid-connect/auth?${q}`);
+  window.location.assign(`${await realmUrl()}/protocol/openid-connect/auth?${q}`);
 }
 
 export type Identity = { name: string; email: string; provider: Provider; verified: boolean };
@@ -97,7 +110,7 @@ export async function finishEarlyAccess(): Promise<{ identity?: Identity; error?
     const why = url.searchParams.get('error_description');
     return { error: kcError === 'access_denied' ? 'Sign-in was cancelled.' : `Sign-in failed: ${why || kcError}` };
   }
-  const res = await fetch(`${realmUrl()}/protocol/openid-connect/token`, {
+  const res = await fetch(`${await realmUrl()}/protocol/openid-connect/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
