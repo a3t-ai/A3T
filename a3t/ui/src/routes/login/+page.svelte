@@ -149,10 +149,10 @@
   }
   function chooseCancel() { choosing = false; password = ''; newPassword = ''; confirmPassword = ''; chooseError = ''; }
 
-  // ── Request Early Access. The visitor isn't signed in, so this posts to a public
-  // webhook (/webhook/* needs no token), whose trigger runs the `a3t/flow_a3t_early_access`
-  // flow with the posted body as its input. /message (execute_flow) needs a token. ──
-  const EARLY_ACCESS_HOOK = '/webhook/a3t/early-access';
+  // ── Request Early Access. The visitor isn't signed in, so this posts to FlowR's
+  // public /auth/early-access, which checks and saves it (admins read the requests
+  // through `a3t/flow_a3t_early_access`). Webhooks need a token or a signature. ──
+  const EARLY_ACCESS = '/auth/early-access';
   let showForm = $state(false);
   let submitting = $state(false);
   type Request = { name: string; email: string; company: string; use_case: string; provider?: Provider; verified?: boolean };
@@ -198,22 +198,19 @@
     submitting = true; formError = '';
     try {
       const payload = {
-        id: `ea-${crypto.randomUUID().slice(0, 8)}`,
         name: who.name,
         email: who.email,
         company: who.company,
         use_case: who.use_case,
-        ...(who.provider ? { provider: who.provider, email_verified: who.verified } : {}),
-        created_at: new Date().toISOString(),
+        ...(who.provider ? { provider: who.provider, email_verified: !!who.verified } : {}),
       };
-      const res = await fetch(`${API_BASE}${EARLY_ACCESS_HOOK}`, {
+      const res = await fetch(`${API_BASE}${EARLY_ACCESS}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => null);
-      // 200 with delivered 0 = no trigger on that path: the request went nowhere.
-      if (!res.ok || !data?.delivered) throw new Error(data?.message || data?.error || 'Request failed. Please try again later.');
+      if (!res.ok || !data?.ok) throw new Error(data?.error || 'Request failed. Please try again later.');
       submitted = who;
     } catch (err: any) {
       formError = err?.message || 'Something went wrong. Please try again.';
