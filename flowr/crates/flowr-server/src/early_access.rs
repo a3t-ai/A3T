@@ -5,8 +5,10 @@
 //! page in a browser can hold neither. What anyone may send is checked and capped
 //! here, the time and status are the server's, and the request is saved to the
 //! platform table `early_access_requests` (where `a3t/flow_a3t_early_access`
-//! lists them to an admin). Limits: one request per address a minute, and
-//! `PER_CLIENT` per client address in `WINDOW`.
+//! lists them to an admin). Nothing a person sends in good faith is dropped:
+//! the same address again within a minute is answered as saved (the first one
+//! is), and only a client address the ingress named is held to `PER_CLIENT` in
+//! `WINDOW` (so people behind one office address still get through).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,7 +24,7 @@ use crate::auth::AuthConfig;
 const TABLE: &str = "early_access_requests";
 const PER_ADDRESS: Duration = Duration::from_secs(60);
 const WINDOW: Duration = Duration::from_secs(600);
-const PER_CLIENT: usize = 5;
+const PER_CLIENT: usize = 20;
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -60,19 +62,27 @@ fn client(headers: &HeaderMap) -> String {
         .unwrap_or_default()
 }
 
-/// Whether this request goes over a limit (and, if not, counts it).
-fn limited(email: &str, ip: &str, now: Instant) -> bool {
+enum Seen { New, Again, TooMany }
+
+/// Whether this address asked a moment ago, or this client too often (and, if
+/// neither, counts it). An unknown client address is never held to the limit.
+fn seen(email: &str, ip: &str, now: Instant) -> Seen {
     static SEEN: OnceLock<Mutex<(HashMap<String, Instant>, HashMap<String, Vec<Instant>>)>> = OnceLock::new();
     let mut g = SEEN.get_or_init(Default::default).lock().unwrap();
     let (by_email, by_ip) = &mut *g;
     by_email.retain(|_, t| now.duration_since(*t) < PER_ADDRESS);
     by_ip.retain(|_, ts| { ts.retain(|t| now.duration_since(*t) < WINDOW); !ts.is_empty() });
-    if by_email.contains_key(email) || by_ip.get(ip).is_some_and(|ts| ts.len() >= PER_CLIENT) {
-        return true;
+    if by_email.contains_key(email) {
+        return Seen::Again;
+    }
+    if !ip.is_empty() && by_ip.get(ip).is_some_and(|ts| ts.len() >= PER_CLIENT) {
+        return Seen::TooMany;
     }
     by_email.insert(email.to_string(), now);
-    by_ip.entry(ip.to_string()).or_default().push(now);
-    false
+    if !ip.is_empty() {
+        by_ip.entry(ip.to_string()).or_default().push(now);
+    }
+    Seen::New
 }
 
 fn refuse(status: StatusCode, msg: &str) -> Response {
@@ -88,8 +98,11 @@ pub async fn early_access_handler(
     if !email_ok(&email) {
         return refuse(StatusCode::BAD_REQUEST, "A valid email address is required.");
     }
-    if limited(&email, &client(&headers), Instant::now()) {
-        return refuse(StatusCode::TOO_MANY_REQUESTS, "We already have a request from you. Try again in a few minutes.");
+    match seen(&email, &client(&headers), Instant::now()) {
+        Seen::New => {}
+        // Sent twice (a refresh, a second click): the first one is saved.
+        Seen::Again => return Json(json!({ "ok": true, "again": true })).into_response(),
+        Seen::TooMany => return refuse(StatusCode::TOO_MANY_REQUESTS, "Too many requests from your network just now. Please try again in a few minutes."),
     }
     let id = format!("ea-{}", uuid::Uuid::now_v7().simple());
     let record = json!({
@@ -136,12 +149,12 @@ mod tests {
     }
 
     #[test]
-    fn limits_per_address_and_client() {
+    fn repeats_are_answered_and_clients_limited() {
         let t = Instant::now();
-        assert!(!limited("one@t.io", "198.51.100.7", t));
-        assert!(limited("one@t.io", "198.51.100.8", t), "same address within a minute");
-        for i in 0..4 { assert!(!limited(&format!("k{i}@t.io"), "198.51.100.9", t)); }
-        assert!(!limited("k4@t.io", "198.51.100.9", t));
-        assert!(limited("k5@t.io", "198.51.100.9", t), "sixth from one client in ten minutes");
+        assert!(matches!(seen("one@t.io", "198.51.100.7", t), Seen::New));
+        assert!(matches!(seen("one@t.io", "198.51.100.8", t), Seen::Again), "same address within a minute");
+        for i in 0..PER_CLIENT { assert!(matches!(seen(&format!("k{i}@t.io"), "198.51.100.9", t), Seen::New)); }
+        assert!(matches!(seen("over@t.io", "198.51.100.9", t), Seen::TooMany), "one client over the limit");
+        for i in 0..(PER_CLIENT + 5) { assert!(matches!(seen(&format!("u{i}@t.io"), "", t), Seen::New), "unknown client never limited"); }
     }
 }
