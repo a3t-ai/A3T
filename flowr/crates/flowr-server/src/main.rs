@@ -13,6 +13,7 @@ mod auth_routes;
 mod sso;
 mod impersonate;
 mod forgot;
+mod early_access;
 mod first_password;
 mod change_password;
 mod refresh;
@@ -335,6 +336,8 @@ async fn main() -> anyhow::Result<()> {
                 // "Forgot password" (forgot.rs): public, like /auth/login.
                 let forgot_routes = Router::new()
                     .route("/auth/forgot", post(forgot::forgot_handler))
+                    // An early-access request from the sign-in page (early_access.rs).
+                    .route("/auth/early-access", post(early_access::early_access_handler))
                     // First sign-in with a temporary password (first_password.rs).
                     .route("/auth/first-password", post(first_password::first_password_handler))
                     // A new session from a refresh token, with roles read again (refresh.rs).
